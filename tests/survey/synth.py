@@ -95,6 +95,14 @@ def make_attitude(polar_distance_deg: float, azimuth_deg: float, roll_deg: float
     return nearest_rotation(np.stack([ex, ey, boresight]))  # exact near the pole too
 
 
+def prior_zero_point(profile: Profile) -> float:
+    """The zero point of the profile's photometric prior: the magnitude with 1 e-/s."""
+    photometry = profile.photometry
+    assert photometry is not None
+    assert photometry.mag0_electron_rate_e_per_s is not None
+    return float(2.5 * np.log10(photometry.mag0_electron_rate_e_per_s))
+
+
 def synthetic_catalog(
     *,
     cap_radius_deg: float = 6.0,
@@ -203,6 +211,12 @@ class SynthTruth:
     vectors_cirs: FloatArray  # of the whole catalog
     hot_pixels: np.ndarray[Any, np.dtype[np.bool_]]  # where the renderer put hot pixels
     epoch: apparent.ObservationEpoch = field(repr=False)
+    zero_point_mag: float = 0.0  # G = ZP - 2.5 log10(rate) + color_term * (BP-RP)
+    color_term: float = 0.0
+    sky_e_per_s_px: float = 0.0
+    dark_e_per_s_px: float = 0.0
+    offset_dn: float = 0.0
+    temperature_c: float = 15.0
 
 
 def astropy_apparent_vectors(catalog: CapCatalog, t_utc_ns: int) -> FloatArray:
@@ -279,6 +293,8 @@ def star_truth(
     vectors_cirs: FloatArray | None = None,
     n_sub: int = 64,
     dut1_s: float = 0.0,
+    zero_point_mag: float | None = None,
+    color_term: float = 0.0,
 ) -> tuple[SynthTruth, FloatArray, FloatArray]:
     """The geometry of a frame without its pixels: the truth, and the star tracks.
 
@@ -323,11 +339,10 @@ def star_truth(
         if isinstance(transmission, int | float)
         else np.asarray(transmission(xs.mean(axis=1), ys.mean(axis=1)), dtype=np.float64)
     )
-    flux_e = (
-        np.array([profile.star_electron_rate_e_per_s(float(g)) for g in catalog.g_mag[rows]])
-        * exposure_s
-        * gain_factor
-    )
+    zero_point = prior_zero_point(profile) if zero_point_mag is None else zero_point_mag
+    bp_rp = np.nan_to_num(catalog.bp_rp[rows], nan=0.0)
+    rate = 10.0 ** (0.4 * (zero_point - catalog.g_mag[rows] + color_term * bp_rp))
+    flux_e = rate * exposure_s * gain_factor
     pole_x, pole_y, pole_front = project(
         rotation_cirs, np.array([[0.0, 0.0, 1.0]]), scale, parity, center
     )
@@ -352,6 +367,8 @@ def star_truth(
         vectors_cirs=vectors_cirs,
         hot_pixels=np.zeros((height, width), dtype=np.bool_),
         epoch=epoch,
+        zero_point_mag=zero_point,
+        color_term=color_term,
     )
     return truth, xs, ys
 
@@ -383,6 +400,11 @@ def render_frame(
     seq: int = 0,
     n_sub: int = 64,
     dut1_s: float = 0.0,
+    zero_point_mag: float | None = None,
+    color_term: float = 0.0,
+    star_scatter: float = 0.0,
+    dark_e_per_s_px: float = 0.0,
+    temperature_c: float = 15.0,
 ) -> tuple[Frame, SynthTruth]:
     """Render one survey frame and return it with the truth.
 
@@ -408,7 +430,12 @@ def render_frame(
         vectors_cirs=vectors_cirs,
         n_sub=n_sub,
         dut1_s=dut1_s,
+        zero_point_mag=zero_point_mag,
+        color_term=color_term,
     )
+    if star_scatter > 0.0:  # scintillation and other flux noise that the photometry cannot model
+        factor = np.exp(rng.normal(0.0, star_scatter, truth.rows.size))
+        truth = replace(truth, flux_e=truth.flux_e * factor)
     readout = profile.mode(mode)
     width, height = truth.width, truth.height
     e_per_adu = profile.e_per_adu(mode, gain)
@@ -419,7 +446,7 @@ def render_frame(
     electrons = np.zeros((height, width), dtype=np.float32)
     sigma = psf_sigma_px
     # A star that will saturate gets a halo, which spreads its wings over many pixels.
-    sky_e = sky_e_per_s_px * exposure_s
+    sky_e = (sky_e_per_s_px + dark_e_per_s_px) * exposure_s
     noise_e = np.sqrt(sky_e + read_noise**2)
     halo = flux_e * halo_fraction > 30.0 * noise_e * np.sqrt(2.0 * np.pi) * halo_sigma_px
     core_flux = np.where(halo, flux_e * (1.0 - halo_fraction), flux_e)
@@ -467,10 +494,17 @@ def render_frame(
         mode=mode,
         roi=Roi(0, 0, width, height),
         adc_bits=readout.adc_bits,
-        temperature_c=15.0,
+        temperature_c=temperature_c,
         flags=FrameFlag.SIMULATED,
     )
-    return frame, replace(truth, hot_pixels=hot_mask)
+    return frame, replace(
+        truth,
+        hot_pixels=hot_mask,
+        sky_e_per_s_px=sky_e_per_s_px,
+        dark_e_per_s_px=dark_e_per_s_px,
+        offset_dn=offset_dn,
+        temperature_c=temperature_c,
+    )
 
 
 def truth_solve_result(
