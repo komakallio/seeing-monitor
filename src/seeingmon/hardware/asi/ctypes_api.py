@@ -308,6 +308,11 @@ class CtypesAsiApi:
 # --- Loading the library -----------------------------------------------------------------
 
 
+def _is_windows() -> bool:
+    """Whether this is Windows. A function, so the type checker does not fold the platform test."""
+    return sys.platform == "win32"
+
+
 def resolve_library(
     path: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -348,8 +353,9 @@ def load_asi_api(
     `loader` replaces `ctypes.CDLL`, so a test loads a stand-in library.
     """
     location = resolve_library(path, env)
-    if sys.platform == "win32" and os.path.isabs(location) and hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(os.path.dirname(location))  # the library finds its own dependencies
+    add_dll_directory = getattr(os, "add_dll_directory", None)  # Windows only
+    if _is_windows() and add_dll_directory is not None and os.path.isabs(location):
+        add_dll_directory(os.path.dirname(location))  # the library finds its own dependencies
     try:
         library = (loader or ctypes.CDLL)(location)
     except OSError as error:
