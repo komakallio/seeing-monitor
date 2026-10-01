@@ -1,0 +1,85 @@
+# Managed by the seeingmon installer. Changes are overwritten.
+#
+# acquire owns the camera driver and streams frames to core. It is the only unit that touches
+# USB, and it needs no network. It listens on a Unix socket in /run/seeingmon, and libusb watches
+# device events through a netlink socket, so the unit allows AF_UNIX and AF_NETLINK only.
+#
+# The memory numbers are provisional until the performance gate on a Raspberry Pi 4.
+
+[Unit]
+Description=Seeing monitor camera acquisition (acquire)
+PartOf=seeingmon.target
+# Five starts in ten minutes are a restart storm. The unit then stays stopped, and
+# seeingmon-failed@.service writes a critical message to the journal. core reports the lost
+# camera as degraded health.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=seeingmon-failed@%n.service
+
+[Service]
+# acquire sends READY=1 when it listens, and WATCHDOG=1 at half the watchdog interval. A call into
+# the vendor SDK that hangs makes the process exit, and systemd starts it again.
+Type=notify
+WatchdogSec=30s
+Restart=always
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+User=@USER@
+UMask=0027
+# An installed release reads local/config.toml relative to its working directory.
+WorkingDirectory=@CONFIG_DIR@
+ExecStart=@PREFIX@/current/venv/bin/seeingmon acquire
+SyslogIdentifier=seeingmon-acquire
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The installer writes sdk.env, with the path of the vendor library, when you give it an SDK.
+EnvironmentFile=-@CONFIG_DIR@/sdk.env
+EnvironmentFile=-@CONFIG_DIR@/seeingmon.env
+LoadCredential=seeingmon-connection-key:@CONFIG_DIR@/credentials/seeingmon-connection-key
+# The three services share one runtime directory, which holds their sockets. It stays when one
+# service stops, so a restart of acquire never removes the socket of core.
+RuntimeDirectory=seeingmon
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+
+# The out-of-memory killer takes the survey worker of core first, then web, then core, and
+# acquire last, because a restart of acquire costs the camera session.
+OOMScoreAdjust=-500
+MemoryMax=20%
+
+# acquire never sees the data directory.
+InaccessiblePaths=@DATA_DIR@
+
+# The capture thread asks for a real-time or raised priority. CAP_SYS_NICE allows both, so this
+# unit also leaves RestrictRealtime off.
+CapabilityBoundingSet=CAP_SYS_NICE
+AmbientCapabilities=CAP_SYS_NICE
+
+# The sandbox. The service user has no login, and the unit sees the file system read-only.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# The services need ordinary calls only. The filter blocks mounting, rebooting, swapping, raw I/O,
+# module loading, and debugging. A blocked call fails with EPERM, so it shows in the log. The
+# second line lets a clock probe read the state of the clock. Writing it still needs CAP_SYS_TIME,
+# which this unit does not have. MemoryDenyWriteExecute stays off, because ctypes and the vendor
+# library can need executable memory.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=adjtimex clock_adjtime
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=seeingmon.target

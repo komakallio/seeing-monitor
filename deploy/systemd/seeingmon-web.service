@@ -1,0 +1,87 @@
+# Managed by the seeingmon installer. Changes are overwritten.
+#
+# web serves the REST API and the web UI. It faces the network, so it gets no camera access and
+# no write access to the data directory. It reads the store through a read-only connection, and
+# it sends commands to core over the Unix socket in /run/seeingmon.
+#
+# SQLite reads a database in WAL mode through a read-only mount only while another process,
+# core, keeps the database open. A web process that starts while core is down cannot open the
+# store until core runs.
+#
+# The memory numbers are provisional until the performance gate on a Raspberry Pi 4.
+
+[Unit]
+Description=Seeing monitor REST API and web UI (web)
+PartOf=seeingmon.target
+# web starts after acquire and core. It also waits for the network, because it binds to the LAN
+# interface.
+After=network-online.target seeingmon-acquire.service seeingmon-core.service
+Wants=network-online.target seeingmon-acquire.service seeingmon-core.service
+RequiresMountsFor=@DATA_DIR@
+# Five starts in ten minutes are a restart storm. The unit then stays stopped, and
+# seeingmon-failed@.service writes a critical message to the journal.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=seeingmon-failed@%n.service
+
+[Service]
+# web sends READY=1 when it listens and WATCHDOG=1 at half the watchdog interval.
+Type=notify
+WatchdogSec=60s
+Restart=always
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+User=@USER@
+UMask=0027
+# An installed release reads local/config.toml relative to its working directory.
+WorkingDirectory=@CONFIG_DIR@
+ExecStart=@PREFIX@/current/venv/bin/seeingmon web
+SyslogIdentifier=seeingmon-web
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The installer passes its --data-dir here, so web reads the same store that core writes.
+Environment=SEEINGMON_PATHS__DATA_DIR=@DATA_DIR@
+EnvironmentFile=-@CONFIG_DIR@/seeingmon.env
+LoadCredential=seeingmon-connection-key:@CONFIG_DIR@/credentials/seeingmon-connection-key
+RuntimeDirectory=seeingmon
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+
+# web holds no state, so the out-of-memory killer takes it before core or acquire.
+OOMScoreAdjust=100
+MemoryMax=15%
+
+# web has no camera access and no write access to the data directory.
+PrivateDevices=yes
+ReadOnlyPaths=@DATA_DIR@
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# The sandbox. The service user has no login, and the unit sees the file system read-only.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The services need ordinary calls only. The filter blocks mounting, rebooting, swapping, raw I/O,
+# module loading, and debugging. A blocked call fails with EPERM, so it shows in the log.
+# MemoryDenyWriteExecute stays off, because ctypes and the libraries of the web stack can need
+# executable memory.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=seeingmon.target

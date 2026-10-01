@@ -1,0 +1,15 @@
+# Managed by the seeingmon installer. Changes are overwritten.
+#
+# Groups the three services, so that one command starts, stops, or restarts them together:
+#
+#     systemctl restart seeingmon.target
+#
+# The services order themselves: acquire, then core, then web.
+
+[Unit]
+Description=Seeing monitor
+Wants=seeingmon-acquire.service seeingmon-core.service seeingmon-web.service
+After=seeingmon-acquire.service seeingmon-core.service seeingmon-web.service
+
+[Install]
+WantedBy=multi-user.target

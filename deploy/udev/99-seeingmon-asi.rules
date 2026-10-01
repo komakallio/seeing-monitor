@@ -1,0 +1,9 @@
+# Managed by the seeingmon installer. Changes are overwritten.
+#
+# ZWO cameras use the USB vendor ID 03c3. The rule does two things for every ZWO device:
+#
+# - It gives the service group read and write access to the device node, so the acquire service
+#   opens the camera and resets its USB device without root privileges.
+# - It sets the power control of the device to "on", which keeps the camera out of USB
+#   autosuspend. A camera that suspends can stop delivering frames.
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="03c3", GROUP="@GROUP@", MODE="0660", TEST=="power/control", ATTR{power/control}="on"

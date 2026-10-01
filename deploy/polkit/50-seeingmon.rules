@@ -1,0 +1,23 @@
+// Managed by the seeingmon installer. Changes are overwritten.
+//
+// Optional. The installer adds this rule only when you pass --supervisor-actions.
+//
+// The units run with NoNewPrivileges, so the service user cannot use sudo. The last steps of the
+// camera recovery ladder (restart acquire, reboot) need a privileged action. This rule lets the
+// service user, and nobody else, restart the seeingmon units and reboot the Raspberry Pi through
+// systemd and logind. It grants nothing else.
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "@USER@") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units") {
+        var unit = action.lookup("unit");
+        if (unit && /^seeingmon-(acquire|core|web)\.service$/.test(unit)) {
+            return polkit.Result.YES;
+        }
+    }
+    if (action.id.indexOf("org.freedesktop.login1.reboot") === 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

@@ -1,0 +1,39 @@
+# Managed by the seeingmon installer. Changes are overwritten.
+#
+# systemd starts this unit through OnFailure= when a seeingmon unit hits its start limit and stays
+# stopped. It writes one critical message to the journal, so the failure stands out:
+#
+#     journalctl -p crit
+#
+# lint-deploy: allow system-exec: it must still write the message when the release is broken, so
+# it runs systemd-cat from the system and not a program from the release.
+
+[Unit]
+Description=Report that %i stays stopped
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=/usr/bin/systemd-cat --identifier=seeingmon --priority=crit /usr/bin/echo "%i hit its start limit and stays stopped. Read its log with: journalctl -u %i. After you fix the cause, run: systemctl reset-failed %i && systemctl start %i"
+
+# The sandbox. The unit writes one line to the journal socket and nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

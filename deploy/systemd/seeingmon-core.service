@@ -1,0 +1,96 @@
+# Managed by the seeingmon installer. Changes are overwritten.
+#
+# core runs the scheduler, the analysis, the store, the sink forwarder, and the dew-heater
+# control loop. It is the only writer of the data directory. It reaches the camera through
+# acquire, so it needs no USB access. It talks to the network for the sinks, the SQM-LE, and the
+# power-cycle route, so the unit allows AF_INET and AF_INET6 next to AF_UNIX.
+#
+# The memory numbers are provisional until the performance gate on a Raspberry Pi 4.
+
+[Unit]
+Description=Seeing monitor scheduler, analysis, and store (core)
+PartOf=seeingmon.target
+After=seeingmon-acquire.service
+Wants=seeingmon-acquire.service
+# Do not write to the SD card by accident: when the data partition does not mount, core waits for
+# it and does not fill the root file system.
+RequiresMountsFor=@DATA_DIR@
+# Five starts in ten minutes are a restart storm. The unit then stays stopped, and
+# seeingmon-failed@.service writes a critical message to the journal.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=seeingmon-failed@%n.service
+
+[Service]
+# core sends READY=1 when it is ready and WATCHDOG=1 at half the watchdog interval.
+Type=notify
+WatchdogSec=60s
+Restart=always
+RestartSec=5s
+# core repairs the segment files that a crash left, and it loads the catalog, before it is ready.
+TimeoutStartSec=180s
+TimeoutStopSec=60s
+User=@USER@
+UMask=0027
+# An installed release reads local/config.toml relative to its working directory.
+WorkingDirectory=@CONFIG_DIR@
+ExecStart=@PREFIX@/current/venv/bin/seeingmon core
+# The heater outputs must be off whenever core is not running, whatever the reason it stopped. The
+# command switches them off. The minus sign keeps a failure of the command from marking the unit
+# as failed. The command logs its own errors to the journal.
+ExecStopPost=-@PREFIX@/current/venv/bin/seeingmon heater-off
+SyslogIdentifier=seeingmon-core
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The installer passes its --data-dir here, so the store always writes where the sandbox allows.
+Environment=SEEINGMON_PATHS__DATA_DIR=@DATA_DIR@
+EnvironmentFile=-@CONFIG_DIR@/seeingmon.env
+LoadCredential=seeingmon-connection-key:@CONFIG_DIR@/credentials/seeingmon-connection-key
+RuntimeDirectory=seeingmon
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# Small state that must survive a reboot, such as the state file of the power-cycle hook (set
+# state_file under /var/lib/seeingmon in the [power] table).
+StateDirectory=seeingmon
+StateDirectoryMode=0700
+
+# The survey worker is a child process of core, and it raises its own oom_score_adj, so the killer
+# takes it before the rest of core. When core passes MemoryMax, the killer takes the process with
+# the highest score in this unit.
+OOMScoreAdjust=-200
+MemoryMax=75%
+
+# core is the only unit that writes to the data directory.
+ReadWritePaths=@DATA_DIR@
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# The sandbox. The service user has no login, and the unit sees the file system read-only.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The services need ordinary calls only. The filter blocks mounting, rebooting, swapping, raw I/O,
+# module loading, and debugging. A blocked call fails with EPERM, so it shows in the log. The
+# second line lets a clock probe read the state of the clock. Writing it still needs CAP_SYS_TIME,
+# which this unit does not have. MemoryDenyWriteExecute stays off, because ctypes and the
+# libraries of the analysis can need executable memory.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=adjtimex clock_adjtime
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=seeingmon.target
