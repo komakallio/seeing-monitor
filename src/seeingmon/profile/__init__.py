@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         ReadoutMode,
         Sensor,
     )
+    from seeingmon.profile.summary import profile_summary
 
 _EXPORTS = {
     "DarkCurrentPoint": "seeingmon.profile.models",
@@ -47,6 +48,7 @@ _EXPORTS = {
     "list_profiles": "seeingmon.profile.loader",
     "load_profile": "seeingmon.profile.loader",
     "parse_profile": "seeingmon.profile.loader",
+    "profile_summary": "seeingmon.profile.summary",
 }
 
 __all__ = [
@@ -65,6 +67,7 @@ __all__ = [
     "list_profiles",
     "load_profile",
     "parse_profile",
+    "profile_summary",
 ]
 
 
