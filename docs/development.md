@@ -14,7 +14,7 @@ py -3.13 -m venv <clone>/.venv                 # Windows. On Linux: python3.13 -
 <clone>/.venv/Scripts/uv sync --project <clone> --all-extras --python <py>
 ```
 
-`uv sync` installs the exact versions in `uv.lock` and the package itself in editable mode.
+`uv sync` installs the exact versions in `uv.lock` and the package itself in editable mode. Pass `--python <py>` to every `uv` command that takes it, and set `UV_PYTHON_DOWNLOADS=never`, so `uv` never downloads an interpreter into your user account.
 
 ## Run the checks
 
@@ -49,9 +49,9 @@ Each lane edits only its own package, its own tests, and its own sections of `do
 | Path | Content | Owner |
 |---|---|---|
 | `src/seeingmon/cli.py` | Entry point. It discovers commands by convention. | Foundation |
-| `src/seeingmon/profile/`, `profiles/`, `config/` | Profile schema, derived values, configuration layers | Foundation (step 1) |
-| `src/seeingmon/clock.py`, `frames.py`, `records/`, `drivers/base.py`, `sinks/base.py`, `solvers/base.py` | The contracts: `Clock`, frame types and wire format, records, and the driver, sink, and solver interfaces | Foundation (step 2) |
-| `src/seeingmon/testing/` | Scripted fakes of the interfaces (`FakeCameraDriver`, `FakeSink`, `FakeSolver`) for tests | Foundation (step 2) |
+| `src/seeingmon/profile/`, `config/` (package), `paths.py`, `profiles/`, `config/` (data) | Profile schema, derived values, configuration layers, data directories | Foundation (step 1) |
+| `src/seeingmon/clock.py`, `frames.py`, `records/`, `drivers/base.py`, `sinks/base.py`, `solvers/base.py`, `analysis/base.py` | The contracts: `Clock`, frame types and wire format, records, and the driver, sink, solver, and analysis interfaces | Foundation (step 2) |
+| `src/seeingmon/testing/` | Scripted fakes of the interfaces (`FakeCameraDriver`, `FakeSink`, `FakeSolver`, `FakeFastAnalyzer`, `FakeSurveyAnalyzer`, `FakePointingProvider`, `ListRecordWriter`) for tests | Foundation (step 2) |
 | `src/seeingmon/drivers/sim/` and `fastpath/` | Simulator and fast path | Simulation and fast path (steps 3 and 4) |
 | `src/seeingmon/store/` and `sinks/` | SQLite store, retention, sink forwarder, adapters | Storage and sinks (step 5) |
 | `src/seeingmon/scheduler/` | Scheduler | Scheduler (step 6) |
@@ -103,7 +103,7 @@ The lock tool is `uv`. Its universal lock covers Windows x64, Linux x64, and Lin
 
 Real values live under `local/`, which Git ignores. Commit only `*.example` templates with placeholders.
 
-- `local/config.toml`: site and deployment configuration. For recordings, set `recordings_dir` in a `[replay]` table, or set the environment variable `SEEINGMON_RECORDINGS_DIR`. Tests marked `recordings` skip when neither exists.
+- `local/config.toml`: site and deployment configuration. For recordings, set `recordings_dir` in a `[replay]` table, or set the environment variable `SEEINGMON_REPLAY__RECORDINGS_DIR` (`SEEINGMON_RECORDINGS_DIR` also works). Tests marked `recordings` skip when neither exists.
 - `local/repo-check-deny.txt`: private literals that `tools/check_repo.py` must never find in tracked files or commit messages, such as a user name or a camera serial number. One entry per line: plain text matches case-insensitively, and `re:` starts a regular expression.
 
 Never write the location of the recordings, a camera serial number, a host name, an address, or a site coordinate into a tracked file, a commit message, or test output. `tools/check_repo.py` catches the common forms, and your review of `git diff --staged` catches the rest. It does not detect site coordinates.

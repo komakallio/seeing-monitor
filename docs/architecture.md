@@ -95,6 +95,8 @@ flowchart LR
 
 The processes isolate three risks. The vendor SDK is a closed binary that can hang on USB faults, so `acquire` restarts alone. `web` faces the network, so it gets read-only store access and no camera access. `core` is the only writer. The processes talk over local connections (`multiprocessing.connection`), and frames travel as length-prefixed bytes with a fixed binary header. No pickle crosses a process boundary.
 
+The scheduler in `core` works against interfaces, not implementations. It drives a `CameraDriver`, which is the real driver in tests and a proxy to the `acquire` process in production, so the same scheduler code runs in both. It feeds frames to a `FastAnalyzer`, hands survey frames to a `SurveyAnalyzer` (which returns results later, so a worker process can do the heavy work), reads the Polaris position from a `PointingProvider`, and sends finished records to a `RecordWriter`. The interfaces live in `drivers/base.py`, `analysis/base.py`, `sinks/base.py`, and `solvers/base.py`, and `seeingmon.testing` holds scripted fakes of each.
+
 ## Reference hardware
 
 The reference camera is the uncooled, USB-powered ZWO ASI294MM (Sony IMX492, 4/3 inch, rolling shutter). ZWO's page for it shows the same modes and gain charts as the cooled Pro, so the figures below are as published, and commissioning checks them on this camera.
