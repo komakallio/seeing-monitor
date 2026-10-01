@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, TypeVar, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -26,6 +26,7 @@ import numpy.typing as npt
 from seeingmon.records.base import FieldSpec, Record, field_specs, resolve_record_type
 
 SegmentRows = npt.NDArray[np.void]
+R = TypeVar("R", bound=Record)
 
 
 def _require_segment(record: str | type[Record]) -> type[Record]:
@@ -80,10 +81,21 @@ def to_segment(records: Sequence[Record]) -> tuple[dict[str, Any], SegmentRows]:
     return header, np.array(rows, dtype=segment_dtype(cls))
 
 
+@overload
+def from_segment(record: type[R], header: Mapping[str, Any], rows: SegmentRows) -> list[R]: ...
+
+
+@overload
+def from_segment(record: str, header: Mapping[str, Any], rows: SegmentRows) -> list[Record]: ...
+
+
 def from_segment(
     record: str | type[Record], header: Mapping[str, Any], rows: SegmentRows
-) -> list[Record]:
-    """Build one record for each row of a segment. NaN in a float column becomes `None`."""
+) -> list[Any]:
+    """Build one record for each row of a segment. NaN in a float column becomes `None`.
+
+    Pass the record class to get a list of that class, or the record type name.
+    """
     cls = _require_segment(record)
     columns = segment_columns(cls)
     if rows.dtype != segment_dtype(cls):

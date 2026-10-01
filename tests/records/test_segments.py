@@ -134,6 +134,11 @@ class TestPacking:
         assert isinstance(record, FrameRecord)
         assert record.cx_px is None
 
+    def test_the_record_class_gives_typed_records(self) -> None:
+        header, rows = to_segment([make_frame(seq=4)])
+        frames: list[FrameRecord] = from_segment(FrameRecord, header, rows)
+        assert frames == [make_frame(seq=4)]
+
     def test_a_float_that_cannot_be_stored_is_rejected_at_construction(self) -> None:
         with pytest.raises(ValidationError):
             make_frame(cx_px=1e39)

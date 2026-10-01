@@ -175,8 +175,9 @@ def quantity(
         max_length: The maximum length.
         pattern: A regular expression that a `str` value must match.
         example: A typical value. The API schema publishes it, and `sample_record` uses it for
-            a required field. A field whose value needs a format that the type does not show,
-            such as a date or a dotted code, needs an example.
+            a required field. A required field whose value needs a format that the type does
+            not show, such as a date or a dotted code, should declare an example. The check
+            at declaration time rejects an example that the field does not accept.
     """
     text = " ".join(definition.split())
     if not text:
