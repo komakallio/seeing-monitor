@@ -10,8 +10,9 @@
 
 The app takes everything it needs as arguments, so a test builds it with a temporary store and a
 `FakeCoreClient`, and `seeingmon web --demo` builds it with synthetic data. Nothing here opens a
-file or a connection by itself. `store` is a `StoreReader`, which opens the database read-only, and
-`images` reads the preview and FITS files. Neither can write.
+file or a connection by itself. `store` reads the database through a read-only connection (a
+`StoreReader`, or the `ReopeningReader` that `seeingmon web` uses), and `images` reads the preview
+and FITS files. Neither can write.
 """
 
 from __future__ import annotations
@@ -33,14 +34,13 @@ from seeingmon.services.web.auth import TokenVerifier
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.context import WebContext
 from seeingmon.services.web.core_client import CoreClient
-from seeingmon.services.web.data import StoreData
+from seeingmon.services.web.data import StoreData, StoreSource
 from seeingmon.services.web.errors import register_error_handlers
 from seeingmon.services.web.images import ImageStore
 from seeingmon.services.web.live import AlignmentHub, Sleep
 from seeingmon.services.web.middleware import BodyLimit, SecurityHeaders, SelectiveGZip
 from seeingmon.services.web.privacy import public_config, scrub_json
 from seeingmon.services.web.schemas import record_components
-from seeingmon.store.db import StoreReader
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 OPENAPI_URL = f"{PREFIX}/openapi.json"
@@ -126,7 +126,7 @@ def _install_openapi(app: FastAPI) -> None:
 
 def build_context(
     settings: WebSettings,
-    store: StoreReader,
+    store: StoreSource,
     images: ImageStore,
     core: CoreClient,
     *,
@@ -177,7 +177,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(
     settings: WebSettings,
-    store: StoreReader,
+    store: StoreSource,
     images: ImageStore,
     core: CoreClient,
     *,

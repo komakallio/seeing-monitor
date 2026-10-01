@@ -1,8 +1,9 @@
 """Read-only access to the results, for the REST API.
 
-`StoreData` reads records through a `StoreReader`, which opens the database read-only. This module
-never writes. It turns the stored rows into the JSON that the API serves, and it builds the
-history of a record type.
+`StoreData` reads records through a `StoreSource`: a `StoreReader`, which opens the database
+read-only, or a `ReopeningReader` (see `seeingmon.services.web.reader`), which opens it when it can.
+This module never writes. It turns the stored rows into the JSON that the API serves, and it builds
+the history of a record type.
 
 **The record JSON.** A record is the `Record.to_row` dict, plus `t_utc`, the start time as an ISO
 8601 UTC string (the integer `t_utc_ns` is too large for a JavaScript number to hold exactly).
@@ -46,14 +47,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
-from typing import Any, TypeVar, get_args, get_origin
+from typing import Any, Protocol, TypeVar, get_args, get_origin
 
 from seeingmon.clock import NS_PER_S, Clock, iso_to_utc_ns, utc_ns_to_iso
 from seeingmon.config import ConfigError
 from seeingmon.records.base import RECORD_TYPES, Record, field_specs, get_record_type
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.privacy import scrub_json, scrub_text
-from seeingmon.store.db import StoreError, StoreReader
+from seeingmon.sinks.base import StoredRow
+from seeingmon.store.db import DEFAULT_LIMIT, StoreError
 
 T = TypeVar("T")
 
@@ -67,6 +69,24 @@ MAX_CURSOR_CHARS = 128
 AGGREGATE_CHUNK = 2000
 _BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9_]{0,62}")
+
+
+class StoreSource(Protocol):
+    """The reads that `StoreData` needs. `StoreReader` and `ReopeningReader` provide them."""
+
+    def latest(self, record_type: str, *, station_id: str | None = None) -> StoredRow | None: ...
+
+    def range(
+        self,
+        record_type: str,
+        start_ns: int,
+        end_ns: int,
+        limit: int = DEFAULT_LIMIT,
+        *,
+        station_id: str | None = None,
+        descending: bool = False,
+        all_revisions: bool = False,
+    ) -> list[StoredRow]: ...
 
 
 class DataError(Exception):
@@ -232,7 +252,7 @@ class StoreData:
 
     def __init__(
         self,
-        store: StoreReader,
+        store: StoreSource,
         settings: WebSettings,
         clock: Clock,
         *,

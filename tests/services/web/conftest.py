@@ -131,10 +131,11 @@ def make_app(
         }
         chosen_settings = overrides.pop("settings", settings)
         chosen_core = overrides.pop("core", core)
+        chosen_store = overrides.pop("store", reader)
         options.update(overrides)
         shared_app.state.ctx = build_context(
             chosen_settings,
-            reader,
+            chosen_store,
             ImageStore(layout, chosen_settings.images),
             chosen_core,
             **options,
