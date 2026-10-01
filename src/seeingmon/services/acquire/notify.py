@@ -26,15 +26,19 @@ _log = logging.getLogger(__name__)
 
 if sys.platform != "win32":
 
-    def _unix_sender(address: str) -> Callable[[bytes], None]:
+    def _open_unix(address: str) -> socket.socket:
         target = "\0" + address[1:] if address.startswith("@") else address
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC)
-        sock.connect(target)
-        return sock.send
+        try:
+            sock.connect(target)
+        except OSError:
+            sock.close()
+            raise
+        return sock
 
 else:
 
-    def _unix_sender(address: str) -> Callable[[bytes], None]:
+    def _open_unix(address: str) -> socket.socket:
         raise OSError("systemd notification needs Unix sockets")
 
 
@@ -45,12 +49,13 @@ class SystemdNotifier:
         self,
         *,
         env: Mapping[str, str] | None = None,
-        send: Callable[[bytes], None] | None = None,
+        send: Callable[[bytes], object] | None = None,
         pid: int | None = None,
     ) -> None:
         environment = os.environ if env is None else env
         self._address = environment.get("NOTIFY_SOCKET", "")
-        self._send = send
+        self._send: Callable[[bytes], object] | None = send
+        self._socket: socket.socket | None = None
         self._failed = False
         self.watchdog_interval_s: float | None = None
         usec = environment.get("WATCHDOG_USEC", "")
@@ -69,7 +74,8 @@ class SystemdNotifier:
             return
         try:
             if self._send is None:
-                self._send = _unix_sender(self._address)
+                self._socket = _open_unix(self._address)
+                self._send = self._socket.send
             self._send("\n".join(lines).encode("utf-8"))
         except OSError as error:
             self._failed = True
@@ -90,3 +96,10 @@ class SystemdNotifier:
     def stopping(self) -> None:
         """Say that the service is shutting down."""
         self._deliver(["STOPPING=1"])
+
+    def close(self) -> None:
+        """Close the socket. Later messages are not sent."""
+        sock, self._socket = self._socket, None
+        self._failed = True
+        if sock is not None:
+            sock.close()

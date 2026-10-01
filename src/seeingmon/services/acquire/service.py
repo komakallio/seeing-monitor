@@ -336,6 +336,7 @@ class AcquireService:
         for thread in self._threads.values():
             if thread is not threading.current_thread():
                 thread.join(2.0)
+        self._notifier.close()
         capture = self._threads.get("acquire-capture")
         if capture is None or not capture.is_alive():
             self._release_driver()

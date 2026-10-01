@@ -147,7 +147,15 @@ class TestSystemdNotifier:
         notifier.watchdog()
         notifier.status("x")
         notifier.stopping()
+        notifier.close()
         assert notifier.watchdog_interval_s is None
+
+    def test_a_closed_notifier_sends_nothing(self) -> None:
+        notifier, sent = self.collect()
+        notifier.ready()
+        notifier.close()
+        notifier.watchdog()
+        assert sent == [b"READY=1"]
 
     def test_messages_follow_the_protocol(self) -> None:
         notifier, sent = self.collect()
@@ -223,8 +231,10 @@ class TestSystemdNotifier:
         try:
             receiver.bind("\0" + name)
             receiver.settimeout(5.0)
-            SystemdNotifier(env={"NOTIFY_SOCKET": "@" + name}).watchdog()
+            notifier = SystemdNotifier(env={"NOTIFY_SOCKET": "@" + name})
+            notifier.watchdog()
             assert receiver.recv(1024) == b"WATCHDOG=1"
+            notifier.close()
         finally:
             receiver.close()
 
