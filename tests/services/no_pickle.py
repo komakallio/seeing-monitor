@@ -4,23 +4,30 @@
 `pickle` and `multiprocessing.reduction.ForkingPickler`. `install` replaces all of them with
 functions that record the call and raise `AssertionError`, so a test sees a pickle even when a
 thread swallows the exception. The subprocess tests call `install` in the child process too,
-through `python -c`.
+through `python -c`. A child also writes each call to the file that
+`SMON_TEST_PICKLE_LOG` names.
 """
 
 from __future__ import annotations
 
 import multiprocessing.connection as connection
 import multiprocessing.reduction as reduction
+import os
 import pickle
 from collections.abc import Callable
 from typing import Any
 
 CALLS: list[str] = []
+LOG_VARIABLE = "SMON_TEST_PICKLE_LOG"
 
 
 def _forbidden(name: str) -> Callable[..., Any]:
     def replacement(*args: Any, **kwargs: Any) -> Any:
         CALLS.append(name)
+        path = os.environ.get(LOG_VARIABLE)
+        if path:  # a child process reports to its parent through this file
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(name + "\n")
         raise AssertionError(f"{name} ran, but pickle must not cross a process boundary")
 
     return replacement
