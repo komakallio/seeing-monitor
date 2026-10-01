@@ -78,7 +78,7 @@ KEY_FIELDS: tuple[str, ...] = ("station_id", "t_utc_ns", "revision")
 
 # Modules that declare record types. The registry imports them on first use. Keep one module
 # per owner, so that lanes extend their own file and never edit another lane's declarations.
-DECLARATION_MODULES: tuple[str, ...] = ()
+DECLARATION_MODULES: tuple[str, ...] = ("seeing",)
 
 # The storage types for the per-row fields of a segment record: NumPy codes, little-endian.
 _INT_DTYPES: dict[str, tuple[int, int]] = {
@@ -369,8 +369,8 @@ class Record(BaseModel):
         default=0,
         ge=0,
         definition=(
-            "The revision of the result for this station and time. A reprocessed result is a "
-            "new record with the next revision, and the first result has revision 0."
+            "The revision of the result for this station and time, which is 0 for the first "
+            "result and grows by one for each reprocessed result."
         ),
     )
     profile_id: str = quantity(
@@ -387,7 +387,7 @@ class Record(BaseModel):
         default=None,
         definition=(
             "The reason that a value is missing or uncertain, as a map from the field name to "
-            "a short reason. The value is `null` when every field is present and trusted."
+            "a short reason, or `null` when every field is present and trusted."
         ),
     )
 

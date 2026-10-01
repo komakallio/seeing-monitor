@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         get_record_type,
         quantity,
     )
+    from seeingmon.records.seeing import FrameRecord, SeeingWindowRecord
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
@@ -37,13 +38,17 @@ _EXPORTS: dict[str, str] = {
     "field_specs": "base",
     "get_record_type": "base",
     "quantity": "base",
+    "FrameRecord": "seeing",
+    "SeeingWindowRecord": "seeing",
 }
 
 __all__ = [
     "KEY_FIELDS",
     "RECORD_TYPES",
     "FieldSpec",
+    "FrameRecord",
     "Record",
+    "SeeingWindowRecord",
     "Storage",
     "field_specs",
     "get_record_type",
