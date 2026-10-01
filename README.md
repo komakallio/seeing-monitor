@@ -9,7 +9,25 @@ A fixed camera points at Polaris, and a Raspberry Pi measures atmospheric seeing
 - [Architecture](docs/architecture.md): the design of record.
 - [Research notes](docs/research-notes.md): the sources and calculations behind the design.
 - [Development guide](docs/development.md): set up a clone, run the checks, and commit.
+- [Runbook](docs/runbook.md): install on a Raspberry Pi, check health, reach the UI through a VPN, and recover.
+- [Performance](docs/performance.md): the budgets, the results on a development machine, and the Pi 4 estimates.
+- [Recordings validation](docs/recordings-validation.md): the fast path on recorded 10 ms video.
+- [Quantities](docs/quantities.md): every record field, generated from the declarations.
+- [REST API](docs/openapi.json): the OpenAPI description of API v1.
+- [Hardware checks](docs/hardware-checks.md): the checks that need a camera or a Pi.
 - [Phase 2 status](docs/phase2-status.md): the state of each implementation step.
+
+## Try it
+
+You need no camera. Both commands print the address of the web UI.
+
+```bash
+uv sync --all-extras
+uv run seeingmon web --demo    # the UI on synthetic data, with a fake core
+uv run seeingmon dev           # acquire, core, and web on a simulated sky
+```
+
+`seeingmon dev` prints a random API token for each run. Both commands read the `[web]` table of `local/config.toml`, so you can set the address and the allowed host names of your own network there. That file stays out of the repository.
 
 ## Develop
 
@@ -22,6 +40,7 @@ uv run ruff check .       # lint
 uv run ruff format .      # format
 uv run mypy               # type check
 uv run python tools/check_repo.py   # check for private or machine-specific values
+uv run python tools/scan_secrets.py # run the secret scan that CI runs
 ```
 
 Read the [development guide](docs/development.md) before you commit. The repository is public, so it must hold no secrets, no machine-specific values, and no captured data.
