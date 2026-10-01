@@ -1,6 +1,6 @@
 # Seeing monitor: phase 2 status
 
-Updated: October 1, 2026, before the first phase 2 session. The lead updates this file at every step boundary, and the lanes do not edit it. The instructions are in `docs/phase2-kickoff.md`.
+Updated: October 1, 2026, after step 0 and the first part of step 2. The lead updates this file at every step boundary, and the lanes do not edit it. The instructions are in `docs/phase2-kickoff.md`.
 
 ## Steps
 
@@ -8,9 +8,9 @@ States are not started, in progress, blocked, and done.
 
 | Step | Lane | State | Notes |
 |---|---|---|---|
-| 0 | Foundation | Not started | The next unblocked step |
-| 1 | Foundation | Not started | After step 0, in parallel with step 2 |
-| 2 | Foundation | Not started | After step 0. Defines the contracts. |
+| 0 | Foundation | Done | CI is green on Windows, Linux x64, and Linux arm64 with Python 3.11 and 3.13, plus a lock check (commit `a5fc068`). |
+| 1 | Foundation | In progress | The profile schema, derived values, reference profile, and configuration layers. A background lane is working on it. |
+| 2 | Foundation | In progress | Done: the `Clock` (system, virtual, and scaled), frame types with the wire format, the driver, sink, and solver interfaces, and scripted fakes (commit `8c1512e`). In progress: the record declarations and their generators. Next: the analysis and scheduler-facing interfaces, after the records land. |
 | 3 | Simulation and fast path | Not started | After steps 1 and 2 |
 | 4 | Simulation and fast path | Not started | After step 3 |
 | 5 | Storage and sinks | Not started | After step 2 |
@@ -33,7 +33,8 @@ States are not started, in progress, blocked, and done.
 | B5 | A sample SQM-LE reading and its protocol notes | Owner | The SQM-LE reader in step 10 | A fake TCP server |
 | B6 | The InfluxDB version and field names | Owner (deferred) | Nothing | A configurable adapter |
 | B7 | The web access rule | Owner (deferred) | Nothing | The default rule in the architecture |
+| B8 | Permission to read the recordings' sidecar text files (the permission classifier denied a read, because the sidecars hold the camera serial number) | Owner | Checking the sidecar parser against the real files in step 8 | A synthetic sidecar fixture built from the format in the research notes. The SER files themselves are not affected. |
 
 ## Next unblocked work
 
-Step 0.
+Finish steps 1 and 2. Then start the simulation and fast path, storage and sinks, scheduler, survey path, and recordings lanes in parallel.
