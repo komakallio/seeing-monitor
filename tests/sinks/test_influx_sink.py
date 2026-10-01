@@ -314,12 +314,15 @@ class TestOpener:
 
     def test_the_default_opener_checks_certificates(self) -> None:
         opener = make_opener()
-        verified = [
-            handler._context.verify_mode  # type: ignore[attr-defined]
+        contexts = [
+            handler._context  # type: ignore[attr-defined]
             for handler in handlers_of(opener)
             if isinstance(handler, urllib.request.HTTPSHandler)
         ]
-        assert all(mode == ssl.CERT_REQUIRED for mode in verified)
+        assert contexts
+        for context in contexts:
+            # Python 3.11 keeps no context, and a connection then builds a verifying default one.
+            assert context is None or context.verify_mode == ssl.CERT_REQUIRED
 
 
 class TestWithTheForwarder:
