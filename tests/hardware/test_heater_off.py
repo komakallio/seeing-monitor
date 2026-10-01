@@ -552,13 +552,33 @@ class TestCommand:
         assert farm.requests == [("heater", "watchdog")]
 
 
+HANG_SCRIPT = """import sys
+import threading
+from pathlib import Path
+
+from seeingmon.hardware.heater_off import run_heater_off
+
+
+def hang(pins):
+    threading.Event().wait(600)  # a GPIO call that never returns
+    raise SystemExit(0)  # not reached: the timer ends the process first
+
+
+sys.exit(run_heater_off(local_config=Path(sys.argv[1]), open_io=hang, deadline_s=0.5))
+"""
+
+
+def process_environment() -> dict[str, str]:
+    """The environment of the test run, without its `SEEINGMON_` settings."""
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("SEEINGMON_")}
+
+
 def run_process(tmp_path: Path, config: Path) -> subprocess.CompletedProcess[str]:
     """Run `python -m seeingmon heater-off` as systemd would, without the test's own settings."""
-    environment = {k: v for k, v in os.environ.items() if not k.upper().startswith("SEEINGMON_")}
     return subprocess.run(
         [sys.executable, "-m", "seeingmon", "heater-off", "--local-config", str(config)],
         cwd=tmp_path,
-        env=environment,
+        env=process_environment(),
         capture_output=True,
         text=True,
         timeout=120,
@@ -591,3 +611,27 @@ class TestProcess:
         assert error_lines[1].startswith(f"{PREFIX}cannot switch off watchdog: ")
         assert CHIP not in done.stderr
         assert "/dev" not in done.stderr
+
+    def test_a_hung_gpio_call_ends_the_process_with_one_line_and_exit_1(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        # No stand-in ends the process here: the real `os._exit` does, from the timer thread,
+        # while the main thread waits in a call that never returns. Without it, the run would end
+        # only at the timeout of `subprocess.run`, and the test would fail.
+        started = time.perf_counter()
+        done = subprocess.run(
+            [sys.executable, "-c", HANG_SCRIPT, str(config_file)],
+            cwd=tmp_path,
+            env=process_environment(),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert done.returncode == 1
+        assert done.stdout == ""
+        assert lines(done.stderr) == [
+            f"{PREFIX}the GPIO calls did not finish within 0.5 s; "
+            "not confirmed off: heater, watchdog"
+        ]
+        assert time.perf_counter() - started < 100
