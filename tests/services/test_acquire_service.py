@@ -639,6 +639,87 @@ class TestConnecting:
             first.close()
 
 
+class TestRecoveryWithoutASession:
+    """A restart of acquire, or an acquire that is not up yet, is the first step of the ladder."""
+
+    def test_the_mildest_step_reconnects_after_acquire_restarted(
+        self, native: Endpoint, key: ConnectionKey
+    ) -> None:
+        first = make_rig(native, key)
+        driver = first.driver()
+        try:
+            driver.open()
+            driver.configure(SMALL)
+            driver.start()
+            read_frames(driver, 3)
+            old_instance = driver.instance
+            first.service.stop()
+            with pytest.raises(CameraDisconnectedError):
+                read_until_it_raises(driver)
+            with pytest.raises(CameraDisconnectedError):
+                driver.recover(RecoveryLevel.RESTART_CAPTURE)  # nobody answers yet
+            second = make_rig(native, key)
+            try:
+                driver.recover(RecoveryLevel.RESTART_CAPTURE)
+                assert driver.connected
+                assert driver.instance != old_instance
+                driver.configure(SMALL)  # the scheduler configures a new stream after a fault
+                driver.start()
+                assert driver.read_frame(10.0).seq == 0
+            finally:
+                driver.close()
+                second.close()
+        finally:
+            first.close()
+
+    def test_a_driver_that_never_opened_opens_on_the_first_step(
+        self, native: Endpoint, key: ConnectionKey
+    ) -> None:
+        driver = RemoteCameraDriver(native, key, connect_timeout_s=0.2)
+        with pytest.raises(CameraDisconnectedError):
+            driver.recover(RecoveryLevel.REOPEN)
+        rig = make_rig(native, key)
+        try:
+            driver.recover(RecoveryLevel.REOPEN)
+            assert driver.open().driver == "fake"  # the camera is open, and open is idempotent
+        finally:
+            driver.close()
+            rig.close()
+
+
+class TestStatusCalls:
+    """The calls that report on `acquire` come from the supervisor of `core`: they are short."""
+
+    def test_health_events_and_ping_use_the_short_timeout(
+        self, native: Endpoint, key: ConnectionKey
+    ) -> None:
+        rig = make_rig(native, key)
+        driver = rig.driver()
+        try:
+            driver.open()
+            timeouts: dict[str, float | None] = {}
+            original = driver._call
+
+            def spy(
+                method: str,
+                params: Any = None,
+                *,
+                slow: bool = False,
+                timeout_s: float | None = None,
+            ) -> Any:
+                timeouts[method] = timeout_s
+                return original(method, params, slow=slow, timeout_s=timeout_s)
+
+            driver._call = spy  # type: ignore[method-assign]
+            driver.health()
+            driver.events()
+            driver.ping()
+            assert timeouts == {"health": 5.0, "events": 5.0, "ping": 5.0}
+        finally:
+            driver.close()
+            rig.close()
+
+
 class TestGuardAndWatchdog:
     def test_a_driver_call_that_hangs_is_reported_by_the_guard(self, build: RigFactory) -> None:
         timeouts = CallTimeouts(configure_s=0.3)

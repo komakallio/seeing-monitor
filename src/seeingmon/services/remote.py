@@ -129,6 +129,7 @@ class RemoteCameraDriver:
         rpc_timeout_s: float = 30.0,
         slow_call_timeout_s: float = 90.0,
         recover_timeout_s: float = 200.0,
+        status_timeout_s: float = 5.0,
         window: StreamWindow | None = None,
         max_rpc_bytes: int = 1024 * 1024,
         max_frame_bytes: int = 128 * 1024 * 1024,
@@ -141,6 +142,10 @@ class RemoteCameraDriver:
         self._rpc_timeout_s = rpc_timeout_s
         self._slow_call_timeout_s = max(slow_call_timeout_s, rpc_timeout_s)
         self._recover_timeout_s = max(recover_timeout_s, rpc_timeout_s)
+        # The calls that report on `acquire` (`health`, `events`, `ping`) come from the supervisor
+        # thread of `core`, which also sends the heartbeat to systemd. They fail fast, so that a
+        # hung `acquire` never holds the supervisor long.
+        self._status_timeout_s = min(status_timeout_s, rpc_timeout_s)
         self._window = window or StreamWindow()
         self._max_rpc_bytes = max_rpc_bytes
         self._max_frame_bytes = max_frame_bytes
@@ -218,10 +223,16 @@ class RemoteCameraDriver:
         return link
 
     def _call(
-        self, method: str, params: Mapping[str, Any] | None = None, *, slow: bool = False
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        slow: bool = False,
+        timeout_s: float | None = None,
     ) -> Any:
         link = self._require()
-        timeout_s = self._slow_call_timeout_s if slow else self._rpc_timeout_s
+        if timeout_s is None:
+            timeout_s = self._slow_call_timeout_s if slow else self._rpc_timeout_s
         try:
             return link.rpc.call(method, params, timeout_s=timeout_s)
         except IpcClosedError as error:
@@ -412,7 +423,19 @@ class RemoteCameraDriver:
 
         A recovery starts a new capture epoch: the frames of before are history, and the first
         frame after it carries `FrameFlag.RECOVERED`.
+
+        Without a session, no step of `acquire` can run: the driver never opened, or `acquire`
+        went away. The step that works then is a new session, so `recover` connects and opens the
+        camera again, whatever the level, and a later `open` finds the camera open. The scheduler
+        ends its stream at every fault and configures a new one, so nothing else is needed. When
+        `acquire` does not answer, the step fails with `CameraDisconnectedError`, and the ladder
+        climbs on.
         """
+        with self._lock:
+            link, state = self._link, self._state
+        if state is not _State.CONNECTED or link is None or link.rpc.closed:
+            self.open()
+            return
         epoch = self._epoch_of("recover", self._call("recover", {"level": int(level)}, slow=True))
         with self._lock:
             self._epoch = epoch
@@ -490,7 +513,7 @@ class RemoteCameraDriver:
 
     def health(self) -> dict[str, Any]:
         """The health summary of `acquire` (see `AcquireHealth`). `core` folds it into its own."""
-        return dict(as_mapping(self._call("health"), "health"))
+        return dict(as_mapping(self._call("health", timeout_s=self._status_timeout_s), "health"))
 
     def events(self, after: int = 0) -> EventBatch:
         """The hardware events that the driver in `acquire` reported after number `after`.
@@ -499,7 +522,9 @@ class RemoteCameraDriver:
         that the log dropped before you asked. The call works with or without a running stream.
         """
         try:
-            return decode_batch(self._call("events", {"after": after}))
+            return decode_batch(
+                self._call("events", {"after": after}, timeout_s=self._status_timeout_s)
+            )
         except CodecError as error:
             raise CameraError(f"acquire sent unreadable events: {error}") from None
 
@@ -517,4 +542,5 @@ class RemoteCameraDriver:
 
     def ping(self) -> str:
         """The identity of the `acquire` process. Answers even while a slow call runs."""
-        return get_str(as_mapping(self._call("ping"), "ping answer"), "instance", "ping answer")
+        answer = self._call("ping", timeout_s=self._status_timeout_s)
+        return get_str(as_mapping(answer, "ping answer"), "instance", "ping answer")
