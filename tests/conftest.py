@@ -37,10 +37,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     )
     run_slow = bool(config.getoption("--slow")) or os.environ.get("SEEINGMON_SLOW") == "1"
     for item in items:
-        if "hardware" in item.keywords and not run_hardware:
+        if item.get_closest_marker("hardware") is not None and not run_hardware:
             reason = "needs hardware: pass --hardware or set SEEINGMON_HARDWARE=1"
             item.add_marker(pytest.mark.skip(reason=reason))
-        if "slow" in item.keywords and not run_slow:
+        if item.get_closest_marker("slow") is not None and not run_slow:
             reason = "slow: pass --slow or set SEEINGMON_SLOW=1"
             item.add_marker(pytest.mark.skip(reason=reason))
 
