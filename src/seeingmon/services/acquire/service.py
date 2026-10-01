@@ -48,6 +48,7 @@ import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, Protocol
 
 from seeingmon.clock import NS_PER_S, Clock, SystemClock
@@ -64,7 +65,8 @@ from seeingmon.frames import (
     StreamConfig,
     StreamKind,
     TimeQuality,
-    encode_frame,
+    encode_frame_into,
+    frame_wire_size,
 )
 from seeingmon.services.acquire.drops import DropAccountant
 from seeingmon.services.acquire.events import HardwareEventLog, after_of, encode_batch
@@ -820,8 +822,11 @@ class AcquireService:
 
     def _send_item(self, sender: StreamSender, item: QueueItem) -> None:
         tag = item.epoch & MAX_TAG
-        if item.frame is not None:
-            sender.send(encode_frame(item.frame), tag=tag)
+        frame = item.frame
+        if frame is not None:
+            sender.send_into(
+                frame_wire_size(frame), partial(encode_frame_into, frame=frame), tag=tag
+            )
             self._counters.frames_sent += 1
         elif item.event is not None:
             sender.send(item.event, tag=tag, kind=WireKind.EVENT)

@@ -28,6 +28,14 @@ limit: the sender stops, and the application above it decides what to drop. The 
 reader thread that takes every message off the connection at once and queues it, so the
 connection never blocks the sender for long, and the receiver's queue never exceeds the window.
 
+**Cost per message.** A stream of 100 frames a second pays for every message, so the layer keeps
+the work of each one small. The sender reads acknowledgements only when the window has no room and
+after every `PUMP_EVERY_SENDS` messages, and not before every send. A receiver may acknowledge in
+batches (`ack_every`): it acknowledges the last message that it took after that many messages, or
+after that many bytes, or when it has waited `ack_idle_s` for the next message, so a quiet stream
+never leaves the sender without credit. `send_into` builds a message in one buffer, with the
+payload written in place, so the bytes are copied once.
+
 **Threads.** One thread uses a `StreamSender`. It both sends and reads acknowledgements, so a
 sender needs no thread of its own and notices a peer that has gone. A `StreamReceiver` has a
 reader thread, and one thread at a time calls `recv`.
@@ -63,6 +71,8 @@ _HEADER = struct.Struct("<4sBBHQI")
 HEADER_SIZE = _HEADER.size
 MAX_ACK_BYTES = 64
 MAX_ACKS_PER_PUMP = 1000
+PUMP_EVERY_SENDS = 16
+DEFAULT_ACK_IDLE_S = 0.1
 DEFAULT_STREAM_BYTES = 128 * 1024 * 1024
 MAX_TAG = 2**32 - 1
 
@@ -153,6 +163,7 @@ class StreamSender:
         self._acked = 0
         self._in_flight: deque[tuple[int, int]] = deque()
         self._in_flight_bytes = 0
+        self._since_pump = 0
         self.messages_sent = 0
         self.bytes_sent = 0
 
@@ -182,6 +193,7 @@ class StreamSender:
         Raises `IpcClosedError` when the receiver has gone away, and `IpcProtocolError` when it
         acknowledges something that was never sent.
         """
+        self._since_pump = 0
         try:
             raw = self._wire.recv(timeout_s, max_bytes=MAX_ACK_BYTES)
             handled = 0
@@ -205,7 +217,16 @@ class StreamSender:
             self._in_flight_bytes -= size
 
     def has_credit(self, nbytes: int) -> bool:
-        """Whether a message of `nbytes` fits in the window now. Reads pending acknowledgements."""
+        """Whether a message of `nbytes` fits in the window now.
+
+        The answer comes from the acknowledgements that the sender has read. When the window looks
+        full, the call reads the acknowledgements that wait, and answers again. Raises
+        `IpcClosedError` when the connection is closed.
+        """
+        if self._wire.closed:
+            raise IpcClosedError(self._wire.reason)
+        if self._fits(nbytes):
+            return True
         self.pump(0.0)
         return self._fits(nbytes)
 
@@ -245,11 +266,45 @@ class StreamSender:
             raise StreamCreditError("the receiver's window is full")
         seq = self._next_seq
         self._wire.send(encode_message(kind, seq, tag, payload))
+        return self._sent(seq, len(payload))
+
+    def send_into(
+        self,
+        size: int,
+        fill: Callable[[memoryview], None],
+        *,
+        tag: int = 0,
+        kind: StreamKind = StreamKind.DATA,
+    ) -> int:
+        """Send a message of `size` payload bytes that `fill` writes in place. Returns its number.
+
+        `fill` receives a writable view of the payload part of the message, and it must write all
+        `size` bytes. The message then goes out from one buffer, so the payload is copied once.
+        The call has the errors of `send`.
+        """
+        if kind is StreamKind.ACK:
+            raise ValueError("a sender sends data and events")
+        if not 0 <= tag <= MAX_TAG:
+            raise ValueError("seq and tag must fit their fields")
+        if not self.has_credit(size):
+            raise StreamCreditError("the receiver's window is full")
+        seq = self._next_seq
+        buffer = bytearray(HEADER_SIZE + size)
+        _HEADER.pack_into(buffer, 0, STREAM_MAGIC, int(kind), 0, 0, seq, tag)
+        fill(memoryview(buffer)[HEADER_SIZE:])
+        self._wire.send(buffer)
+        return self._sent(seq, size)
+
+    def _sent(self, seq: int, size: int) -> int:
+        """Book a message that went out. Reads the acknowledgements now and then."""
         self._next_seq += 1
-        self._in_flight.append((seq, len(payload)))
-        self._in_flight_bytes += len(payload)
+        self._in_flight.append((seq, size))
+        self._in_flight_bytes += size
         self.messages_sent += 1
-        self.bytes_sent += len(payload)
+        self.bytes_sent += size
+        self._since_pump += 1
+        if self._since_pump >= PUMP_EVERY_SENDS:
+            self.pump(0.0)  # also notices a receiver that has gone away
         return seq
 
     def close(self, reason: str = "the sender closed the stream") -> None:
@@ -273,7 +328,11 @@ class StreamReceiver:
         *,
         name: str = "stream",
         clock: Clock | None = None,
+        ack_every: int = 1,
+        ack_idle_s: float = DEFAULT_ACK_IDLE_S,
     ) -> None:
+        if ack_every < 1 or ack_idle_s <= 0:
+            raise ValueError("ack_every is at least 1, and ack_idle_s is positive")
         self._wire = wire
         self._window = window
         self.name = name
@@ -283,8 +342,15 @@ class StreamReceiver:
         self._expected = 1
         self._closed = False
         self._reason = "the stream is closed"
+        self._ack_every = ack_every
+        self._ack_idle_s = ack_idle_s
+        self._ack_bytes = max(1, window.bytes // 4)
+        self._unacked = 0  # messages that `recv` returned and that no acknowledgement covers
+        self._unacked_bytes = 0
+        self._last_taken = 0
         self.messages_received = 0
         self.bytes_received = 0
+        self.acks_sent = 0
         self._reader = threading.Thread(target=self._read_loop, name=f"{name}-reader", daemon=True)
         self._reader.start()
 
@@ -308,25 +374,52 @@ class StreamReceiver:
         """Take the next message, or return `None` when `timeout_s` passes without one.
 
         Messages that arrived before the connection closed are returned first. After the last
-        one, the call raises `IpcClosedError`. Taking a message acknowledges it, which gives the
-        sender credit for another.
+        one, the call raises `IpcClosedError`. Taking a message gives the sender credit for
+        another: the receiver acknowledges at once (`ack_every=1`), or in batches (see the module
+        text), and it always acknowledges before it waits for longer than `ack_idle_s`.
         """
-        started_ns = self._clock.monotonic_ns()
-        with self._cond:
-            while not self._items:
+        deadline_ns = (
+            None if timeout_s is None else self._clock.monotonic_ns() + round(timeout_s * NS_PER_S)
+        )
+        while True:
+            acknowledge = timed_out = False
+            with self._cond:
+                if self._items:
+                    message = self._items.popleft()
+                    break
                 if self._closed:
                     raise IpcClosedError(self._reason)
-                if timeout_s is None:
-                    self._cond.wait()
-                    continue
-                remaining_s = timeout_s - (self._clock.monotonic_ns() - started_ns) / NS_PER_S
-                if remaining_s <= 0:
-                    return None
-                self._cond.wait(remaining_s)
-            message = self._items.popleft()
-        with contextlib.suppress(IpcClosedError):  # `recv` reports a closed wire after the queue
-            self._wire.send(encode_message(StreamKind.ACK, message.seq, 0))
+                wait_s: float | None = None
+                if deadline_ns is not None:
+                    wait_s = (deadline_ns - self._clock.monotonic_ns()) / NS_PER_S
+                    timed_out = wait_s <= 0
+                if not timed_out:
+                    idle_wait = bool(self._unacked) and (
+                        wait_s is None or wait_s > self._ack_idle_s
+                    )
+                    self._cond.wait(self._ack_idle_s if idle_wait else wait_s)
+                    acknowledge = idle_wait and not self._items and not self._closed
+            if acknowledge or timed_out:
+                self.flush_acks()  # a quiet stream must not leave the sender without credit
+            if timed_out:
+                return None
+        self._unacked += 1
+        self._unacked_bytes += len(message.payload) + HEADER_SIZE
+        self._last_taken = message.seq
+        if self._unacked >= self._ack_every or self._unacked_bytes >= self._ack_bytes:
+            self.flush_acks()
         return message
+
+    def flush_acks(self) -> None:
+        """Acknowledge the messages that `recv` returned and that no acknowledgement covers yet."""
+        if not self._unacked:
+            return
+        seq = self._last_taken
+        self._unacked = 0
+        self._unacked_bytes = 0
+        with contextlib.suppress(IpcClosedError):  # `recv` reports a closed wire after the queue
+            self._wire.send(encode_message(StreamKind.ACK, seq, 0))
+            self.acks_sent += 1
 
     def close(self, reason: str = "the receiver closed the stream") -> None:
         """Close the connection and wake a thread that waits in `recv`."""
@@ -425,6 +518,7 @@ def connect_stream(
     max_message_bytes: int = DEFAULT_STREAM_BYTES,
     clock: Clock | None = None,
     name: str = "stream",
+    ack_batch: int = 1,
 ) -> tuple[StreamReceiver, Mapping[str, Any]]:
     """Connect to a `StreamService` and return the receiver and the hello reply.
 
@@ -450,4 +544,5 @@ def connect_stream(
     except (CodecError, IpcProtocolError):
         wire.close()
         raise
-    return StreamReceiver(wire, granted, name=name, clock=clock), reply
+    ack_every = max(1, min(ack_batch, granted.messages // 4))
+    return StreamReceiver(wire, granted, name=name, clock=clock, ack_every=ack_every), reply

@@ -92,6 +92,7 @@ from seeingmon.services.ipc.stream import (
 RPC_CHANNEL = "rpc"
 FRAMES_CHANNEL = "frames"
 MAX_TAG = 2**32 - 1
+ACK_BATCH = 8  # frames that the reader takes before it acknowledges them (the window limits it)
 
 _log = logging.getLogger(__name__)
 _REAL_CLOCK = SystemClock()
@@ -281,6 +282,7 @@ class RemoteCameraDriver:
                 max_message_bytes=self._max_frame_bytes,
                 clock=self._clock,
                 name="remote-frames",
+                ack_batch=ACK_BATCH,
             )
         except (IpcError, CodecError) as error:
             rpc.close("the frame stream did not connect")

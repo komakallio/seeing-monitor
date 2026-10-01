@@ -232,6 +232,53 @@ class FrameDecodeError(ValueError):
     """The bytes are not a valid frame message."""
 
 
+def frame_wire_size(frame: Frame) -> int:
+    """The number of bytes that `encode_frame` and `encode_frame_into` write for a frame."""
+    return FRAME_HEADER_SIZE + int(frame.data.nbytes)
+
+
+def encode_frame_into(out: bytearray | memoryview, frame: Frame) -> None:
+    """Write a frame in the wire format into `out`, which holds `frame_wire_size(frame)` bytes.
+
+    The header is packed in place and the pixels are copied once, so the call makes no
+    temporary buffer. `encode_frame` makes the same bytes.
+    """
+    size = frame_wire_size(frame)
+    if len(out) != size:
+        raise ValueError(f"the buffer holds {len(out)} bytes and the frame needs {size}")
+    temperature_mc = (
+        NO_TEMPERATURE if frame.temperature_c is None else round(frame.temperature_c * 1000)
+    )
+    _HEADER.pack_into(
+        out,
+        0,
+        FRAME_MAGIC,
+        FRAME_WIRE_VERSION,
+        frame.pixel_format.value,
+        int(frame.t_quality),
+        frame.adc_bits,
+        FRAME_HEADER_SIZE,
+        int(frame.flags) & 0xFFFF,
+        frame.stream_id,
+        frame.seq,
+        frame.t_arrival_ns,
+        frame.t_utc_ns,
+        frame.t_err_ns,
+        frame.dropped_before,
+        frame.exposure_us,
+        frame.gain,
+        frame.roi.x,
+        frame.roi.y,
+        frame.roi.width,
+        frame.roi.height,
+        temperature_mc,
+        frame.mode.encode("ascii"),
+        frame.data.nbytes,
+    )
+    data = frame.data if frame.data.flags.c_contiguous else np.ascontiguousarray(frame.data)
+    memoryview(out)[FRAME_HEADER_SIZE:] = memoryview(data).cast("B")
+
+
 def encode_frame(frame: Frame) -> bytes:
     """Serialize a frame: the 96-byte header, then the pixels in row-major order."""
     if frame.temperature_c is None:
