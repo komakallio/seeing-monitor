@@ -57,6 +57,7 @@ class SurveyFrameRecord(Record):
     )
     readout_mode: str = quantity(
         min_length=1,
+        example="bin2",
         definition="The name of the readout mode in the hardware profile, such as `bin2`.",
     )
     sensor_temperature_c: float | None = quantity(
@@ -67,6 +68,7 @@ class SurveyFrameRecord(Record):
     image_ref: str | None = quantity(
         default=None,
         min_length=1,
+        example="survey/2026-10-01/frame-0001.fits",
         definition=(
             "A reference to the stored image file, as a path relative to the data directory, "
             "or `null` when the system did not store the frame."
@@ -258,10 +260,12 @@ class PointingRecord(Record):
     )
     readout_mode: str = quantity(
         min_length=1,
+        example="bin2",
         definition="The name of the readout mode in the hardware profile, such as `bin2`.",
     )
     solver: str = quantity(
         min_length=1,
+        example="astrometry.net",
         definition="The name of the plate solver that produced the initial solution.",
     )
     solve_time_s: float | None = quantity(
@@ -367,6 +371,7 @@ class StarEpochRecord(Record):
 
     night: str = quantity(
         pattern=r"^\d{4}-\d{2}-\d{2}$",
+        example="2026-10-01",
         definition="The UTC date that labels the night, in `YYYY-MM-DD` form.",
     )
     n_stars: int = quantity(ge=0, definition="The number of stars in the summary.")

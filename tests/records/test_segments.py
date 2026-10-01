@@ -8,6 +8,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
+from seeingmon.records.samples import sample_values
 from seeingmon.records.seeing import FrameRecord, SeeingWindowRecord
 from seeingmon.records.segments import (
     from_segment,
@@ -17,7 +18,7 @@ from seeingmon.records.segments import (
     segment_layout,
     to_segment,
 )
-from tests.records.strategies import minimal_values, record_values
+from tests.records.strategies import record_values
 
 # The segment layout is a file format. Append a column at the end of FrameRecord and extend
 # this list. Never reorder, remove, or retype a column, or old segment files stop loading.
@@ -146,7 +147,7 @@ class TestPacking:
             to_segment([make_frame(), make_frame(provenance={"algo": "fast-2"})])
 
     def test_a_segment_holds_one_record_type(self) -> None:
-        window = SeeingWindowRecord(**minimal_values("seeing_window"))
+        window = SeeingWindowRecord(**sample_values("seeing_window"))
         with pytest.raises(ValueError, match="not a segment record"):
             to_segment([window])
 

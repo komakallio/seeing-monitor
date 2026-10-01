@@ -65,9 +65,27 @@ import re
 import types
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, Self, TypeAlias, Union, get_args, get_origin
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    TypeAlias,
+    Union,
+    get_args,
+    get_origin,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    ValidationInfo,
+    model_validator,
+)
 from pydantic_core import PydanticUndefined
 
 Storage: TypeAlias = Literal["table", "segment"]
@@ -130,6 +148,7 @@ def quantity(
     min_length: int | None = None,
     max_length: int | None = None,
     pattern: str | None = None,
+    example: Any = PydanticUndefined,
 ) -> Any:
     """Declare a field of a record, with its definition and unit.
 
@@ -155,6 +174,9 @@ def quantity(
         min_length: The minimum length of a `str`, `bytes`, `list`, or `dict`.
         max_length: The maximum length.
         pattern: A regular expression that a `str` value must match.
+        example: A typical value. The API schema publishes it, and `sample_record` uses it for
+            a required field. A field whose value needs a format that the type does not show,
+            such as a date or a dotted code, needs an example.
     """
     text = " ".join(definition.split())
     if not text:
@@ -188,6 +210,8 @@ def quantity(
         constraints["ge"] = low if ge is None else ge
         constraints["le"] = high if le is None else le
     kwargs = {key: value for key, value in constraints.items() if value is not None}
+    if example is not PydanticUndefined:
+        kwargs["examples"] = [example]
     if default_factory is not None:
         kwargs["default_factory"] = default_factory
     else:
@@ -203,7 +227,7 @@ class FieldSpec:
     means that the type includes `None`. `has_default` means that the constructor needs no
     value. `dtype` is set for the per-row fields of a segment record. `constraints` holds the
     bounds, lengths, and pattern that the declaration sets (`ge`, `gt`, `le`, `lt`,
-    `min_length`, `max_length`, and `pattern`).
+    `min_length`, `max_length`, and `pattern`). `examples` holds the declared example, if any.
     """
 
     name: str
@@ -217,6 +241,7 @@ class FieldSpec:
     codes: Mapping[str, str] | None
     dtype: str | None
     constraints: Mapping[str, Any]
+    examples: tuple[Any, ...]
     base: bool
 
     @property
@@ -315,6 +340,7 @@ def _build_specs(cls: type[Record]) -> tuple[FieldSpec, ...]:
                 codes=extra.get("codes"),
                 dtype=extra.get("dtype"),
                 constraints=_constraints_of(info),
+                examples=tuple(info.examples or ()),
                 base=name in Record.model_fields,
             )
         )
@@ -359,11 +385,13 @@ class Record(BaseModel):
 
     station_id: str = quantity(
         min_length=1,
+        example="station-1",
         definition="The ID of the station that produced the record, from the local configuration.",
     )
     t_utc_ns: int = quantity(
         unit="ns",
         dtype="i8",
+        example=1_767_225_600_000_000_000,  # 2026-01-01T00:00:00Z
         definition=(
             "The start of the interval that the record describes, or the instant for a point "
             "record, in nanoseconds since the Unix epoch, in UTC."
@@ -379,9 +407,11 @@ class Record(BaseModel):
     )
     profile_id: str = quantity(
         min_length=1,
+        example="profile-1",
         definition="The ID of the hardware profile that was active when the record was produced.",
     )
     provenance: dict[str, str] = quantity(
+        example={"algo": "fast-1"},
         definition=(
             "The versions that produced the result, as a map from a component to a version "
             "string, such as the algorithm revision (`algo`) and the calibration versions."
@@ -528,6 +558,7 @@ def _validate_declaration(cls: type[Record]) -> None:
             raise ValueError(f"{where}: a {spec.kind} field has no unit")
         if spec.codes is not None and spec.annotation not in (str, list[str]):
             raise ValueError(f"{where}: codes apply to str and list[str] fields only")
+        _check_examples(cls, spec)
         if spec.dtype is None:
             continue
         if spec.dtype in _INT_DTYPES and spec.kind != "int":
@@ -540,6 +571,26 @@ def _validate_declaration(cls: type[Record]) -> None:
     # A segment holds the time of each row and at least one metric.
     if cls.storage == "segment" and row_fields < 2:
         raise ValueError(f"{name}: a segment record needs per-row fields with a dtype")
+
+
+def _check_examples(cls: type[Record], spec: FieldSpec) -> None:
+    """Check that each declared example is a valid value of its field."""
+    if not spec.examples:
+        return
+    info = cls.model_fields[spec.name]
+    config = ConfigDict(strict=True, allow_inf_nan=False)
+    adapter: TypeAdapter[Any] = TypeAdapter(Annotated[info.annotation, info], config=config)
+    for example in spec.examples:
+        where = f"{cls.__name__}.{spec.name}"
+        try:
+            adapter.validate_python(example)
+        except ValidationError as exc:
+            raise ValueError(f"{where}: the example {example!r} is not valid: {exc}") from None
+        if spec.codes is not None:
+            used = [example] if isinstance(example, str) else example
+            unknown = [code for code in used if code not in spec.codes]
+            if unknown:
+                raise ValueError(f"{where}: the example {example!r} is not a declared code")
 
 
 def field_specs(record: str | type[Record]) -> tuple[FieldSpec, ...]:

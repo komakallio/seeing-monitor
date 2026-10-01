@@ -3,7 +3,7 @@
 A strategy draws every field from its declared type, bounds, codes, and pattern, so a new
 field of any record type joins the property tests with no change here. A few record types have
 rules that connect fields (a star list needs as many bytes as its rows). `_REPAIRS` enforces
-them. `minimal_record` builds the smallest valid record without Hypothesis.
+them.
 """
 
 from __future__ import annotations
@@ -41,18 +41,11 @@ JSON_VALUES: st.SearchStrategy[Any] = st.recursive(
 )
 
 # Fields with a format that the declared type does not show, such as a date or a relative path.
-# A field that has a validator of its own needs an entry here. The strategy and the minimal value
-# both come from this table.
-_FORMATTED: dict[str, tuple[st.SearchStrategy[str], str]] = {
-    "night": (st.dates().map(date.isoformat), "2026-01-01"),
-    "kind": (
-        st.from_regex(r"[a-z][a-z0-9_]{0,5}(\.[a-z][a-z0-9_]{0,5}){1,2}", fullmatch=True),
-        "scheduler.state_change",
-    ),
-    "image_ref": (
-        st.from_regex(r"[a-z0-9_]{1,6}(/[a-z0-9_]{1,6}){0,2}\.fits", fullmatch=True),
-        "survey/frame-0001.fits",
-    ),
+# A field that has a validator of its own needs an entry here.
+_FORMATTED: dict[str, st.SearchStrategy[str]] = {
+    "night": st.dates().map(date.isoformat),
+    "kind": st.from_regex(r"[a-z][a-z0-9_]{0,5}(\.[a-z][a-z0-9_]{0,5}){1,2}", fullmatch=True),
+    "image_ref": st.from_regex(r"[a-z0-9_]{1,6}(/[a-z0-9_]{1,6}){0,2}\.fits", fullmatch=True),
 }
 
 
@@ -181,7 +174,7 @@ def record_values(draw: st.DrawFn, record: str | type[Record]) -> dict[str, Any]
                 st.none() | st.dictionaries(st.sampled_from(names), TEXT, max_size=3)
             )
         elif spec.name in _FORMATTED:
-            formatted = _FORMATTED[spec.name][0]
+            formatted = _FORMATTED[spec.name]
             values[spec.name] = draw(st.none() | formatted if spec.nullable else formatted)
         else:
             values[spec.name] = draw(field_strategy(spec))
@@ -195,39 +188,3 @@ def records(record: str | type[Record]) -> st.SearchStrategy[Record]:
     """A strategy for valid records of a type (a name or a class)."""
     cls = resolve_record_type(record)
     return record_values(cls).map(lambda values: cls(**values))
-
-
-def _minimal(spec: FieldSpec) -> Any:
-    constraints = spec.constraints
-    if spec.name in _FORMATTED:
-        return _FORMATTED[spec.name][1]
-    if spec.codes is not None:
-        return sorted(spec.codes)[0] if spec.annotation is str else []
-    if spec.kind == "bool":
-        return False
-    if spec.kind == "int":
-        low = int(constraints.get("ge", int(constraints["gt"]) + 1 if "gt" in constraints else 0))
-        return max(low, 0) if constraints.get("le", 0) >= 0 else low
-    if spec.kind == "float":
-        if "gt" in constraints:
-            high = constraints.get("le", constraints.get("lt"))
-            low = constraints["gt"]
-            return (low + high) / 2 if high is not None else low + 1.0
-        return float(constraints.get("ge", 0.0))
-    if spec.kind == "str":
-        return "x"
-    if spec.kind == "bytes":
-        return b""
-    return {} if get_origin(spec.annotation) is dict else []
-
-
-def minimal_values(record: str | type[Record]) -> dict[str, Any]:
-    """The constructor arguments for the smallest valid record: required fields only."""
-    specs = field_specs(resolve_record_type(record))
-    return {spec.name: _minimal(spec) for spec in specs if spec.required}
-
-
-def minimal_record(record: str | type[Record]) -> Record:
-    """The smallest valid record of a type, without Hypothesis."""
-    cls = resolve_record_type(record)
-    return cls(**minimal_values(cls))

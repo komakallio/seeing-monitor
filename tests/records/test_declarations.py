@@ -9,8 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from seeingmon.records.base import RECORD_TYPES, Record, field_specs
+from seeingmon.records.samples import sample_record
 from seeingmon.records.seeing import SEEING_WINDOW_FLAGS, FrameRecord, SeeingWindowRecord
-from tests.records.strategies import ALL_RECORD_TYPES, minimal_record, type_id
+from tests.records.strategies import ALL_RECORD_TYPES, type_id
 
 # The name of a quantity that has a unit ends with the unit, so the API field name carries
 # it (`seeing_fwhm_arcsec`). This table maps each unit to the suffix. A new unit needs a line.
@@ -88,8 +89,8 @@ class TestEveryRecordType:
             if spec.nullable:
                 assert spec.default is None, f"{cls.record_type}.{spec.name}"
 
-    def test_the_minimal_record_is_valid_and_survives_a_round_trip(self, cls: type[Record]) -> None:
-        record = minimal_record(cls)
+    def test_the_sample_record_is_valid_and_survives_a_round_trip(self, cls: type[Record]) -> None:
+        record = sample_record(cls)
         assert cls.from_row(record.to_row(), strict=True) == record
 
 

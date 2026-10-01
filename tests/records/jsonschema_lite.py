@@ -40,6 +40,7 @@ KEYWORDS = frozenset(
         "format",
         "description",
         "title",
+        "examples",
     }
 )
 

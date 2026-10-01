@@ -26,7 +26,9 @@ class ReferenceRecord(Record):
     record_type: ClassVar[str] = "reference"
 
     instrument: str = quantity(
-        min_length=1, definition="The name of the instrument that took the reading."
+        min_length=1,
+        example="sqm-le",
+        definition="The name of the instrument that took the reading.",
     )
     source: str = quantity(
         codes=REFERENCE_SOURCES,

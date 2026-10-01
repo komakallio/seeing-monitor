@@ -16,9 +16,10 @@ from seeingmon.records.api_schema import (
     schema_name,
 )
 from seeingmon.records.base import RECORD_TYPES, Record, field_specs, quantity
+from seeingmon.records.samples import sample_record
 from seeingmon.records.system import HealthRecord
 from tests.records.jsonschema_lite import InvalidError, unknown_keywords, validate
-from tests.records.strategies import ALL_RECORD_TYPES, minimal_record, records, type_id
+from tests.records.strategies import ALL_RECORD_TYPES, records, type_id
 
 DOCUMENT = api_schema()
 SCHEMAS = DOCUMENT["components"]["schemas"]
@@ -76,6 +77,18 @@ class TestRecordSchema:
             else:
                 assert properties[spec.name]["x-unit"] == spec.unit, spec.name
 
+    def test_it_publishes_the_declared_examples_and_each_one_validates(
+        self, cls: type[Record]
+    ) -> None:
+        for spec in field_specs(cls):
+            schema = field_schema(spec)
+            if not spec.examples:
+                assert "examples" not in schema, spec.name
+                continue
+            assert schema["examples"] == list(spec.examples), spec.name
+            for example in spec.examples:
+                validate(example, schema, DOCUMENT)
+
     def test_it_describes_the_record(self, cls: type[Record]) -> None:
         schema = record_schema(cls)
         assert schema["type"] == "object"
@@ -100,11 +113,11 @@ class TestRecordSchema:
             types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
             assert ("null" in types) == spec.nullable, f"{cls.record_type}.{spec.name}"
 
-    def test_the_minimal_record_validates(self, cls: type[Record]) -> None:
-        validate(minimal_record(cls).to_row(), SCHEMAS[schema_name(cls)], DOCUMENT)
+    def test_the_sample_record_validates(self, cls: type[Record]) -> None:
+        validate(sample_record(cls).to_row(), SCHEMAS[schema_name(cls)], DOCUMENT)
 
     def test_a_row_with_a_missing_field_does_not_validate(self, cls: type[Record]) -> None:
-        row = minimal_record(cls).to_row()
+        row = sample_record(cls).to_row()
         del row["station_id"]
         with pytest.raises(InvalidError, match="missing station_id"):
             validate(row, SCHEMAS[schema_name(cls)], DOCUMENT)
@@ -194,7 +207,7 @@ class TestQuality:
             assert property_["description"] == field_specs(cls)[5].definition
 
     def test_a_missing_value_with_a_reason_validates(self) -> None:
-        record = minimal_record("seeing_window")
+        record = sample_record("seeing_window")
         row = {**record.to_row(), "quality": {"seeing_fwhm_arcsec": "too_few_frames"}}
         validate(row, SCHEMAS["SeeingWindow"], DOCUMENT)
         row["quality"] = {"seeing_fwhm_arcsec": 3}
@@ -219,11 +232,11 @@ class TestTheValidatorCatchesMistakes:
         ],
     )
     def test_a_wrong_value_does_not_validate(self, field: str, value: Any) -> None:
-        row = {**minimal_record("seeing_window").to_row(), field: value}
+        row = {**sample_record("seeing_window").to_row(), field: value}
         with pytest.raises(InvalidError):
             validate(row, SCHEMAS["SeeingWindow"], DOCUMENT)
 
     def test_bytes_must_be_base64(self) -> None:
-        row = {**minimal_record("star_list").to_row(), "data": "not base64!"}
+        row = {**sample_record("star_list").to_row(), "data": "not base64!"}
         with pytest.raises(InvalidError, match="base64"):
             validate(row, SCHEMAS["StarList"], DOCUMENT)

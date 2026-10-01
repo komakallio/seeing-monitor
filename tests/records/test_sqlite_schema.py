@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from seeingmon.records.base import Record, field_specs, quantity
+from seeingmon.records.samples import sample_values
 from seeingmon.records.seeing import SeeingWindowRecord
 from seeingmon.records.sqlite_schema import (
     SchemaError,
@@ -32,7 +33,6 @@ from seeingmon.records.sqlite_schema import (
 from seeingmon.records.system import EventRecord, HealthRecord
 from tests.records.strategies import (
     ALL_RECORD_TYPES,
-    minimal_values,
     record_values,
     records,
     type_id,
@@ -197,12 +197,12 @@ class TestRows:
         assert sqlite_to_row("event", {"level": "info"}) == {"level": "info"}
 
     def test_row_to_sqlite_encodes_booleans_json_and_bytes(self) -> None:
-        window = SeeingWindowRecord(**minimal_values("seeing_window"), flags=["cloud"])
+        window = SeeingWindowRecord(**sample_values("seeing_window"), flags=["cloud"])
         params = row_to_sqlite(SeeingWindowRecord, window.to_row())
         assert params["flags"] == '["cloud"]'
-        assert params["provenance"] == "{}"
+        assert params["provenance"] == '{"algo":"fast-1"}'
         assert params["quality"] is None
-        health = HealthRecord(**minimal_values("health"), time_synchronized=True)
+        health = HealthRecord(**sample_values("health"), time_synchronized=True)
         assert row_to_sqlite("health", health.to_row())["time_synchronized"] == 1
         assert row_to_sqlite("health", health.to_row())["degraded"] == 0
 
@@ -213,7 +213,7 @@ class TestRows:
             row_to_sqlite("event", row)
 
     def test_sqlite_checks_json_booleans_and_required_columns(self) -> None:
-        health = HealthRecord(**minimal_values("health"))
+        health = HealthRecord(**sample_values("health"))
         good = row_to_sqlite(HealthRecord, health.to_row())
         with memory_db() as db:
             db.execute(create_table_sql(HealthRecord))
@@ -389,7 +389,7 @@ class WindowV2(SeeingWindowRecord, register=False):
 
 
 def window_values(**overrides: Any) -> dict[str, Any]:
-    values = minimal_values("seeing_window")
+    values = sample_values("seeing_window")
     values.update(overrides)
     return values
 

@@ -109,6 +109,8 @@ def field_schema(spec: FieldSpec) -> dict[str, Any]:
         if "enum" in schema:
             schema["enum"] = [*schema["enum"], None]
     schema["description"] = spec.definition
+    if spec.examples:
+        schema["examples"] = list(spec.examples)
     if spec.unit is not None:
         schema["x-unit"] = spec.unit
     if spec.codes is not None:

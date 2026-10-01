@@ -51,6 +51,7 @@ class HealthRecord(Record):
         definition="Whether the system runs in the degraded state, with a component that failed."
     )
     components: dict[str, str] = quantity(
+        example={"acquire": "ok", "core": "ok", "web": "ok"},
         definition=(
             "The state of each component, as a map from the component name to a state such as "
             "`ok`, `degraded`, or `failed`."
@@ -146,10 +147,13 @@ class EventRecord(Record):
     level: str = quantity(codes=EVENT_LEVELS, definition="The severity of the event.")
     kind: str = quantity(
         pattern=EVENT_KIND_PATTERN,
+        example="scheduler.state_change",
         definition="A dotted code that names the kind of event, such as `scheduler.state_change`.",
     )
     message: str = quantity(
-        min_length=1, definition="A short description of the event in plain language."
+        min_length=1,
+        example="The scheduler entered the auto state.",
+        definition="A short description of the event in plain language.",
     )
     detail: dict[str, Any] | None = quantity(
         default=None, definition="Structured data about the event, as a JSON object."
@@ -165,22 +169,25 @@ class RunRecord(Record):
 
     record_type: ClassVar[str] = "run"
 
-    run_id: str = quantity(min_length=1, definition="The unique ID of the run.")
+    run_id: str = quantity(min_length=1, example="run-0001", definition="The unique ID of the run.")
     software_version: str = quantity(
-        min_length=1, definition="The version of the `seeingmon` package."
+        min_length=1, example="0.1.0", definition="The version of the `seeingmon` package."
     )
     versions: dict[str, str] = quantity(
+        example={"python": "3.13"},
         definition=(
             "The versions of the components, as a map from the component name to a version "
             "string, such as the vendor SDK, the plate solver, and the star catalog."
         ),
     )
     effective_config: dict[str, Any] = quantity(
+        example={"scheduler": {"window_s": 60}},
         definition=(
             "The merged configuration of the run, as a JSON object that the caller has cleaned "
             "of secrets."
         ),
     )
     profile: dict[str, Any] = quantity(
-        definition="The hardware profile of the run, with its derived values, as a JSON object."
+        example={"name": "example-profile"},
+        definition="The hardware profile of the run, with its derived values, as a JSON object.",
     )

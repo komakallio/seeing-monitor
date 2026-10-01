@@ -6,8 +6,9 @@ name on first use, so importing `seeingmon.records` (and `seeingmon --help`) sta
 
 The declarations live in `base` (the `Record` base class, `quantity`, and the registry) and in
 one module for each owner: `seeing`, `survey`, `reference`, and `system`. The generators are
-`sqlite_schema`, `api_schema`, `quantity_reference`, `sink_mapping`, and `segments`. See the
-module documentation of `base` for how to declare and change a record type.
+`sqlite_schema`, `api_schema`, `quantity_reference`, `sink_mapping`, and `segments`, and
+`samples` builds valid records for tests. See the module documentation of `base` for how to
+declare and change a record type.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
         quantity,
     )
     from seeingmon.records.reference import ReferenceRecord
+    from seeingmon.records.samples import sample_record, sample_values
     from seeingmon.records.seeing import FrameRecord, SeeingWindowRecord
     from seeingmon.records.survey import (
         PointingRecord,
@@ -47,6 +49,8 @@ _EXPORTS: dict[str, str] = {
     "field_specs": "base",
     "get_record_type": "base",
     "quantity": "base",
+    "sample_record": "samples",
+    "sample_values": "samples",
     "FrameRecord": "seeing",
     "SeeingWindowRecord": "seeing",
     "SurveyFrameRecord": "survey",
@@ -80,6 +84,8 @@ __all__ = [
     "field_specs",
     "get_record_type",
     "quantity",
+    "sample_record",
+    "sample_values",
 ]
 
 

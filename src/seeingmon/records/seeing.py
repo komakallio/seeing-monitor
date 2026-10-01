@@ -142,6 +142,7 @@ class SeeingWindowRecord(Record):
     )
     readout_mode: str = quantity(
         min_length=1,
+        example="bin1",
         definition="The name of the readout mode in the hardware profile, such as `bin1`.",
     )
     exposure_us: int = quantity(
