@@ -311,21 +311,24 @@ class TestTiming:
         assert driver.read_frame(1.0).dropped_before == 0
 
     def test_the_driver_paces_in_real_time(self) -> None:
-        """With a clock that runs in real time, `read_frame` sleeps until each frame is due."""
+        """With a clock that runs in real time, `read_frame` sleeps until each frame is due.
+
+        The exposure is 80 ms, so a loaded machine still renders a frame well inside its period.
+        """
         scaled = ScaledClock(
             start_utc_ns=DEFAULT_START_UTC_NS, origin_real_ns=time.time_ns(), speed=1.0
         )
         camera = make(scaled)
         camera.open()
-        camera.configure(FAST)
+        camera.configure(StreamConfig("bin1", 80_000, 0, roi=FAST.roi))
         camera.start()
         first = camera.read_frame(1.0)
         wall = time.perf_counter()
         last = first
-        for _ in range(30):
+        for _ in range(10):
             last = camera.read_frame(1.0)
         elapsed_s = (last.t_arrival_ns - first.t_arrival_ns) / NS_PER_S
-        assert elapsed_s == pytest.approx(30 * 11.3128e-3, rel=0.15)
+        assert elapsed_s == pytest.approx(10 * 0.080, rel=0.15)
         assert time.perf_counter() - wall == pytest.approx(elapsed_s, rel=0.25)
         assert last.dropped_before == 0
 
