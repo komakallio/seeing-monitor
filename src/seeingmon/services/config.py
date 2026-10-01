@@ -20,6 +20,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 
 from seeingmon.clock import Clock, ScaledClock, SystemClock
 from seeingmon.config import SectionModel
+from seeingmon.services.core.settings import CoreSettings
 from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey, load_connection_key
 
@@ -135,7 +136,7 @@ class AcquireSettings(SectionModel):
 
 
 class ServicesConfig(SectionModel):
-    """The `[services]` section: connections, limits, and the settings of `acquire`.
+    """The `[services]` section: connections, limits, and the settings of `acquire` and `core`.
 
     An empty address selects the default for the platform (see `Endpoint.default`). The
     connection key has three sources (see `seeingmon.services.ipc.keys`), and the value of
@@ -162,6 +163,7 @@ class ServicesConfig(SectionModel):
 
     clock: ClockSettings = Field(default_factory=ClockSettings)
     acquire: AcquireSettings = Field(default_factory=AcquireSettings)
+    core: CoreSettings = Field(default_factory=CoreSettings)
 
     @field_validator("connection_key", mode="before")
     @classmethod

@@ -99,3 +99,65 @@ temperature_s = 10.0
 dropped_s = 10.0
 recover_s = 180.0
 read_grace_s = 5.0
+
+[services.core]
+# How often core writes a health record, and how often it collects the hardware events of the
+# driver in acquire.
+health_interval_s = 60.0
+events_interval_s = 5.0
+
+# The run record names the camera, which core learns when the scheduler opens it. After this wait,
+# core writes the record without the camera.
+run_record_wait_s = 30.0
+
+# How long the shutdown may take before core gives up on a thread.
+shutdown_timeout_s = 30.0
+
+# The most RPC clients at once: web, and the commands burst, sweep, and replay.
+max_rpc_connections = 8
+
+[services.core.survey_worker]
+# `process` runs the survey analysis in a worker process at a lower priority. On Linux the worker
+# also gets a higher oom_score_adj, so that the out-of-memory killer takes it before it takes core.
+# `thread` runs it in a thread of core, and `inline` in the scheduler thread (for tests).
+mode = "process"
+nice = 10
+oom_score_adj = 500
+
+[services.core.escalation]
+# After a restart request, core waits this long for acquire to go away.
+restart_acquire_wait_s = 15.0
+
+# The command that reboots the machine, as an argument list that core runs without a shell. The
+# list stays empty here: set it in local/config.toml, or no reboot happens. The power cycle uses
+# the [power] section.
+reboot_command = []
+command_timeout_s = 30.0
+
+[alignment]
+# The alignment helper of core: a live view and a quick solve while the scheduler is in `align`.
+#
+# The target is where Polaris belongs in the frame of the alignment stream, in pixels of the
+# survey readout mode, and the roll that the camera should have. They stay unset here. Take them
+# from a reference solution at commissioning, and set them in local/config.toml.
+# target_x_px = 0.0
+# target_y_px = 0.0
+# target_roll_deg = 0.0
+
+# The preview: JPEG quality, the most pixels in the image, and the shortest time between frames.
+jpeg_quality = 80
+max_preview_pixels = 1000000
+min_interval_s = 0.1
+
+# A solve starts at most this often, and a solved position older than the limit is not current.
+solve_interval_s = 1.0
+solution_max_age_s = 10.0
+
+# The histogram, and the saturation warning: the share of pixels that reach `saturation_level` of
+# the saturation level of the readout mode.
+histogram_bins = 64
+saturation_level = 0.98
+saturation_warn_fraction = 0.0005
+
+# While a live view is open, core tells the scheduler this often that someone watches.
+touch_interval_s = 5.0

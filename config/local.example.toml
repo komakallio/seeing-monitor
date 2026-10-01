@@ -75,6 +75,18 @@ token_hash = "<hash of the API token>"
 #
 # [services.acquire]
 # driver = "<name of the camera driver>"
+#
+# The reboot step of the recovery ladder. Core runs this argument list without a shell. With no
+# command, a reboot step does nothing and writes an event.
+# [services.core.escalation]
+# reboot_command = ["<path to the reboot program>", "<argument>"]
+#
+# The alignment helper compares the solved position of Polaris with a target. Take the target
+# from a reference solution at commissioning. The values below are placeholders.
+# [alignment]
+# target_x_px = 0.0
+# target_y_px = 0.0
+# target_roll_deg = 0.0
 
 # Result sinks. Each sink is a table named for the sink, [sinks.<name>]. Keep the name stable,
 # because the forwarder stores the cursor of the sink under it. Remove the "# " from the lines of

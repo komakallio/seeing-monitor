@@ -10,6 +10,7 @@ import pytest
 from seeingmon.clock import SystemClock
 from seeingmon.config import REDACTED, ConfigError, load_config
 from seeingmon.services.config import AcquireSettings, ClockSettings, ServicesConfig
+from seeingmon.services.core.settings import AlignmentSettings, CoreSettings
 from seeingmon.services.ipc.endpoint import PIPE_PREFIX
 from seeingmon.services.ipc.errors import IpcConfigError
 from seeingmon.services.ipc.keys import ConnectionKey
@@ -123,4 +124,47 @@ class TestClockSettings:
 def test_the_default_file_belongs_to_this_lane_and_parses(repo_root: Path) -> None:
     with (repo_root / "config" / "default.d" / "services.toml").open("rb") as handle:
         table = tomllib.load(handle)
-    assert set(table) == {"services"}
+    assert set(table) == {"services", "alignment"}
+
+
+class TestCoreSettings:
+    def test_the_defaults_load_and_match_the_models(self, tmp_path: Path) -> None:
+        config = load_config(local_file=tmp_path / "none.toml", env={})
+        services = config.section("services", ServicesConfig)
+        assert services.core == CoreSettings()
+        assert services.core.survey_worker.mode == "process"
+        assert services.core.escalation.reboot_command == []  # no reboot until you name one
+        assert config.section("alignment", AlignmentSettings) == AlignmentSettings()
+
+    def test_an_environment_variable_overrides_a_core_key(self, tmp_path: Path) -> None:
+        services = load(
+            tmp_path,
+            {
+                "SEEINGMON_SERVICES__CORE__HEALTH_INTERVAL_S": "5",
+                "SEEINGMON_SERVICES__CORE__SURVEY_WORKER__MODE": '"thread"',
+            },
+        )
+        assert services.core.health_interval_s == 5.0
+        assert services.core.survey_worker.mode == "thread"
+
+    def test_a_reboot_command_is_hidden_from_the_effective_configuration(
+        self, tmp_path: Path
+    ) -> None:
+        local = tmp_path / "local.toml"
+        local.write_text('[services.core.escalation]\nreboot_command = ["reboot-it", "now"]\n')
+        config = load_config(local_file=local, env={})
+        assert "reboot-it" not in str(config.effective())
+        assert config.effective()["services"]["core"]["escalation"]["reboot_command"] == REDACTED
+
+    def test_the_target_needs_both_coordinates(self) -> None:
+        with pytest.raises(ValueError, match="together"):
+            AlignmentSettings(target_x_px=10.0)
+        assert not AlignmentSettings().has_target
+        assert AlignmentSettings(target_x_px=1.0, target_y_px=2.0).has_target
+
+    def test_a_misspelled_alignment_key_fails_loudly(self, tmp_path: Path) -> None:
+        local = tmp_path / "local.toml"
+        local.write_text("[alignment]\ntarget_x = 1.0\n")
+        config = load_config(local_file=local, env={})
+        with pytest.raises(ConfigError, match="target_x"):
+            config.section("alignment", AlignmentSettings)
