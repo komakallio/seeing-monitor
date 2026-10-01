@@ -3,7 +3,9 @@
 Any subpackage of `seeingmon` can add commands. Define `seeingmon.<subpackage>.cli` with
 a `register(subparsers)` function that calls `add_command` once per command. The entry
 point imports these modules by convention, so adding a command never edits a shared file.
-Keep heavy imports inside the handler, so that `seeingmon --help` stays fast.
+Keep heavy imports inside the handler, so that `seeingmon --help` stays fast. The entry point
+does not import a subpackage that has no `cli` module, so the `__init__` of such a subpackage
+costs a command nothing at start-up.
 
 A handler takes the parsed `argparse.Namespace` and returns the process exit code. To
 fail with a message, raise `CliError`.
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.machinery
 import pkgutil
 import sys
 from collections.abc import Callable, Sequence
@@ -41,9 +44,24 @@ def add_command(
     return parser
 
 
+def _has_cli_module(name: str) -> bool:
+    """Whether the subpackage `name` has a `cli` module. The check imports nothing.
+
+    Importing `seeingmon.<name>.cli` first imports the subpackage, and the `__init__` of a
+    subpackage without commands can load numpy or pydantic. That slows down every command, most of
+    all on a Raspberry Pi.
+    """
+    spec = importlib.machinery.PathFinder.find_spec(f"seeingmon.{name}", seeingmon.__path__)
+    if spec is None or spec.submodule_search_locations is None:
+        return False
+    return any(
+        entry.name == "cli" for entry in pkgutil.iter_modules(spec.submodule_search_locations)
+    )
+
+
 def _register_discovered_commands(subparsers: Subparsers) -> None:
     for module_info in sorted(pkgutil.iter_modules(seeingmon.__path__), key=lambda m: m.name):
-        if not module_info.ispkg:
+        if not module_info.ispkg or not _has_cli_module(module_info.name):
             continue
         module_name = f"seeingmon.{module_info.name}.cli"
         try:

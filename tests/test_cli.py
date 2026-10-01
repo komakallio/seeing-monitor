@@ -78,6 +78,28 @@ def test_cli_error_prints_a_message_and_returns_its_exit_code(
     assert "demo failure" in capsys.readouterr().err
 
 
+def test_discovery_does_not_import_a_subpackage_that_has_no_cli_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The `__init__` of a subpackage without commands can load numpy, which costs seconds on a
+    # Raspberry Pi. This one fails when it runs, so the test fails if discovery imports it.
+    quiet = tmp_path / "demo_quiet"
+    quiet.mkdir()
+    (quiet / "__init__.py").write_text("raise RuntimeError('imported without a cli module')\n")
+    loud = tmp_path / "demo_loud"
+    loud.mkdir()
+    (loud / "__init__.py").write_text("")
+    (loud / "cli.py").write_text(DEMO_CLI)
+    monkeypatch.setattr(seeingmon, "__path__", [*seeingmon.__path__, str(tmp_path)])
+    importlib.invalidate_caches()
+    try:
+        assert main(["demo-hello"]) == 7
+    finally:
+        for name in [n for n in sys.modules if n.startswith("seeingmon.demo_")]:
+            del sys.modules[name]
+    assert capsys.readouterr().out.strip() == "hello from demo"
+
+
 def test_cli_error_keeps_its_message() -> None:
     assert str(CliError("broken")) == "broken"
     assert CliError("broken").exit_code == 1
