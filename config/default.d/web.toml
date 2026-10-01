@@ -1,0 +1,83 @@
+# Defaults of the web lane: the REST API, the static UI, and the alignment live view. Every key
+# sits under [web], and seeingmon.services.web.config declares the same defaults. Override a key
+# in local/config.toml, or with an environment variable such as SEEINGMON_WEB__PORT=8081.
+#
+# The address of one installation and the hash of its API token belong to the untracked local
+# file (see config/local.example.toml), and never to this file. The hash lives in [auth].
+
+[web]
+# The one interface that the process binds. Set the LAN address of this device in the local file.
+# The default is the loopback interface, so a fresh install is reachable from this device only. A
+# wildcard address (0.0.0.0 or ::) is an error.
+bind_address = "127.0.0.1"
+port = 8080
+
+# Reads are open on the LAN by default. Set this to true to ask for the API token on every read
+# too. Every POST needs the token in any case.
+require_token_for_reads = false
+
+# /health answers 503 when the newest health record is older than this many seconds.
+health_max_age_s = 180.0
+
+# How often the Now page refreshes, in seconds.
+ui_refresh_s = 10.0
+
+# Record fields that the API serves as null with a quality note, because they narrow down the
+# site. The zenith angle of Polaris is about 90 degrees minus the site latitude.
+withhold_fields = ["zenith_angle_deg"]
+
+# Log every request. The log never holds a token.
+access_log = false
+
+# How long a clean shutdown waits for open connections, in seconds.
+shutdown_timeout_s = 5.0
+
+# Limits per client (a remote address). Every POST counts against commands_per_window. A failed
+# token check also counts against auth_failures_per_window, and a client over that limit gets no
+# token check until its failures leave the window.
+[web.rate_limit]
+commands_per_window = 30
+window_s = 60.0
+auth_failures_per_window = 5
+auth_failure_window_s = 300.0
+max_clients = 1024
+
+# The size of a page of history, and the most rows that one request reads to build it.
+[web.paging]
+default_limit = 500
+max_limit = 2000
+max_scan_rows = 50000
+default_range_hours = 24.0
+
+# The image list, and the largest files that the API serves.
+[web.images]
+default_list_limit = 24
+max_list_limit = 200
+max_preview_bytes = 8388608
+max_fits_bytes = 134217728
+scan_days = 31
+
+# The alignment live view. max_fps is the preview cadence: the most frames per second that the
+# server sends to one client. The server always sends the newest frame. It reads frames from core
+# while a client watches, and for idle_s seconds after the last one has gone. A client that gets no
+# frame for stall_s seconds sees the view as stalled.
+[web.live]
+max_fps = 2.0
+idle_s = 10.0
+max_clients = 4
+stall_s = 5.0
+
+# The link to core. The address and the key come from [services].
+[web.core]
+connect_timeout_s = 2.0
+rpc_timeout_s = 5.0
+submit_timeout_s = 10.0
+retry_interval_s = 1.0
+
+# The bounds on the body of a command.
+[web.requests]
+max_body_bytes = 16384
+max_burst_s = 600.0
+max_sweep_values = 16
+max_alignment_exposure_s = 10.0
+max_label_chars = 40

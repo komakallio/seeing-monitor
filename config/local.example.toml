@@ -37,8 +37,24 @@ data_dir = "<path to the data folder>"
 recordings_dir = "<path to the recordings folder>"
 
 [auth]
-# The hash of the API token that authorizes commands. Store the hash, never the token.
+# The hash of the API token that authorizes commands. Store the hash, never the token. Create both
+# with `seeingmon web hash-token --generate`: keep the token in a password manager, and paste the
+# hash here. The hash may instead come from SEEINGMON_AUTH__TOKEN_HASH, from a systemd credential
+# named seeingmon-token-hash, or from a file (token_hash_file = "<path to a file with the hash>").
+# Without a hash, the API refuses every command.
 token_hash = "<hash of the API token>"
+
+# The web process: the REST API, the UI, and the alignment live view. The defaults live in
+# config/default.d/web.toml. Set the LAN address of this device, so that the process listens on
+# that interface only (a wildcard address such as 0.0.0.0 is an error). The default address is the
+# loopback interface. Reads are open on the LAN unless you set require_token_for_reads, and every
+# POST needs the token. The lines below only show the shape.
+# [web]
+# bind_address = "<LAN address of this device>"
+# port = 8080
+# require_token_for_reads = false
+# [web.rate_limit]
+# commands_per_window = 30
 
 # Survey path. `seeingmon catalog build` writes the cap catalog and the solver index files.
 # [survey]
