@@ -156,14 +156,14 @@ Every result is an immutable record keyed by `(station_id, record_type, t_utc_ns
 
 | Record | Content |
 |---|---|
-| `frame` (local files; optional sink) | Sequence, UTC time and error, stream ID, centroid, width, peak, flux, background, flags |
+| `frame` (local files; optional sink) | Sequence, UTC time and error, stream ID, centroid, width, peak, flux, background, flags (44 bytes a row) |
 | `seeing_window` (each 60 s window) | Frame and drop counts, image-motion RMS, seeing, r0, scintillation, spectrum bins, vibration lines, heater duty, flags |
 | `survey_frame`, `sky_quality`, `pointing` (each survey step) | Exposure, gain, mode, temperature. Sky brightness, zero point, transparency, cloud fraction. Attitude, center, roll, scale, residual, offset, focus. |
 | `star_list` (each survey step), `star_epoch` (each night) | Matched stars brighter than G = 11 and all unmatched detections. Per star and night: mean position offset, mean magnitude, scatter, frame count. |
 | `reference` (each reading) | Instrument, time, value (mag/arcsec²), temperature, pointing, and whether it comes from the fixed SQM-LE or a manual handheld entry |
 | `health`, `event`, `run` (every 60 s, on occurrence, on start) | States, temperatures, heater duty, free space, drops, sink backlog, time sync. Events. Versions and effective configuration. |
 
-Each record type is declared once (field, type, unit, definition), and the SQLite schema, sink mappings, API schema, and quantity reference come from that declaration. InfluxDB gets one measurement per type with `station` and `profile` tags. TimescaleDB gets one hypertable per type with a unique index on the key. Tables are append-only, so a sink cursor is the last acknowledged row ID, and a new sink backfills from row zero.
+Each record type is declared once (field, type, unit, definition) in `src/seeingmon/records/`, with the `Record` base class in `base.py` and the declarations in `seeing.py`, `survey.py`, `reference.py`, and `system.py`, one module for each lane. Generators in the same package produce the SQLite schema with additive migrations, the sink mappings (InfluxDB gets one measurement per type with `station` and `profile` tags, and TimescaleDB gets one hypertable per type with a unique index on the key), the API schema, the packed layout of the `frame` segment files, and [quantities.md](quantities.md), and `seeingmon records` prints them. Tables are append-only, so a sink cursor is the last acknowledged row ID (`AUTOINCREMENT` never reuses one), a new sink backfills from row zero, and a correction is a new record with the next `revision`, not an update.
 
 ## REST API
 
