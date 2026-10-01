@@ -1,0 +1,6145 @@
+{
+  "components": {
+    "schemas": {
+      "AlignmentFrameInfo": {
+        "description": "The frame that the state describes. Coordinates elsewhere are pixels of this frame.",
+        "properties": {
+          "exposure_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gain"
+          },
+          "height_px": {
+            "exclusiveMinimum": 0.0,
+            "title": "Height Px",
+            "type": "integer"
+          },
+          "plate_scale_arcsec_px": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plate Scale Arcsec Px"
+          },
+          "readout_mode": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Readout Mode",
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 0.0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "width_px": {
+            "exclusiveMinimum": 0.0,
+            "title": "Width Px",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "width_px",
+          "height_px"
+        ],
+        "title": "AlignmentFrameInfo",
+        "type": "object"
+      },
+      "AlignmentStartRequest": {
+        "additionalProperties": false,
+        "description": "Start the alignment stream. Leave a field out to use the configured value.",
+        "properties": {
+          "exposure_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 10.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gain"
+          }
+        },
+        "title": "AlignmentStartRequest",
+        "type": "object"
+      },
+      "AlignmentState": {
+        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows.",
+        "properties": {
+          "active": {
+            "default": false,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "focus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FocusView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "frame": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlignmentFrameInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "histogram": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HistogramView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OffsetView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quality": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 32,
+            "title": "Quality",
+            "type": "object"
+          },
+          "saturation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SaturationView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "solved": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SolvedView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "t_utc": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "T Utc"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TargetView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "AlignmentState",
+        "type": "object"
+      },
+      "ApiInfo": {
+        "description": "The root of the API.",
+        "properties": {
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "openapi": {
+            "title": "Openapi",
+            "type": "string"
+          },
+          "software_version": {
+            "title": "Software Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_version",
+          "software_version",
+          "openapi"
+        ],
+        "title": "ApiInfo",
+        "type": "object"
+      },
+      "BurstRequest": {
+        "additionalProperties": false,
+        "description": "Record raw frames to a SER file for `duration_s` seconds.",
+        "properties": {
+          "duration_s": {
+            "default": 10.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 600.0,
+            "title": "Duration S",
+            "type": "number"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 40,
+            "pattern": "^[A-Za-z0-9 _.-]*$",
+            "title": "Label",
+            "type": "string"
+          },
+          "priority": {
+            "default": 0,
+            "maximum": 10.0,
+            "minimum": -10.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StreamRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "BurstRequest",
+        "type": "object"
+      },
+      "CommandResponse": {
+        "description": "The scheduler's answer to a command. A rejection has `accepted` false and a `reason`.",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The code of a rejection, or `null`.",
+            "title": "Reason"
+          },
+          "state": {
+            "description": "The state of the scheduler right after the command.",
+            "title": "State",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ID of a queued task, or `null`.",
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "accepted",
+          "message",
+          "state"
+        ],
+        "title": "CommandResponse",
+        "type": "object"
+      },
+      "CoreLink": {
+        "description": "Whether the web process reaches `core`.",
+        "properties": {
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ID of the `core` process, when known.",
+            "title": "Instance"
+          },
+          "reachable": {
+            "title": "Reachable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reachable"
+        ],
+        "title": "CoreLink",
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "description": "What went wrong. `code` is a short word, and `message` is one sentence.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One entry for each invalid field of a request.",
+            "title": "Details"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "The body of every error response.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "Event": {
+        "description": "An occurrence that the operator or the analysis may need to see.\n\n`t_utc_ns` is the time of the occurrence. Two events can share a timestamp, so the store moves the later event forward by one nanosecond until its station and time are unique.",
+        "properties": {
+          "detail": {
+            "description": "Structured data about the event, as a JSON object.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "A dotted code that names the kind of event, such as `scheduler.state_change`.",
+            "examples": [
+              "scheduler.state_change"
+            ],
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+            "type": "string"
+          },
+          "level": {
+            "description": "The severity of the event.",
+            "enum": [
+              "error",
+              "info",
+              "warning"
+            ],
+            "type": "string",
+            "x-codes": {
+              "error": "A failure that needs attention.",
+              "info": "A normal occurrence that is worth recording.",
+              "warning": "Something unexpected that the system handled."
+            }
+          },
+          "message": {
+            "description": "A short description of the event in plain language.",
+            "examples": [
+              "The scheduler entered the auto state."
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          }
+        },
+        "required": [
+          "station_id",
+          "t_utc_ns",
+          "revision",
+          "profile_id",
+          "provenance",
+          "quality",
+          "level",
+          "kind",
+          "message",
+          "detail",
+          "t_utc"
+        ],
+        "title": "Event",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "event",
+        "x-storage": "table"
+      },
+      "EventLevel": {
+        "description": "The lowest severity that an event query returns.",
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ],
+        "title": "EventLevel",
+        "type": "string"
+      },
+      "EventPage": {
+        "description": "A page of `event` items, oldest first unless noted.",
+        "properties": {
+          "from": {
+            "description": "The start of the range.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EventRow"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass it as `cursor` to read the next page, or `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "now": {
+            "description": "The time of the server.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "record_type": {
+            "const": "event",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "raw",
+              "1m",
+              "10m",
+              "1h"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "The end of the range, which the range excludes.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_type",
+          "step",
+          "from",
+          "to",
+          "now",
+          "items",
+          "next_cursor"
+        ],
+        "title": "EventPage",
+        "type": "object"
+      },
+      "EventRow": {
+        "description": "An item of the history of `event` records. Without `fields`, an item holds every field except the arrays of numbers. With `fields`, it holds the named fields. An occurrence that the operator or the analysis may need to see.\n\n`t_utc_ns` is the time of the occurrence. Two events can share a timestamp, so the store moves the later event forward by one nanosecond until its station and time are unique.",
+        "properties": {
+          "detail": {
+            "description": "Structured data about the event, as a JSON object.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "A dotted code that names the kind of event, such as `scheduler.state_change`.",
+            "examples": [
+              "scheduler.state_change"
+            ],
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+            "type": "string"
+          },
+          "level": {
+            "description": "The severity of the event.",
+            "enum": [
+              "error",
+              "info",
+              "warning"
+            ],
+            "type": "string",
+            "x-codes": {
+              "error": "A failure that needs attention.",
+              "info": "A normal occurrence that is worth recording.",
+              "warning": "Something unexpected that the system handled."
+            }
+          },
+          "message": {
+            "description": "A short description of the event in plain language.",
+            "examples": [
+              "The scheduler entered the auto state."
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "n_samples": {
+            "description": "The number of records that this item combines. A raw item combines none.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          }
+        },
+        "required": [
+          "t_utc_ns",
+          "t_utc"
+        ],
+        "title": "EventRow",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "event",
+        "x-storage": "table"
+      },
+      "FaultStatusView": {
+        "properties": {
+          "failures": {
+            "title": "Failures",
+            "type": "integer"
+          },
+          "good_frames": {
+            "title": "Good Frames",
+            "type": "integer"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "next_attempt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "required": [
+          "failures",
+          "good_frames"
+        ],
+        "title": "FaultStatusView",
+        "type": "object"
+      },
+      "FocusView": {
+        "description": "The focus measure: the median FWHM of the unsaturated stars, and the best of the session.",
+        "properties": {
+          "best_fwhm_px": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Fwhm Px"
+          },
+          "fwhm_px": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fwhm Px"
+          },
+          "n_stars": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Stars"
+          }
+        },
+        "title": "FocusView",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "The verdict of `GET /health`. The HTTP status is 200 unless `status` is `failed`.",
+        "properties": {
+          "age_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The age of the newest health record, in seconds.",
+            "title": "Age S"
+          },
+          "components": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Components",
+            "type": "object"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "now": {
+            "title": "Now",
+            "type": "string"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "healthy",
+              "degraded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "now",
+          "age_s",
+          "reasons",
+          "components",
+          "flags"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "HistogramView": {
+        "description": "Counts of pixels in equal bins from `min_dn` to `max_dn`. The UI draws them on a log axis.",
+        "properties": {
+          "counts": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 256,
+            "title": "Counts",
+            "type": "array"
+          },
+          "max_dn": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Dn",
+            "type": "number"
+          },
+          "min_dn": {
+            "default": 0.0,
+            "title": "Min Dn",
+            "type": "number"
+          }
+        },
+        "required": [
+          "counts",
+          "max_dn"
+        ],
+        "title": "HistogramView",
+        "type": "object"
+      },
+      "ImageFormat": {
+        "description": "What `GET /images/{id}` returns.",
+        "enum": [
+          "jpeg",
+          "fits",
+          "json"
+        ],
+        "title": "ImageFormat",
+        "type": "string"
+      },
+      "ImageItem": {
+        "description": "One image.",
+        "properties": {
+          "fits_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fits Bytes"
+          },
+          "fits_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fits Url"
+          },
+          "has_fits": {
+            "title": "Has Fits",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The ID. Pass it to `GET /images/{id}`.",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "preview_url": {
+            "title": "Preview Url",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "t_utc": {
+            "title": "T Utc",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "title": "T Utc Ns",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "t_utc",
+          "t_utc_ns",
+          "size_bytes",
+          "has_fits",
+          "fits_bytes",
+          "preview_url",
+          "fits_url"
+        ],
+        "title": "ImageItem",
+        "type": "object"
+      },
+      "ImageList": {
+        "description": "A page of images, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImageItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "now": {
+            "title": "Now",
+            "type": "string"
+          }
+        },
+        "required": [
+          "now",
+          "items"
+        ],
+        "title": "ImageList",
+        "type": "object"
+      },
+      "ModeRequest": {
+        "additionalProperties": false,
+        "description": "Pause the scheduler, or resume it.",
+        "properties": {
+          "mode": {
+            "description": "`paused` stops everything. `auto` resumes, through `safe`.",
+            "enum": [
+              "paused",
+              "auto"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ModeRequest",
+        "type": "object"
+      },
+      "OffsetView": {
+        "description": "The solved position minus the target, in pixels and in arcseconds.",
+        "properties": {
+          "distance_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Arcsec"
+          },
+          "distance_px": {
+            "minimum": 0.0,
+            "title": "Distance Px",
+            "type": "number"
+          },
+          "dx_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dx Arcsec"
+          },
+          "dx_px": {
+            "title": "Dx Px",
+            "type": "number"
+          },
+          "dy_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dy Arcsec"
+          },
+          "dy_px": {
+            "title": "Dy Px",
+            "type": "number"
+          },
+          "roll_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Deg"
+          }
+        },
+        "required": [
+          "dx_px",
+          "dy_px",
+          "distance_px"
+        ],
+        "title": "OffsetView",
+        "type": "object"
+      },
+      "Order": {
+        "description": "The order of a page of events.",
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "title": "Order",
+        "type": "string"
+      },
+      "Pointing": {
+        "description": "The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
+        "properties": {
+          "attitude": {
+            "description": "The rotation matrix of the attitude, as nine numbers in row-major order.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "maxItems": 9,
+            "minItems": 9,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "center_dec_deg": {
+            "description": "The declination of the field center, in degrees.",
+            "format": "double",
+            "maximum": 90,
+            "minimum": -90,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          },
+          "center_ra_deg": {
+            "description": "The right ascension of the field center, in degrees.",
+            "format": "double",
+            "maximum": 360,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          },
+          "flags": {
+            "description": "The conditions that apply to the solution, as documented codes.",
+            "items": {
+              "enum": [
+                "few_stars",
+                "moved",
+                "roll_undefined",
+                "time_invalid",
+                "unsolved"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "x-codes": {
+              "few_stars": "Too few stars matched for a reliable fit.",
+              "moved": "The offset from the reference solution exceeds the configured limit.",
+              "roll_undefined": "The center lies on the pole, so the roll is undefined.",
+              "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
+              "unsolved": "The solver found no solution, so the geometry fields are `null`."
+            }
+          },
+          "focus_fwhm_px": {
+            "description": "The median FWHM of the unsaturated stars, in pixels.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "n_matched": {
+            "description": "The number of stars that the fit matched to the catalog.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset_arcmin": {
+            "description": "The offset of the field center from the reference solution, in arcminutes.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcmin"
+          },
+          "plate_scale_arcsec_px": {
+            "description": "The plate scale in the readout mode of the frame, in arcseconds per pixel.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec/px"
+          },
+          "polaris_x_px": {
+            "description": "The x coordinate of Polaris predicted at `t_utc_ns`, in sensor pixels.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "polaris_y_px": {
+            "description": "The y coordinate of Polaris predicted at `t_utc_ns`, in sensor pixels.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "readout_mode": {
+            "description": "The name of the readout mode in the hardware profile, such as `bin2`.",
+            "examples": [
+              "bin2"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "reference_id": {
+            "description": "The ID of the reference solution that `offset_arcmin` refers to.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roll_deg": {
+            "description": "The roll angle, which is the position angle of the direction to the pole, in degrees.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          },
+          "solve_rms_arcsec": {
+            "description": "The RMS residual of the matched stars after the fit, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "solve_time_s": {
+            "description": "The time that the solver took, in seconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "s"
+          },
+          "solver": {
+            "description": "The name of the plate solver that produced the initial solution.",
+            "examples": [
+              "astrometry.net"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          }
+        },
+        "required": [
+          "station_id",
+          "t_utc_ns",
+          "revision",
+          "profile_id",
+          "provenance",
+          "quality",
+          "center_ra_deg",
+          "center_dec_deg",
+          "roll_deg",
+          "plate_scale_arcsec_px",
+          "attitude",
+          "offset_arcmin",
+          "solve_rms_arcsec",
+          "n_matched",
+          "focus_fwhm_px",
+          "polaris_x_px",
+          "polaris_y_px",
+          "readout_mode",
+          "solver",
+          "solve_time_s",
+          "reference_id",
+          "flags",
+          "t_utc"
+        ],
+        "title": "Pointing",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "pointing",
+        "x-storage": "table"
+      },
+      "PointingPage": {
+        "description": "A page of `pointing` items, oldest first unless noted.",
+        "properties": {
+          "from": {
+            "description": "The start of the range.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PointingRow"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass it as `cursor` to read the next page, or `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "now": {
+            "description": "The time of the server.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "record_type": {
+            "const": "pointing",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "raw",
+              "1m",
+              "10m",
+              "1h"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "The end of the range, which the range excludes.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_type",
+          "step",
+          "from",
+          "to",
+          "now",
+          "items",
+          "next_cursor"
+        ],
+        "title": "PointingPage",
+        "type": "object"
+      },
+      "PointingRow": {
+        "description": "An item of the history of `pointing` records. Without `fields`, an item holds every field except the arrays of numbers. With `fields`, it holds the named fields. The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
+        "properties": {
+          "attitude": {
+            "description": "The rotation matrix of the attitude, as nine numbers in row-major order.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "maxItems": 9,
+            "minItems": 9,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "center_dec_deg": {
+            "description": "The declination of the field center, in degrees.",
+            "format": "double",
+            "maximum": 90,
+            "minimum": -90,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          },
+          "center_ra_deg": {
+            "description": "The right ascension of the field center, in degrees.",
+            "format": "double",
+            "maximum": 360,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          },
+          "flags": {
+            "description": "The conditions that apply to the solution, as documented codes.",
+            "items": {
+              "enum": [
+                "few_stars",
+                "moved",
+                "roll_undefined",
+                "time_invalid",
+                "unsolved"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "x-codes": {
+              "few_stars": "Too few stars matched for a reliable fit.",
+              "moved": "The offset from the reference solution exceeds the configured limit.",
+              "roll_undefined": "The center lies on the pole, so the roll is undefined.",
+              "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
+              "unsolved": "The solver found no solution, so the geometry fields are `null`."
+            }
+          },
+          "focus_fwhm_px": {
+            "description": "The median FWHM of the unsaturated stars, in pixels.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "n_matched": {
+            "description": "The number of stars that the fit matched to the catalog.",
+            "format": "double",
+            "minimum": 0,
+            "type": "number"
+          },
+          "n_samples": {
+            "description": "The number of records that this item combines. A raw item combines none.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset_arcmin": {
+            "description": "The offset of the field center from the reference solution, in arcminutes.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcmin"
+          },
+          "plate_scale_arcsec_px": {
+            "description": "The plate scale in the readout mode of the frame, in arcseconds per pixel.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec/px"
+          },
+          "polaris_x_px": {
+            "description": "The x coordinate of Polaris predicted at `t_utc_ns`, in sensor pixels.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "polaris_y_px": {
+            "description": "The y coordinate of Polaris predicted at `t_utc_ns`, in sensor pixels.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "readout_mode": {
+            "description": "The name of the readout mode in the hardware profile, such as `bin2`.",
+            "examples": [
+              "bin2"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "reference_id": {
+            "description": "The ID of the reference solution that `offset_arcmin` refers to.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roll_deg": {
+            "description": "The roll angle, which is the position angle of the direction to the pole, in degrees.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          },
+          "solve_rms_arcsec": {
+            "description": "The RMS residual of the matched stars after the fit, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "solve_time_s": {
+            "description": "The time that the solver took, in seconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "s"
+          },
+          "solver": {
+            "description": "The name of the plate solver that produced the initial solution.",
+            "examples": [
+              "astrometry.net"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          }
+        },
+        "required": [
+          "t_utc_ns",
+          "t_utc"
+        ],
+        "title": "PointingRow",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "pointing",
+        "x-storage": "table"
+      },
+      "Quality": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted. A client reads a `null` value together with this map, which gives the reason as a short code, such as `too_few_frames`.",
+        "title": "Quality",
+        "type": "object"
+      },
+      "RecordTime": {
+        "description": "The newest record of a type.",
+        "properties": {
+          "age_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age S"
+          },
+          "t_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "T Utc"
+          }
+        },
+        "required": [
+          "t_utc",
+          "age_s"
+        ],
+        "title": "RecordTime",
+        "type": "object"
+      },
+      "ReplayRequest": {
+        "additionalProperties": false,
+        "description": "Replay a recording through the production analysis.",
+        "properties": {
+          "options": {
+            "maxProperties": 8,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,31}$": {
+                "anyOf": [
+                  {
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              }
+            },
+            "title": "Options",
+            "type": "object"
+          },
+          "priority": {
+            "default": 0,
+            "maximum": 10.0,
+            "minimum": -10.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "source": {
+            "description": "The name of a recording in the configured folder, without a directory part.",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "Source",
+            "type": "string"
+          },
+          "speed": {
+            "default": 1.0,
+            "description": "0 means as fast as possible.",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Speed",
+            "type": "number"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "ReplayRequest",
+        "type": "object"
+      },
+      "RoiRequest": {
+        "additionalProperties": false,
+        "description": "A rectangle of the sensor, in pixels of the readout mode.",
+        "properties": {
+          "height": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 100000.0,
+            "title": "Height",
+            "type": "integer"
+          },
+          "width": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 100000.0,
+            "title": "Width",
+            "type": "integer"
+          },
+          "x": {
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "X",
+            "type": "integer"
+          },
+          "y": {
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "RoiRequest",
+        "type": "object"
+      },
+      "SaturationView": {
+        "description": "The share of saturated pixels, and whether it is enough to warn about.",
+        "properties": {
+          "fraction": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Fraction",
+            "type": "number"
+          },
+          "warning": {
+            "default": false,
+            "title": "Warning",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "fraction"
+        ],
+        "title": "SaturationView",
+        "type": "object"
+      },
+      "SchedulerStatusResponse": {
+        "description": "The scheduler as `core` reports it.\n\nThe status leaves out the Sun's elevation, because a series of elevations shows the site.",
+        "properties": {
+          "alignment_idle_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alignment Idle S"
+          },
+          "background_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Fraction"
+          },
+          "cloud": {
+            "title": "Cloud",
+            "type": "boolean"
+          },
+          "cloud_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloud Fraction"
+          },
+          "counters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counters",
+            "type": "object"
+          },
+          "degraded": {
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "fault": {
+            "$ref": "#/components/schemas/FaultStatusView"
+          },
+          "last_transition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Transition"
+          },
+          "queued_tasks": {
+            "title": "Queued Tasks",
+            "type": "integer"
+          },
+          "sensor_temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensor Temperature C"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "state_reason": {
+            "title": "State Reason",
+            "type": "string"
+          },
+          "state_since": {
+            "title": "State Since",
+            "type": "string"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StreamStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "survey_pending": {
+            "title": "Survey Pending",
+            "type": "integer"
+          },
+          "t_utc": {
+            "title": "T Utc",
+            "type": "string"
+          },
+          "twilight": {
+            "title": "Twilight",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "t_utc",
+          "state",
+          "state_reason",
+          "state_since",
+          "last_transition",
+          "degraded",
+          "stream",
+          "cloud",
+          "cloud_fraction",
+          "twilight",
+          "background_fraction",
+          "sensor_temperature_c",
+          "counters",
+          "fault",
+          "queued_tasks",
+          "survey_pending",
+          "alignment_idle_s"
+        ],
+        "title": "SchedulerStatusResponse",
+        "type": "object"
+      },
+      "SeeingWindow": {
+        "description": "The seeing statistics of one window of frames, normally 60 seconds long.\n\n`t_utc_ns` is the start of the window. A window never spans a reconfiguration of the camera, so one `stream_id` covers all of its frames. A statistic that the window cannot support is `null`, and `quality` says why.",
+        "properties": {
+          "assumed_wind_ms": {
+            "description": "The wind speed that the estimator assumed for the exposure correction, in meters per second.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "m/s"
+          },
+          "background_mean_dn": {
+            "description": "The mean local background, in digital numbers.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "DN"
+          },
+          "centroid_gain_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to correct for the difference between the centroid in the finite aperture and the G-tilt.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "centroid_noise_px": {
+            "description": "The centroid noise per axis that the estimator subtracted from the variance, in pixels.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "detrend_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to add back the turbulence that the polynomial detrend removed.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "duration_s": {
+            "description": "The length of the window, in seconds.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": "number",
+            "x-unit": "s"
+          },
+          "exposure_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to correct for exposure averaging.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "exposure_us": {
+            "description": "The exposure time of each frame, in microseconds.",
+            "exclusiveMinimum": 0,
+            "format": "int64",
+            "type": "integer",
+            "x-unit": "us"
+          },
+          "flags": {
+            "description": "The conditions that apply to the window, as documented codes.",
+            "items": {
+              "enum": [
+                "cloud",
+                "degraded",
+                "heater_on",
+                "partial",
+                "saturated",
+                "time_invalid",
+                "twilight",
+                "vibration"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "x-codes": {
+              "cloud": "Clouds crossed the star during the window.",
+              "degraded": "The system dropped more than 5% of the expected frames.",
+              "heater_on": "The dew heater was on, so heater plumes can add turbulence.",
+              "partial": "The window ended early, for example because the star neared the edge of the ROI.",
+              "saturated": "The star saturated in enough frames to bias the centroid and the width.",
+              "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
+              "twilight": "The Sun was less than 18 degrees below the horizon, so sky light can skew the data.",
+              "vibration": "The spectrum shows vibration lines, so the image motion can read high."
+            }
+          },
+          "flux_mean_e": {
+            "description": "The mean flux of the star, minus the background, in electrons.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "e-"
+          },
+          "frame_rate_hz": {
+            "description": "The mean frame rate during the window, in hertz.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "Hz"
+          },
+          "gain": {
+            "description": "The camera gain setting, in the units of the camera driver.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "heater_duty": {
+            "description": "The mean duty cycle of the dew heater during the window, from 0 (off) to 1 (always on).",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "image_motion_rms_x_arcsec": {
+            "description": "The RMS of the detrended centroid along sensor x, with the centroid noise subtracted, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "image_motion_rms_y_arcsec": {
+            "description": "The RMS of the detrended centroid along sensor y, with the centroid noise subtracted, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "motion_psd_dof": {
+            "description": "The degrees of freedom of each bin of the full-resolution image-motion spectrum, which sets the relative scatter of a bin to the square root of 2 divided by this number.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "motion_psd_freq_hz": {
+            "description": "The frequencies of the bins of the image-motion spectrum, in hertz.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "Hz"
+          },
+          "motion_psd_x_arcsec2_per_hz": {
+            "description": "The power spectral density of the centroid along sensor x in each bin, in square arcseconds per hertz.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "arcsec^2/Hz"
+          },
+          "motion_psd_y_arcsec2_per_hz": {
+            "description": "The power spectral density of the centroid along sensor y in each bin, in square arcseconds per hertz.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "arcsec^2/Hz"
+          },
+          "n_dropped": {
+            "description": "The number of frames that the system lost during the window.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "n_frames": {
+            "description": "The number of frames that the window analyzed.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outer_scale_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to correct for the finite outer scale.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "outer_scale_m": {
+            "description": "The outer scale L0 that the estimator assumed, in meters.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "m"
+          },
+          "peak_mean_dn": {
+            "description": "The mean value of the brightest pixel, in digital numbers.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "DN"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "r0_cm": {
+            "description": "The Fried parameter at 500 nm and at the zenith, in centimeters.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "cm"
+          },
+          "r0_structure_cm": {
+            "description": "The Fried parameter from the structure function of the centroid, in centimeters.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "cm"
+          },
+          "readout_mode": {
+            "description": "The name of the readout mode in the hardware profile, such as `bin1`.",
+            "examples": [
+              "bin1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "saturated_fraction": {
+            "description": "The share of the frames whose brightest pixel reaches 98% of full scale, from 0 to 1.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "scintillation_index": {
+            "description": "The normalized variance of the flux, minus the Poisson floor, for the exposure time of the window.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "seeing_fwhm_arcsec": {
+            "description": "The Kolmogorov seeing FWHM at 500 nm and at the zenith, from the tilt variance with the outer-scale and exposure corrections, in arcseconds.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "seeing_fwhm_structure_arcsec": {
+            "description": "The seeing FWHM from the structure function of the centroid, which ignores slow drift and cross-checks `seeing_fwhm_arcsec`, in arcseconds.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "sensor_temperature_c": {
+            "description": "The mean sensor temperature during the window, in degrees Celsius.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "degC"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "stream_id": {
+            "description": "The ID of the stream that produced the frames of the window.",
+            "format": "int64",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          },
+          "valid_fraction": {
+            "description": "The share of the expected frames that arrived and passed analysis, from 0 to 1.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "vibration_lines_hz": {
+            "description": "The frequencies of the spectral lines that the estimator flagged as vibration, in hertz, or an empty list when it found none.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "Hz"
+          },
+          "width_fwhm_arcsec": {
+            "description": "The mean FWHM of the star image, from the second-moment width, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "zenith_angle_deg": {
+            "description": "The zenith angle of the star at the middle of the window, in degrees.",
+            "format": "double",
+            "maximum": 180,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          }
+        },
+        "required": [
+          "station_id",
+          "t_utc_ns",
+          "revision",
+          "profile_id",
+          "provenance",
+          "quality",
+          "duration_s",
+          "stream_id",
+          "readout_mode",
+          "exposure_us",
+          "gain",
+          "n_frames",
+          "n_dropped",
+          "valid_fraction",
+          "frame_rate_hz",
+          "image_motion_rms_x_arcsec",
+          "image_motion_rms_y_arcsec",
+          "seeing_fwhm_arcsec",
+          "r0_cm",
+          "seeing_fwhm_structure_arcsec",
+          "r0_structure_cm",
+          "scintillation_index",
+          "centroid_noise_px",
+          "width_fwhm_arcsec",
+          "peak_mean_dn",
+          "flux_mean_e",
+          "background_mean_dn",
+          "saturated_fraction",
+          "outer_scale_m",
+          "assumed_wind_ms",
+          "exposure_correction_factor",
+          "outer_scale_correction_factor",
+          "zenith_angle_deg",
+          "motion_psd_freq_hz",
+          "motion_psd_x_arcsec2_per_hz",
+          "motion_psd_y_arcsec2_per_hz",
+          "vibration_lines_hz",
+          "heater_duty",
+          "sensor_temperature_c",
+          "flags",
+          "detrend_correction_factor",
+          "centroid_gain_correction_factor",
+          "motion_psd_dof",
+          "t_utc"
+        ],
+        "title": "SeeingWindow",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "seeing_window",
+        "x-storage": "table"
+      },
+      "SeeingWindowPage": {
+        "description": "A page of `seeing_window` items, oldest first unless noted.",
+        "properties": {
+          "from": {
+            "description": "The start of the range.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SeeingWindowRow"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass it as `cursor` to read the next page, or `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "now": {
+            "description": "The time of the server.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "record_type": {
+            "const": "seeing_window",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "raw",
+              "1m",
+              "10m",
+              "1h"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "The end of the range, which the range excludes.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_type",
+          "step",
+          "from",
+          "to",
+          "now",
+          "items",
+          "next_cursor"
+        ],
+        "title": "SeeingWindowPage",
+        "type": "object"
+      },
+      "SeeingWindowRow": {
+        "description": "An item of the history of `seeing_window` records. Without `fields`, an item holds every field except the arrays of numbers. With `fields`, it holds the named fields. The seeing statistics of one window of frames, normally 60 seconds long.\n\n`t_utc_ns` is the start of the window. A window never spans a reconfiguration of the camera, so one `stream_id` covers all of its frames. A statistic that the window cannot support is `null`, and `quality` says why.",
+        "properties": {
+          "assumed_wind_ms": {
+            "description": "The wind speed that the estimator assumed for the exposure correction, in meters per second.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "m/s"
+          },
+          "background_mean_dn": {
+            "description": "The mean local background, in digital numbers.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "DN"
+          },
+          "centroid_gain_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to correct for the difference between the centroid in the finite aperture and the G-tilt.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "centroid_noise_px": {
+            "description": "The centroid noise per axis that the estimator subtracted from the variance, in pixels.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "detrend_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to add back the turbulence that the polynomial detrend removed.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "duration_s": {
+            "description": "The length of the window, in seconds.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": "number",
+            "x-unit": "s"
+          },
+          "exposure_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to correct for exposure averaging.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "exposure_us": {
+            "description": "The exposure time of each frame, in microseconds.",
+            "exclusiveMinimum": 0,
+            "format": "int64",
+            "type": "integer",
+            "x-unit": "us"
+          },
+          "flags": {
+            "description": "The conditions that apply to the window, as documented codes.",
+            "items": {
+              "enum": [
+                "cloud",
+                "degraded",
+                "heater_on",
+                "partial",
+                "saturated",
+                "time_invalid",
+                "twilight",
+                "vibration"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "x-codes": {
+              "cloud": "Clouds crossed the star during the window.",
+              "degraded": "The system dropped more than 5% of the expected frames.",
+              "heater_on": "The dew heater was on, so heater plumes can add turbulence.",
+              "partial": "The window ended early, for example because the star neared the edge of the ROI.",
+              "saturated": "The star saturated in enough frames to bias the centroid and the width.",
+              "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
+              "twilight": "The Sun was less than 18 degrees below the horizon, so sky light can skew the data.",
+              "vibration": "The spectrum shows vibration lines, so the image motion can read high."
+            }
+          },
+          "flux_mean_e": {
+            "description": "The mean flux of the star, minus the background, in electrons.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "e-"
+          },
+          "frame_rate_hz": {
+            "description": "The mean frame rate during the window, in hertz.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "Hz"
+          },
+          "gain": {
+            "description": "The camera gain setting, in the units of the camera driver.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "heater_duty": {
+            "description": "The mean duty cycle of the dew heater during the window, from 0 (off) to 1 (always on).",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "image_motion_rms_x_arcsec": {
+            "description": "The RMS of the detrended centroid along sensor x, with the centroid noise subtracted, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "image_motion_rms_y_arcsec": {
+            "description": "The RMS of the detrended centroid along sensor y, with the centroid noise subtracted, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "motion_psd_dof": {
+            "description": "The degrees of freedom of each bin of the full-resolution image-motion spectrum, which sets the relative scatter of a bin to the square root of 2 divided by this number.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "motion_psd_freq_hz": {
+            "description": "The frequencies of the bins of the image-motion spectrum, in hertz.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "Hz"
+          },
+          "motion_psd_x_arcsec2_per_hz": {
+            "description": "The power spectral density of the centroid along sensor x in each bin, in square arcseconds per hertz.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "arcsec^2/Hz"
+          },
+          "motion_psd_y_arcsec2_per_hz": {
+            "description": "The power spectral density of the centroid along sensor y in each bin, in square arcseconds per hertz.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "arcsec^2/Hz"
+          },
+          "n_dropped": {
+            "description": "The number of frames that the system lost during the window.",
+            "format": "double",
+            "minimum": 0,
+            "type": "number"
+          },
+          "n_frames": {
+            "description": "The number of frames that the window analyzed.",
+            "format": "double",
+            "minimum": 0,
+            "type": "number"
+          },
+          "n_samples": {
+            "description": "The number of records that this item combines. A raw item combines none.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "outer_scale_correction_factor": {
+            "description": "The factor by which the estimator multiplied the variance to correct for the finite outer scale.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "outer_scale_m": {
+            "description": "The outer scale L0 that the estimator assumed, in meters.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "m"
+          },
+          "peak_mean_dn": {
+            "description": "The mean value of the brightest pixel, in digital numbers.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "DN"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "r0_cm": {
+            "description": "The Fried parameter at 500 nm and at the zenith, in centimeters.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "cm"
+          },
+          "r0_structure_cm": {
+            "description": "The Fried parameter from the structure function of the centroid, in centimeters.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "cm"
+          },
+          "readout_mode": {
+            "description": "The name of the readout mode in the hardware profile, such as `bin1`.",
+            "examples": [
+              "bin1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "saturated_fraction": {
+            "description": "The share of the frames whose brightest pixel reaches 98% of full scale, from 0 to 1.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "scintillation_index": {
+            "description": "The normalized variance of the flux, minus the Poisson floor, for the exposure time of the window.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "seeing_fwhm_arcsec": {
+            "description": "The Kolmogorov seeing FWHM at 500 nm and at the zenith, from the tilt variance with the outer-scale and exposure corrections, in arcseconds.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "seeing_fwhm_structure_arcsec": {
+            "description": "The seeing FWHM from the structure function of the centroid, which ignores slow drift and cross-checks `seeing_fwhm_arcsec`, in arcseconds.",
+            "exclusiveMinimum": 0,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "sensor_temperature_c": {
+            "description": "The mean sensor temperature during the window, in degrees Celsius.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "degC"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "stream_id": {
+            "description": "The ID of the stream that produced the frames of the window.",
+            "format": "int64",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          },
+          "valid_fraction": {
+            "description": "The share of the expected frames that arrived and passed analysis, from 0 to 1.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "vibration_lines_hz": {
+            "description": "The frequencies of the spectral lines that the estimator flagged as vibration, in hertz, or an empty list when it found none.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "x-unit": "Hz"
+          },
+          "width_fwhm_arcsec": {
+            "description": "The mean FWHM of the star image, from the second-moment width, in arcseconds.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "arcsec"
+          },
+          "zenith_angle_deg": {
+            "description": "The zenith angle of the star at the middle of the window, in degrees.",
+            "format": "double",
+            "maximum": 180,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "deg"
+          }
+        },
+        "required": [
+          "t_utc_ns",
+          "t_utc"
+        ],
+        "title": "SeeingWindowRow",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "seeing_window",
+        "x-storage": "table"
+      },
+      "SkyQuality": {
+        "description": "The sky brightness and the transparency from one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. A value that the frame cannot support is `null`, and `quality` says why.",
+        "properties": {
+          "cloud_fraction": {
+            "description": "The share of the expected catalog stars that the frame missed, from 0 to 1.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "color_term": {
+            "description": "The fitted coefficient of the color term, in magnitudes per magnitude of the BP-RP color.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dark_model_version": {
+            "description": "The version of the dark model that the pipeline subtracted.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flags": {
+            "description": "The conditions that apply to the measurement, as documented codes.",
+            "items": {
+              "enum": [
+                "cloud",
+                "dark_due",
+                "dew",
+                "moon",
+                "time_invalid",
+                "twilight"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "x-codes": {
+              "cloud": "Clouds reduce the number of detected stars.",
+              "dark_due": "The dark library misses the current temperature or is older than 6 months.",
+              "dew": "The star widths and the transparency indicate dew on the optics.",
+              "moon": "The Moon was above the horizon and bright enough to raise the sky background.",
+              "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
+              "twilight": "The Sun was less than 18 degrees below the horizon."
+            }
+          },
+          "limiting_mag": {
+            "description": "The magnitude at which the frame detects half of the stars, in magnitudes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag"
+          },
+          "n_stars_used": {
+            "description": "The number of matched stars in the zero-point fit.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sky_mag_arcsec2": {
+            "description": "The sky surface brightness in the camera band, in magnitudes per square arcsecond.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag/arcsec^2"
+          },
+          "sky_mag_arcsec2_v": {
+            "description": "The sky surface brightness converted to the V band, in magnitudes per square arcsecond.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag/arcsec^2"
+          },
+          "sky_rate_e_per_s_arcsec2": {
+            "description": "The sky signal, in electrons per second per square arcsecond.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "e-/s/arcsec^2"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          },
+          "transparency": {
+            "description": "The atmospheric transmission relative to the clearest nights, normally from 0 to 1.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "zero_point_mag": {
+            "description": "The photometric zero point, which is the magnitude of a star that gives one electron per second, in magnitudes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag"
+          },
+          "zero_point_rms_mag": {
+            "description": "The scatter of the matched stars around the zero-point fit, in magnitudes.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag"
+          }
+        },
+        "required": [
+          "station_id",
+          "t_utc_ns",
+          "revision",
+          "profile_id",
+          "provenance",
+          "quality",
+          "sky_mag_arcsec2",
+          "sky_mag_arcsec2_v",
+          "zero_point_mag",
+          "zero_point_rms_mag",
+          "color_term",
+          "transparency",
+          "cloud_fraction",
+          "limiting_mag",
+          "n_stars_used",
+          "sky_rate_e_per_s_arcsec2",
+          "dark_model_version",
+          "flags",
+          "t_utc"
+        ],
+        "title": "SkyQuality",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "sky_quality",
+        "x-storage": "table"
+      },
+      "SkyQualityPage": {
+        "description": "A page of `sky_quality` items, oldest first unless noted.",
+        "properties": {
+          "from": {
+            "description": "The start of the range.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SkyQualityRow"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass it as `cursor` to read the next page, or `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "now": {
+            "description": "The time of the server.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "record_type": {
+            "const": "sky_quality",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "raw",
+              "1m",
+              "10m",
+              "1h"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "The end of the range, which the range excludes.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_type",
+          "step",
+          "from",
+          "to",
+          "now",
+          "items",
+          "next_cursor"
+        ],
+        "title": "SkyQualityPage",
+        "type": "object"
+      },
+      "SkyQualityRow": {
+        "description": "An item of the history of `sky_quality` records. Without `fields`, an item holds every field except the arrays of numbers. With `fields`, it holds the named fields. The sky brightness and the transparency from one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. A value that the frame cannot support is `null`, and `quality` says why.",
+        "properties": {
+          "cloud_fraction": {
+            "description": "The share of the expected catalog stars that the frame missed, from 0 to 1.",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "color_term": {
+            "description": "The fitted coefficient of the color term, in magnitudes per magnitude of the BP-RP color.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dark_model_version": {
+            "description": "The version of the dark model that the pipeline subtracted.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flags": {
+            "description": "The conditions that apply to the measurement, as documented codes.",
+            "items": {
+              "enum": [
+                "cloud",
+                "dark_due",
+                "dew",
+                "moon",
+                "time_invalid",
+                "twilight"
+              ],
+              "type": "string"
+            },
+            "type": "array",
+            "x-codes": {
+              "cloud": "Clouds reduce the number of detected stars.",
+              "dark_due": "The dark library misses the current temperature or is older than 6 months.",
+              "dew": "The star widths and the transparency indicate dew on the optics.",
+              "moon": "The Moon was above the horizon and bright enough to raise the sky background.",
+              "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
+              "twilight": "The Sun was less than 18 degrees below the horizon."
+            }
+          },
+          "limiting_mag": {
+            "description": "The magnitude at which the frame detects half of the stars, in magnitudes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag"
+          },
+          "n_samples": {
+            "description": "The number of records that this item combines. A raw item combines none.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "n_stars_used": {
+            "description": "The number of matched stars in the zero-point fit.",
+            "format": "double",
+            "minimum": 0,
+            "type": "number"
+          },
+          "profile_id": {
+            "description": "The ID of the hardware profile that was active when the record was produced.",
+            "examples": [
+              "profile-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The versions that produced the result, as a map from a component to a version string, such as the algorithm revision (`algo`) and the calibration versions.",
+            "examples": [
+              {
+                "algo": "fast-1"
+              }
+            ],
+            "type": "object"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quality"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted."
+          },
+          "revision": {
+            "description": "The revision of the result for this station and time, which is 0 for the first result and grows by one for each reprocessed result.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sky_mag_arcsec2": {
+            "description": "The sky surface brightness in the camera band, in magnitudes per square arcsecond.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag/arcsec^2"
+          },
+          "sky_mag_arcsec2_v": {
+            "description": "The sky surface brightness converted to the V band, in magnitudes per square arcsecond.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag/arcsec^2"
+          },
+          "sky_rate_e_per_s_arcsec2": {
+            "description": "The sky signal, in electrons per second per square arcsecond.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "e-/s/arcsec^2"
+          },
+          "station_id": {
+            "description": "The ID of the station that produced the record, from the local configuration.",
+            "examples": [
+              "station-1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The start time as an ISO 8601 UTC string with six fractional digits. The integer `t_utc_ns` is too large for a JavaScript number to hold exactly, so use this field there.",
+            "examples": [
+              "2026-10-01T21:00:00.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "description": "The start of the interval that the record describes, or the instant for a point record, in nanoseconds since the Unix epoch, in UTC.",
+            "examples": [
+              1767225600000000000
+            ],
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-unit": "ns"
+          },
+          "transparency": {
+            "description": "The atmospheric transmission relative to the clearest nights, normally from 0 to 1.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "zero_point_mag": {
+            "description": "The photometric zero point, which is the magnitude of a star that gives one electron per second, in magnitudes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag"
+          },
+          "zero_point_rms_mag": {
+            "description": "The scatter of the matched stars around the zero-point fit, in magnitudes.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "mag"
+          }
+        },
+        "required": [
+          "t_utc_ns",
+          "t_utc"
+        ],
+        "title": "SkyQualityRow",
+        "type": "object",
+        "x-key": [
+          "station_id",
+          "t_utc_ns",
+          "revision"
+        ],
+        "x-record-type": "sky_quality",
+        "x-storage": "table"
+      },
+      "SolvedView": {
+        "description": "Where the latest solution puts the star, and how good the solution is.",
+        "properties": {
+          "age_s": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age S"
+          },
+          "n_matched": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "N Matched",
+            "type": "integer"
+          },
+          "rms_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rms Arcsec"
+          },
+          "roll_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Deg"
+          },
+          "x_px": {
+            "title": "X Px",
+            "type": "number"
+          },
+          "y_px": {
+            "title": "Y Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px"
+        ],
+        "title": "SolvedView",
+        "type": "object"
+      },
+      "StatusResponse": {
+        "description": "The state of every component.",
+        "properties": {
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "core": {
+            "$ref": "#/components/schemas/CoreLink"
+          },
+          "data": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RecordTime"
+            },
+            "title": "Data",
+            "type": "object"
+          },
+          "demo": {
+            "title": "Demo",
+            "type": "boolean"
+          },
+          "health": {
+            "$ref": "#/components/schemas/HealthResponse"
+          },
+          "now": {
+            "title": "Now",
+            "type": "string"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "scheduler": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SchedulerStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "software_version": {
+            "title": "Software Version",
+            "type": "string"
+          },
+          "station_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Station Id"
+          },
+          "ui": {
+            "$ref": "#/components/schemas/UiSettings"
+          }
+        },
+        "required": [
+          "now",
+          "api_version",
+          "software_version",
+          "station_id",
+          "demo",
+          "health",
+          "core",
+          "scheduler",
+          "data",
+          "ui"
+        ],
+        "title": "StatusResponse",
+        "type": "object"
+      },
+      "Step": {
+        "description": "The width of a history bucket. `raw` returns the stored records without aggregation.",
+        "enum": [
+          "raw",
+          "1m",
+          "10m",
+          "1h"
+        ],
+        "title": "Step",
+        "type": "string"
+      },
+      "StreamRequest": {
+        "additionalProperties": false,
+        "description": "The stream settings of a burst. Leave the whole object out for the fast stream.",
+        "properties": {
+          "exposure_us": {
+            "maximum": 2000000000.0,
+            "minimum": 1.0,
+            "title": "Exposure Us",
+            "type": "integer"
+          },
+          "gain": {
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Gain",
+            "type": "integer"
+          },
+          "high_speed": {
+            "default": false,
+            "title": "High Speed",
+            "type": "boolean"
+          },
+          "mode": {
+            "description": "The name of a readout mode.",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,15}$",
+            "title": "Mode",
+            "type": "string"
+          },
+          "pixel_format": {
+            "default": "RAW16",
+            "enum": [
+              "RAW8",
+              "RAW16"
+            ],
+            "title": "Pixel Format",
+            "type": "string"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoiRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Leave out for the full frame."
+          }
+        },
+        "required": [
+          "mode",
+          "exposure_us",
+          "gain"
+        ],
+        "title": "StreamRequest",
+        "type": "object"
+      },
+      "StreamStatus": {
+        "properties": {
+          "exposure_us": {
+            "title": "Exposure Us",
+            "type": "integer"
+          },
+          "gain": {
+            "title": "Gain",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roi"
+          },
+          "stream_id": {
+            "title": "Stream Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream_id",
+          "purpose",
+          "mode",
+          "exposure_us",
+          "gain"
+        ],
+        "title": "StreamStatus",
+        "type": "object"
+      },
+      "SweepRequest": {
+        "additionalProperties": false,
+        "description": "Run a short fast window for every cell of a grid. An empty axis uses the default.",
+        "properties": {
+          "exposure_us": {
+            "items": {
+              "maximum": 2000000000.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "maxItems": 16,
+            "title": "Exposure Us",
+            "type": "array"
+          },
+          "gain": {
+            "items": {
+              "maximum": 1000.0,
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "maxItems": 16,
+            "title": "Gain",
+            "type": "array"
+          },
+          "modes": {
+            "items": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,15}$",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Modes",
+            "type": "array"
+          },
+          "priority": {
+            "default": 0,
+            "maximum": 10.0,
+            "minimum": -10.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "roi_arcmin": {
+            "items": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 60.0,
+              "type": "number"
+            },
+            "maxItems": 16,
+            "title": "Roi Arcmin",
+            "type": "array"
+          },
+          "window_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 600.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window S"
+          }
+        },
+        "title": "SweepRequest",
+        "type": "object"
+      },
+      "TargetView": {
+        "description": "Where the star belongs: the position of Polaris in the reference solution.",
+        "properties": {
+          "roll_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Deg"
+          },
+          "x_px": {
+            "title": "X Px",
+            "type": "number"
+          },
+          "y_px": {
+            "title": "Y Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px"
+        ],
+        "title": "TargetView",
+        "type": "object"
+      },
+      "UiSettings": {
+        "description": "What the UI needs to know about the server.",
+        "properties": {
+          "alignment_max_fps": {
+            "title": "Alignment Max Fps",
+            "type": "number"
+          },
+          "alignment_stall_s": {
+            "title": "Alignment Stall S",
+            "type": "number"
+          },
+          "commands_enabled": {
+            "description": "False when no token hash is configured.",
+            "title": "Commands Enabled",
+            "type": "boolean"
+          },
+          "refresh_s": {
+            "title": "Refresh S",
+            "type": "number"
+          },
+          "token_required_for_reads": {
+            "title": "Token Required For Reads",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "refresh_s",
+          "token_required_for_reads",
+          "commands_enabled",
+          "alignment_max_fps",
+          "alignment_stall_s"
+        ],
+        "title": "UiSettings",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "The API token. The server stores only its hash. Every POST needs it, and a read needs it when the server sets `require_token_for_reads`.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The REST API of the seeing monitor: a fixed camera that points at Polaris, and a Raspberry Pi that\nmeasures the atmospheric seeing and the sky quality unattended.\n\n**Versioning.** The API lives under `/api/v1`. Within `v1`, a change only adds a field or an\nendpoint. A breaking change creates `/api/v2`, and `v1` stays for at least one release.\n\n**Access.** Reads are open on the LAN by default, and a setting can require the token for reads\ntoo. Every `POST` needs the token as `Authorization: Bearer <token>`. The server refuses every\ncommand when no token is configured. A client that sends too many requests gets 429 with a\n`Retry-After` header.\n\n**Values.** Times are ISO 8601 UTC strings. A field name carries its unit, such as\n`seeing_fwhm_arcsec`. A missing value is `null`, and the `quality` object says why. Every error\nhas the same shape: `{\"error\": {\"code\": ..., \"message\": ..., \"details\": ...}}`.\n\n**History.** A history route takes `from` (included) and `to` (excluded), and `step` (`raw`, `1m`,\n`10m`, or `1h`). A numeric field of a bucket is the mean, and a list of flags is the union. A page\nholds at most `limit` items, and `next_cursor` points to the next page.\n",
+    "summary": "Seeing, sky quality, pointing, images, and commands.",
+    "title": "Seeing monitor API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1": {
+      "get": {
+        "description": "Return the version of the API and the software, and where the OpenAPI description is.",
+        "operationId": "get_api_info",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Describe the API",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/v1/alignment/frame": {
+      "get": {
+        "description": "Return the newest live-view frame, for a client that cannot use the WebSocket.\n\nEach call keeps the stream to `core` open for a few seconds. Call it about twice a second\nwhile the page shows the live view.",
+        "operationId": "get_alignment_frame",
+        "parameters": [
+          {
+            "description": "The `X-Frame-Seq` of the last frame.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "The `X-Frame-Seq` of the last frame.",
+              "minimum": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The newest frame, as a JPEG. `X-Frame-Seq` numbers it."
+          },
+          "204": {
+            "description": "No frame is newer than `after`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Poll for the newest live-view frame",
+        "tags": [
+          "alignment"
+        ]
+      }
+    },
+    "/api/v1/alignment/start": {
+      "post": {
+        "description": "Start the alignment stream, or keep it alive when it already runs.\n\nThe command preempts every other mode. Send it again to restart the idle timer.",
+        "operationId": "post_alignment_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AlignmentStartRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Start the alignment helper",
+        "tags": [
+          "alignment"
+        ]
+      }
+    },
+    "/api/v1/alignment/state": {
+      "get": {
+        "description": "Return the offset, the rotation, the focus, the histogram, and the saturation warning.\n\nPositions are in pixels of the frame that `frame` describes. `active` is false outside the\nalignment mode.",
+        "operationId": "get_alignment_state",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlignmentState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the state of the alignment helper",
+        "tags": [
+          "alignment"
+        ]
+      }
+    },
+    "/api/v1/alignment/stop": {
+      "post": {
+        "description": "End the alignment stream. The scheduler goes back to `safe` and checks the sky.",
+        "operationId": "post_alignment_stop",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stop the alignment helper",
+        "tags": [
+          "alignment"
+        ]
+      }
+    },
+    "/api/v1/commands/burst": {
+      "post": {
+        "description": "Queue a burst: record raw frames to a SER file with a JSON sidecar.\n\nThe burst runs at the next cycle boundary, and its result is pinned.",
+        "operationId": "post_burst",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BurstRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Queue a burst",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/commands/replay": {
+      "post": {
+        "description": "Queue a replay of a recording through the production analysis.",
+        "operationId": "post_replay",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Queue a replay",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/commands/sweep": {
+      "post": {
+        "description": "Queue a sweep: a short fast window for every cell of a grid of settings.\n\nAn empty axis uses the configured default. The scheduler checks the values against the\nhardware profile.",
+        "operationId": "post_sweep",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SweepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Queue a sweep",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/config": {
+      "get": {
+        "description": "Return the configuration without secrets, site data, paths, hosts, and addresses.\n\nThe response keeps the sections that describe how the station computes, such as the\nscheduler and the fast path, and it leaves out the sections that describe one installation.",
+        "operationId": "get_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Config",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Get the effective configuration",
+        "tags": [
+          "reference"
+        ]
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "description": "Return events, newest first by default. Their text has no paths or addresses.",
+        "operationId": "get_events",
+        "parameters": [
+          {
+            "description": "The start of the range, included. Default: 24 hours before `to`.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The start of the range, included. Default: 24 hours before `to`.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The end of the range, excluded. Default: now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The end of the range, excluded. Default: now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "The lowest severity to return.",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventLevel",
+              "default": "info",
+              "description": "The lowest severity to return."
+            }
+          },
+          {
+            "description": "Return only events whose kind starts with this text.",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "pattern": "^[a-z][a-z0-9_.]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Return only events whose kind starts with this text.",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "`desc` returns the newest first.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Order",
+              "default": "desc",
+              "description": "`desc` returns the newest first."
+            }
+          },
+          {
+            "description": "Items per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Items per page.",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "The `next_cursor` of a page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of a page.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            },
+            "description": "A page of events."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "List events",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "Judge the system from the newest health record and from the link to `core`.\n\nThe answer is 200 when the status is `healthy` or `degraded`, and 503 when it is `failed`.\nA failed system has an unreadable store, no health record, a record older than the limit\n(so `core` stopped writing), or a failed component. An external watchdog can poll this\nroute.",
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "The system is healthy or degraded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "The system has failed."
+          }
+        },
+        "summary": "Get the health verdict",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/v1/images": {
+      "get": {
+        "description": "List the preview images, newest first.",
+        "operationId": "list_images",
+        "parameters": [
+          {
+            "description": "Images per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Images per page.",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "The `next_cursor` of a page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of a page.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "List the images",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/api/v1/images/latest": {
+      "get": {
+        "description": "Return the newest image. A client that shows it should ask again after a while.",
+        "operationId": "get_latest_image",
+        "parameters": [
+          {
+            "description": "`jpeg` returns the preview, `fits` the frame, `json` the data.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ImageFormat",
+              "default": "jpeg",
+              "description": "`jpeg` returns the preview, `fits` the frame, `json` the data."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/fits": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageItem"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The image: a JPEG preview, a FITS frame, or its description."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Get the newest image",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/api/v1/images/{image_id}": {
+      "get": {
+        "description": "Return one image. The ID names a file, so it never holds a path: a bad ID is a 404.",
+        "operationId": "get_image",
+        "parameters": [
+          {
+            "description": "An ID from `GET /images`.",
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "description": "An ID from `GET /images`.",
+              "maxLength": 64,
+              "title": "Image Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`jpeg` returns the preview, `fits` the frame, `json` the data.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ImageFormat",
+              "default": "jpeg",
+              "description": "`jpeg` returns the preview, `fits` the frame, `json` the data."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/fits": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageItem"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The image: a JPEG preview, a FITS frame, or its description."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Get an image",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/api/v1/mode": {
+      "post": {
+        "description": "Pause the scheduler, or resume it. A resumed scheduler enters `safe` first.",
+        "operationId": "post_mode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Pause or resume the scheduler",
+        "tags": [
+          "commands"
+        ]
+      }
+    },
+    "/api/v1/pointing": {
+      "get": {
+        "description": "Return the `pointing` records between `from` (included) and `to` (excluded), oldest first.\n\nWith `step`, each item is a bucket that starts at a multiple of the step in UTC. A numeric field is the mean of the bucket, and a list of flags is the union of the flags, so a flag that applied to any record shows. `n_samples` counts the records of the bucket. Pass `next_cursor` back as `cursor` to read the next page.",
+        "operationId": "get_pointing_history",
+        "parameters": [
+          {
+            "description": "The start of the range, included. Default: 24 hours before `to`.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The start of the range, included. Default: 24 hours before `to`.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The end of the range, excluded. Default: now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The end of the range, excluded. Default: now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "The bucket width. `raw` returns the stored records.",
+            "in": "query",
+            "name": "step",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Step",
+              "default": "raw",
+              "description": "The bucket width. `raw` returns the stored records."
+            }
+          },
+          {
+            "description": "Items per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Items per page.",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "The `next_cursor` of a page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of a page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "A comma-separated list of the fields to return. Default: all fields except the arrays of numbers.",
+            "in": "query",
+            "name": "fields",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A comma-separated list of the fields to return. Default: all fields except the arrays of numbers.",
+              "title": "Fields"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PointingPage"
+                }
+              }
+            },
+            "description": "A page of `pointing` items."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the history of pointing records",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/pointing/latest": {
+      "get": {
+        "description": "Return the newest `pointing` record. A missing value is `null`, and `quality` says why. A field that the server withholds is `null` with the note `withheld`.",
+        "operationId": "get_pointing_latest",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pointing"
+                }
+              }
+            },
+            "description": "The newest `pointing` record."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the newest pointing record",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/profile": {
+      "get": {
+        "description": "Return the hardware profile with its derived values.\n\nEach readout mode carries its own plate scale, field of view, and sampling, so a plate\nscale always names its mode.",
+        "operationId": "get_profile",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Profile",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Get the hardware profile",
+        "tags": [
+          "reference"
+        ]
+      }
+    },
+    "/api/v1/seeing": {
+      "get": {
+        "description": "Return the `seeing_window` records between `from` (included) and `to` (excluded), oldest first.\n\nWith `step`, each item is a bucket that starts at a multiple of the step in UTC. A numeric field is the mean of the bucket, and a list of flags is the union of the flags, so a flag that applied to any record shows. `n_samples` counts the records of the bucket. Pass `next_cursor` back as `cursor` to read the next page.",
+        "operationId": "get_seeing_history",
+        "parameters": [
+          {
+            "description": "The start of the range, included. Default: 24 hours before `to`.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The start of the range, included. Default: 24 hours before `to`.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The end of the range, excluded. Default: now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The end of the range, excluded. Default: now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "The bucket width. `raw` returns the stored records.",
+            "in": "query",
+            "name": "step",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Step",
+              "default": "raw",
+              "description": "The bucket width. `raw` returns the stored records."
+            }
+          },
+          {
+            "description": "Items per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Items per page.",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "The `next_cursor` of a page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of a page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "A comma-separated list of the fields to return. Default: all fields except the arrays of numbers.",
+            "in": "query",
+            "name": "fields",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A comma-separated list of the fields to return. Default: all fields except the arrays of numbers.",
+              "title": "Fields"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeeingWindowPage"
+                }
+              }
+            },
+            "description": "A page of `seeing_window` items."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the history of seeing_window records",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/seeing/latest": {
+      "get": {
+        "description": "Return the newest `seeing_window` record. A missing value is `null`, and `quality` says why. A field that the server withholds is `null` with the note `withheld`.",
+        "operationId": "get_seeing_latest",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeeingWindow"
+                }
+              }
+            },
+            "description": "The newest `seeing_window` record."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the newest seeing_window record",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/sky": {
+      "get": {
+        "description": "Return the `sky_quality` records between `from` (included) and `to` (excluded), oldest first.\n\nWith `step`, each item is a bucket that starts at a multiple of the step in UTC. A numeric field is the mean of the bucket, and a list of flags is the union of the flags, so a flag that applied to any record shows. `n_samples` counts the records of the bucket. Pass `next_cursor` back as `cursor` to read the next page.",
+        "operationId": "get_sky_history",
+        "parameters": [
+          {
+            "description": "The start of the range, included. Default: 24 hours before `to`.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The start of the range, included. Default: 24 hours before `to`.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The end of the range, excluded. Default: now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The end of the range, excluded. Default: now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "The bucket width. `raw` returns the stored records.",
+            "in": "query",
+            "name": "step",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Step",
+              "default": "raw",
+              "description": "The bucket width. `raw` returns the stored records."
+            }
+          },
+          {
+            "description": "Items per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Items per page.",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "The `next_cursor` of a page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of a page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "A comma-separated list of the fields to return. Default: all fields except the arrays of numbers.",
+            "in": "query",
+            "name": "fields",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A comma-separated list of the fields to return. Default: all fields except the arrays of numbers.",
+              "title": "Fields"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkyQualityPage"
+                }
+              }
+            },
+            "description": "A page of `sky_quality` items."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the history of sky_quality records",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/sky/latest": {
+      "get": {
+        "description": "Return the newest `sky_quality` record. A missing value is `null`, and `quality` says why. A field that the server withholds is `null` with the note `withheld`.",
+        "operationId": "get_sky_latest",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkyQuality"
+                }
+              }
+            },
+            "description": "The newest `sky_quality` record."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the newest sky_quality record",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "description": "Return the health, the scheduler, the link to `core`, and the age of the newest records.\n\nA value that the server cannot find is `null`, and `quality` says why. The status leaves\nout the Sun's elevation, because a series of elevations would show the site.",
+        "operationId": "get_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Get the state of every component",
+        "tags": [
+          "status"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "The health and the state of every component.",
+      "name": "status"
+    },
+    {
+      "description": "Seeing, sky quality, pointing, and events.",
+      "name": "records"
+    },
+    {
+      "description": "The preview images and the FITS frames.",
+      "name": "images"
+    },
+    {
+      "description": "Commands for the scheduler. Each needs the token.",
+      "name": "commands"
+    },
+    {
+      "description": "The alignment helper and its live view.",
+      "name": "alignment"
+    },
+    {
+      "description": "The hardware profile and the configuration.",
+      "name": "reference"
+    }
+  ]
+}
