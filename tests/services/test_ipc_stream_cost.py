@@ -192,8 +192,12 @@ class TestRoom:
         assert link.sender.room() == (4, 700)
         assert reads == []
         assert link.receiver.recv(5.0) is not None
-        assert wait_until(lambda: (link.sender.pump(0.0), link.sender.room())[1][0] == 5, 10.0)
-        assert link.sender.room()[0] == 5
+
+        def window_is_empty() -> bool:
+            link.sender.pump(0.0)
+            return link.sender.room()[0] == 5
+
+        assert wait_until(window_is_empty, 10.0)
 
 
 class TestTheReceiverAcknowledgesInBatches:
