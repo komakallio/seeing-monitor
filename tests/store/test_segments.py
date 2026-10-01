@@ -25,6 +25,7 @@ from seeingmon.store.segments import (
     SegmentFormatError,
     SegmentReader,
     SegmentWriter,
+    create_exclusive,
     iter_segments,
     parse_segment_name,
     read_segment,
@@ -447,6 +448,31 @@ class TestCrashRecovery:
             assert report.rows == 8
             next_run.write_metrics(1, make_rows(T0 + 100 * NS_PER_S, 4))  # same slot
         assert len(files(crashed)) == 2
+
+
+class TestDirectoryRace:
+    def test_a_directory_that_vanishes_before_the_open_is_made_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retention prunes empty date directories, and it can win the race against a writer."""
+        path = tmp_path / "2026" / "01" / "01" / "x.seg.part"
+        real_open = Path.open
+        modes: list[str] = []
+
+        def vanishing(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+            modes.append(mode)
+            if len(modes) == 1:
+                raise FileNotFoundError("the directory vanished")
+            return real_open(self, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", vanishing)
+        handle = create_exclusive(path)
+        handle.close()
+        monkeypatch.undo()
+        assert modes == ["xb", "xb"]
+        assert path.is_file()
+        with pytest.raises(FileExistsError):
+            create_exclusive(path)  # an existing file is not a race: the caller picks a new name
 
 
 class TestFormatErrors:

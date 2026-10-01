@@ -481,6 +481,21 @@ class SegmentReader:
 # --- writing -----------------------------------------------------------------------------------
 
 
+def create_exclusive(path: Path) -> BinaryIO:
+    """Create a new file and open it for writing. Raises `FileExistsError` if it exists.
+
+    The retention task removes empty date directories. If it removes this one between the
+    `mkdir` and the `open`, the function makes the directory again.
+    """
+    for _ in range(3):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            return path.open("xb")
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(f"cannot create the directory of {path.name}")
+
+
 @dataclass(slots=True)
 class _OpenSegment:
     handle: BinaryIO
@@ -666,7 +681,6 @@ class SegmentWriter:
     def _open(self, stream_id: int, slot: int, first_t_utc_ns: int) -> _OpenSegment:
         start = slot * self._slot_ns
         directory = segment_directory(self._root, start)
-        directory.mkdir(parents=True, exist_ok=True)
         header = self._header_bytes(stream_id, slot, first_t_utc_ns)
         for part in range(_MAX_PARTS):
             final = directory / segment_name(self._cls.record_type, start, stream_id, part)
@@ -674,7 +688,7 @@ class SegmentWriter:
                 continue
             partial = final.with_name(final.name + OPEN_SUFFIX)
             try:
-                handle = partial.open("xb")
+                handle = create_exclusive(partial)
             except FileExistsError:
                 continue
             try:

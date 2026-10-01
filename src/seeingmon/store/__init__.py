@@ -8,7 +8,8 @@ fast.
   cursors, and the immutability and event rules.
 - `segments`: `SegmentWriter` and `SegmentReader` for the 10-minute files of per-frame metrics.
 - `layout`: `DataLayout` for the data directory, atomic writes, and the pin marker of a burst.
-- `retention`: `RetentionManager`, which keeps the data directory within its quotas.
+- `retention`: `RetentionManager`, which keeps the data directory within its quotas and decides
+  whether raw capture may run.
 - `events`: `EventEmitter`, which writes the events of the storage lane.
 - `config`: the configuration section models (`[store]` in `config/default.d/store.toml`).
 """
@@ -40,6 +41,14 @@ if TYPE_CHECKING:
     )
     from seeingmon.store.events import EventEmitter, EventSink
     from seeingmon.store.layout import DataLayout, PathsConfig, burst_name, write_atomic
+    from seeingmon.store.retention import (
+        Deletion,
+        DiskUsage,
+        RetentionManager,
+        RetentionReport,
+        RetentionStatus,
+        system_disk_usage,
+    )
     from seeingmon.store.segments import (
         RecoveryReport,
         SegmentData,
@@ -76,6 +85,12 @@ _EXPORTS: dict[str, str] = {
     "RetentionConfig": "config",
     "SegmentsConfig": "config",
     "StoreConfig": "config",
+    "Deletion": "retention",
+    "DiskUsage": "retention",
+    "RetentionManager": "retention",
+    "RetentionReport": "retention",
+    "RetentionStatus": "retention",
+    "system_disk_usage": "retention",
     "RecoveryReport": "segments",
     "SegmentData": "segments",
     "SegmentFormatError": "segments",
@@ -90,6 +105,8 @@ _EXPORTS: dict[str, str] = {
 
 __all__ = [
     "DataLayout",
+    "Deletion",
+    "DiskUsage",
     "DuplicateRecordError",
     "EventEmitter",
     "EventSink",
@@ -97,6 +114,9 @@ __all__ = [
     "PathsConfig",
     "RecoveryReport",
     "RetentionConfig",
+    "RetentionManager",
+    "RetentionReport",
+    "RetentionStatus",
     "SegmentData",
     "SegmentFormatError",
     "SegmentInfo",
@@ -119,6 +139,7 @@ __all__ = [
     "record_from_row",
     "recover_orphans",
     "recover_segment",
+    "system_disk_usage",
     "write_atomic",
 ]
 
