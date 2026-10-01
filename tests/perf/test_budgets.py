@@ -171,7 +171,7 @@ class TestEstimates:
 
 
 class TestCoreSim:
-    def test_a_core_sim_result_replaces_the_upper_bound_of_the_fast_path_and_the_store(
+    def test_a_core_sim_result_replaces_the_stand_in_of_the_fast_path_and_the_store(
         self,
     ) -> None:
         report = fixture_report()
@@ -184,11 +184,11 @@ class TestCoreSim:
         )
         terms = [term.label for term in build_budgets(with_core)[-1].terms]
         assert "core process peak" in terms
-        assert not any("upper bound" in label for label in terms)
+        assert not any("stand-in" in label for label in terms)
         found = verdicts(with_core)["memory-1.4"]
         assert found.value == pytest.approx(60 + 300 + 100 + 90)
 
-    def test_a_skipped_core_sim_keeps_the_upper_bound(self) -> None:
+    def test_a_skipped_core_sim_keeps_the_stand_in(self) -> None:
         report = fixture_report()
         with_skip = Report(
             report.label,
@@ -198,7 +198,7 @@ class TestCoreSim:
             (*report.cases, CaseResult("core-sim", "skipped", "the core process is not on main")),
         )
         terms = [term.label for term in build_budgets(with_skip)[-1].terms]
-        assert any("upper bound" in label for label in terms)
+        assert any("stand-in" in label for label in terms)
 
 
 class TestPi4Measurement:

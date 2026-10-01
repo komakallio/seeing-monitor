@@ -20,7 +20,7 @@ with "the core process is not on main". The lead enables the case by writing one
      `docs/performance.md` compares it with the sum of the fast-path shares of the `fastpath`
      case.
    - `peak_rss`, in `bytes`, scale `memory`: the peak memory of the `core` process. When this
-     case runs, the memory budgets use it in place of the upper bound that the `fastpath` and
+     case runs, the memory budgets use it in place of the stand-in that the `fastpath` and
      `store` cases give.
 
 Nothing else changes: the case is registered, the budgets look for the figures, and the test in

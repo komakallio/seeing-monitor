@@ -130,15 +130,15 @@ def fast_path_budget(
 
 def build_budgets(report: Report) -> list[Budget]:
     """The budgets for a report. The core process of the memory budget depends on the cases that
-    ran: `core-sim` replaces the upper bound of the fast path plus the store when it ran."""
+    ran: `core-sim` replaces the stand-in of the fast path plus the store when it ran."""
     core_sim = report.case("core-sim")
     core_terms: tuple[Term, ...]
     if core_sim is not None and core_sim.ok:
         core_terms = (Term("core process peak", "core-sim", PEAK, 1 / MB, "memory"),)
     else:
         core_terms = (
-            Term("core, fast path peak (upper bound)", "fastpath", PEAK, 1 / MB, "memory"),
-            Term("core, store peak (upper bound)", "store", PEAK, 1 / MB, "memory"),
+            Term("core, fast path peak (stand-in)", "fastpath", PEAK, 1 / MB, "memory"),
+            Term("core, store peak (stand-in)", "store", PEAK, 1 / MB, "memory"),
         )
     memory_terms = (
         Term("acquire peak", "ipc", "acquire.peak_rss", 1 / MB, "memory"),
