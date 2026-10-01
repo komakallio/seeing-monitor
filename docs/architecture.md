@@ -292,7 +292,7 @@ In `align`, the camera streams a bin2 view with 0.2 to 1 s exposures. `core` str
 
 | Quantity (unit) | Definition and estimator | Uncertainty | Known failure modes |
 |---|---|---|---|
-| `cx`, `cy` (px) | Centroid inside a circular aperture (15 pixels or more across in bin1), recentered twice | Noise below 0.02 px, subtracted from the variance. Truncation lowers the gain to 0.98 (variance 3 to 5% low). | Saturation, hot pixels, truncation, a star near the ROI edge, bin2 in focus |
+| `cx`, `cy` (px) | Centroid inside a circular aperture (15 pixels or more across in bin1), recentered twice | Noise below 0.02 px, subtracted from the variance. A recentered 16-pixel aperture reads 1.6% more variance than the G-tilt, and the estimator divides it out. | Saturation, hot pixels, a star near the ROI edge, bin2 in focus |
 | `width_x`, `width_y` (px), `peak` (DN), `flux` (e⁻), `bg` (DN) | Second-moment sigma inside the aperture. Maximum pixel. Aperture sum minus background. Median of the ROI border. | Poisson plus background noise. Truncation lowers the width by a few percent. | Saturation (flag at 98%), clouds, the Polaris halo, defocus |
 | `image_motion_rms` (arcsec) | RMS of the detrended centroid per axis, noise subtracted | 2 to 4% (1,000 to 6,000 effective samples per window) | Vibration and wind shake (high), exposure averaging (low), drift, jitter, drops |
 | `seeing_fwhm_arcsec`, `r0_cm` | Kolmogorov seeing and r0 at 500 nm and zenith, from the tilt variance with the L0 and exposure corrections and the factor (cos z)^(3/5) | 1 to 2% statistical, 10 to 15% systematic (L0, wind) | As above, plus ground-layer turbulence and bin2 phase effects |
