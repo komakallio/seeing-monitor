@@ -126,6 +126,9 @@ def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) 
     if name == "survey":
         # The sky quality step is part of every frame, so its stage must not go missing.
         assert "stage.quality" in names
+    if name == "ipc":
+        # The runs with the fake camera show what that fake adds, and no budget reads them.
+        assert "fake_camera.acquire.cpu_per_frame" in names
     # The budgets read figures by name. A renamed figure must break this test and not the verdict.
     wanted = {
         term.measurement

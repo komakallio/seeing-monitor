@@ -1,13 +1,18 @@
 """The `acquire` side of the `ipc` case, in a process of its own.
 
-    python -m seeingmon.perf._acquire --address ADDRESS --pool FILE [--burst N]
+    python -m seeingmon.perf._acquire --address ADDRESS --pool FILE [--burst N] [--camera KIND]
 
-The process runs an `AcquireService` with a fake camera that replays the frames of a pool (a NumPy
+The process runs an `AcquireService` with a camera that replays the frames of a pool (a NumPy
 `.npz` file that the case wrote, with one array of frames for each ROI size, such as `f128x128`).
-The fake costs almost nothing, so the CPU time that the process uses is the cost of `acquire`
-itself: the capture thread, the time stamper, the queue, and the sender. The fake has no readout
-time, so the exposure of a stream is its frame period, and the frame rate is the inverse of the
-exposure.
+The camera has no readout time, so the exposure of a stream is its frame period, and the frame
+rate is the inverse of the exposure.
+
+**The camera.** `--camera zero` (the default) gives a camera that builds its frames when you
+configure the stream, so a read waits for the next frame and returns a frame that exists already
+(`seeingmon.perf._zerocamera`). The CPU time that the process uses is then the cost of `acquire`
+itself: the capture thread, the time stamper, the queue, and the sender. `--camera fake` gives the
+`FakeCameraDriver` of `seeingmon.testing`, which builds a frame on every read, so the process uses
+more CPU time. The difference between the two is the cost of the fake.
 
 **Bursts.** A paced camera wakes the capture thread for every frame, and each frame then wakes the
 sender, so the CPU time per frame includes the cost of the wake-ups. With `--burst N`, the camera
@@ -42,6 +47,8 @@ from typing import Any
 from seeingmon.clock import SystemClock
 from seeingmon.perf.memory import peak_rss_bytes, process_cpu_ns
 from seeingmon.perf.threadcpu import threads_cpu_ns
+
+CAMERAS = ("zero", "fake")
 
 
 class BurstClock(SystemClock):
@@ -105,6 +112,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--burst", type=int, default=1, help="frames that the camera delivers at a time"
     )
+    parser.add_argument(
+        "--camera",
+        choices=CAMERAS,
+        default="zero",
+        help="zero: a prebuilt frame for each read. fake: the fake camera of seeingmon.testing.",
+    )
     args = parser.parse_args(argv)
 
     import numpy as np
@@ -124,8 +137,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return pool[seq % len(pool)]
 
     clock = BurstClock(args.burst)
-    # The fake has no readout time, so the exposure of a stream is its frame period.
-    driver = FakeCameraDriver(clock, overhead_s=0.0, row_time_s=0.0, frame_factory=next_frame)
+    # The camera has no readout time, so the exposure of a stream is its frame period.
+    driver: Any
+    if args.camera == "zero":
+        from seeingmon.perf._zerocamera import ZeroCostCamera
+
+        driver = ZeroCostCamera(clock, pools)
+    else:
+        driver = FakeCameraDriver(clock, overhead_s=0.0, row_time_s=0.0, frame_factory=next_frame)
     settings = ServicesConfig(
         acquire=AcquireSettings(
             time_source="stamp",  # fit the arrival times, as the real driver's frames need

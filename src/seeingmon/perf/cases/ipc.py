@@ -2,13 +2,23 @@
 
 The case starts `acquire` in its own process (`seeingmon.perf._acquire`), and this process plays
 `core`: a `RemoteCameraDriver` opens the session, starts the stream, and reads frames with no
-pause. `acquire` runs the production `AcquireService` on a fake camera that replays 64 frames of
-a Polaris-like star (32 KB for bin1 at 128 x 128, 8 KB for bin2 at 64 x 64). The fake costs almost
-nothing, so the CPU time of the `acquire` process is the cost of `acquire` itself: the capture
-thread, the time stamper, the queue, the encoder, and the sender. The case uses two processes, as
-production does. The in-process thread pair that the brief allows for a runner where a subprocess
-is fragile is not needed, because the end-to-end tests of the services lane start `acquire` the
-same way on every runner.
+pause. `acquire` runs the production `AcquireService` on a camera that replays 64 frames of a
+Polaris-like star (32 KB for bin1 at 128 x 128, 8 KB for bin2 at 64 x 64). The case uses two
+processes, as production does. The in-process thread pair that the brief allows for a runner where
+a subprocess is fragile is not needed, because the end-to-end tests of the services lane start
+`acquire` the same way on every runner.
+
+**The camera.** The budgets read runs with a camera that costs nothing per frame
+(`seeingmon.perf._zerocamera`): it waits for the next frame, as the blocking call of the vendor SDK
+does, and it returns a frame that exists already. The CPU time of the `acquire` process is then the
+cost of `acquire` itself: the capture thread, the time stamper, the queue, the encoder, and the
+sender. A real driver adds work of its own (the guard around the SDK calls, the copy of the buffer,
+and the `Frame` with its checks), so this figure is a lower bound of the cost of `acquire`. A third
+set of runs uses the fake camera of `seeingmon.testing`, which builds a frame on every read, and
+its figures (the prefix `fake_camera`) show what that fake adds to the capture thread. The figures
+`camera.<name>.read` time one `read_frame` call of the fake, the zero-cost camera, and the
+production ASI driver on a stub SDK, with no waiting, so they give the camera part of the capture
+thread without the noise of a run. No budget reads these figures.
 
 The camera paces itself on the real clock. The case runs
 
@@ -20,7 +30,8 @@ The camera paces itself on the real clock. The case runs
   one run with no burst run, so it gives the work and the wake-ups together;
 - **bursts**: bin1 at 98 frames per second, with a camera that delivers 10 frames at a time. The
   capture thread sleeps for 10 frame periods and then reads 10 frames with no pause, so a wake-up
-  serves 10 frames. The rate and the time stamps of the frames stay the same.
+  serves 10 frames. The rate and the time stamps of the frames stay the same;
+- **fake camera**: bin1 at 98 frames per second with the fake camera, as the nominal run.
 
 **Why two kinds of run.** The cost per frame of a paced stream includes thread wake-ups: the
 capture thread sleeps until the next frame, the sender wakes for each frame, and the reader of
@@ -79,7 +90,13 @@ class AcquireProcess:
     """The `acquire` helper process: a line-based control channel on its standard streams."""
 
     def __init__(
-        self, endpoint: Endpoint, key_text: str, pool_path: Path, *, burst: int = 1
+        self,
+        endpoint: Endpoint,
+        key_text: str,
+        pool_path: Path,
+        *,
+        burst: int = 1,
+        camera: str = "zero",
     ) -> None:
         self._process = subprocess.Popen(
             [
@@ -90,6 +107,8 @@ class AcquireProcess:
                 str(endpoint),
                 "--pool",
                 str(pool_path),
+                "--camera",
+                camera,
                 *(["--burst", str(burst)] if burst > 1 else []),
             ],
             stdin=subprocess.PIPE,
@@ -210,13 +229,17 @@ def _per_frame_us(cpu_ns: float, frames: int) -> float:
 class Session:
     """The `acquire` process and the driver that reads from it, for several runs."""
 
-    def __init__(self, folder: Path, pool_path: Path, *, burst: int = 1) -> None:
+    def __init__(
+        self, folder: Path, pool_path: Path, *, burst: int = 1, camera: str = "zero"
+    ) -> None:
         from seeingmon.services.ipc.keys import ConnectionKey
         from seeingmon.services.remote import RemoteCameraDriver
 
         self._endpoint = new_endpoint(folder)
         key_text = secrets.token_urlsafe(32)
-        self._helper = AcquireProcess(self._endpoint, key_text, pool_path, burst=burst)
+        self._helper = AcquireProcess(
+            self._endpoint, key_text, pool_path, burst=burst, camera=camera
+        )
         self._key = ConnectionKey.from_text(key_text)
         self._driver_class = RemoteCameraDriver
         self._driver: CameraDriver | None = None
@@ -307,20 +330,24 @@ def figures(
     runs: list[RunResult],
     *,
     with_acquire: bool = True,
+    with_core: bool = True,
     threads: bool = False,
+    camera: str = "zero",
 ) -> list[Measurement]:
     """The measurements of the runs of one stream: CPU per frame and the share at the rate."""
     share = rate_hz / 1e4  # percent of one core for a cost in microseconds at this rate
-    extra: dict[str, float | int | str] = {}
+    extra: dict[str, float | int | str] = {"camera": camera}
     if threads:
         split = [run.thread_us() for run in runs]
         for key in ("capture_us", "sender_us", "other_us"):
             extra[key] = round(statistics.median(item[key] for item in split), 1)
     detail = _detail(rate_hz, runs, extra)
     out: list[Measurement] = []
-    sides = [("core_rx", [run.core_us for run in runs])]
+    sides: list[tuple[str, list[float]]] = []
     if with_acquire:
-        sides.insert(0, ("acquire", [run.acquire_us for run in runs]))
+        sides.append(("acquire", [run.acquire_us for run in runs]))
+    if with_core:
+        sides.append(("core_rx", [run.core_us for run in runs]))
     for side, costs in sides:
         per_frame = _stats(costs)
         out.append(
@@ -436,6 +463,73 @@ def burst_figures(
     return out
 
 
+def camera_read_figures(
+    pools: dict[str, Any], mode: FastMode, ctx: CaseContext
+) -> list[Measurement]:
+    """The CPU time of one `read_frame` call of each camera, with no waiting.
+
+    The fake camera of `seeingmon.testing` builds a frame on every read, the zero-cost camera
+    returns a frame that exists already, and the production ASI driver runs its Python code for the
+    frame on a stub SDK. A clock that does not wait takes the place of the blocking SDK call, so a
+    call costs what its Python code costs and nothing else. One thread makes the calls, so the
+    figure has none of the noise that two threads on a busy machine add to a run of the whole
+    process.
+    """
+    from seeingmon.clock import SystemClock
+    from seeingmon.frames import Roi, StreamConfig
+    from seeingmon.perf._asicamera import create_asi_driver
+    from seeingmon.perf._zerocamera import ZeroCostCamera
+    from seeingmon.testing import FakeCameraDriver
+
+    class NoWaitClock(SystemClock):
+        def sleep(self, seconds: float) -> None:
+            return None
+
+    clock = NoWaitClock()
+    height, width = mode.shape
+    pool = pools[f"f{height}x{width}"]
+    config = StreamConfig(
+        mode.mode, round(1e6 / NOMINAL_HZ), mode.gain, roi=Roi(100, 200, width, height)
+    )
+
+    def next_frame(config: Any, roi: Any, seq: int) -> Any:
+        return pool[seq % len(pool)]
+
+    cameras: dict[str, Any] = {
+        "fake": FakeCameraDriver(clock, overhead_s=0.0, row_time_s=0.0, frame_factory=next_frame),
+        "zero": ZeroCostCamera(clock, pools),
+        "asi": create_asi_driver(clock, pools, watchdog_thread=False),
+    }
+    calls, repeats = ctx.pick(2000, 50), ctx.pick(7, 2)
+    out: list[Measurement] = []
+    for name, camera in cameras.items():
+        camera.open()
+        camera.configure(config)
+        camera.start()
+        for _ in range(ctx.pick(200, 10)):  # a warm-up that is not reported
+            camera.read_frame(1.0)
+        samples: list[float] = []
+        for _ in range(repeats):
+            started = time.perf_counter_ns()
+            for _ in range(calls):
+                camera.read_frame(1.0)
+            samples.append(max((time.perf_counter_ns() - started) / calls / 1e3, _FLOOR))
+        camera.stop()
+        camera.close()
+        stats = _stats(samples)
+        out.append(
+            Measurement(
+                f"camera.{name}.read",
+                "us/frame",
+                stats.median,
+                stats,
+                "interpreter",
+                {"calls": calls, "repeats": repeats, "waiting": "none"},
+            )
+        )
+    return out
+
+
 @REGISTRY.case("ipc", summary="Cost of moving a frame from acquire to core, in CPU time per frame")
 def ipc(ctx: CaseContext) -> list[Measurement]:
     import numpy as np
@@ -479,12 +573,29 @@ def ipc(ctx: CaseContext) -> list[Measurement]:
                 session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
             bursts = [session.run(bin1, NOMINAL_HZ, seconds) for _ in range(repeats)]
             measurements.extend(burst_figures(bursts, nominal, NOMINAL_HZ, BURST_FRAMES))
+        # The same stream with the fake camera of `seeingmon.testing`, which builds a frame on
+        # every read. The figures show what that fake adds, and no budget reads them.
+        with Session(folder, pool_path, camera="fake") as session:
+            if not ctx.smoke:
+                session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
+            fake = [session.run(bin1, NOMINAL_HZ, seconds) for _ in range(repeats)]
+            measurements.extend(
+                figures(
+                    "fake_camera.", NOMINAL_HZ, fake, with_core=False, threads=True, camera="fake"
+                )
+            )
+        measurements.extend(camera_read_figures(pools, bin1, ctx))
     ctx.note(
-        "acquire runs in its own process with a fake camera that replays 64 frames, and the CPU "
-        "time of that process is the cost of acquire. This process reads the stream the way core "
+        "acquire runs in its own process with a camera that costs nothing per frame: it returns "
+        "frames that exist already, so the CPU time of the process is the cost of the capture "
+        "code, the time stamper, the queue, the encoder, and the sender. A real driver adds work "
+        "of its own, so the figure is a lower bound. This process reads the stream the way core "
         "does. A share is the CPU time of a frame times the nominal rate (98 fps for bin1, 360 fps "
         "for the bin2 row). The nominal figure is the median of the runs. In the burst runs the "
         "camera delivers 10 frames at a time, so each wake-up serves 10 frames. The paced and "
-        "burst costs per frame give the work and the wake-ups of a frame."
+        "burst costs per frame give the work and the wake-ups of a frame. The figures with the "
+        "prefix fake_camera come from the fake camera of seeingmon.testing, which builds a frame "
+        "on every read. The figures camera.<name>.read time one read_frame call of each camera "
+        "with no waiting."
     )
     return measurements

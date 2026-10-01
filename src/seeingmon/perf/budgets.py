@@ -19,6 +19,10 @@ wake-ups, such as the stream between the two processes, is split in the `ipc` ca
 work scales with the speed of the processor and the wake-ups with the `scheduler` range. The
 second mode, bin2 at 360 fps, has no split: its receive figure scales with the interpreter range.
 
+**The `acquire` row.** The row reads the runs of the `ipc` case with a camera that costs nothing per
+frame, so it counts the code of `acquire` and leaves out what the camera adds. A real driver adds
+some Python work of its own, so the row is a lower bound of the cost of `acquire`.
+
 A budget whose figures are missing, because a case skipped or failed, has the verdict `n/a`.
 """
 
@@ -150,7 +154,7 @@ def build_budgets(report: Report) -> list[Budget]:
     return [
         Budget(
             "acquire-cpu",
-            f"acquire, bin1 128 x 128 at {FAST_RATE_BIN1_HZ:g} fps",
+            f"acquire without the camera cost, bin1 128 x 128 at {FAST_RATE_BIN1_HZ:g} fps",
             10.0,
             "% of one core",
             (
