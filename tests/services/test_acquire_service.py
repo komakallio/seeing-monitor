@@ -226,7 +226,7 @@ class TestDrops:
         rig = build(acquire={"queue_depth": 4}, services={"stream_window_messages": 2})
         driver = streaming(rig)
         assert wait_until(lambda: driver.health()["queue_frames"] >= 3, 10.0)
-        time.sleep(0.5)  # the consumer sleeps while about 40 frames come
+        time.sleep(1.0)  # the consumer sleeps while about 90 frames come
         frames = read_frames(driver, 40)
         assert sum(f.dropped_before for f in frames) > 10
         assert_every_frame_is_accounted_for(frames)

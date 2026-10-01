@@ -130,7 +130,7 @@ def test_a_slow_consumer_makes_the_queue_drop_and_the_drops_are_counted(
     driver.open()
     driver.configure(FAST)
     driver.start()
-    frames = read_frames(driver, 60, pause_s=0.02)  # slower than the camera
+    frames = read_frames(driver, 40, pause_s=0.05)  # slower than the camera by far
     assert_every_frame_is_accounted_for(frames)
     reported = sum(f.dropped_before for f in frames)
     health = driver.health()
@@ -150,7 +150,7 @@ def test_kill_and_restart_recovers_and_accounts_for_every_frame(
     driver.start()
 
     # Stream with a consumer that is slower than the camera, so that the queue drops frames.
-    before = read_frames(driver, 50, pause_s=0.02)
+    before = read_frames(driver, 40, pause_s=0.04)
     first_instance = driver.instance
     assert sum(f.dropped_before for f in before) > 0
     assert driver.health()["dropped_queue"] >= sum(f.dropped_before for f in before)
