@@ -621,7 +621,7 @@ install_release() {
 
 install_sdk() {
   local sdk_dir=$SDK_ROOT/${SDK_SHA256:0:12}
-  local arch_dir library
+  local arch_dir library missing_libraries
   local content
   [ -n "$SDK_ARCHIVE" ] || return 0
   if [ -f "$sdk_dir/.installed" ]; then
@@ -650,6 +650,10 @@ install_sdk() {
     library=$(find "$sdk_dir" -path "*/lib/$arch_dir/libASICamera2.so.*" -print -quit)
   fi
   [ -n "$library" ] || die "the SDK archive has no libASICamera2.so for $arch_dir"
+  missing_libraries=$(ldd "$library" 2>/dev/null | grep 'not found' || true)
+  if [ -n "$missing_libraries" ]; then
+    warn "the vendor library needs libraries that this system lacks (${missing_libraries//$'\n'/;}). The camera driver needs libusb: install the package libusb-1.0-0."
+  fi
   content=$WORK_DIR/sdk.env
   printf '# %s. Changes are overwritten.\nSEEINGMON_ASI__LIBRARY_PATH=%s\n' "$MARKER" "$library" >"$content"
   install_file "$content" "$SDK_ENV_FILE" 0644 root root

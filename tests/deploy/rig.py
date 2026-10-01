@@ -242,6 +242,9 @@ esac
     )
     stubs.add("useradd", f'for last; do :; done\n: > "{state}/user-$last"\n')
     stubs.add("usermod", f'for last; do :; done\necho gpio > "{state}/groups-of-$last"\n')
+    stubs.add(
+        "ldd", 'if [ -n "$FAKE_LDD_MISSING" ]; then echo "libusb-1.0.so.0 => not found"; fi\n'
+    )
     for name in ("chown", "udevadm", "systemd-tmpfiles"):
         stubs.add(name)
     stubs.add(

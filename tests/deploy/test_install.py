@@ -655,6 +655,18 @@ def test_the_sdk_is_installed_privately_and_the_services_get_its_path(rig: Rig) 
 
 
 @pytest.mark.skipif(arch_directory() is None, reason="the SDK has no folder for this machine")
+def test_a_vendor_library_with_a_missing_dependency_is_a_warning(rig: Rig) -> None:
+    sdk, checksum = rig.make_sdk(sdk_members())
+    quiet = rig.install(sdk_archive=str(sdk), sdk_sha256=checksum)
+    assert "the vendor library needs libraries" not in quiet.stderr
+    loud = rig.install_env({"FAKE_LDD_MISSING": "1"}, sdk_archive=str(sdk), sdk_sha256=checksum)
+    assert loud.returncode == 0, loud.output
+    assert "the vendor library needs libraries that this system lacks" in loud.stderr
+    assert "libusb-1.0.so.0 => not found" in loud.stderr
+    assert "install the package libusb-1.0-0" in loud.stderr
+
+
+@pytest.mark.skipif(arch_directory() is None, reason="the SDK has no folder for this machine")
 def test_a_second_run_finds_the_sdk_installed(rig: Rig) -> None:
     sdk, checksum = rig.make_sdk(sdk_members())
     rig.install(sdk_archive=str(sdk), sdk_sha256=checksum)
