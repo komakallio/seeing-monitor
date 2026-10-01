@@ -311,7 +311,7 @@ Codes for `flags`:
 
 An occurrence that the operator or the analysis may need to see.
 
-`t_utc_ns` is the time of the occurrence. Two events can share a timestamp, so the writer gives the later event the next `revision`.
+`t_utc_ns` is the time of the occurrence. Two events can share a timestamp, so the store moves the later event forward by one nanosecond until its station and time are unique.
 
 Storage: a row of a SQLite table. Retention: kept forever.
 
