@@ -10,9 +10,10 @@ bin2 size (4144 x 2822 pixels) and the survey worker peaks where it peaks on a r
 clock runs at the speed of real time. The fast stream takes the fast mode of the architecture (an
 exposure of 2 ms, which the readout of the sensor stretches to about 88 frames per second) and the
 real Polaris. The windows are those of the dev launcher (20 s). The run waits for two survey
-results, which takes the survey cadence of 3 minutes, and it pauses the scheduler at the end to read
-the load that does not belong to the frames. In `--smoke` mode the run uses the `small` sensor and
-takes a few seconds of sampling after the start of the processes.
+steps (a short and a long exposure each), which takes the survey cadence of 3 minutes, and it
+pauses the scheduler at the end to read the load that does not belong to the frames. In `--smoke`
+mode the run uses the `small` sensor and takes a few seconds of sampling after the start of the
+processes.
 
 **What the figures include.**
 
@@ -144,7 +145,7 @@ def measurements_from(run: SystemRun) -> list[Measurement]:
             "s",
             run.worker_cpu_ns / 1e9,
             "interpreter",
-            {"survey_results": run.survey_results},
+            {"survey_steps": run.survey_steps, "survey_results": run.survey_results},
         )
     add("run.frame_rate", "frames/s", fast.fps, "none", {"frames": fast.frames})
     stream = {key: str(value) for key, value in run.stream.items()}
@@ -158,6 +159,7 @@ def measurements_from(run: SystemRun) -> list[Measurement]:
             "sample_interval_s": run.plan.sample_interval_s,
             "fast_s": round(fast.seconds, 1),
             "idle_s": round(idle.seconds, 1),
+            "survey_steps": run.survey_steps,
             "survey_results": run.survey_results,
             "sensor": run.plan.sensor,
             "speed": run.plan.speed,
@@ -192,7 +194,8 @@ def measure_core(ctx: CaseContext) -> list[Measurement]:
         f"{run.sampling_s:.0f} s with one sample every {plan.sample_interval_s:g} s.",
         f"The fast phase has {fast.seconds:.0f} s ({fast.frames} frames, {fast.fps:.1f} frames "
         f"per second), and the idle phase has {idle.seconds:.0f} s with the scheduler paused.",
-        f"{run.survey_results} survey results arrived.",
+        f"{run.survey_steps} survey steps ran, and the worker analyzed {run.survey_results} "
+        "survey frames.",
         "The simulator renders inside acquire, so the CPU time and the peak memory of acquire "
         "include it, and the budgets read acquire from the ipc case.",
         f"One client polled web every {plan.poll_interval_s:g} s.",

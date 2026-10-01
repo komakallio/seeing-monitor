@@ -64,9 +64,11 @@ class RunPlan:
     """What a run does and how long it takes.
 
     `fast_seconds` and `idle_seconds` are the seconds of each phase to collect. The run waits for
-    `survey_results` survey results, because a result means that the survey worker ran. A fast
-    interval counts only when the frame rate reaches `min_fast_fps`, so a stall does not enter the
-    figures. `max_run_s` ends the sampling when the system does not get there, and a note says so.
+    `survey_steps` survey steps, and for the results of their frames, because a result means that
+    the survey worker ran. A step takes two exposures, a short one and a long one, and the steps
+    come every 3 minutes at speed 1. A fast interval counts only when the frame rate reaches
+    `min_fast_fps`, so a stall does not enter the figures. `max_run_s` ends the sampling when the
+    system does not get there, and a note says so.
     """
 
     sensor: str = "full"
@@ -78,7 +80,7 @@ class RunPlan:
     warmup_windows: int = 1
     fast_seconds: float = 60.0
     idle_seconds: float = 30.0
-    survey_results: int = 2
+    survey_steps: int = 2
     min_fast_fps: float = MIN_FAST_FPS
     max_run_s: float = 720.0
     ready_timeout_s: float = 120.0
@@ -90,7 +92,7 @@ SMOKE_PLAN = RunPlan(
     warmup_windows=0,
     fast_seconds=3.0,
     idle_seconds=2.0,
-    survey_results=0,
+    survey_steps=0,
     min_fast_fps=1.0,  # a slow runner still gets through, and the smoke run reads no figure's size
     max_run_s=120.0,
 )
@@ -217,6 +219,7 @@ class SystemRun:
     snapshots: tuple[Snapshot, ...]
     startup_s: float
     sampling_s: float
+    survey_steps: int
     survey_results: int
     stream: Mapping[str, Any]
     worker_cpu_ns: int
@@ -488,7 +491,7 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                 if stage == "collect":
                     enough = (
                         fast.seconds >= plan.fast_seconds
-                        and latest.survey_results >= plan.survey_results
+                        and latest.survey_steps >= plan.survey_steps
                         and latest.survey_pending == 0
                     )
                     if enough or elapsed > plan.max_run_s:
@@ -496,7 +499,7 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                             notes.append(
                                 f"the sampling reached its limit of {plan.max_run_s:.0f} s with "
                                 f"{fast.seconds:.0f} s of the fast phase and "
-                                f"{latest.survey_results} survey results"
+                                f"{latest.survey_steps} survey steps"
                             )
                         result = decode_result(
                             client.call(METHOD_SUBMIT, {"command": encode_command(Pause())})
@@ -543,6 +546,7 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                 snapshots=tuple(snapshots),
                 startup_s=startup_s,
                 sampling_s=sampling_s,
+                survey_steps=snapshots[-1].survey_steps,
                 survey_results=snapshots[-1].survey_results,
                 stream=stream_facts,
                 worker_cpu_ns=sampler.worker_cpu_ns(),

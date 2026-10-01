@@ -107,7 +107,8 @@ class TestFigures:
     def test_the_worker_gives_its_cpu_time_in_seconds(self) -> None:
         item = figures(fabricated_run())["survey_worker.cpu"]
         assert (item.value, item.unit) == (6.0, "s")
-        assert item.detail["survey_results"] == 2
+        assert item.detail["survey_steps"] == 2
+        assert item.detail["survey_results"] == 4
 
     def test_the_length_of_the_run_comes_with_the_facts_of_the_method(self) -> None:
         item = figures(fabricated_run())["run.length"]
@@ -115,6 +116,8 @@ class TestFigures:
         assert item.detail["sample_interval_s"] == 1.0
         assert item.detail["sensor"] == SMOKE_PLAN.sensor
         assert item.detail["speed"] == SMOKE_PLAN.speed
+        assert item.detail["survey_steps"] == 2
+        assert item.detail["survey_results"] == 4
         assert item.detail["fast_s"] == 4.0
         assert item.detail["idle_s"] == 2.0
         assert item.detail["samples"] == 8
@@ -261,12 +264,13 @@ class TestTheCase:
 
 @pytest.mark.slow
 @pytest.mark.timeout(1800)
-def test_the_full_run_reaches_the_steady_state_and_two_survey_results() -> None:
+def test_the_full_run_reaches_the_steady_state_and_two_survey_steps() -> None:
     """The run of the page: the `full` sensor, speed 1, until two survey frames have a result."""
     run = run_system(FULL_PLAN)
     assert run.fast.seconds >= FULL_PLAN.fast_seconds
     assert run.idle.seconds >= FULL_PLAN.idle_seconds
-    assert run.survey_results >= FULL_PLAN.survey_results
+    assert run.survey_steps >= FULL_PLAN.survey_steps
+    assert run.survey_results >= 2 * FULL_PLAN.survey_steps  # a short and a long frame in a step
     assert run.stream.get("mode")
     names = set(figures(run))
     assert {
