@@ -242,7 +242,8 @@
       banner.append(h("p", { text: "This is the demo. The data are synthetic, and the station does not exist." }));
     }
     if (health.status !== "healthy") {
-      banner.append(h("strong", { text: "The system is " + health.status + ". " }), health.reasons.map(explainReason).join(" "));
+      const verdict = health.status === "failed" ? "The system has failed. " : "The system is " + health.status + ". ";
+      banner.append(h("strong", { text: verdict }), health.reasons.map(explainReason).join(" "));
     }
   }
 

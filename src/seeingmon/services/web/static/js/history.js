@@ -17,7 +17,7 @@
     { id: "7d", label: "7 days", ms: 168 * HOUR, step: "1h" },
     { id: "30d", label: "30 days", ms: 720 * HOUR, step: "1h" },
   ];
-  const STEP_NAMES = { raw: "each span", "1m": "1 min", "10m": "10 min", "1h": "1 h" };
+  const STEP_NOTES = { raw: "one point for each window", "1m": "one point per minute", "10m": "one point per 10 minutes", "1h": "one point per hour" };
   const MAX_PAGES = 12;
   const MARKS = { cloud: "--series-4", vibration: "--series-2", twilight: "--series-3" };
   const MARK_TEXT = { cloud: "clouds", vibration: "vibration", twilight: "twilight" };
@@ -228,7 +228,7 @@
     }
     if (id === state.loadId) {
       $("range-note").textContent =
-        fmt.stamp(iso(span.t0)) + " to " + fmt.stamp(iso(span.t1)) + " UTC, " + STEP_NAMES[step] + " per point";
+        fmt.stamp(iso(span.t0)) + " to " + fmt.stamp(iso(span.t1)) + " UTC, " + STEP_NOTES[step];
       state.span = span;
     }
   }
