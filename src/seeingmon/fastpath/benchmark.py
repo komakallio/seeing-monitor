@@ -15,8 +15,9 @@ cannot hide the cost of fresh pixels. The benchmark reports
   spectrum, and the corrections). It runs inside the `push` that closes a window.
 
 Each figure is the median over `repeats` of the mean time of a batch of frames, and the report
-also gives the best batch. The Raspberry Pi 4 budget is 0.2 to 0.4 ms for the kernel of a bin1
-frame, which is 5 to 10 times the figure of a modern desktop.
+also gives the best batch. The architecture estimates 0.2 to 0.4 ms for the kernel of a 128 x 128
+frame on a Raspberry Pi 4, which is 2 to 4 times the figure of a modern desktop (about 0.1 ms).
+The estimate is an assumption, and the performance gate on a Pi 4 measures it.
 
 The default timer is `time.perf_counter_ns`, which ticks every 100 ns or finer on every platform.
 The monotonic clock of Windows before Python 3.13 ticks every 15.6 ms, and it would read a batch

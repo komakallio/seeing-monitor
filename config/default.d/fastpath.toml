@@ -30,7 +30,7 @@ min_star_snr = 6.0               # An aperture sum below this signal-to-noise ra
 hot_pixel_ratio = 0.03           # An isolated brightest pixel (neighbors below this share): hot pixel.
 
 # --- the seeing estimator ---
-outer_scale_m = 20.0             # The assumed outer scale L0. It lowers a 50 mm aperture's variance by 19%.
+outer_scale_m = 20.0             # The assumed outer scale L0. It lowers a 50 mm aperture's variance by 21%.
 assumed_wind_ms = 10.0           # The assumed wind speed for the exposure correction.
 detrend_order = 2                # The order of the polynomial that each window removes per axis.
 outlier_sigma = 8.0              # Frames beyond this many robust sigma of the residuals drop out (0: off).
