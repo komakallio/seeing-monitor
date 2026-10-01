@@ -81,10 +81,13 @@ from seeingmon.services.core.driver_proxy import InfoDriver
 from seeingmon.services.core.escalation import Escalator
 from seeingmon.services.core.events import EventPump, EventSource, EventWriter
 from seeingmon.services.core.health import HealthReporter, build_run_record
+from seeingmon.services.core.history import StoreZeroPointHistory
 from seeingmon.services.core.liveness import BeatClock, Liveness
+from seeingmon.services.core.nightly import NightlySummary
 from seeingmon.services.core.periodic import PeriodicTasks
 from seeingmon.services.core.rpc import CoreRpc
 from seeingmon.services.core.settings import AlignmentSettings, ReplaySettings
+from seeingmon.services.core.skyflags import SkyFlagWriter
 from seeingmon.services.core.survey_worker import make_survey_executor
 from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey
@@ -104,6 +107,7 @@ INSTANCE_BYTES = 8
 SUPERVISOR_SLICE_S = 1.0
 JOIN_SLICE_S = 5.0
 STATUS_INTERVAL_S = 1.0
+NIGHTLY_INTERVAL_S = 30.0
 
 
 class Hardware(EventSource, Protocol):
@@ -249,6 +253,7 @@ class CoreApp:
         self._build_survey()
         self._build_hardware()
         self._build_alignment()
+        site = load_site(config)
         self.escalator = Escalator(
             writer=self.events,
             clock=self.beat_clock,
@@ -264,13 +269,18 @@ class CoreApp:
             fast=self.fast,
             survey=self.survey,
             pointing=self.pointing,
-            records=storage.store.as_record_writer(),
+            records=SkyFlagWriter(
+                storage.store.as_record_writer(),
+                site=site,
+                heater=self.heater,
+                settings=self.settings.sky_flags,
+            ),
             metrics=storage.segments,
             clock=self.beat_clock,
             escalate=self.escalator,
             context_provider=ContextProvider(
                 clock=clock,
-                site=load_site(config),
+                site=site,
                 window_s=fast_config.window_s,
                 heater=self.heater,
             ),
@@ -283,16 +293,28 @@ class CoreApp:
 
     def _build_survey(self) -> None:
         parts, config = self.parts, self.config
-        from seeingmon.survey.analyzer import SurveyPipelineAnalyzer, analyzer_spec
+        assert self.storage is not None
+        from seeingmon.survey.analyzer import (
+            analyzer_spec,
+            create_survey_analyzer,
+            with_calibration,
+        )
         from seeingmon.survey.config import SurveyConfig
+        from seeingmon.survey.quality import QualityOptions
         from seeingmon.survey.tracker import PointingTracker
 
-        self.survey_config = config.section("survey", SurveyConfig)
+        # The dark library is the one in the data directory, unless the configuration names another.
+        self.survey_config = with_calibration(
+            config.section("survey", SurveyConfig), self.storage.layout
+        )
+        transparency = QualityOptions.from_config(self.survey_config).transparency
         self.tracker: PointingTracker | None = parts.tracker
         self.survey: SurveyAnalyzer
+        self.history: StoreZeroPointHistory | None = None
         self._executor: Executor | None = None
+        analyzer: Any
         if parts.survey is not None:
-            self.survey = parts.survey
+            analyzer = parts.survey
         else:
             if not self.survey_config.catalog_path:
                 raise ConfigError(
@@ -305,17 +327,33 @@ class CoreApp:
             self._executor = parts.survey_executor or make_survey_executor(
                 spec, self.settings.survey_worker
             )
-            analyzer = SurveyPipelineAnalyzer(
+            # The reference zero point comes from the store, so a restart of core keeps it. The
+            # worker process never reads the history: the analyzer hands it the reference.
+            self.history = StoreZeroPointHistory(
+                self.storage.store, clock=self.clock, window_days=transparency.window_days
+            )
+            analyzer = create_survey_analyzer(
                 profile=self.profile,
                 station_id=self.station_id,
                 config=self.survey_config,
-                spec=spec,
                 executor=self._executor,
+                layout=self.storage.layout,
+                history=self.history,
                 clock=self.clock,
             )
-            self.survey = analyzer
             self.tracker = analyzer.tracker
             self._load_seed(self.tracker)
+        # An analyzer with a nightly summary gets its nights closed on time and at shutdown.
+        self.nightly: NightlySummary | None = None
+        if callable(getattr(analyzer, "flush_night", None)):
+            self.nightly = NightlySummary(
+                analyzer,
+                write=self.storage.store.write,
+                clock=self.clock,
+                split_utc_hour=transparency.night_split_utc_hour,
+            )
+            analyzer = self.nightly
+        self.survey = analyzer
         self.pointing: PointingProvider = parts.pointing or (
             self.tracker if self.tracker is not None else _NoPointing()
         )
@@ -427,13 +465,23 @@ class CoreApp:
 
     def _build_reporting(self) -> None:
         assert self.storage is not None
-        from seeingmon.survey.dark import DarkLibrary, dark_due
+        from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary, dark_due
 
-        library = DarkLibrary.from_layout(self.storage.layout)
+        # The library of the survey analysis (`calibration_dir`), so that the health record and
+        # the `dark_due` flag of the sky quality agree.
+        library = DarkLibrary(Path(self.survey_config.calibration_dir) / DARKS_DIRNAME)
         survey_mode = self.profile.survey_mode.mode
+        dark = self.survey_config.dark
 
         def dark_is_due(temperature_c: float | None, now_ns: int) -> bool:
-            return dark_due(library, temperature_c, now_ns, mode=survey_mode)
+            return dark_due(
+                library,
+                temperature_c,
+                now_ns,
+                mode=survey_mode,
+                tolerance_c=dark.temperature_tolerance_c,
+                max_age_days=dark.max_age_days,
+            )
 
         self.rpc = CoreRpc(
             instance=self.instance,
@@ -463,6 +511,8 @@ class CoreApp:
             self.tasks.add("events", self.settings.events_interval_s, self._poll_events)
         self.tasks.add("run_record", 1.0, self._run_record_fallback)
         self.tasks.add("status", STATUS_INTERVAL_S, self._update_status)
+        if self.nightly is not None:
+            self.tasks.add("nightly", NIGHTLY_INTERVAL_S, self._flush_night_if_due, immediate=False)
         if self.notifier.watchdog_interval_s is not None:  # systemd asked for a heartbeat
             self.tasks.add("heartbeat", self.notifier.watchdog_interval_s, self._heartbeat)
 
@@ -529,6 +579,10 @@ class CoreApp:
         assert self.storage is not None
         record = self.health.build()
         self.storage.store.write(record)
+
+    def _flush_night_if_due(self) -> None:
+        if self.nightly is not None:
+            self.nightly.flush_due()
 
     def _poll_events(self) -> None:
         if self.pump is not None:
@@ -718,6 +772,7 @@ class CoreApp:
         elif self._started:
             self.scheduler.close()
         self.alignment.stop()
+        self._close_night()
         for name in ("core-heater", "core-sqm", "core-supervisor"):
             thread = self._threads.get(name)
             if thread is not None:
@@ -741,6 +796,14 @@ class CoreApp:
             housekeeping.join(timeout_s)
         self._release_storage()
         self.notifier.close()
+
+    def _close_night(self) -> None:
+        """Write the star summary of the open night. The scheduler has stopped by now."""
+        if self.nightly is not None and self._started:
+            try:
+                self.nightly.flush()
+            except Exception:
+                _log.exception("could not close the night at shutdown")
 
     def _shutdown_survey(self) -> None:
         analyzer = getattr(self, "survey", None)

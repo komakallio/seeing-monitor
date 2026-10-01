@@ -75,6 +75,7 @@ class Analyzer(Protocol):
         previous: PointingSolution | None = None,
         reference: ReferenceSolution | None = None,
         index: int = 0,
+        sky_quality: bool | None = None,
     ) -> FrameAnalysis: ...
 
 
@@ -146,6 +147,7 @@ class QuickSolver:
                 previous=self._tracker.solution,
                 reference=self._tracker.reference,
                 index=index,
+                sky_quality=False,  # the live view needs no zero point, and the step costs a second
             )
         except Exception as error:
             self.failures += 1

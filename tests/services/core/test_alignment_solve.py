@@ -128,6 +128,22 @@ class TestSolving:
         assert solver.tracker.solution is None
         assert solver.failures == 1
 
+    def test_an_alignment_frame_never_asks_for_the_sky_quality(self, scene: Scene) -> None:
+        asked: list[object] = []
+
+        class Spy:
+            def __init__(self, inner: object) -> None:
+                self._inner = inner
+
+            def analyze(self, frame: Frame, **options: object) -> FrameAnalysis:
+                asked.append(options.get("sky_quality"))
+                return self._inner.analyze(frame, **options)  # type: ignore[attr-defined, no-any-return]
+
+        solver, _ = quick_solver(scene)
+        solver._pipeline = Spy(solver._pipeline)
+        solver.solve(scene.first[0])
+        assert asked == [False]  # even a long frame would get no zero point and no sky brightness
+
     def test_the_analysis_that_raises_becomes_an_unsolved_result(self, scene: Scene) -> None:
         class Broken:
             def analyze(self, frame: Frame, **options: object) -> FrameAnalysis:

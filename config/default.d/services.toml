@@ -158,6 +158,16 @@ burst_max_duration_s = 600.0
 # manage it: delete an old replay by hand.
 replays_dir = "replays"
 
+[services.core.sky_flags]
+# Core adds the moon and dew flags to each sky_quality record. The scheduler sets twilight, cloud,
+# and time_invalid. The Moon counts when its center is above this elevation (degrees) and at least
+# this share of its disk is lit.
+moon_min_elevation_deg = 0.0
+moon_min_illumination = 0.1
+
+# The optics count as dewy when their temperature is this close to the dew point (degrees Celsius).
+dew_margin_c = 1.0
+
 [alignment]
 # The alignment helper of core: a live view and a quick solve while the scheduler is in `align`.
 #
