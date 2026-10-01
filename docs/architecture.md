@@ -143,6 +143,7 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 | Fast frames, bin2, 64 × 64 ROI | 8 KB | Up to about 360 fps at 2 ms | Needs about 3 pixels of defocus |
 | Survey frame, bin2 | 23 MB | 1 per 3 minutes | A bin1 frame is 94 MB, too heavy for a Pi 4 |
 | Per-frame metrics | About 40 bytes | 3.5 KB/s at 90 fps | 0.3 GB per 24 hours |
+| Star list rows | 24 bytes a star, about 8 KB for each survey step | 1 per 3 minutes while the sky is dark | About 0.45 GB per year |
 | Results | 0.15 to 0.4 KB | About 4 rows per minute | Under 0.5 GB per year |
 
 The rates are derived estimates, and USB 3 carries every stream with wide margin. The Pi 4 budget is 10% of a core for `acquire`, 25% for the fast path, one core in bursts for the survey worker, and about 1.4 GB of memory at peak (the survey worker takes 550 MB). A 2 GB model fits if the out-of-memory killer takes the survey worker first, calibration frames stay memory-mapped, and native frames are processed off the Pi. More than 1.6 GB at peak in the gate means 4 GB. A NumPy centroid on a 128 × 128 frame takes an estimated 0.2 to 0.4 ms on a Pi 4. The performance gate measures all of this.
@@ -151,7 +152,7 @@ The rates are derived estimates, and USB 3 carries every stream with wide margin
 |---|---|---|
 | Results | Windows, survey results, pointing, star epochs, health, events (SQLite) | Forever |
 | Per-frame metrics | Segment files of 10 minutes each, under `segments/YYYY/MM/DD/` | 7 days or 2 GB, whichever comes first |
-| Star lists | Per survey step: matched stars brighter than G = 11 and all unmatched detections (about 0.3 GB per year). They are SQLite rows, and the record declares `retention_days`. | 1 year: retention deletes older rows |
+| Star lists | Per survey step: matched stars brighter than G = 11 and all unmatched detections (about 0.45 GB per year). They are SQLite rows, and the record declares `retention_days`. | 1 year: retention deletes older rows |
 | Raw bursts | SER with a JSON sidecar, on demand. One folder for each burst, under `bursts/`. | 2 GB quota for unpinned bursts. A burst with a `PINNED` marker is exempt and does not count. |
 | Survey frames | FITS with Rice compression, under `survey/YYYY/MM/DD/`. The newest three stay in RAM. Every tenth frame and every event frame go to disk. | 7 days, then one per night for 60 more days (the frame nearest to the middle of the night) |
 | Previews | JPEG up to 1 megapixel, under `previews/YYYY/MM/DD/` | 7 days |
@@ -392,7 +393,7 @@ A camera that stares at one field for years produces a rare dataset. The table l
 | Sky and atmosphere | Light-pollution trend, airglow and the solar cycle, aurora, aerosol and smoke events, clear-sky fraction, seeing against jet-stream wind | Series joined with weather and space-weather data | 0.01 mag per year if the calibration holds |
 | Instrument aging | Dark-current drift, hot-pixel growth, cosmic-ray hit rate | Dark-model residuals and hit counts per frame | Percent-level rates |
 
-Three records and a habit keep these options open. `star_epoch` stores each matched star's nightly mean position offset, magnitude, scatter, and frame count (13 MB per year for 1,500 stars). `star_list` stores each survey step's matched stars brighter than G = 11 and all unmatched detections for one year (0.3 GB), so a better algorithm can reprocess the photometry and astrometry, and moving objects can be linked offline. An optional archive sink ships one raw frame per night to remote storage, because difference imaging needs raw pixels. The `pointing` record stores the attitude as a rotation matrix, so analysis can express it in ICRS or in the frame of date. Every record carries its algorithm revision and calibration versions, and the catalog tool can switch to a later Gaia release without invalidating history.
+Three records and a habit keep these options open. `star_epoch` stores each matched star's nightly mean position offset, magnitude, scatter, and frame count (13 MB per year for 1,500 stars). `star_list` stores each survey step's matched stars brighter than G = 11 and all unmatched detections for one year (0.45 GB), so a better algorithm can reprocess the photometry and astrometry, and moving objects can be linked offline. An optional archive sink ships one raw frame per night to remote storage, because difference imaging needs raw pixels. The `pointing` record stores the attitude as a rotation matrix, so analysis can express it in ICRS or in the frame of date. Every record carries its algorithm revision and calibration versions, and the catalog tool can switch to a later Gaia release without invalidating history.
 
 ## Appendix: larger scopes (GS-300 and GS-350)
 
