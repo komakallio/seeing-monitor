@@ -11,6 +11,7 @@ fast.
 - `retention`: `RetentionManager`, which keeps the data directory within its quotas and decides
   whether raw capture may run.
 - `events`: `EventEmitter`, which writes the events of the storage lane.
+- `wiring`: `open_storage`, which opens the whole storage side of `core` in one call.
 - `config`: the configuration section models (`[store]` in `config/default.d/store.toml`).
 """
 
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
         recover_orphans,
         recover_segment,
     )
+    from seeingmon.store.wiring import Storage, open_storage
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
@@ -85,6 +87,8 @@ _EXPORTS: dict[str, str] = {
     "RetentionConfig": "config",
     "SegmentsConfig": "config",
     "StoreConfig": "config",
+    "Storage": "wiring",
+    "open_storage": "wiring",
     "Deletion": "retention",
     "DiskUsage": "retention",
     "RetentionManager": "retention",
@@ -124,6 +128,7 @@ __all__ = [
     "SegmentWriter",
     "SegmentsConfig",
     "SinkCursor",
+    "Storage",
     "Store",
     "StoreBusyError",
     "StoreClosedError",
@@ -135,6 +140,7 @@ __all__ = [
     "UnknownRecordTypeError",
     "burst_name",
     "iter_segments",
+    "open_storage",
     "read_segment",
     "record_from_row",
     "recover_orphans",
