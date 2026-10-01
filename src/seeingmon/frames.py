@@ -12,12 +12,16 @@ and `t_quality` says how the time was derived.
 
 **Wire format.** Frames cross process boundaries as bytes with a fixed 96-byte header. No
 pickle crosses a boundary. `encode_frame` and `decode_frame` are the only code that knows
-the layout. Transports add their own length prefix (`multiprocessing.connection` does).
+the layout. Transports add their own length prefix (`multiprocessing.connection` does). A message
+may hold several frames, one after the other: each header states the size of its frame, so
+`decode_frames` finds where the next one starts. A message of one frame is the message of
+`encode_frame`.
 """
 
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag, StrEnum
 from typing import TypeAlias
@@ -226,6 +230,11 @@ _HEADER = struct.Struct("<4sBBBBHHIQqqqIIIHHHHi16sI4x")
 FRAME_HEADER_SIZE = _HEADER.size
 if FRAME_HEADER_SIZE != 96:  # the layout is part of the contract
     raise RuntimeError(f"frame header is {FRAME_HEADER_SIZE} bytes, expected 96")
+# Where a header states its own size and the size of its pixels, for `decode_frames`.
+_HEADER_SIZE_AT = 8
+_HEADER_SIZE_FIELD = struct.Struct("<H")
+_PAYLOAD_SIZE_AT = 88
+_PAYLOAD_SIZE_FIELD = struct.Struct("<I")
 
 
 class FrameDecodeError(ValueError):
@@ -277,6 +286,21 @@ def encode_frame_into(out: bytearray | memoryview, frame: Frame) -> None:
     )
     data = frame.data if frame.data.flags.c_contiguous else np.ascontiguousarray(frame.data)
     memoryview(out)[FRAME_HEADER_SIZE:] = memoryview(data).cast("B")
+
+
+def encode_frames_into(out: bytearray | memoryview, frames: Sequence[Frame]) -> None:
+    """Write several frames, one after the other, into `out`.
+
+    `out` holds the sum of `frame_wire_size` over `frames`. `decode_frames` reads them back.
+    """
+    view = memoryview(out)
+    offset = 0
+    for frame in frames:
+        end = offset + frame_wire_size(frame)
+        encode_frame_into(view[offset:end], frame)
+        offset = end
+    if offset != view.nbytes:
+        raise ValueError(f"the buffer holds {view.nbytes} bytes and the frames need {offset}")
 
 
 def encode_frame(frame: Frame) -> bytes:
@@ -391,3 +415,30 @@ def decode_frame(buffer: bytes | bytearray | memoryview) -> Frame:
         )
     except ValueError as exc:  # includes UnicodeDecodeError, an invalid enum, or a bad frame
         raise FrameDecodeError(str(exc)) from exc
+
+
+def decode_frames(buffer: bytes | bytearray | memoryview) -> list[Frame]:
+    """Parse a message that holds one or more frames, one after the other.
+
+    A message of one frame is the message of `encode_frame`, so `decode_frames` reads it too.
+    Raises `FrameDecodeError` for anything malformed, including a frame that the message cuts
+    short and bytes after the last frame. Each frame shares memory with `buffer`, as in
+    `decode_frame`.
+    """
+    view = memoryview(buffer).cast("B")
+    end = view.nbytes
+    frames: list[Frame] = []
+    offset = 0
+    while offset < end:
+        if end - offset < FRAME_HEADER_SIZE:
+            raise FrameDecodeError("message is shorter than the header")
+        (header_size,) = _HEADER_SIZE_FIELD.unpack_from(view, offset + _HEADER_SIZE_AT)
+        (payload_size,) = _PAYLOAD_SIZE_FIELD.unpack_from(view, offset + _PAYLOAD_SIZE_AT)
+        size = header_size + payload_size
+        if size > end - offset:
+            raise FrameDecodeError("message length does not match the header")
+        frames.append(decode_frame(view[offset : offset + size]))
+        offset += size
+    if not frames:
+        raise FrameDecodeError("message is shorter than the header")
+    return frames
