@@ -73,6 +73,7 @@ def fixture_report(
     acquire_wakeup: float = 0.2,
     rx_compute: float = 0.3,
     rx_wakeup: float = 0.1,
+    bin2_rx: float = 1.0,
     label: str = "dev",
     machine: str = "x86-64",
     calibration: bool = True,
@@ -83,8 +84,9 @@ def fixture_report(
 
     With the defaults and the scaling table of this commit, the budgets come out as: `acquire`
     passes (0.5% against 10%), the bin1 fast path passes (about 1.1% against 25%), the bin2 fast
-    path is marginal (2.3% on this machine, so 11.7 to 25.3% on a Pi 4), and the memory budgets
-    pass. Pass larger numbers to make a budget fail.
+    path is marginal (2.3% on this machine, so 11.7 to 25.3% on a Pi 4), the bin2 fast path with
+    its receive is marginal too (3.3%, so 18.7 to 36.3%), and the memory budgets pass. Pass larger
+    numbers to make a budget fail.
     """
     cases = [
         case(
@@ -93,6 +95,7 @@ def fixture_report(
             figure("acquire.wakeup_share", acquire_wakeup, "percent", "scheduler"),
             figure("core_rx.compute_share", rx_compute, "percent", "interpreter"),
             figure("core_rx.wakeup_share", rx_wakeup, "percent", "scheduler"),
+            figure("bin2.core_rx.share", bin2_rx, "percent", "interpreter"),
             figure("acquire.peak_rss", 60 * MB, "bytes", "memory"),
         ),
         case(

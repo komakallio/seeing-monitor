@@ -12,11 +12,12 @@ within the limit, `fail` when the whole range is above it, and `marginal` when t
 the limit. A report with the label `pi4` and a measured `calibration` case gives a measurement:
 the figures are compared with the limits directly, and the verdict is `pass` or `fail`.
 
-**Rows.** The fast path has two rows for the planned mode: the fast path as the brief defines it
-(the kernel, the window, and the segment append), and the fast path with the cost of receiving the
+**Rows.** The fast path has two rows for each mode: the fast path as the brief defines it (the
+kernel, the window, and the segment append), and the fast path with the cost of receiving the
 frames from `acquire`, which the same consumer in `core` pays. A figure that mixes work and thread
 wake-ups, such as the stream between the two processes, is split in the `ipc` case, so that the
-work scales with the speed of the processor and the wake-ups with the `scheduler` range.
+work scales with the speed of the processor and the wake-ups with the `scheduler` range. The
+second mode, bin2 at 360 fps, has no split: its receive figure scales with the interpreter range.
 
 A budget whose figures are missing, because a case skipped or failed, has the verdict `n/a`.
 """
@@ -38,6 +39,9 @@ BASELINE = "@baseline_rss_bytes"  # its resident size before the work started
 FAST_RATE_BIN1_HZ = 98.0
 FAST_RATE_BIN2_HZ = 360.0
 MB = 1e6
+
+BIN1 = "bin1_128x128_u16"
+BIN2 = "bin2_64x64_u16"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,14 +92,24 @@ class BudgetVerdict:
     missing: tuple[str, ...] = ()
 
 
+RECEIVE_TERMS: dict[str, tuple[Term, ...]] = {
+    BIN1: (
+        Term("receive, the work", "ipc", "core_rx.compute_share"),
+        Term("receive, the wake-ups", "ipc", "core_rx.wakeup_share"),
+    ),
+    # The bin2 run of the `ipc` case has no burst run to split with, so it gives the two parts
+    # together, and the budget scales them with the interpreter range.
+    BIN2: (Term("receive, the work and the wake-ups", "ipc", "bin2.core_rx.share"),),
+}
+
+
 def fast_path_budget(
     mode: str, rate_hz: float, title: str, key: str, *, receive: bool = False
 ) -> Budget:
     """The 25% budget of the fast path for a mode at a frame rate (per frame: 25% of the period).
 
-    With `receive`, the budget also counts the cost of receiving the frames from `acquire`, in the
-    two parts that the `ipc` case measures: the work, and the wake-ups. The fast-path consumer of
-    `core` pays it.
+    With `receive`, the budget also counts the cost of receiving the frames from `acquire`, which
+    the `ipc` case measures (`RECEIVE_TERMS`). The fast-path consumer of `core` pays it.
     """
     per_frame_ms = 0.25 / rate_hz * 1e3
     terms = [
@@ -104,8 +118,7 @@ def fast_path_budget(
         Term("segment append", "fastpath", f"{mode}.append_share"),
     ]
     if receive:
-        terms.append(Term("receive, the work", "ipc", "core_rx.compute_share"))
-        terms.append(Term("receive, the wake-ups", "ipc", "core_rx.wakeup_share"))
+        terms.extend(RECEIVE_TERMS[mode])
     return Budget(
         key=key,
         title=f"{title}, {rate_hz:g} fps ({per_frame_ms:.2f} ms per frame)",
@@ -145,18 +158,21 @@ def build_budgets(report: Report) -> list[Budget]:
                 Term("acquire, the wake-ups", "ipc", "acquire.wakeup_share"),
             ),
         ),
+        fast_path_budget(BIN1, FAST_RATE_BIN1_HZ, "Fast path, bin1 128 x 128", "fast-bin1"),
         fast_path_budget(
-            "bin1_128x128_u16", FAST_RATE_BIN1_HZ, "Fast path, bin1 128 x 128", "fast-bin1"
-        ),
-        fast_path_budget(
-            "bin1_128x128_u16",
+            BIN1,
             FAST_RATE_BIN1_HZ,
             "Fast path and receive, bin1 128 x 128",
             "core-bin1",
             receive=True,
         ),
+        fast_path_budget(BIN2, FAST_RATE_BIN2_HZ, "Fast path, bin2 64 x 64", "fast-bin2"),
         fast_path_budget(
-            "bin2_64x64_u16", FAST_RATE_BIN2_HZ, "Fast path, bin2 64 x 64", "fast-bin2"
+            BIN2,
+            FAST_RATE_BIN2_HZ,
+            "Fast path and receive, bin2 64 x 64",
+            "core-bin2",
+            receive=True,
         ),
         Budget(
             "survey-time",
@@ -262,13 +278,18 @@ def kernel_check(report: Report, mode: str = "bin1_128x128_u16") -> list[str]:
             f"Kernel on this machine: {time} per 128 x 128 frame (measured, not scaled). "
             "The architecture estimates 0.2 to 0.4 ms."
         ]
-    verdict = "consistent with" if high >= table.low and low <= table.high else "outside"
+    if high < table.low:
+        verdict = "less cautious than the table, because it assumes a faster Pi 4"
+    elif low > table.high:
+        verdict = "more cautious than the table, because it assumes a slower Pi 4"
+    else:
+        verdict = "consistent with the table"
     return [
         f"Kernel on this machine: {time} per 128 x 128 frame (median).",
         f"The architecture estimates 0.2 to 0.4 ms on a Pi 4, which implies a factor of "
         f"{low:.1f} to {high:.1f} from this machine.",
         f"The scaling table assumes {table.low:g} to {table.high:g} for NumPy code, so the "
-        f"architecture's estimate is {verdict} the table.",
+        f"architecture's estimate is {verdict}.",
         f"With the table, the kernel takes an estimated {measured_ms * table.low:.2f} to "
         f"{measured_ms * table.high:.2f} ms on a Pi 4.",
     ]

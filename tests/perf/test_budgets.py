@@ -92,12 +92,24 @@ class TestEstimates:
         assert core.high == pytest.approx(
             plain.high + 0.3 * interpreter.high + 0.1 * scheduler.high
         )
-        assert "core-bin2" not in found  # only the planned mode counts the receive
+
+    def test_the_bin2_row_adds_the_receive_as_one_interpreter_figure(self) -> None:
+        found = verdicts(fixture_report(bin2_rx=3.0))
+        plain, core = found["fast-bin2"], found["core-bin2"]
+        interpreter = PI4_SCALING["interpreter"]
+        assert plain.value is not None
+        assert plain.low is not None
+        assert plain.high is not None
+        assert core.value == pytest.approx(plain.value + 3.0)
+        assert core.low == pytest.approx(plain.low + 3.0 * interpreter.low)
+        assert core.high == pytest.approx(plain.high + 3.0 * interpreter.high)
 
     def test_a_costly_receive_makes_the_core_row_fail_while_the_fast_path_passes(self) -> None:
-        found = verdicts(fixture_report(rx_compute=4.0, rx_wakeup=1.0))
+        found = verdicts(fixture_report(rx_compute=4.0, rx_wakeup=1.0, bin2_rx=6.0))
         assert found["fast-bin1"].verdict == "pass"
         assert found["core-bin1"].verdict == "fail"
+        assert found["fast-bin2"].verdict == "marginal"
+        assert found["core-bin2"].verdict == "fail"  # 6% on this machine is 42% or more
 
     def test_the_memory_budget_adds_the_assumed_share_of_the_operating_system(self) -> None:
         item = verdicts(fixture_report())["memory-1.4"]
@@ -225,7 +237,7 @@ class TestKernelCheck:
         assert (low, high) == pytest.approx((2.0, 4.0))
         assert "factor of 2.0 to 4.0" in text
         assert "assumes 5 to 11" in text
-        assert "outside the table" in text
+        assert "less cautious than the table, because it assumes a faster Pi 4" in text
         assert "0.50 to 1.10 ms" in text
         assert "100 us per 128 x 128 frame" in text
 
@@ -239,6 +251,19 @@ class TestKernelCheck:
             (case("kernel", figure("bin1_128x128_u16.kernel", 40.0, "us/frame", "numpy")),),
         )
         assert "consistent with the table" in "\n".join(kernel_check(slow))
+
+    def test_a_much_faster_machine_makes_the_estimate_more_cautious_than_the_table(self) -> None:
+        report = fixture_report()
+        fast = Report(
+            report.label,
+            report.smoke,
+            report.created_utc,
+            report.environment,
+            (case("kernel", figure("bin1_128x128_u16.kernel", 10.0, "us/frame", "numpy")),),
+        )
+        text = "\n".join(kernel_check(fast))
+        assert "factor of 20.0 to 40.0" in text
+        assert "more cautious than the table, because it assumes a slower Pi 4" in text
 
     def test_a_pi4_report_prints_the_measured_time_and_no_factor(self) -> None:
         lines = kernel_check(fixture_report(label="pi4", machine="arm64"))

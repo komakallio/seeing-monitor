@@ -16,7 +16,8 @@ The camera paces itself on the real clock. The case runs
   reports the median of the runs and their spread. The CPU time of each process, per frame and as a
   share of one core, is the figure to compare with the 10% budget of `acquire`. The detail of the
   figure splits the CPU time of `acquire` among its threads;
-- **bin2**: 64 x 64 at 360 frames per second, for the receive cost of the second fast mode;
+- **bin2**: 64 x 64 at 360 frames per second, for the receive cost of the second fast mode. It is
+  one run with no burst run, so it gives the work and the wake-ups together;
 - **bursts**: bin1 at 98 frames per second, with a camera that delivers 10 frames at a time. The
   capture thread sleeps for 10 frame periods and then reads 10 frames with no pause, so a wake-up
   serves 10 frames. The rate and the time stamps of the frames stay the same.
@@ -32,8 +33,9 @@ the work with the `interpreter` range, and the wake-ups with the `scheduler` ran
 machine.
 
 The CPU time of the `core` side is what receiving costs `core`: the stream reader thread and the
-decoder. It adds to the fast path in the 25% budget, so the budgets include it in a second row. The
-vendor SDK and the USB transfer cost something too, and the harness does not measure them.
+decoder. It adds to the fast path in the 25% budget, so the budgets include it in a second row for
+each mode. The vendor SDK and the USB transfer cost something too, and the harness does not measure
+them.
 """
 
 from __future__ import annotations
@@ -470,9 +472,8 @@ def ipc(ctx: CaseContext) -> list[Measurement]:
                     {"process": "acquire"},
                 )
             )
-            if not ctx.smoke:  # the second mode is for the page, and no budget reads it
-                second = [session.run(bin2, BIN2_HZ, 3.0)]
-                measurements.extend(figures("bin2.", BIN2_HZ, second, with_acquire=False))
+            second = [session.run(bin2, BIN2_HZ, ctx.pick(3.0, 0.4))]  # the bin2 budget row
+            measurements.extend(figures("bin2.", BIN2_HZ, second, with_acquire=False))
         with Session(folder, pool_path, burst=BURST_FRAMES) as session:
             if not ctx.smoke:
                 session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
