@@ -19,6 +19,7 @@ module.exports = function scenarios(LiveLink, test, assert) {
     h.options = Object.assign(
       {
         url: () => "ws://example.invalid/stream",
+        supportsWebSocket: () => true, // a Node context has no WebSocket, and a browser does
         createSocket: (url) => {
           const socket = { url, sent: [], closed: null, send(data) { this.sent.push(data); }, close(code) { this.closed = code; } };
           h.sockets.push(socket);

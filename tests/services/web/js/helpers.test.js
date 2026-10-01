@@ -19,4 +19,13 @@ for (const name of ["common.js", "plot.js"]) {
   vm.runInContext(fs.readFileSync(path.join(folder, name), "utf8"), context, { filename: name });
 }
 
-scenarios(context.window.Seeing, test, assert);
+// The scripts run in another realm, so their arrays have another prototype, and the strict deep
+// comparison of Node would tell equal arrays apart. Compare plain copies instead.
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const checks = {
+  equal: assert.equal,
+  ok: assert.ok,
+  deepEqual: (actual, expected) => assert.deepEqual(clone(actual), clone(expected)),
+};
+
+scenarios(context.window.Seeing, test, checks);

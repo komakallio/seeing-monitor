@@ -19,4 +19,13 @@ const source = fs.readFileSync(
 const context = { window: { Seeing: {} }, setTimeout, clearTimeout, Blob, Date, Math, JSON, Promise, Error };
 vm.runInNewContext(source, context);
 
-scenarios(context.window.Seeing.LiveLink, test, assert);
+// The script runs in another realm, so its arrays have another prototype, and the strict deep
+// comparison of Node would tell equal arrays apart. Compare plain copies instead.
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const checks = {
+  equal: assert.equal,
+  ok: assert.ok,
+  deepEqual: (actual, expected) => assert.deepEqual(clone(actual), clone(expected)),
+};
+
+scenarios(context.window.Seeing.LiveLink, test, checks);
