@@ -41,6 +41,8 @@ Steps 0 to 2 define the contracts: the package layout, the profile, the `Clock`,
 ## Parallel work
 
 - Each lane works in its own clone of the repository, in a directory outside the repository and outside any cloud-synced folder, with `main` checked out. After every commit, run `git pull --rebase origin main`, run the lane's tests (and the full suite when the rebase brought in other lanes' files), and push. If a push is rejected, pull and rebase again. Never force-push.
+- Create the lane clones inside the directory that your project memory names for them, one subfolder per lane. The owner's untracked `.claude/settings.local.json` lists that directory under `permissions.additionalDirectories`, so file access there needs no approval. Do not record the path in any tracked file.
+- Run git in a lane's clone as `git -C <clone> <subcommand>`, and never `cd` into the clone and then run git. A lane's agent starts in the lead's working directory, so each command names its clone. The owner's permission rules pre-approve `add`, `commit`, `pull --rebase origin main`, and `push origin main` in this form, so give the pull and push commands no extra options. A `cd` followed by `git` prompts for approval (git can run hooks in the new directory), and the prompt stalls the lane.
 - A lane edits only its own package, its own tests, and its own sections of `docs/architecture.md`. It adds dependencies only to its own extra in `pyproject.toml`. The lead regenerates the lock file after merges and is the only one who edits `docs/phase2-status.md`.
 - The lead watches CI on `main` (`gh run list`) and acts on any failure at once.
 
