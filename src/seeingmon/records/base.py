@@ -458,6 +458,13 @@ class Record(BaseModel):
         """The key of the record: `(station_id, record_type, t_utc_ns, revision)`."""
         return (self.station_id, self.record_type, self.t_utc_ns, self.revision)
 
+    def __hash__(self) -> int:
+        """Hash the key, so that records with list or dict fields still work in a set.
+
+        Two records that are equal have the same key, so they have the same hash.
+        """
+        return hash(self.record_key)
+
     def to_row(self) -> dict[str, Any]:
         """Return the record as a dict of JSON-compatible values, keyed by the declared names.
 

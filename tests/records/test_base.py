@@ -76,6 +76,14 @@ class TestRecord:
         assert record.record_key == ("station-a", "sample", 1_800_000_000_000_000_000, 0)
         assert KEY_FIELDS == ("station_id", "t_utc_ns", "revision")
 
+    def test_a_record_with_lists_and_dicts_is_hashable_by_its_key(self) -> None:
+        first = make(values=[1.0], counts={"a": 1})
+        same = make(values=[1.0], counts={"a": 1})
+        other = make(values=[1.0], counts={"a": 1}, revision=1)
+        assert first == same
+        assert hash(first) == hash(same) == hash(first.record_key)
+        assert len({first, same, other}) == 2
+
     def test_a_record_is_immutable(self) -> None:
         record = make()
         with pytest.raises(ValidationError, match="frozen"):
