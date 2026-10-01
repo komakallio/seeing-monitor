@@ -1,8 +1,9 @@
 """The `core-sim` case: the `core` process against `acquire` with the simulator, a placeholder.
 
-The `core` process is not on `main` yet. The package `seeingmon.services.core` exists, but its
-entry module `seeingmon.services.core.app` (`CoreApp` and `run_core`) does not, so the case skips
-with the reason "the core process is not on main". When the entry module exists, the lead enables
+The `core` process is not on `main` yet. The package `seeingmon.services.core` and its `CoreApp`
+exist, but the entry function that starts the process, `run_core` in
+`seeingmon.services.core.app` (the entry of `seeingmon core`), does not. Until it does, the case
+skips with the reason "the core process is not on main". Once `run_core` exists, the lead enables
 the case by writing one function, `measure_core`, in this file:
 
 1. Start `acquire` with the simulator (`seeingmon.perf.cases.ipc.AcquireProcess` shows how to run
@@ -28,25 +29,38 @@ Nothing else changes: the case is registered, the budgets look for the figures, 
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 
 from seeingmon.perf.registry import REGISTRY, CaseContext, SkipCase
 from seeingmon.perf.report import Measurement
 
 CORE_MODULE = "seeingmon.services.core.app"
+CORE_ENTRY = "run_core"
+
+
+def core_process_exists() -> bool:
+    """Whether the entry function of the `core` process is on `main`.
+
+    The function imports the module of the entry only when the module exists, so the check costs
+    nothing before the process lands.
+    """
+    try:
+        found = importlib.util.find_spec(CORE_MODULE)
+    except ModuleNotFoundError:  # a parent package is missing
+        return False
+    if found is None:
+        return False
+    return hasattr(importlib.import_module(CORE_MODULE), CORE_ENTRY)
 
 
 def measure_core(ctx: CaseContext) -> list[Measurement]:
-    """Measure the `core` process. Replace this body when the entry module of core lands."""
+    """Measure the `core` process. Replace this body when `run_core` lands."""
     raise SkipCase("the core process is on main, and measure_core is not written yet")
 
 
 @REGISTRY.case("core-sim", summary="The core process against acquire with the simulator")
 def core_sim(ctx: CaseContext) -> list[Measurement]:
-    try:
-        found = importlib.util.find_spec(CORE_MODULE)
-    except ModuleNotFoundError:  # a parent package is missing
-        found = None
-    if found is None:
+    if not core_process_exists():
         raise SkipCase("the core process is not on main")
     return measure_core(ctx)

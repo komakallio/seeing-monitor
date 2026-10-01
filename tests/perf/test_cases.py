@@ -7,7 +7,6 @@ It checks nothing about how large a figure is, because the speed of a runner say
 
 from __future__ import annotations
 
-import importlib.util
 import math
 import subprocess
 import sys
@@ -26,14 +25,7 @@ from .helpers import environment
 CASE_NAMES = load_registry().names()
 
 
-def core_is_on_main() -> bool:
-    try:
-        return importlib.util.find_spec(core_sim.CORE_MODULE) is not None
-    except ModuleNotFoundError:  # a parent package is missing
-        return False
-
-
-CORE_IS_ON_MAIN = core_is_on_main()
+CORE_IS_ON_MAIN = core_sim.core_process_exists()
 
 
 def empty_report() -> Report:
@@ -149,6 +141,7 @@ class TestCoreSim:
         # The lead writes `measure_core`, and the module of the core process appears. Stand in for
         # both, and the case reports the figures that the function returns.
         monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
+        monkeypatch.setattr(core_sim, "CORE_ENTRY", "percentile")
         monkeypatch.setattr(
             core_sim,
             "measure_core",
@@ -162,9 +155,17 @@ class TestCoreSim:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
+        monkeypatch.setattr(core_sim, "CORE_ENTRY", "percentile")
         result = execute_case(REGISTRY.get("core-sim"), smoke=True)
         assert result.status == "skipped"
         assert "measure_core is not written yet" in (result.reason or "")
+
+    def test_a_module_without_the_entry_function_does_not_count_as_the_core_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
+        monkeypatch.setattr(core_sim, "CORE_ENTRY", "run_core")
+        assert not core_sim.core_process_exists()
 
     def test_the_default_function_skips(self) -> None:
         with pytest.raises(SkipCase, match="measure_core is not written yet"):
