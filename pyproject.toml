@@ -52,6 +52,10 @@ dev = [
   "pytest>=8.2",
   "pytest-timeout>=2.3",
   "ruff>=0.6",
+  # `tools/lint_deploy.py` runs shellcheck on the deploy scripts. The package has wheels for
+  # Windows x64 and Linux x64 and none for Linux arm64, so the marker leaves it out there. On
+  # arm64 the linter says that it skipped shellcheck, and it runs `bash -n` instead.
+  "shellcheck-py>=0.10.0.1; platform_machine != 'aarch64'",
 ]
 
 [tool.hatch.build.targets.wheel]
