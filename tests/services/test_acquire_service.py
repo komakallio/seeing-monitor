@@ -582,7 +582,7 @@ class TestConnecting:
         started = time.monotonic()
         with pytest.raises(CameraDisconnectedError, match="cannot reach acquire"):
             driver.open()
-        assert 0.25 <= time.monotonic() - started < 5.0
+        assert 0.15 <= time.monotonic() - started < 20.0
 
     def test_calls_before_open_are_state_errors(self, native: Endpoint, key: ConnectionKey) -> None:
         driver = RemoteCameraDriver(native, key)

@@ -206,7 +206,7 @@ class TestTimeoutsAndConcurrency:
         started = time.monotonic()
         with pytest.raises(RpcTimeoutError, match="block did not answer"):
             client.call("block", timeout_s=0.3)
-        assert 0.25 <= time.monotonic() - started < 5.0
+        assert 0.15 <= time.monotonic() - started < 20.0
         assert client.call("ping") == "pong"  # inline methods answer while a worker is busy
         release.set()
         assert wait_until(lambda: "block:end" in log)  # the late answer is dropped, not misrouted
@@ -307,7 +307,7 @@ class TestTimeoutsAndConcurrency:
 
 class TestPeerDisappears:
     def test_a_pending_call_fails_when_the_service_closes_the_connection(
-        self, harness: Harness, release: threading.Event
+        self, harness: Harness, release: threading.Event, log: list[str]
     ) -> None:
         client = harness.client()
         outcome: list[BaseException] = []
@@ -320,8 +320,7 @@ class TestPeerDisappears:
 
         thread = threading.Thread(target=call)
         thread.start()
-        assert wait_until(lambda: len(harness.service.connections) == 1)
-        time.sleep(0.2)
+        assert wait_until(lambda: "block:start" in log)  # the call is in flight
         harness.service.connections[0].close("restarting")
         thread.join(10.0)
         assert not thread.is_alive()

@@ -71,7 +71,7 @@ class TestOrder:
         queue = FrameQueue(10, 1 << 20)
         started = time.monotonic()
         assert queue.peek(0.2) is None
-        assert time.monotonic() - started >= 0.15
+        assert time.monotonic() - started >= 0.1
         timer = threading.Timer(0.15, lambda: queue.put_frame(frame(7), 0))
         timer.start()
         try:

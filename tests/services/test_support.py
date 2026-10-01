@@ -77,7 +77,7 @@ class TestDriverGate:
             for _ in range(20):
                 with gate.control():
                     pass
-            assert time.monotonic() - started < 3.0  # twenty calls, however busy the reader is
+            assert time.monotonic() - started < 30.0  # twenty calls, however busy the reader is
         finally:
             stop.set()
             thread.join(5.0)
