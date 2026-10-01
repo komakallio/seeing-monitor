@@ -31,7 +31,9 @@ dependencies = ["pydantic>=2.7,<3", "numpy>=2.0"]
 # Each lane adds dependencies to its own extra only. The lead regenerates `uv.lock` after merges.
 [project.optional-dependencies]
 fast = ["scipy>=1.13"]
-survey = ["seeingmon[fast]", "astropy>=6.1", "pyerfa>=2.0.1"]
+# `sep` is the Python wrapper of Source Extractor (LGPL-3.0-or-later). Its wheels cover Windows
+# x64, Linux x64, and Linux arm64 on Python 3.11 and 3.13.
+survey = ["seeingmon[fast]", "astropy>=6.1", "pyerfa>=2.0.1", "sep>=1.4"]
 web = ["fastapi>=0.115", "uvicorn>=0.30", "pillow>=10.4"]
 
 [project.scripts]

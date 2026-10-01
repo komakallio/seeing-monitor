@@ -56,3 +56,8 @@ def pairs_within(first: FloatArray, second: FloatArray, radius: float) -> list[l
 def erf(x: FloatArray) -> FloatArray:
     """The error function."""
     return np.asarray(_special.erf(x), dtype=np.float64)
+
+
+def erf32(x: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+    """The error function in single precision."""
+    return np.asarray(_special.erf(x), dtype=np.float32)
