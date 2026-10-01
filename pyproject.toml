@@ -54,6 +54,13 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/seeingmon"]
 
+# The hardware profiles and the default configuration ship inside the wheel as package data.
+# `seeingmon.paths` reads them from seeingmon/_data/ in an installed wheel and from the
+# repository root in a source checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"profiles" = "seeingmon/_data/profiles"
+"config" = "seeingmon/_data/config"
+
 [tool.uv]
 # The lock covers the three platforms that CI and the deployment use, and no others.
 environments = [

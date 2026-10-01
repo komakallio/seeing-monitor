@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,13 @@ def test_the_running_package_is_the_checkout_in_a_development_environment(
     assert paths.package_dir() == repo_root / "src" / "seeingmon"
     assert paths.source_root() == repo_root
     assert paths.profiles_dir() == repo_root / "profiles"
+
+
+def test_the_wheel_packs_the_directories_where_the_paths_module_looks(repo_root: Path) -> None:
+    """`pyproject.toml` maps `profiles/` and `config/` to the package-data location."""
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert force_include == {
+        paths.PROFILES_DIRNAME: f"seeingmon/{paths.PACKAGE_DATA_DIR}/{paths.PROFILES_DIRNAME}",
+        paths.CONFIG_DIRNAME: f"seeingmon/{paths.PACKAGE_DATA_DIR}/{paths.CONFIG_DIRNAME}",
+    }
