@@ -144,6 +144,10 @@ class FakeAsiSdk:
         temperature_warmup_s: How long the temperature control reads 0 after `init_camera`.
         silent_gain_limit: If set, the camera applies at most this gain without an error,
             although its caps report a higher maximum.
+        control_numbers: Reports a control under another number than the binding's enumeration,
+            to test a driver that finds controls by name when the numbers differ.
+        control_names: Reports a control under another name, to test a driver that finds controls
+            by number.
     """
 
     def __init__(
@@ -163,6 +167,8 @@ class FakeAsiSdk:
         temperature_warmup_s: float = 0.25,
         silent_gain_limit: int | None = None,
         sdk_version: str = "1, 41, 0, 0",
+        control_numbers: Mapping[AsiControl, int] | None = None,
+        control_names: Mapping[AsiControl, str] | None = None,
     ) -> None:
         self._clock = clock
         self._model = model
@@ -177,6 +183,8 @@ class FakeAsiSdk:
         self._warmup_ns = round(temperature_warmup_s * NS_PER_S)
         self._silent_gain_limit = silent_gain_limit
         self._sdk_version = sdk_version
+        self._numbers = {int(k): v for k, v in (control_numbers or {}).items()}
+        self._names = {int(k): v for k, v in (control_names or {}).items()}
         self.temperature_c = temperature_c
         self._lock = threading.RLock()
         # Every call in order, as (function, arguments). A blocking read adds a second entry,
@@ -294,7 +302,10 @@ class FakeAsiSdk:
         self._opened = False
         self._initialized = False
         self._init_ns = 0
-        self._controls: dict[int, int] = {caps.control: caps.default_value for caps in self._caps()}
+        # Values by control, keyed by the binding's enumeration and not by the reported number.
+        self._controls: dict[int, int] = {
+            logical: caps.default_value for logical, caps in self._logical_caps().items()
+        }
         self._bin = 1
         self._image_type = AsiImageType.RAW8
         self._width = self._max_width
@@ -311,12 +322,27 @@ class FakeAsiSdk:
         self._exposure_info: FakeFrameInfo | None = None
         self._snapshots = 0
 
-    def _caps(self) -> list[AsiControlCaps]:
+    def _number(self, logical: int) -> int:
+        """The number under which the camera reports a control."""
+        return self._numbers.get(logical, logical)
+
+    def _logical(self, number: int) -> int | None:
+        """The control that the camera reports under `number`, or `None`."""
+        for control in AsiControl:
+            if self._number(int(control)) == number:
+                return int(control)
+        return None
+
+    def _logical_caps(self) -> dict[int, AsiControlCaps]:
         def caps(
             control: AsiControl, name: str, low: int, high: int, default: int
-        ) -> AsiControlCaps:
+        ) -> tuple[int, AsiControlCaps]:
             writable = control is not AsiControl.TEMPERATURE
-            return AsiControlCaps(name, name, int(control), low, high, default, False, writable)
+            shown = self._names.get(int(control), name)
+            entry = AsiControlCaps(
+                shown, shown, self._number(int(control)), low, high, default, False, writable
+            )
+            return int(control), entry
 
         listed = [
             caps(AsiControl.GAIN, "Gain", 0, 570, 0),
@@ -329,7 +355,10 @@ class FakeAsiSdk:
         ]
         if self.temperature_c is not None:
             listed.append(caps(AsiControl.TEMPERATURE, "Temperature", -500, 1000, 200))
-        return listed
+        return dict(listed)
+
+    def _caps(self) -> list[AsiControlCaps]:
+        return list(self._logical_caps().values())
 
     def _high_speed(self) -> bool:
         return bool(self._controls[AsiControl.HIGH_SPEED_MODE])
@@ -499,13 +528,15 @@ class FakeAsiSdk:
         self._enter("get_control_value", camera_id, control)
         with self._lock:
             self._require_camera("get_control_value", camera_id)
-            if control == AsiControl.TEMPERATURE and self.temperature_c is not None:
+            logical = self._logical(control)
+            if logical is None or logical not in self._logical_caps():
+                raise error_for("get_control_value", AsiErrorCode.INVALID_CONTROL_TYPE)
+            if logical == AsiControl.TEMPERATURE:
                 if self._clock.monotonic_ns() - self._init_ns < self._warmup_ns:
                     return 0, False
+                assert self.temperature_c is not None  # the control exists only with a sensor
                 return round(self.temperature_c * 10), False
-            if control not in self._controls:
-                raise error_for("get_control_value", AsiErrorCode.INVALID_CONTROL_TYPE)
-            return self._controls[control], False
+            return self._controls[logical], False
 
     def set_control_value(
         self, camera_id: int, control: int, value: int, *, auto: bool = False
@@ -513,15 +544,16 @@ class FakeAsiSdk:
         self._enter("set_control_value", camera_id, control, value, auto)
         with self._lock:
             self._require_camera("set_control_value", camera_id)
-            caps = {c.control: c for c in self._caps()}
-            if control not in caps or not caps[control].is_writable:
+            caps = self._logical_caps()
+            logical = self._logical(control)
+            if logical is None or logical not in caps or not caps[logical].is_writable:
                 raise error_for("set_control_value", AsiErrorCode.INVALID_CONTROL_TYPE)
-            limits = caps[control]
+            limits = caps[logical]
             applied = min(max(value, limits.min_value), limits.max_value)  # the SDK clamps
-            if control == AsiControl.GAIN and self._silent_gain_limit is not None:
+            if logical == AsiControl.GAIN and self._silent_gain_limit is not None:
                 applied = min(applied, self._silent_gain_limit)
             self._advance(self._clock.monotonic_ns())
-            self._controls[control] = applied
+            self._controls[logical] = applied
             self._reschedule()
 
     # --- AsiApi: geometry ---

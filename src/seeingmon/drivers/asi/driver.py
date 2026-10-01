@@ -102,6 +102,23 @@ SNAPSHOT_POLL_MAX_S = 0.25  # the longest sleep between two status polls of a si
 REOPEN_POLL_S = 0.25  # how often the USB reset step checks whether the camera is back
 EXPOSURE_TOLERANCE = 0.01  # a read-back exposure within 1% of the request counts as applied
 
+# The controls that the driver uses, with the name that the SDK reports for each, reduced to
+# lowercase letters and digits. The driver finds a control by its number and checks the name. When
+# the number and the name disagree, the name wins, because a camera model can number controls
+# differently than the binding expects.
+CONTROL_NAMES: dict[AsiControl, str] = {
+    AsiControl.GAIN: "gain",
+    AsiControl.EXPOSURE: "exposure",
+    AsiControl.OFFSET: "offset",
+    AsiControl.BANDWIDTH_OVERLOAD: "bandwidth",
+    AsiControl.HIGH_SPEED_MODE: "highspeedmode",
+    AsiControl.TEMPERATURE: "temperature",
+}
+
+
+def _normalize(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
 
 @dataclass(slots=True)
 class _Plan:
@@ -299,18 +316,50 @@ class AsiDriver:
                 _log.debug("%s failed while quieting a new camera", call, exc_info=True)
 
     def _load_caps(self, camera_id: int) -> dict[int, AsiControlCaps]:
+        """Read the controls, and key them by the binding's enumeration (`AsiControl`).
+
+        The entry of a control keeps the number that the camera reports, and every SDK call uses
+        that number (`_sdk_number`).
+        """
         api = self._api
         with self._guard("get_control_count"):
             count = api.get_control_count(camera_id)
-        caps: dict[int, AsiControlCaps] = {}
+        entries: list[AsiControlCaps] = []
         for index in range(count):
             with self._guard("get_control_caps"):
-                entry = api.get_control_caps(camera_id, index)
-            caps[entry.control] = entry
+                entries.append(api.get_control_caps(camera_id, index))
+        by_number = {entry.control: entry for entry in entries}
+        by_name = {_normalize(entry.name): entry for entry in reversed(entries)}
+        caps: dict[int, AsiControlCaps] = {}
+        for control, expected in CONTROL_NAMES.items():
+            numbered, named = by_number.get(int(control)), by_name.get(expected)
+            if numbered is not None and (
+                named is None or named is numbered or _normalize(numbered.name) == expected
+            ):
+                caps[int(control)] = numbered
+            elif named is not None:
+                caps[int(control)] = named
+                self._emit(
+                    "warning",
+                    "camera.control_renumbered",
+                    "The camera numbers a control differently than the binding expects.",
+                    control=control.name.lower(),
+                    expected_number=int(control),
+                    reported_number=named.control,
+                )
+            elif numbered is not None:
+                caps[int(control)] = numbered  # the name differs, and the number agrees
         for control in (AsiControl.GAIN, AsiControl.EXPOSURE):
-            if control not in caps:
+            if int(control) not in caps:
                 raise CameraError(f"the camera has no {control.name.lower()} control")
         return caps
+
+    def _sdk_number(self, control: AsiControl) -> int:
+        """The number that the camera reports for `control`."""
+        caps = self._caps.get(int(control))
+        if caps is None:
+            raise CameraConfigError(f"this camera has no {control.name.lower()} control")
+        return caps.control
 
     def _check_against_profile(self) -> None:
         """Report a camera that does not match the profile. `acquire` decides what to do."""
@@ -567,7 +616,7 @@ class AsiDriver:
 
     def _get_control(self, control: AsiControl) -> int:
         with self._guard("get_control_value"):
-            return self._api.get_control_value(self._camera_id, int(control))[0]
+            return self._api.get_control_value(self._camera_id, self._sdk_number(control))[0]
 
     def _set_checked(
         self, control: AsiControl, value: int, label: str, *, tolerance: float = 0.0
@@ -583,7 +632,7 @@ class AsiDriver:
                 f"{caps.min_value} to {caps.max_value}"
             )
         with self._guard("set_control_value"):
-            self._api.set_control_value(self._camera_id, int(control), value)
+            self._api.set_control_value(self._camera_id, caps.control, value)
         applied = self._get_control(control)
         allowed = max(1.0, abs(value) * tolerance) if tolerance else 0.0
         if abs(applied - value) > allowed:

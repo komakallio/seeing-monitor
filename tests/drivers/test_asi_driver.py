@@ -13,6 +13,7 @@ from seeingmon.clock import NS_PER_S, ClockStatus, VirtualClock
 from seeingmon.drivers import (
     CameraConfigError,
     CameraDisconnectedError,
+    CameraError,
     CameraStateError,
     CameraTimeoutError,
 )
@@ -272,6 +273,56 @@ class TestControls:
                 mode="bin1", exposure_us=2000, gain=1, roi=Roi(0, 0, 8, 2), pixel_format=RAW8
             )
         )
+
+
+class TestControlNumbers:
+    """The driver finds a control by its number and checks its name, and the name wins."""
+
+    def test_a_control_that_the_camera_numbers_differently_is_found_by_its_name(self) -> None:
+        numbers = {AsiControl.GAIN: 41, AsiControl.HIGH_SPEED_MODE: 40}
+        rig = make_rig(sdk={"control_numbers": numbers}).opened()
+        assert rig.event_kinds().count("camera.control_renumbered") == 2
+        rig.driver.configure(
+            StreamConfig(
+                mode="bin1", exposure_us=2000, gain=120, roi=Roi(0, 0, 16, 8), high_speed=True
+            )
+        )
+        assert rig.sdk.control(AsiControl.GAIN) == 120
+        assert rig.sdk.control(AsiControl.HIGH_SPEED_MODE) == 1
+        used = {args[1] for args in rig.sdk.calls_named("set_control_value")}
+        assert {40, 41} <= used  # the calls carry the numbers that the camera reports
+        assert rig.driver.capabilities().gain_range == (0, 570)
+
+    def test_two_controls_with_swapped_numbers_are_still_told_apart(self) -> None:
+        rig = make_rig(
+            sdk={"control_numbers": {AsiControl.GAIN: 1, AsiControl.EXPOSURE: 0}}
+        ).opened()
+        active = rig.driver.configure(
+            StreamConfig(mode="bin1", exposure_us=2000, gain=120, roi=Roi(0, 0, 16, 8))
+        )
+        assert (active.config.gain, active.config.exposure_us) == (120, 2000)
+
+    def test_a_control_with_an_unexpected_name_is_found_by_its_number(self) -> None:
+        rig = make_rig(sdk={"control_names": {AsiControl.GAIN: "Verstaerkung"}}).opened()
+        assert rig.event_kinds() == []
+        active = rig.driver.configure(
+            StreamConfig(mode="bin1", exposure_us=2000, gain=120, roi=Roi(0, 0, 16, 8))
+        )
+        assert active.config.gain == 120
+
+    def test_a_camera_without_a_gain_control_is_refused_at_open(self) -> None:
+        rig = make_rig(
+            sdk={
+                "control_numbers": {AsiControl.GAIN: 77},
+                "control_names": {AsiControl.GAIN: "Mystery"},
+            }
+        )
+        with pytest.raises(CameraError, match="no gain control"):
+            rig.driver.open()
+
+    def test_the_temperature_follows_the_name_too(self) -> None:
+        rig = make_rig(sdk={"control_numbers": {AsiControl.TEMPERATURE: 55}}).opened()
+        assert rig.driver.read_temperature_c() == pytest.approx(18.3)
 
 
 class TestGeometry:
