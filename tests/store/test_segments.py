@@ -250,7 +250,7 @@ class TestIdleAndSync:
         calls: list[int] = []
         monkeypatch.setattr(os, "fsync", calls.append)
         # POSIX also forces the directory after the rename, and Windows does not.
-        monkeypatch.setattr("seeingmon.store.segments._fsync_directory", lambda directory: None)
+        monkeypatch.setattr("seeingmon.store.segments.fsync_directory", lambda directory: None)
         writer.write_metrics(1, make_rows(T0, 5))
         clock.advance(30)
         writer.write_metrics(1, make_rows(T0 + 30 * NS_PER_S, 5))
@@ -261,13 +261,33 @@ class TestIdleAndSync:
         writer.close()
         assert len(calls) == 2  # the close forces the disk before the rename
 
+    def test_the_directory_is_forced_after_the_rename(
+        self, writer: SegmentWriter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rename is durable only after the directory reaches the disk (a no-op on Windows)."""
+        order: list[str] = []
+        real_replace = os.replace
+
+        def record_replace(source: Any, destination: Any) -> None:
+            order.append("rename")
+            real_replace(source, destination)
+
+        monkeypatch.setattr(os, "replace", record_replace)
+        monkeypatch.setattr(
+            "seeingmon.store.segments.fsync_directory", lambda directory: order.append("directory")
+        )
+        writer.write_metrics(1, make_rows(T0, 3))
+        assert order == []  # nothing renames while the segment is open
+        writer.close()
+        assert order == ["rename", "directory"]
+
     def test_flush_forces_the_open_segment_to_disk(
         self, writer: SegmentWriter, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls: list[int] = []
         monkeypatch.setattr(os, "fsync", calls.append)
         # POSIX also forces the directory after the rename, and Windows does not.
-        monkeypatch.setattr("seeingmon.store.segments._fsync_directory", lambda directory: None)
+        monkeypatch.setattr("seeingmon.store.segments.fsync_directory", lambda directory: None)
         writer.flush()
         assert calls == []
         writer.write_metrics(1, make_rows(T0, 2))

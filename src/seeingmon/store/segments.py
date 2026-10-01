@@ -60,6 +60,7 @@ from seeingmon.records.segments import (
     segment_layout,
 )
 from seeingmon.store.config import SegmentsConfig
+from seeingmon.store.layout import fsync_directory
 
 MAGIC = b"\x89SMSEG\r\n"
 FORMAT_VERSION = 1
@@ -207,17 +208,6 @@ def parse_segment_name(path: Path) -> SegmentInfo | None:
         part=int(match["part"] or 0),
         is_open=match["open"] is not None,
     )
-
-
-def _fsync_directory(directory: Path) -> None:
-    """Make a rename durable. Windows cannot open a directory, so it skips the step."""
-    if os.name == "nt":
-        return
-    descriptor = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 # --- reading -----------------------------------------------------------------------------------
@@ -397,7 +387,7 @@ def recover_segment(path: Path | str) -> RecoveryReport:
     if file_path.name.endswith(OPEN_SUFFIX):
         final = _unused_name(file_path.with_name(file_path.name.removesuffix(OPEN_SUFFIX)))
         os.replace(file_path, final)
-        _fsync_directory(final.parent)
+        fsync_directory(final.parent)
     return RecoveryReport(file_path, final, "renamed", len(data.rows), data.dropped_bytes)
 
 
@@ -717,7 +707,7 @@ class SegmentWriter:
         finally:
             current.handle.close()
         os.replace(current.partial, current.final)
-        _fsync_directory(current.final.parent)
+        fsync_directory(current.final.parent)
 
     def _abandon(self, current: _OpenSegment) -> None:
         """Close a segment after a failed write: cut it at the last complete row and rename it."""

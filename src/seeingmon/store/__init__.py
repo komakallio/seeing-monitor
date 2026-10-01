@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         record_from_row,
     )
     from seeingmon.store.events import EventEmitter, EventSink
+    from seeingmon.store.layout import DataLayout, PathsConfig, burst_name, write_atomic
     from seeingmon.store.segments import (
         RecoveryReport,
         SegmentData,
@@ -67,6 +68,10 @@ _EXPORTS: dict[str, str] = {
     "record_from_row": "db",
     "EventEmitter": "events",
     "EventSink": "events",
+    "DataLayout": "layout",
+    "PathsConfig": "layout",
+    "burst_name": "layout",
+    "write_atomic": "layout",
     "ForwarderConfig": "config",
     "RetentionConfig": "config",
     "SegmentsConfig": "config",
@@ -84,10 +89,12 @@ _EXPORTS: dict[str, str] = {
 }
 
 __all__ = [
+    "DataLayout",
     "DuplicateRecordError",
     "EventEmitter",
     "EventSink",
     "ForwarderConfig",
+    "PathsConfig",
     "RecoveryReport",
     "RetentionConfig",
     "SegmentData",
@@ -106,11 +113,13 @@ __all__ = [
     "StoreReader",
     "StoreSnapshot",
     "UnknownRecordTypeError",
+    "burst_name",
     "iter_segments",
     "read_segment",
     "record_from_row",
     "recover_orphans",
     "recover_segment",
+    "write_atomic",
 ]
 
 
