@@ -1249,7 +1249,7 @@ class Scheduler:
                 "The survey analysis is behind, so the scheduler skipped this survey step.",
                 {"pending": self._survey.pending(), "max_pending": survey.max_pending},
             )
-            self._finish_survey()
+            self._finish_survey(counted=False)
             return StepKind.TRANSITION
         exposure_us, gain = self._survey_exposure(cycle.survey_stage)
         config = StreamConfig(
@@ -1286,12 +1286,16 @@ class Scheduler:
             self._finish_survey()
         return StepKind.WORK
 
-    def _finish_survey(self) -> None:
-        """The survey step is over: plan the next slot, and wait for a solution if none exists."""
+    def _finish_survey(self, *, counted: bool = True) -> None:
+        """The survey step is over: plan the next slot, and wait for a solution if none exists.
+
+        A skipped step (`counted=False`) ends the same way, but it is not a step that ran.
+        """
         cycle = self._cycle
         now = self._mono()
-        self._counters.survey_steps += 1
-        self._last_survey_mono = now
+        if counted:
+            self._counters.survey_steps += 1
+            self._last_survey_mono = now
         cycle.anchored = not cycle.survey_forced
         cycle.next_slot_mono = now
         position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)

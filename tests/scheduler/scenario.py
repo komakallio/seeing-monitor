@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from seeingmon.analysis import SurveyOutput
+from seeingmon.analysis import FastContext, SurveyOutput
 from seeingmon.clock import NS_PER_S, Clock, VirtualClock, iso_to_utc_ns
 from seeingmon.drivers.base import CameraTimeoutError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, FrameData, Roi, StreamConfig, StreamKind
@@ -193,6 +193,7 @@ class World:
         escalate: bool = True,
         survey_polls: int = 0,
         clock: Clock | None = None,
+        context_provider: Callable[[int], FastContext] | None = None,
     ) -> None:
         self.start_utc_ns = start_utc_ns
         self.clock: Clock = clock or VirtualClock(start_utc_ns)
@@ -233,6 +234,7 @@ class World:
             escalate=self._escalate if escalate else None,
             alignment_sink=self.align_frames.append,
             result_sink=self.results.append,
+            context_provider=context_provider,
         )
 
     # --- Time ---
