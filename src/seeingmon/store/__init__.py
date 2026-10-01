@@ -19,6 +19,12 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from seeingmon.store.config import (
+        ForwarderConfig,
+        RetentionConfig,
+        SegmentsConfig,
+        StoreConfig,
+    )
     from seeingmon.store.db import (
         DuplicateRecordError,
         SinkCursor,
@@ -32,6 +38,18 @@ if TYPE_CHECKING:
         record_from_row,
     )
     from seeingmon.store.events import EventEmitter, EventSink
+    from seeingmon.store.segments import (
+        RecoveryReport,
+        SegmentData,
+        SegmentFormatError,
+        SegmentInfo,
+        SegmentReader,
+        SegmentWriter,
+        iter_segments,
+        read_segment,
+        recover_orphans,
+        recover_segment,
+    )
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
@@ -47,21 +65,49 @@ _EXPORTS: dict[str, str] = {
     "record_from_row": "db",
     "EventEmitter": "events",
     "EventSink": "events",
+    "ForwarderConfig": "config",
+    "RetentionConfig": "config",
+    "SegmentsConfig": "config",
+    "StoreConfig": "config",
+    "RecoveryReport": "segments",
+    "SegmentData": "segments",
+    "SegmentFormatError": "segments",
+    "SegmentInfo": "segments",
+    "SegmentReader": "segments",
+    "SegmentWriter": "segments",
+    "iter_segments": "segments",
+    "read_segment": "segments",
+    "recover_orphans": "segments",
+    "recover_segment": "segments",
 }
 
 __all__ = [
     "DuplicateRecordError",
     "EventEmitter",
     "EventSink",
+    "ForwarderConfig",
+    "RecoveryReport",
+    "RetentionConfig",
+    "SegmentData",
+    "SegmentFormatError",
+    "SegmentInfo",
+    "SegmentReader",
+    "SegmentWriter",
+    "SegmentsConfig",
     "SinkCursor",
     "Store",
     "StoreBusyError",
     "StoreClosedError",
+    "StoreConfig",
     "StoreError",
     "StoreFormatError",
     "StoreReader",
     "UnknownRecordTypeError",
+    "iter_segments",
+    "read_segment",
     "record_from_row",
+    "recover_orphans",
+    "recover_segment",
 ]
 
 
