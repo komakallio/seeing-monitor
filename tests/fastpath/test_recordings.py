@@ -268,10 +268,10 @@ def test_the_modeled_centroid_noise_is_a_small_part_of_the_motion(captures: list
 
 
 def test_the_pixel_phase_bias_is_small_for_the_defocused_star(captures: list[Capture]) -> None:
-    """A star that is 3 to 4 pixels wide has a centroid gain near 1 at every sub-pixel phase.
+    """A star with a core of 2 to 3 pixels has a centroid gain near 1 at every sub-pixel phase.
 
     The notes predict a gain between 0.53 and 1.48 for an in-focus bin2 star, which makes the
-    sub-pixel positions bunch up (a first harmonic of the density of about 0.5). The first
+    sub-pixel positions bunch up (a first harmonic of the density of 0.4 to 0.5). The first
     harmonic of these recordings is 0.08 to 0.11.
     """
     checked = 0

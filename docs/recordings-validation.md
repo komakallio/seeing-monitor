@@ -14,7 +14,7 @@ This page records what the fast path does with your two recorded 10 ms videos, a
 | Is the motion stationary? | No, as real seeing isn't. The variance of 10 s blocks scatters by 13% (29% with one burst block), where a stationary process with the same spectrum scatters by 7%. The 60 s windows hold: their r0 values spread by 10%. |
 | Do the spectra look like turbulence? | Yes between 1 and 30 Hz. A floor that doesn't scale with the flux sits above 20 Hz. |
 | Do the two estimators agree? | Not at the default wind of 10 m/s: the structure-function estimate is 17 to 34% above the variance estimate. On average they agree within 4% at an assumed wind of 2 m/s. |
-| Does the bin2 gain swing of 0.53 to 1.48 show? | No. The star is 3.4 pixels wide, and the gain stays within about 0.9 to 1.1. |
+| Does the bin2 gain swing of 0.53 to 1.48 show? | No. The star has a core of 2.3 pixels, and the gain stays within about 0.9 to 1.1. |
 | Does the 8-bit noise model hold? | No. It over-subtracts the centroid noise, and r0 reads about 3.5% high. |
 | What is r0? | 8 to 12 cm at the default assumptions, which is 0.8 to 1.2 arcsec of seeing. Not calibrated. |
 
@@ -40,7 +40,7 @@ The 300 s capture has two gaps: 33.8 ms (2 frames lost) within the first 30 ms o
 
 ### The star
 
-The second-moment width of the star is 1.41 to 1.48 pixels (sigma), which is 12.5 to 13.3 arcsec FWHM. Diffraction and 1 arcsec seeing give about 2.3 arcsec for a focused 50 mm aperture, so the star is out of focus or aberrated by a factor of about 6. The design suggests a defocus of about 3 pixels for bin2, and this is it.
+The second-moment width of the star is 1.41 to 1.48 pixels (sigma), which is 12.5 to 13.3 arcsec FWHM (3.3 to 3.5 pixels). The brightest pixel holds 16% of the flux, which a Gaussian core of 2.3 pixels FWHM (9 arcsec) gives, so the star has a core of about 2.3 pixels and wings that widen the second moment. Diffraction and 1 arcsec seeing give a core of about 2.3 arcsec for a focused 50 mm aperture, so the star is out of focus or aberrated by a factor of about 4. The design suggests a defocus of about 3 pixels for bin2, and this star is somewhat sharper.
 
 ## Stationarity
 
@@ -94,7 +94,7 @@ The window records store the assumed wind and the factor, so a reader can undo t
 
 The research notes predict that an in-focus bin2 star has a centroid gain between 0.53 and 1.48 as it drifts across a pixel, with a period of about 22 s. The star in these captures crosses a pixel every 24 s along x (0.0406 px/s) and every 108 s along y.
 
-The swing is absent. A swing of that size means a bias with an amplitude of 0.076 px, and it would bunch the sub-pixel positions of the centroid: the first harmonic of their density would be about 0.5. It is 0.10 in x and 0.08 in y for the 300 s capture, which fits a bias with an amplitude of 0.016 px and a gain between 0.90 and 1.10. The variance of 3 s blocks differs by a factor of 1.2 to 1.35 between sub-pixel phases, and by 1.75 for one axis in which the burst falls into a single phase bin. A gain of 0.53 to 1.48 would give a factor of 8. The star is 3.4 pixels wide, so the swing doesn't apply to it. The estimator's centroid-gain factor for bin2 is 0.991, and the data can't confirm it (see the last section).
+The swing is absent. The notes give a bias with an amplitude of 0.06 to 0.076 px for that swing, and such a bias would bunch the sub-pixel positions of the centroid: the first harmonic of their density would be 0.4 to 0.5. It is 0.10 in x and 0.08 in y for the 300 s capture, which fits a bias with an amplitude of 0.016 px and a gain between 0.90 and 1.10. The variance of 3 s blocks differs by a factor of 1.2 to 1.35 between sub-pixel phases, and by 1.75 for one axis in which the burst falls into a single phase bin. The variance factor of 0.44 to 1.8 in the notes would give a factor of 4. The notes give a gain variation of about 1.8% for a blur of 3 pixels, and the swing of the in-focus star is 47%. This star has a core of 2.3 pixels and a variation of 10%, between the two, so the swing doesn't apply to it. The estimator's centroid-gain factor for bin2 is 0.991, and the data can't confirm it (see the last section).
 
 ## 8-bit quantization
 
@@ -116,7 +116,7 @@ A line at 17.5 Hz appears in one 10 s block (270 to 280 s) of the long capture: 
 2. **The two axes differ.** The x variance is 31 to 57% above the y variance. A single layer explains this only with a fast wind along y, and the slow structure contradicts a single fast layer. The turbulence probably has several layers, and the estimator assumes one.
 3. **The 8-bit noise model over-subtracts,** by up to 7% of the variance for these recordings.
 4. **The frame times jitter.** Arrival intervals range from 0.14 to 15 ms around 10.2 ms. The analyzer treats the stream as uniformly sampled and uses the times only to count lost frames, so seeing is not affected. Don't read the times as exposure times to better than one frame.
-5. **The star is defocused to 3.4 pixels,** which these captures need and the final design avoids. The aperture truncation and the centroid gain were not tested on a focused star.
+5. **The star is defocused to a core of 2.3 pixels,** which these captures need and the final design avoids. The aperture truncation and the centroid gain were not tested on a focused star.
 6. **The first drop** falls in the first 30 ms of the capture, which suggests an unsettled start.
 
 ## What this validation can't check
