@@ -109,9 +109,9 @@ ROI rules (V, Z11, Z12): width and height count pixels after binning, width is a
 | Mass | 140 g | 410 g | Z1 p5 |
 | Operating temperature | Maximum 40 °C in manual V2.2. −5 to 45 °C in V1.7 and V1.2. | Same table | Z1 |
 
-The non-Pro page shows the same two modes, the same gain charts (the labels match), the HCG step at gain 120, and the same frame-rate tables as the Pro, so the mode, gain, noise, and frame-rate numbers above apply as published (D). Assumed from the Pro and unverified for the non-Pro: the SDK bin1 to bin4 mapping, the high-speed mode, the gain range 0 to 570, the `Temperature` control, the binning rules, and the 16-bit scaling. With no buffer, a slow or contended USB link can stall readout, so check `ASIGetDroppedFrames` in video mode (D).
+The non-Pro page shows the same two modes, the same gain charts (the labels match), the HCG step at gain 120, and the same frame-rate tables as the Pro, so the mode, gain, noise, and frame-rate numbers above apply as published (D). Assumed from the Pro and unverified for the non-Pro: the SDK bin1 to bin4 mapping, the high-speed mode, the gain range 0 to 570, the binning rules, and the 16-bit scaling. With no buffer, a slow or contended USB link can stall readout, so check `ASIGetDroppedFrames` in video mode (D).
 
-- **Sensor temperature.** `ASI_TEMPERATURE` returns tenths of a degree and is read-only (V). ZWO does not document it for this model. Other uncooled ZWO cameras report it in 0.1 °C steps (S), so check `ASIGetControlCaps` at start-up. The first read after opening returns 0 for about 250 ms. Uncooled bodies run about 4 °C above ambient (S).
+- **Sensor temperature.** `ASI_TEMPERATURE` returns tenths of a degree and is read-only (V). ZWO does not document it for this model, but the owner's SharpCap settings files show a sensor temperature for the ASI294MM (18.3 and 17.6 °C), so this camera reports one. Other uncooled ZWO cameras report it in 0.1 °C steps (S). Check `ASIGetControlCaps` at start-up. The first read after opening returns 0 for about 250 ms. Uncooled bodies run about 4 °C above ambient (S).
 - **Dark current** (ZWO chart; camera, mode, and gain not stated; points read off the image, about 5% uncertainty):
 
 | Sensor temperature | 30 °C | 25 °C | 20 °C | 10 °C | 0 °C | −10 °C | −20 °C |
@@ -368,6 +368,15 @@ Polaris sources: https://arxiv.org/abs/0804.3593, https://arxiv.org/abs/0810.437
 - **SQM-LE.** Unihedron's product page lists an Ethernet interface, an infrared-blocking filter that limits the response to the visual band, a reported sensor temperature, and a sampling time of 1 to 80 s (V, https://www.unihedron.com/projects/sqm-le/). The page gives no field of view or accuracy, and the manual is a scanned PDF that I could not read, so the field of view and the reading protocol are open items. The SQM band differs from V by up to 0.25 mag depending on the sky spectrum (see the solver and catalog section).
 - **GPIO on the Pi 5.** The Pi 5 routes the header pins through the RP1 chip, so `RPi.GPIO`, which reads hardware registers through `/dev/mem`, does not work. Libraries that use the kernel's `/dev/gpiochip` interface (`libgpiod`, `gpiozero` with `lgpio`) work on every Pi model (V, https://pip-assets.raspberrypi.com/categories/685-whitepapers-app-notes/documents/RP-006553-WP/A-history-of-GPIO-usage-on-Raspberry-Pi-devices-and-current-best-practices, and https://forums.raspberrypi.com/viewtopic.php?t=361834).
 - **Heater plumes.** A heater near the objective can create convection and add image motion, so the design logs the heater duty on every seeing window and keeps the heat on the dew shield or lens cell at the lowest duty that holds the optics a small margin above the dew point (design reasoning, not a measurement).
+
+## Owner's recordings (format only)
+
+The newest recording folder holds two SharpCap 4.1 captures from the ASI294MM, each a SER file with a settings sidecar. One lasts 60 s (5,874 frames, 430 MiB) and the other 300 s (29,378 frames, 2.1 GiB). The settings in both sidecars are the 11 MP read mode with binning 1 (the SDK's bin2), a 320 × 240 ROI, MONO8, gain 100, a 10 ms exposure, high-speed mode off, Turbo USB 72 (auto), the frame-rate limit at maximum, and a sensor temperature of 18.3 and 17.6 °C. SharpCap measured 97.86 fps.
+
+- **Layout.** The file sizes match the SER layout exactly: a 178-byte header, 76,800 bytes per frame, and an 8-byte timestamp per frame (the PC clock, according to SharpCap).
+- **Sidecar.** It uses decimal commas (`10,0000ms`, `97,8567fps`), UTC stamps with a trailing Z, Julian dates, and a local time-zone offset. It also holds the camera serial number, which must stay out of the repository.
+- **Frame rate.** 97.86 fps matches the exposure-limited 100 fps that the line-time model predicts for a 240-row bin2 ROI (about 6.5 ms of readout against a 10 ms exposure).
+- **Difference from the plan.** The recordings are bin2, 10 ms, and 8-bit, while the planned fast mode is bin1, 2 ms, and a 16-bit container. They therefore show the in-focus bin2 centroid gain swing, the 10 ms exposure bias, and the 8-bit quantization (if RAW8 keeps the top 8 bits of the 14-bit value, each level is about 80 e⁻ at this gain).
 
 ## Calculations
 
