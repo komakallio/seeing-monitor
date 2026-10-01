@@ -1,0 +1,17 @@
+# Defaults of the survey path. Every key sits under [survey], and no other file defines one.
+#
+# Paths belong to one installation, so they stay empty here: set them in local/config.toml.
+# Override a key there, or with an environment variable such as SEEINGMON_SURVEY__CATALOG_PATH.
+
+[survey]
+# The cap catalog that `seeingmon catalog build` writes.
+catalog_path = ""
+# The folder with the astrometry.net cap index files that the same command builds.
+index_dir = ""
+# The solver programs. Each runs as a separate process, so its GPL or MPL code stays outside
+# this MIT code base.
+solve_field_command = "solve-field"
+astap_command = "astap"
+astap_database_dir = ""   # Empty uses the star database that ASTAP finds by itself.
+# The solvers to try, in order, after the tracker fails to match the frame by itself.
+solvers = ["astrometry.net", "astap"]
