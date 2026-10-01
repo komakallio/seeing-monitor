@@ -8,6 +8,8 @@ loads each name on first use, so importing `seeingmon.sinks` stays fast.
   and backoff.
 - `config`: the `[sinks.<name>]` configuration models.
 - `influx`: `InfluxSink`, an InfluxDB line-protocol sink for versions 1 and 2.
+- `timescale`: `TimescaleSink`, a PostgreSQL or TimescaleDB sink over a DB-API connection.
+- `factory`: `build_sinks`, which builds the sinks of the `[sinks]` configuration.
 """
 
 from __future__ import annotations
@@ -31,6 +33,9 @@ _EXPORTS: dict[str, str] = {
     "SinkPass": "forwarder",
     "SinkStatus": "forwarder",
     "InfluxSink": "influx",
+    "TimescaleSink": "timescale",
+    "make_psycopg_connect": "timescale",
+    "build_sinks": "factory",
 }
 
 __all__ = [
@@ -44,7 +49,10 @@ __all__ = [
     "SinkStatus",
     "SinksSection",
     "StoredRow",
+    "TimescaleSink",
     "TimescaleSinkConfig",
+    "build_sinks",
+    "make_psycopg_connect",
     "resolve_credential",
 ]
 

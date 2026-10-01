@@ -60,17 +60,38 @@ token_hash = "<hash of the API token>"
 # [services.acquire]
 # driver = "<name of the camera driver>"
 
-# Result sinks. Each sink adapter documents its own keys; the lines below only show the shape.
-# [sinks.influx]
-# url = "https://influx.example.com:8086"
-# database = "<database name>"
-# token = "<access token>"
+# Result sinks. Each sink is a table named for the sink, [sinks.<name>]. Keep the name stable,
+# because the forwarder stores the cursor of the sink under it. Remove the "# " from the lines of
+# the sinks that you use. Give a secret with token_env or password_env, which name an environment
+# variable (for example in a systemd EnvironmentFile), or set it directly with token or password
+# here, or with SEEINGMON_SINKS__<NAME>__TOKEN. Every endpoint and secret stays in this untracked
+# file and never goes into a tracked one. Add enabled = false to switch a sink off, and
+# record_types = ["seeing_window", "health"] to send fewer record types.
 #
-# [sinks.timescale]
-# host = "timescale.example.com"
-# database = "<database name>"
+# InfluxDB 2.x or 3.x (version = 2, the default). It posts to /api/v2/write.
+# [sinks.lab_influx]
+# kind = "influx"
+# endpoint = "https://influx.example.org:8086"
+# org = "<organization>"
+# bucket = "<bucket>"
+# token_env = "<name of the environment variable that holds the token>"
+#
+# InfluxDB 1.x. It posts to /write.
+# [sinks.old_influx]
+# kind = "influx"
+# version = 1
+# endpoint = "https://influx.example.org:8086"
+# database = "<database>"
+# username = "<user name>"
+# password_env = "<name of the environment variable that holds the password>"
+#
+# PostgreSQL or TimescaleDB. It needs the "timescale" extra: pip install 'seeingmon[timescale]'.
+# [sinks.archive]
+# kind = "timescale"
+# host = "timescale.example.org"
+# database = "<database>"
 # user = "<user name>"
-# password = "<password>"
+# password_env = "<name of the environment variable that holds the password>"
 
 # Hardware. Every part below stays off until you enable it, and every value is a placeholder. The
 # lines only show the shape. See docs/hardware-checks.md for how to test each part.
