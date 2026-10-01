@@ -8,6 +8,9 @@ that releases and takes the lock in a tight loop starves the other thread.)
 
 A driver that is safe to call from several threads, such as the `asi` driver, does not need the
 gate, and `acquire` skips it (see `AcquireSettings.driver_threads`).
+
+A read takes the gate for every frame, so the read side is a small class and not a generator: it
+takes the lock once to enter and once to leave, and it wakes a control call only when one waits.
 """
 
 from __future__ import annotations
@@ -15,6 +18,45 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
+
+
+def _never() -> bool:
+    return False
+
+
+class _Read:
+    """The hold of one read. `__enter__` returns whether the gate admitted the read."""
+
+    __slots__ = ("_abort", "_admitted", "_gate")
+
+    def __init__(self, gate: DriverGate, abort: Callable[[], bool]) -> None:
+        self._gate = gate
+        self._abort = abort
+        self._admitted = False
+
+    def __enter__(self) -> bool:
+        gate = self._gate
+        with gate._cond:
+            if gate._controlling or gate._waiting:
+                while gate._controlling or gate._waiting:
+                    if self._abort():
+                        break
+                    gate._cond.wait(0.05)
+                self._admitted = not (gate._controlling or gate._waiting)
+            else:
+                self._admitted = True
+            if self._admitted:
+                gate._reading = True
+        return self._admitted
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._admitted:
+            gate = self._gate
+            with gate._cond:
+                gate._reading = False
+                if gate._waiting:
+                    gate._cond.notify_all()
 
 
 class DriverGate:
@@ -26,27 +68,12 @@ class DriverGate:
         self._controlling = False
         self._waiting = 0
 
-    @contextlib.contextmanager
-    def read(self, abort: Callable[[], bool] = lambda: False) -> Iterator[bool]:
+    def read(self, abort: Callable[[], bool] = _never) -> AbstractContextManager[bool]:
         """Hold the gate for one read. Yields `False` without holding it when `abort` is true.
 
         The block waits while a control call runs or waits. It checks `abort` every 50 ms.
         """
-        with self._cond:
-            while self._controlling or self._waiting:
-                if abort():
-                    break
-                self._cond.wait(0.05)
-            admitted = not (self._controlling or self._waiting)
-            if admitted:
-                self._reading = True
-        try:
-            yield admitted
-        finally:
-            if admitted:
-                with self._cond:
-                    self._reading = False
-                    self._cond.notify_all()
+        return _Read(self, abort)
 
     @contextlib.contextmanager
     def control(self) -> Iterator[None]:

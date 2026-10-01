@@ -680,7 +680,7 @@ class AcquireService:
                 self._stop.wait(self._cfg.error_backoff_s or 0.05)
 
     def _capture_once(self) -> None:
-        if not self._capturing_event.wait(0.1):
+        if not self._capturing_event.is_set() and not self._capturing_event.wait(0.1):
             return
         with self._lock:
             paused = self._disruptions > 0
@@ -776,7 +776,7 @@ class AcquireService:
         lost = self._drops.frame_arrived(
             seen_mono_ns, frame.dropped_before, period_s=self._stamper.period_s
         )
-        flags = frame.flags | (FrameFlag.RECOVERED if recovered else FrameFlag.NONE)
+        flags = frame.flags | FrameFlag.RECOVERED if recovered else frame.flags
         if self._keeps_driver_time(frame):
             stamped = replace(frame, dropped_before=lost, flags=flags)
         else:
@@ -788,7 +788,7 @@ class AcquireService:
                 t_err_ns=frame_time.t_err_ns,
                 t_quality=frame_time.t_quality,
                 dropped_before=lost,
-                flags=flags | frame_time.flags,
+                flags=flags | frame_time.flags if frame_time.flags else flags,
             )
         overflow = self._queue.put_frame(stamped, epoch)
         if overflow:
