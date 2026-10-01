@@ -1,6 +1,6 @@
 # Seeing monitor: architecture
 
-Status: draft for review (phase 1), October 1, 2026. The main body takes about 20 minutes to read, and the two appendixes are optional. Sources and calculations are in [research-notes.md](research-notes.md).
+Status: draft for review (phase 1), October 1, 2026. For a 15-minute review, read Summary, Decisions, Components, Reference hardware, Measurement modes, and Risks and open questions (about 2,500 words). The other sections are reference, and the two appendixes are optional. Sources and calculations are in [research-notes.md](research-notes.md).
 
 ## Summary
 
@@ -20,12 +20,13 @@ Five rules shape the design. A profile describes the hardware, and everything el
 | Language | Python 3.11 or later with NumPy, SciPy, astropy, and `pyerfa`. If the Pi 4 benchmark gate fails, Rust (PyO3) replaces only the per-frame metrics. | One maintainer, the best astronomy ecosystem, and solving is not a bottleneck. | You |
 | License | MIT, copyright Lauri Kangas | | You |
 | Remote database | A sink interface with InfluxDB first and PostgreSQL with TimescaleDB second. Both can run at once. | Matches your migration plan. | You |
-| Hardware | Raspberry Pi 4 or 5, SD card only. The design targets the Pi 4. | The weakest case sets the budget. | You |
+| Hardware | Raspberry Pi 4 (with the owner's power HAT) or Raspberry Pi 5 (with the camera HAT), SD card only. The HAT choice is open. The design targets the Pi 4. | The weakest case sets the budget. | You |
 | RAM | Start with 2 GB, and move to 4 GB only if the phase 2 memory gate fails. | Peak memory is about 1.4 GB, and the step to 4 GB nearly doubles the price (April 2026). A bench swap is cheap. | Lead |
-| Solver catalog | A cap around the north celestial pole (NCP). No all-sky blind solve. | The mount never points far from the pole. | You |
+| Solver catalog | A 15 degree cap around the north celestial pole (NCP). No all-sky blind solve. | The mount never points far from the pole. | You |
 | Fast mode | Bin1 readout and a 2 ms exposure. The brief suggests about 10 ms, which stays selectable. | Bin1 needs no defocus. At 10 ms, Polaris saturates and seeing reads 2 to 27% low. | Lead |
 | Local store | SQLite (WAL) for results. FITS, SER, and binary segment files for survey frames, bursts, and per-frame metrics. | No administration and few writes, which suits an SD card. | Lead |
 | Camera access | ZWO ASI SDK through `ctypes` in `acquire`. INDI and Alpaca adapters only for other vendors. | Only the SDK offers video mode, ROI streaming, and a drop counter at low latency. | Lead |
+| Dew heater | GPIO through `libgpiod` behind an `Io` interface, with one adapter per HAT. The loop holds the heater a small margin above the dew point, logs its duty, and defaults to off. | `libgpiod` works on the Pi 4 and the Pi 5 (`RPi.GPIO` does not work on the Pi 5). Heater plumes can add local turbulence, so the duty goes on every seeing window. | Lead |
 | Plate solver | astrometry.net with a custom cap index and SEP star lists. ASTAP as fallback. An in-house tracker between solves. | Packaged for Raspberry Pi OS and safe at the pole. A separate process keeps GPL code out of the MIT project. | Lead |
 | Web | FastAPI, static HTML and JavaScript, uPlot, no external assets. | The Pi may have no internet. | Lead |
 | Processes | `acquire`, `core`, and `web` under systemd with a watchdog. chrony supplies time. | A closed SDK can hang, and the network-facing process stays read-only. | Lead |
@@ -47,6 +48,8 @@ flowchart LR
     FAST["Fast analysis: per-frame metrics, window statistics"]
     SURV["Survey analysis worker: detection, solve, photometry"]
     ALN["Alignment helper"]
+    HEAT["Dew heater control"]
+    REF["Reference readers: SQM-LE, manual entries"]
     STORE[("Store: SQLite and files")]
     OUT["Sink forwarder"]
   end
@@ -54,6 +57,8 @@ flowchart LR
     API["REST API v1 and web UI"]
   end
   CAT[("Catalog cap around the NCP")]
+  HW[("GPIO: heater and sensors")]
+  SQM[("SQM-LE on the LAN")]
   INFLUX[("InfluxDB")]
   PG[("PostgreSQL or TimescaleDB")]
   CAM --> DRV --> Q
@@ -65,6 +70,9 @@ flowchart LR
   SURV --> STORE
   CAT --> SURV
   CAT --> ALN
+  HEAT --> HW
+  HEAT --> STORE
+  SQM --> REF --> STORE
   STORE --> OUT
   OUT --> INFLUX
   OUT --> PG
@@ -80,6 +88,7 @@ flowchart LR
 | Scheduler | Grants the camera to one mode at a time, follows daylight and clouds, queues commissioning tasks | `core` |
 | Analysis | Fast: per-frame metrics and window statistics. Survey: detection, solving, photometry, pointing, focus, in a low-priority worker. Alignment: live view and quick solve. | `core` |
 | Store and sinks | SQLite plus files, quota-based retention, per-sink forwarding with retry | `core` |
+| Heater and reference | The dew-heater control loop through GPIO. SQM-LE polling and manual SQM entries. | `core` |
 | API and UI | Versioned REST API, static UI, WebSocket live view. Reads the store and sends commands to `core`. | `web` |
 
 The processes isolate three risks. The vendor SDK is a closed binary that can hang on USB faults, so `acquire` restarts alone. `web` faces the network, so it gets read-only store access and no camera access. `core` is the only writer. The processes talk over local connections (`multiprocessing.connection`), and frames travel as length-prefixed bytes with a fixed binary header. No pickle crosses a process boundary.
@@ -146,10 +155,11 @@ Every result is an immutable record keyed by `(station_id, record_type, t_utc_ns
 | Record | Content |
 |---|---|
 | `frame` (local files; optional sink) | Sequence, UTC time and error, stream ID, centroid, width, peak, flux, background, flags |
-| `seeing_window` (each 60 s window) | Frame and drop counts, image-motion RMS, seeing, r0, scintillation, spectrum bins, vibration lines, flags |
+| `seeing_window` (each 60 s window) | Frame and drop counts, image-motion RMS, seeing, r0, scintillation, spectrum bins, vibration lines, heater duty, flags |
 | `survey_frame`, `sky_quality`, `pointing` (each survey step) | Exposure, gain, mode, temperature. Sky brightness, zero point, transparency, cloud fraction. Attitude, center, roll, scale, residual, offset, focus. |
 | `star_list` (each survey step), `star_epoch` (each night) | Matched stars brighter than G = 11 and all unmatched detections. Per star and night: mean position offset, mean magnitude, scatter, frame count. |
-| `health`, `event`, `run` (every 60 s, on occurrence, on start) | States, temperatures, free space, drops, sink backlog, time sync. Events. Versions and effective configuration. |
+| `reference` (each reading) | Instrument, time, value (mag/arcsec²), temperature, pointing, and whether it comes from the fixed SQM-LE or a manual handheld entry |
+| `health`, `event`, `run` (every 60 s, on occurrence, on start) | States, temperatures, heater duty, free space, drops, sink backlog, time sync. Events. Versions and effective configuration. |
 
 Each record type is declared once (field, type, unit, definition), and the SQLite schema, sink mappings, API schema, and quantity reference come from that declaration. InfluxDB gets one measurement per type with `station` and `profile` tags. TimescaleDB gets one hypertable per type with a unique index on the key. Tables are append-only, so a sink cursor is the last acknowledged row ID, and a new sink backfills from row zero.
 
@@ -202,6 +212,7 @@ Later layers override earlier ones. Pydantic validates the merged result, and th
 
 - **Burst.** `seeingmon burst` or `POST /commands/burst` records frames to a SER file with a JSON sidecar. Pinned bursts are exempt from retention.
 - **Sweep.** `seeingmon sweep` runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise.
+- **Dark.** There is no lens cap, so `seeingmon dark` waits while you cover the camera, checks that the frame is dark, and records a set at the current sensor temperature.
 - **Replay.** The `replay` driver feeds a recorded burst through `acquire` at the original or the maximum rate, and the production analysis runs unchanged. A replay writes to a separate store.
 
 ## Measurement modes
@@ -215,7 +226,7 @@ Frames group into windows (default 60 s) that never span a reconfiguration. Pola
 
 ### Sky quality
 
-Survey frames use bin2 at gain 120 or higher. The pipeline subtracts bias and a temperature-dependent dark model, divides by a flat model, masks stars, and takes a sigma-clipped sky median. The zero point comes from matched Gaia DR3 stars with a fitted BP-RP color term (the camera band is not Gaia G), and Tycho-2 supplies Polaris and other bright stars. Sky brightness is the zero point minus 2.5 log10 of the sky rate per square arcsecond. Transparency is the zero-point offset from the median of the clearest nights, because Polaris sits at a fixed altitude and extinction cannot be fitted. Capped dark frames at several temperatures fit the dark-rate model and a hot-pixel map, and capped frames recheck them each season. **Validation:** injected-truth simulation, zero-point scatter of 0.03 mag or less on clear nights, and a comparison with an SQM or TESS-W if you have one.
+Survey frames use bin2 at gain 120 or higher. The pipeline subtracts bias and a temperature-dependent dark model, divides by a flat model, masks stars, and takes a sigma-clipped sky median. The zero point comes from matched Gaia DR3 stars with a fitted BP-RP color term (the camera band is not Gaia G), and Tycho-2 supplies Polaris and other bright stars. Sky brightness is the zero point minus 2.5 log10 of the sky rate per square arcsecond. Transparency is the zero-point offset from the median of the clearest nights, because Polaris sits at a fixed altitude and extinction cannot be fitted. Manual dark sets at several temperatures between 0 and 25 °C fit the dark-rate model and a hot-pixel map, and `health` reports `dark_due` when the library misses the current temperature or is older than 6 months. **Validation:** injected-truth simulation, zero-point scatter of 0.03 mag or less on clear nights, and the reference readings. The fixed SQM-LE points 45 degrees up to the north through a plastic dome, so the dome loss and the altitude difference become fitted terms, and handheld SQM-L readings taken outside the dome calibrate the dome loss.
 
 ### Pointing
 
@@ -277,6 +288,7 @@ The target is Raspberry Pi OS Lite, 64-bit (Debian 13 with Python 3.13). The Deb
 
 - **Install.** A generic script takes host, user, and paths as parameters, with no defaults. It creates a service user, installs the wheel in a virtual environment and the systemd units, adds the camera udev rule and the USB buffer setting, configures journald and chrony, and copies your local configuration. It is safe to rerun.
 - **Recovery.** Services use `Restart=always`, `WatchdogSec`, and a start limit that escalates to `degraded` health. The camera ladder ends in a hard power cycle of the whole Pi through its PoE switch port or a smart plug. An external watchdog on the LAN polls `/api/v1/health` and triggers the cycle when health stays failed for several minutes, and the Pi can request it as a last resort. A command or URL in local configuration defines the cycle, so no address or credential enters the repository.
+- **Heater.** Heater outputs default to off at boot and when a service stops. Prefer a HAT with its own failsafe, and add an over-temperature cutoff from the sensors. The pin map and sensor addresses live in local configuration, with an example template.
 - **SD card.** Data lives on its own partition. Journald logs stay in RAM, and warnings also go to the `event` table. Temporary files use tmpfs, files are written under a temporary name and renamed, and SQLite runs WAL with `synchronous=NORMAL`. The write budget is under 1 GB per day. Use a high-endurance card. A 32 GB card holds the rolling tiers (about 7 GB) and five years of results.
 - **Time and updates.** The Pi 4 has no real-time clock, so records carry `time_invalid` until the first synchronization. Two versioned environments and a symlink flip give a rollback in seconds. The OS updates itself for security, and application and SDK updates are manual.
 - **Vendor SDK.** The repository never contains the SDK. The installer takes the archive from a path you give it, checks its checksum, and installs it privately. The INDI third-party repository carries an MIT license text for the SDK, but the terms in ZWO's own archive are unconfirmed, so redistribution waits on that check.
@@ -298,7 +310,7 @@ The device sits on a LAN, and the repository is public.
 | Polaris saturates, and bin2 biases the centroid | Clipped flux, and a centroid gain of 0.5 to 1.5 | Bin1, 2 ms, a defocus of about 3 pixels if bin2 is used, flags, a commissioning sweep |
 | No frame timestamp from the camera | Absolute time depends on the host clock and a latency estimate | Regression over frame number, GPIO light-pulse calibration, `t_err` on every frame |
 | The closed SDK hangs or stalls the camera | Lost frames, or no camera for days | Process isolation, watchdog, the recovery ladder ending in a remote power cycle, a soak test, a pinned SDK version |
-| Uncooled sensor and possible dew | Dark current and transparency drift | Dark-rate model with seasonal checks, a dew flag, an optional heater |
+| Uncooled sensor, dew, and heater plumes | Dark current and transparency drift. The heater can add local turbulence and bias seeing high. | Manual dark sets and a dark-rate model. A GPIO dew heater held a small margin above the dew point, with its duty logged and flagged on seeing windows. A dew flag from star width and transparency. |
 | No standard sky scale for an unfiltered sensor | 0.2 to 0.3 mag uncertainty in V | Report the camera band first, and fit against an SQM or TESS-W |
 | SD card wear and corruption | Data loss or a failed boot | Write budget, tmpfs, WAL, atomic writes, a high-endurance card, remote sinks as a second copy |
 
@@ -306,10 +318,8 @@ Questions for you:
 
 1. You deferred the InfluxDB version, the field names to keep, and any history import. The InfluxDB adapter waits for them.
 2. How will the Pi's power be cycled remotely: through its PoE switch port, through a smart plug on the injector, or not at all? A camera-only cycle needs a powered hub on a switchable supply, and ZWO advises a direct connection when troubleshooting, so the soak test must include any hub.
-3. Does the scope have a dew heater or shield, and is a lens cap available for dark frames?
-4. Does the site have a reference instrument (SQM, TESS-W, or DIMM)?
-5. How far from the pole can the mount point when alignment starts? The default cap radius is 15 degrees.
-6. Is a LAN-only service with a command token acceptable?
+3. Which Pi and HAT will you use? When you decide, send the HAT's pin map, any temperature and humidity sensors, and any failsafe, so the heater adapter can match it.
+4. Who may use the web UI? The default is that anyone on your local network can view the pages, while an action that changes something (starting alignment, capturing a burst, pausing) needs a token, a long secret that your phone stores after you enter it once. Reaching the device from outside goes through a VPN, and the router never forwards a port to it. Do you want a different rule, such as a login to view, or access from the internet?
 
 ## Appendix: long-term science plan
 

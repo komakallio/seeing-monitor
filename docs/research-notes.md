@@ -362,6 +362,13 @@ Tokovinin 2002 (https://iopscience.iop.org/article/10.1086/342683). Martin 1987 
 
 Polaris sources: https://arxiv.org/abs/0804.3593, https://arxiv.org/abs/0810.4371, https://arxiv.org/abs/1610.03813, https://doi.org/10.1093/mnrasl/sly170, https://arxiv.org/abs/2309.03257. VSX in VizieR: https://cdsarc.cds.unistra.fr/viz-bin/cat/B/vsx. VizieR TAP: https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync. SkyBoT: http://vo.imcce.fr/webservices/skybot/.
 
+## Reference instruments, dew heater, and GPIO
+
+- **Owner's setup (not independently verified).** A fixed SQM-LE points 45 degrees up to the north through a plastic dome, and a handheld SQM-L is also available. The dome transmission is unknown, so it becomes a fitted offset, and handheld readings taken outside the dome can calibrate it.
+- **SQM-LE.** Unihedron's product page lists an Ethernet interface, an infrared-blocking filter that limits the response to the visual band, a reported sensor temperature, and a sampling time of 1 to 80 s (V, https://www.unihedron.com/projects/sqm-le/). The page gives no field of view or accuracy, and the manual is a scanned PDF that I could not read, so the field of view and the reading protocol are open items. The SQM band differs from V by up to 0.25 mag depending on the sky spectrum (see the solver and catalog section).
+- **GPIO on the Pi 5.** The Pi 5 routes the header pins through the RP1 chip, so `RPi.GPIO`, which reads hardware registers through `/dev/mem`, does not work. Libraries that use the kernel's `/dev/gpiochip` interface (`libgpiod`, `gpiozero` with `lgpio`) work on every Pi model (V, https://pip-assets.raspberrypi.com/categories/685-whitepapers-app-notes/documents/RP-006553-WP/A-history-of-GPIO-usage-on-Raspberry-Pi-devices-and-current-best-practices, and https://forums.raspberrypi.com/viewtopic.php?t=361834).
+- **Heater plumes.** A heater near the objective can create convection and add image motion, so the design logs the heater duty on every seeing window and keeps the heat on the dew shield or lens cell at the lowest duty that holds the optics a small margin above the dew point (design reasoning, not a measurement).
+
 ## Calculations
 
 | Item | Inputs and result |
