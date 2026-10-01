@@ -480,10 +480,8 @@ class StarField:
         )
         distance = math.hypot(dx, dy)
         fwhm = 2.4 + 0.25 * math.sin(t / 50)
-        counts = [
-            round(3.0e6 * math.exp(-0.63 * i)) + (40 if i >= 28 else 0)
-            for i in range(HISTOGRAM_BINS)
-        ]
+        counts = [round(3.0e6 * math.exp(-0.63 * i)) for i in range(HISTOGRAM_BINS)]
+        counts[-1] = round(saturation * FRAME_WIDTH_PX * FRAME_HEIGHT_PX)  # the saturated pixels
         state = AlignmentState(
             active=True,
             t_utc=utc_ns_to_iso(now_ns + round(t * NS_PER_S), digits=3),
