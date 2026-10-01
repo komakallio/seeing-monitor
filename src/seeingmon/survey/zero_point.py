@@ -104,7 +104,7 @@ def _weighted_fit(
         design = np.column_stack([np.ones_like(y), color - pivot])
         normal = design.T @ (design * weight[:, None])
         rhs = design.T @ (weight * y)
-        covariance = np.linalg.inv(normal)
+        covariance = np.asarray(np.linalg.inv(normal), dtype=np.float64)
         solution = covariance @ rhs
         return float(solution[0]), float(solution[1]), covariance
     level = float(np.sum(weight * (y - prior * (color - pivot))) / np.sum(weight))
