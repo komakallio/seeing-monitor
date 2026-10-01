@@ -442,7 +442,11 @@ class Scheduler:
             self.close()
 
     def close(self) -> None:
-        """End the stream, flush the analyzer, and close the camera. Safe to call twice."""
+        """End the stream, flush the analyzer, and close the camera. Safe to call twice.
+
+        Call it from the thread that runs the loop (`run` does), or after the loop ended. It
+        touches the camera and the analyzer, which no other thread may do while the loop runs.
+        """
         with self._lock:
             if self._closed:
                 return
@@ -505,23 +509,35 @@ class Scheduler:
         if problem is not None:
             return self._reject(RejectReason.INVALID, problem)
         now = self._clock.monotonic_ns()
-        if state is State.ALIGN and self._align is not None:
+        if state is State.ALIGN:
             session = self._align
-            if (session.exposure_us, session.gain) != (exposure_us, gain):
-                session.exposure_us, session.gain, session.dirty = exposure_us, gain, True
-            session.last_activity_mono = now
+            if session is None:  # the session ended a moment ago, so start it again
+                self._align = _AlignSession(exposure_us, gain, now)
+            else:
+                if (session.exposure_us, session.gain) != (exposure_us, gain):
+                    session.exposure_us, session.gain, session.dirty = exposure_us, gain, True
+                session.last_activity_mono = now
             return self._accept("alignment already runs, so the idle timer restarted")
         self._align = _AlignSession(exposure_us=exposure_us, gain=gain, last_activity_mono=now)
         self._transition("alignment started", State.ALIGN)
         return self._accept("alignment started")
 
     def _stop_alignment(self) -> CommandResult:
-        if self._machine.state is not State.ALIGN:
+        if not self._end_alignment("alignment stopped"):
             return self._reject(RejectReason.NOT_ALIGNING, "no alignment runs")
-        self._align = None
-        self._next_watch_mono = self._clock.monotonic_ns()
-        self._transition("alignment stopped", State.SAFE)
         return self._accept("alignment stopped")
+
+    def _end_alignment(self, reason: str) -> bool:
+        """Leave `align` for `safe`. The session and the state change in one hold of the lock.
+
+        The next brightness frame follows at once. Returns `False` when no alignment runs.
+        """
+        with self._lock:
+            if self._machine.state is not State.ALIGN:
+                return False
+            self._align = None
+            self._next_watch_mono = self._clock.monotonic_ns()
+            return self._transition(reason, State.SAFE, expect=State.ALIGN)
 
     def _pause(self) -> CommandResult:
         if self._machine.state is State.PAUSED:
@@ -860,12 +876,10 @@ class Scheduler:
                 {"failures": plan.failures},
             )
         self._cycle = _Cycle(next_slot_mono=now)
-        if plan.degraded:
-            for state in (State.AUTO, State.ALIGN, State.COMMISSION):
+        if plan.degraded and not self._end_alignment("camera fault"):
+            for state in (State.AUTO, State.COMMISSION):
                 if self._transition("camera fault", State.SAFE, expect=state):
-                    with self._lock:
-                        self._align = None
-                        self._next_watch_mono = now
+                    self._next_watch_mono = now
                     break
         return StepKind.FAULT
 
@@ -892,9 +906,9 @@ class Scheduler:
             else:
                 assert self._escalate is not None
                 self._escalate(step)
-        except (
-            Exception
-        ) as error:  # the callback is outside code, and the driver can raise any CameraError
+        except Exception as error:
+            # The driver raises a `CameraError`, but the callback is outside code that can raise
+            # anything. Either way, the step failed, and the failure counts.
             self._emit(
                 "error",
                 "scheduler.recovery_step",
@@ -1346,14 +1360,11 @@ class Scheduler:
         with self._lock:
             session = self._align
         if session is None:
-            self._transition("no alignment session", State.SAFE, expect=State.ALIGN)
+            self._end_alignment("no alignment session")
             return StepKind.TRANSITION
         idle_ns = round(self._config.align.idle_timeout_s * NS_PER_S)
         if now - session.last_activity_mono >= idle_ns:
-            with self._lock:
-                self._align = None
-            self._next_watch_mono = now
-            self._transition("alignment idle timeout", State.SAFE, expect=State.ALIGN)
+            self._end_alignment("alignment idle timeout")
             return StepKind.TRANSITION
         if self._activity is not Purpose.ALIGN or session.dirty:
             config = StreamConfig(

@@ -173,6 +173,34 @@ class TestIdleTimeout:
         assert {f.gain for f in later} == {60}
         world.close()
 
+    def test_a_start_that_arrives_just_after_the_session_ended_starts_it_again(self) -> None:
+        """A `StartAlignment` can arrive between the end of a session and the state change.
+
+        The loop ends the session and changes the state in one hold of the lock now, so the
+        window is gone. The scheduler also copes with the state alone, which this test builds.
+        """
+        world = World(start_utc_ns=NIGHT)
+        submit_at(world, 100, StartAlignment(exposure_s=10.0))
+        world.run_until(200)
+        assert world.scheduler.state.value == "align"
+        world.scheduler._align = None  # the stale case: the state says align, and no session
+        result = world.scheduler.submit(StartAlignment(exposure_s=10.0))
+        assert result.accepted
+        assert world.scheduler.status().alignment_idle_s is not None
+        world.run_until(260)
+        assert world.scheduler.state.value == "align"
+        world.close()
+
+    def test_stopping_the_alignment_clears_the_session_with_the_state(self) -> None:
+        world = World(start_utc_ns=NIGHT)
+        submit_at(world, 100, StartAlignment(exposure_s=10.0))
+        submit_at(world, 200, StopAlignment())
+        world.run_until(300)
+        status = world.scheduler.status()
+        assert status.alignment_idle_s is None
+        assert world.scheduler.state.value == "auto"
+        world.close()
+
     def test_sending_start_again_with_the_same_settings_does_not_reconfigure(self) -> None:
         world = World(start_utc_ns=NIGHT)
         submit_at(world, 400, StartAlignment(exposure_s=10.0))
