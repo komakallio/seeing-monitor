@@ -18,8 +18,10 @@ Each figure is the median over `repeats` of the mean time of a batch of frames, 
 also gives the best batch. The Raspberry Pi 4 budget is 0.2 to 0.4 ms for the kernel of a bin1
 frame, which is 5 to 10 times the figure of a modern desktop.
 
-The function takes a `Clock`, so a test can run it on a clock that it controls. The default is the
-system clock.
+The default timer is `time.perf_counter_ns`, which ticks every 100 ns or finer on every platform.
+The monotonic clock of Windows before Python 3.13 ticks every 15.6 ms, and it would read a batch
+of a few frames as zero. A test passes a `Clock` that it controls, and the benchmark times with the
+`monotonic_ns` method of that clock.
 """
 
 from __future__ import annotations
@@ -28,13 +30,14 @@ import argparse
 import json
 import math
 import statistics
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 
 import numpy as np
 import numpy.typing as npt
 
-from seeingmon.clock import NS_PER_S, Clock, SystemClock
+from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.fastpath.analyzer import FastPathAnalyzer
 from seeingmon.fastpath.config import FastPathConfig
 from seeingmon.fastpath.kernel import measure_frame, measure_stack
@@ -125,10 +128,12 @@ def _frame(
     )
 
 
-def _microseconds_per_frame(clock: Clock, count: int, work: Callable[[], object]) -> float:
-    start = clock.monotonic_ns()
+def _microseconds_per_frame(
+    timer: Callable[[], int], count: int, work: Callable[[], object]
+) -> float:
+    start = timer()
     work()
-    return (clock.monotonic_ns() - start) / 1000.0 / count
+    return (timer() - start) / 1000.0 / count
 
 
 def run_case(
@@ -141,7 +146,7 @@ def run_case(
     *,
     frames: int,
     repeats: int,
-    clock: Clock,
+    timer: Callable[[], int],
     close_window_s: float = 60.0,
 ) -> CaseResult:
     """Time one case. `frames` is the number of frames in a batch, and `repeats` the batches.
@@ -176,10 +181,10 @@ def run_case(
     stack_runs: list[float] = []
     push_runs: list[float] = []
     for _ in range(repeats):
-        kernel_runs.append(_microseconds_per_frame(clock, frames, kernel))
+        kernel_runs.append(_microseconds_per_frame(timer, frames, kernel))
         stack_runs.append(
             _microseconds_per_frame(
-                clock, frames, lambda: measure_stack(stack, roi.x, roi.y, params, calibration)
+                timer, frames, lambda: measure_stack(stack, roi.x, roi.y, params, calibration)
             )
         )
         analyzer = new_analyzer()
@@ -189,14 +194,14 @@ def run_case(
             for item in items:
                 target.push(item)
 
-        push_runs.append(_microseconds_per_frame(clock, frames, push))
+        push_runs.append(_microseconds_per_frame(timer, frames, push))
     # Fill a full window and time how long `flush` takes to close it.
     analyzer = new_analyzer()
     for i in range(max(1, round(close_window_s * NS_PER_S / period_ns))):
         analyzer.push(_frame(pool[i % POOL], i, period_ns, roi, config, adc_bits))
-    start = clock.monotonic_ns()
+    start = timer()
     analyzer.flush()
-    close_ms = (clock.monotonic_ns() - start) / 1e6
+    close_ms = (timer() - start) / 1e6
     return CaseResult(
         name=name,
         mode=mode,
@@ -223,17 +228,18 @@ def run_benchmark(
 
     `frames` is the size of a timed batch, and `repeats` the number of batches of each kind.
     `close_window_s` is the length of the window whose closing the benchmark times. The benchmark
-    reads the reference profile unless you pass one.
+    reads the reference profile unless you pass one, and it times with `time.perf_counter_ns`
+    unless you pass a clock.
     """
     profile = profile or load_profile(_REFERENCE_PROFILE)
-    clock = clock or SystemClock()
+    timer = time.perf_counter_ns if clock is None else clock.monotonic_ns
     return [
         run_case(
             profile,
             *case,
             frames=frames,
             repeats=repeats,
-            clock=clock,
+            timer=timer,
             close_window_s=close_window_s,
         )
         for case in _CASES

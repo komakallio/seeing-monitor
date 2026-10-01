@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -59,12 +60,40 @@ def test_the_benchmark_reports_microseconds_per_frame_for_both_cases(profile: Pr
         assert result.kernel_best_us <= result.kernel_us
 
 
-def test_the_real_clock_gives_plausible_numbers(profile: Profile) -> None:
+def test_the_default_timer_gives_finite_positive_numbers(profile: Profile) -> None:
+    """The default timer has a fine tick on every platform, so a batch never reads as zero.
+
+    The monotonic clock of Windows before Python 3.13 ticks every 15.6 ms, and a batch of 40
+    frames takes less than that. The test checks no speed: a CI runner can be fast or slow.
+    """
     (bin1, bin2) = run_benchmark(frames=40, repeats=2, profile=profile, close_window_s=3.0)
     for result in (bin1, bin2):
-        assert 1.0 < result.kernel_us < 20_000.0  # a loose bound: CI machines vary a lot
-        assert result.push_us >= 0.5 * result.kernel_us
-        assert result.close_ms > 0.0
+        for value in (
+            result.kernel_us,
+            result.kernel_best_us,
+            result.stack_us,
+            result.push_us,
+            result.push_best_us,
+            result.close_ms,
+        ):
+            assert math.isfinite(value)
+            assert value > 0.0
+
+
+def test_a_coarse_clock_gives_finite_non_negative_numbers(profile: Profile) -> None:
+    """A clock that ticks every 15.6 ms (Windows before Python 3.13) reads a short batch as zero."""
+
+    class CoarseClock(TickingClock):
+        def monotonic_ns(self) -> int:
+            return super().monotonic_ns() // 15_600_000 * 15_600_000
+
+    results = run_benchmark(
+        frames=20, repeats=1, profile=profile, clock=CoarseClock(1_000), close_window_s=2.0
+    )
+    for result in results:
+        for value in (result.kernel_us, result.stack_us, result.push_us, result.close_ms):
+            assert math.isfinite(value)
+            assert value >= 0.0
 
 
 def test_the_report_names_every_case(profile: Profile) -> None:
