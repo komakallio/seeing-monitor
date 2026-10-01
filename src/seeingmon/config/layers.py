@@ -28,6 +28,30 @@ ENV_PREFIX = "SEEINGMON_"
 ENV_SEPARATOR = "__"
 REDACTED = "<redacted>"
 SECRET_WORDS = ("token", "password", "secret", "credential", "key")
+# Deployment values (hosts, URLs, addresses, commands, and paths) say where a station runs,
+# not how it computes, so they stay out of the effective configuration too. The match is on whole
+# name parts, so `wind_direction_deg` is not a folder.
+DEPLOYMENT_WORDS = frozenset(
+    {
+        "host",
+        "hostname",
+        "url",
+        "uri",
+        "endpoint",
+        "address",
+        "dsn",
+        "command",
+        "path",
+        "paths",
+        "dir",
+        "dirs",
+        "directory",
+        "socket",
+        "pipe",
+        "file",
+        "files",
+    }
+)
 
 _ENV_SEGMENT = re.compile(r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 
@@ -122,16 +146,25 @@ def is_secret_key(key: str) -> bool:
     return any(word in lowered for word in SECRET_WORDS)
 
 
+def is_deployment_key(key: str) -> bool:
+    """Whether a key name marks a deployment value: a part of the name is a host, URL, address,
+    command, path, folder, socket, pipe, or file word, with parts split at every non-letter."""
+    return any(part in DEPLOYMENT_WORDS for part in re.split(r"[^a-z0-9]+", key.lower()) if part)
+
+
 def redact(value: Any) -> Any:
-    """A copy of `value` with the value of every secret key replaced by `REDACTED`.
+    """A copy of `value` with the value of every secret or deployment key replaced by `REDACTED`.
 
     A key is secret when its name contains token, password, secret, credential, or key, in any
-    case. The rule applies at any depth, and it replaces a table or an array under such a key
-    as a whole.
+    case. A key is a deployment key when a part of its name is a host, URL, address, command,
+    path, folder, socket, pipe, or file word. The rule applies at any depth, and it replaces a
+    table or an array under such a key as a whole.
     """
     if isinstance(value, Mapping):
         return {
-            key: REDACTED if is_secret_key(str(key)) else redact(item)
+            key: REDACTED
+            if is_secret_key(str(key)) or is_deployment_key(str(key))
+            else redact(item)
             for key, item in value.items()
         }
     if isinstance(value, list):

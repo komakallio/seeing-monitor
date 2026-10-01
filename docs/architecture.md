@@ -185,7 +185,7 @@ The API lives under `/api/v1`. Within `v1`, changes only add fields and endpoint
 |---|---|---|
 | `/status`, `/health` | GET | State of every component. Health returns 200 (healthy or degraded) or 503. |
 | `/seeing`, `/sky`, `/pointing` (each with `/latest`) | GET | Latest record, or history with `from`, `to`, and `step` (1 minute, 10 minutes, 1 hour) |
-| `/images/latest`, `/images/{id}`, `/events`, `/profile`, `/config` | GET | Preview and FITS, events, profile with derived values, configuration without secrets or site data |
+| `/images/latest`, `/images/{id}`, `/events`, `/profile`, `/config` | GET | Preview and FITS, events, profile with derived values, configuration without secrets, hosts, URLs, addresses, commands, paths, or site data |
 | `/commands/burst`, `/commands/sweep`, `/commands/replay`, `/mode`, `/alignment/start`, `/alignment/stop` | POST | Commissioning, mode changes, alignment (token required) |
 | `/alignment/state`, `/alignment/stream` | GET, WebSocket | Alignment offsets and the live view |
 
@@ -354,7 +354,7 @@ The device sits on a LAN, and the repository is public.
 
 - **Network.** `web` binds to the LAN interface only, and remote access goes through a VPN. Reads are open on the LAN by default (a deferred decision), and a setting can require the token. Commands need a bearer token (only its hash is stored), are rate-limited, and validate input.
 - **Isolation.** Each service runs unprivileged under a systemd sandbox (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`). `web` has no camera access and no write access to the data directory. Only `acquire` touches USB.
-- **Supply chain and secrets.** Dependencies are pinned with hashes. Secrets and site coordinates live in `local/`, environment variables, or systemd credentials, and never in the repository, the logs, or the API. SSH uses keys only.
+- **Supply chain and secrets.** Dependencies are pinned with hashes. Secrets and site coordinates live in `local/`, environment variables, or systemd credentials, and never in the repository, the logs, or the API. The effective configuration in the `run` record and the `/config` endpoint also leaves out hosts, URLs, addresses, commands, and paths, because they say where a station runs and not how it computes. SSH uses keys only.
 
 ## Risks and open questions
 

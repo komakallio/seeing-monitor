@@ -13,6 +13,7 @@ from seeingmon.config import REDACTED, ConfigError
 from seeingmon.config.layers import (
     deep_merge,
     env_overrides,
+    is_deployment_key,
     is_secret_key,
     jsonable,
     parse_env_value,
@@ -186,10 +187,37 @@ def test_a_key_that_contains_a_secret_word_is_secret(key: str) -> None:
     assert redact({key: "value"}) == {key: REDACTED}
 
 
-@pytest.mark.parametrize("key", ["station_id", "latitude_deg", "url", "user", "host", "profile"])
+@pytest.mark.parametrize("key", ["station_id", "latitude_deg", "user", "profile", "window_s"])
 def test_other_keys_are_not_secret(key: str) -> None:
     assert not is_secret_key(key)
     assert redact({key: "value"}) == {key: "value"}
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "host",
+        "url",
+        "endpoint",
+        "bind_address",
+        "data_dir",
+        "catalog_path",
+        "power_command",
+        "SOCKET",
+        "log-file",
+    ],
+)
+def test_a_key_that_names_a_deployment_value_is_redacted(key: str) -> None:
+    assert is_deployment_key(key)
+    assert redact({key: "value"}) == {key: REDACTED}
+
+
+@pytest.mark.parametrize(
+    "key", ["wind_direction_deg", "hostile", "profile", "pipeline_depth", "mode"]
+)
+def test_a_name_that_only_contains_a_deployment_word_is_not_redacted(key: str) -> None:
+    assert not is_deployment_key(key)
+    assert redact({key: 1}) == {key: 1}
 
 
 def test_redaction_applies_at_any_depth_and_inside_arrays_of_tables() -> None:
@@ -199,7 +227,7 @@ def test_redaction_applies_at_any_depth_and_inside_arrays_of_tables() -> None:
         "plain": [1, 2, 3],
     }
     assert redact(data) == {
-        "sinks": {"influx": {"url": "https://x.example.com", "Token": REDACTED}},
+        "sinks": {"influx": {"url": REDACTED, "Token": REDACTED}},
         "list": [{"user": "u", "password": REDACTED}, {"user": "v"}],
         "plain": [1, 2, 3],
     }

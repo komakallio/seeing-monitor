@@ -134,8 +134,9 @@ class Config:
         """The merged configuration as plain JSON types, for the `run` record.
 
         With `redact` set, the value of every key whose name contains token, password, secret,
-        credential, or key (in any case, at any depth) becomes `"<redacted>"`. With `omit_site`
-        set, the `site` section is left out, for output that must not carry site coordinates.
+        credential, or key, or that names a host, URL, address, command, path, folder, socket,
+        pipe, or file (in any case, at any depth) becomes `"<redacted>"`. With `omit_site` set,
+        the `site` section is left out, for output that must not carry site coordinates.
         TOML dates and times become ISO 8601 strings. The result is a copy.
         """
         result: dict[str, Any] = layers.jsonable(copy.deepcopy(self._data))

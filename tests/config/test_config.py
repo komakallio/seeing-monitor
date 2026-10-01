@@ -357,7 +357,7 @@ def secret_config(config_dir: Path, tmp_path: Path) -> Config:
 def test_the_effective_configuration_redacts_secrets_by_default(secret_config: Config) -> None:
     effective = secret_config.effective()
     assert effective["auth"] == {"token_hash": REDACTED}
-    assert effective["sinks"]["influx"] == {"url": "https://influx.example.com", "token": REDACTED}
+    assert effective["sinks"]["influx"] == {"url": REDACTED, "token": REDACTED}
     assert effective["sinks"]["list"] == [{"user": "u", "password": REDACTED}]
     assert effective["site"] == {"latitude_deg": 1.0}
     assert effective["station_id"] == "unset"
