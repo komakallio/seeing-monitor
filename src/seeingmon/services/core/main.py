@@ -78,28 +78,18 @@ def run_core(args: argparse.Namespace) -> int:
 
 
 def heater_off(args: argparse.Namespace) -> int:
-    """Switch the heater outputs off and exit. The unit of `core` runs it after core stops."""
-    from seeingmon.clock import SystemClock
-    from seeingmon.config import ConfigError, load_config
-    from seeingmon.hardware.heater import HeaterConfig, create_heater
+    """Switch the heater outputs off and exit. The unit of `core` runs it after core stops.
+
+    The work lives in `seeingmon.hardware.heater_off`: it reads only `[heater]`, switches off each
+    output line by itself, names a failed output by its logical name, and ends within a time
+    limit even when the GPIO library hangs. Exit code 0 means that the outputs are off or that the
+    heater is not enabled, and 1 means that an output could not be switched off. With
+    `--log-level debug`, the traceback of an unexpected error goes to the log.
+    """
+    from seeingmon.hardware.heater_off import run_heater_off
 
     setup_logging(getattr(args, "log_level", "info"))
-    try:
-        config = load_config(local_file=getattr(args, "local_config", None))
-        heater_config = config.section("heater", HeaterConfig)
-    except ConfigError as error:
-        raise CliError(f"cannot read the heater configuration: {error}") from None
-    if not heater_config.enabled:
-        print("the heater is not enabled, so there is nothing to switch off")
-        return 0
-    try:
-        controller = create_heater(heater_config, clock=SystemClock())
-        controller.close()  # the constructor switches the output off, and close releases the lines
-    except Exception as error:
-        _log.debug("the heater could not be switched off", exc_info=True)
-        raise CliError(f"cannot switch the heater off: {type(error).__name__}: {error}") from None
-    print("the heater outputs are off")
-    return 0
+    return run_heater_off(local_config=getattr(args, "local_config", None))
 
 
 def local_config_option(parser: argparse.ArgumentParser) -> None:

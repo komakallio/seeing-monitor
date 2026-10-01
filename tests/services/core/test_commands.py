@@ -10,7 +10,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +22,7 @@ pytest.importorskip("scipy", reason="the fast path needs the fast extra")
 from seeingmon.cli import main
 from seeingmon.clock import VirtualClock
 from seeingmon.config import load_config
+from seeingmon.hardware.io import FakeIo, PinSpec
 from seeingmon.scheduler.commands import QueueBurst, QueueReplay, QueueSweep
 from seeingmon.scheduler.commission import format_sweep_table
 from seeingmon.services.config import ServicesConfig
@@ -476,23 +477,19 @@ temperature_c = 5.0
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        calls: list[str] = []
+        opened: list[FakeIo] = []
 
-        class Controller:
-            def close(self) -> None:
-                calls.append("close")
+        def open_lines(pins: Mapping[str, PinSpec]) -> FakeIo:
+            opened.append(FakeIo(outputs=pins))
+            return opened[-1]
 
-        def create(config: object, *, clock: object) -> Controller:
-            calls.append("create")
-            return Controller()
-
-        monkeypatch.setattr("seeingmon.hardware.heater.create_heater", create)
+        monkeypatch.setattr("seeingmon.hardware.heater_off.open_lines", open_lines)
         config = tmp_path / "local.toml"
         config.write_text(
             local_config_text(tmp_path / "data", extra=self.ENABLED), encoding="utf-8"
         )
         assert main(["heater-off", "--local-config", str(config)]) == 0
-        assert calls == ["create", "close"]
+        assert [(io.values, io.closed) for io in opened] == [({"heater": False}, True)]
         assert "outputs are off" in capsys.readouterr().out
 
     def test_a_heater_that_cannot_be_reached_is_an_error_with_a_message(
@@ -501,13 +498,15 @@ temperature_c = 5.0
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        def create(config: object, *, clock: object) -> object:
+        def open_lines(pins: Mapping[str, PinSpec]) -> FakeIo:
             raise OSError("no gpio here")
 
-        monkeypatch.setattr("seeingmon.hardware.heater.create_heater", create)
+        monkeypatch.setattr("seeingmon.hardware.heater_off.open_lines", open_lines)
         config = tmp_path / "local.toml"
         config.write_text(
             local_config_text(tmp_path / "data", extra=self.ENABLED), encoding="utf-8"
         )
         assert main(["heater-off", "--local-config", str(config)]) == 1
-        assert "cannot switch the heater off: OSError: no gpio here" in capsys.readouterr().err
+        error = capsys.readouterr().err
+        assert "cannot switch off heater: unexpected OSError" in error
+        assert "no gpio here" not in error  # the journal gets the type of the error, not its text
