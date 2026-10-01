@@ -1,0 +1,109 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "seeingmon"
+version = "0.1.0.dev0"
+description = "Seeing and sky-quality monitor: a fixed camera that points at Polaris, and a Raspberry Pi that runs unattended."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Lauri Kangas" }]
+keywords = ["astronomy", "seeing", "image motion", "Polaris", "Raspberry Pi"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Typing :: Typed",
+]
+# The core install stays small: the profile, the records, and the interfaces need only pydantic.
+dependencies = ["pydantic>=2.7,<3"]
+
+# Each lane adds dependencies to its own extra only. The lead regenerates `uv.lock` after merges.
+[project.optional-dependencies]
+fast = ["numpy>=2.0", "scipy>=1.13"]
+survey = ["seeingmon[fast]", "astropy>=6.1", "pyerfa>=2.0.1"]
+web = ["fastapi>=0.115", "uvicorn>=0.30", "pillow>=10.4"]
+
+[project.scripts]
+seeingmon = "seeingmon.cli:main"
+
+[project.urls]
+Repository = "https://github.com/komakallio/seeing-monitor"
+
+[dependency-groups]
+dev = [
+  "detect-secrets>=1.5",
+  "httpx>=0.27",
+  "hypothesis>=6.100",
+  "mypy>=1.11",
+  "pytest>=8.2",
+  "pytest-timeout>=2.3",
+  "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/seeingmon"]
+
+[tool.uv]
+# The lock covers the three platforms that CI and the deployment use, and no others.
+environments = [
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+required-environments = [
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF", "N", "PERF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["seeingmon", "tools"]
+
+[tool.mypy]
+# No `python_version`: each CI job checks against its own interpreter, so the 3.11 jobs
+# reject newer syntax and the 3.13 jobs read the newest library stubs.
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests", "tools"]
+mypy_path = "$MYPY_CONFIG_FILE_DIR"
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+# Third-party packages without type information.
+module = ["astropy.*", "erfa.*", "sep.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.2"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+filterwarnings = ["error"]
+timeout = 300
+markers = [
+  "hardware: needs a real camera, Raspberry Pi, or other hardware. Skipped unless you pass --hardware or set SEEINGMON_HARDWARE=1.",
+  "recordings: needs the owner's recordings. Skipped when the location is not configured (see docs/development.md).",
+  "slow: runs for a long time. Skipped unless you pass --slow.",
+]

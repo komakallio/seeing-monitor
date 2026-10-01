@@ -31,6 +31,8 @@ Five rules shape the design. A profile describes the hardware, and everything el
 | Web | FastAPI, static HTML and JavaScript, uPlot, no external assets. | The Pi may have no internet. | Lead |
 | Processes | `acquire`, `core`, and `web` under systemd with a watchdog. chrony supplies time. | A closed SDK can hang, and the network-facing process stays read-only. | Lead |
 | Configuration and tests | TOML with pydantic. pytest, hypothesis, and GitHub Actions on Windows, Linux x64, and Linux arm64. | The arm64 runner approximates Raspberry Pi OS. | Lead |
+| Packaging and lock | `pyproject.toml` with `hatchling` and a `src/` layout. `uv` writes one universal lock (`uv.lock`) with hashes for Windows x64, Linux x64, and Linux arm64, and the install script exports hashed requirements from it. | One lock serves every CI runner and the Pi, and installs verify hashes. | Lead |
+| Static checks | `ruff` (lint and format), `mypy` in strict mode, `detect-secrets`, and `tools/check_repo.py`, which fails on absolute paths, IP and MAC addresses, private host names, serial numbers, URL credentials, and co-author trailers. | The repository is public, so the checks catch leaks before review does. An untracked deny list covers private values that no general rule can describe. | Lead |
 
 "You" is the project owner. "Lead" is the design lead's choice, open to your review.
 
