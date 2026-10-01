@@ -195,7 +195,7 @@ def test_an_unknown_format_is_a_422(
     assert response.status_code == 422
 
 
-SECRET = "a-secret-that-must-not-leave"
+SECRET = "a-secret-that-must-not-leave"  # pragma: allowlist secret
 
 
 @pytest.mark.parametrize(

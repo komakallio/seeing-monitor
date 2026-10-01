@@ -163,7 +163,8 @@ elif sys.platform == "win32":
 
         try:
             with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",  # pragma: allowlist secret
             ) as key:
                 name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
         except OSError:
