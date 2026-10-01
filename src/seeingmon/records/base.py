@@ -58,6 +58,7 @@ import binascii
 import enum
 import functools
 import importlib
+import inspect
 import json
 import re
 import types
@@ -540,6 +541,16 @@ def field_specs(record: str | type[Record]) -> tuple[FieldSpec, ...]:
     `provenance`, and `quality`). `record` is a record type name or a record class.
     """
     return _specs_for(resolve_record_type(record))
+
+
+def doc_paragraphs(record: str | type[Record]) -> list[str]:
+    """Return the paragraphs of the docstring of a record type, each one on a single line.
+
+    The generated files describe a record with its docstring. This drops the line breaks that
+    wrap the text in the source.
+    """
+    text = inspect.cleandoc(resolve_record_type(record).__doc__ or "")
+    return [" ".join(block.split()) for block in text.split("\n\n") if block.strip()]
 
 
 def base_field_specs() -> tuple[FieldSpec, ...]:

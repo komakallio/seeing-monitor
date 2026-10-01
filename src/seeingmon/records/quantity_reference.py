@@ -10,7 +10,6 @@ A test fails when the committed file differs from the generated text.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Iterable
 
 from seeingmon.records.base import (
@@ -19,6 +18,7 @@ from seeingmon.records.base import (
     FieldSpec,
     Record,
     base_field_specs,
+    doc_paragraphs,
     field_specs,
     resolve_record_type,
 )
@@ -55,12 +55,6 @@ cursor. A `segment` record is a row of a binary segment file.
 - **Changes.** A new field goes at the end of its record, and it is optional or has a default. \
 The rules are in the documentation of `src/seeingmon/records/base.py`.\
 """
-
-
-def _paragraphs(text: str) -> list[str]:
-    """Join the wrapped lines of each paragraph of a docstring."""
-    blocks = inspect.cleandoc(text).split("\n\n")
-    return [" ".join(block.split()) for block in blocks if block.strip()]
 
 
 def _cell(text: str) -> str:
@@ -104,7 +98,7 @@ def _record_section(cls: type[Record]) -> list[str]:
     specs = [spec for spec in field_specs(cls) if not spec.base]
     segment = cls.storage == "segment"
     lines = [f"## `{cls.record_type}`", ""]
-    for paragraph in _paragraphs(cls.__doc__ or ""):
+    for paragraph in doc_paragraphs(cls):
         lines += [paragraph, ""]
     where = "a row of a segment file" if segment else "a row of a SQLite table"
     lines += [f"Storage: {where}. Retention: {_retention(cls)}.", ""]

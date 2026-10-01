@@ -86,6 +86,8 @@ class TestRecordSchema:
         assert schema.get("x-retention-days") == cls.retention_days
         first_line = (cls.__doc__ or "").strip().split("\n")[0]
         assert schema["description"].startswith(first_line)
+        # The source wraps the docstring, and the schema keeps only the paragraph breaks.
+        assert all("\n" not in part for part in schema["description"].split("\n\n"))
 
     def test_a_nullable_field_accepts_null_and_a_required_one_does_not(
         self, cls: type[Record]

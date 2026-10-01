@@ -16,7 +16,6 @@ time next to it.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Iterable
 from typing import Any, get_args, get_origin
 
@@ -26,6 +25,7 @@ from seeingmon.records.base import (
     FieldSpec,
     Record,
     base_field_specs,
+    doc_paragraphs,
     field_specs,
     resolve_record_type,
 )
@@ -123,7 +123,7 @@ def record_schema(record: str | type[Record]) -> dict[str, Any]:
     schema: dict[str, Any] = {
         "type": "object",
         "title": schema_name(cls),
-        "description": inspect.cleandoc(cls.__doc__ or ""),
+        "description": "\n\n".join(doc_paragraphs(cls)),
         "properties": {spec.name: field_schema(spec) for spec in specs},
         "required": [spec.name for spec in specs],
         "x-record-type": cls.record_type,
