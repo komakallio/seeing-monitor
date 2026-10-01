@@ -1,7 +1,50 @@
-"""Result sinks. The interface is in `seeingmon.sinks.base`."""
+"""Result sinks. The interface is in `seeingmon.sinks.base`.
+
+Import the classes from here, for example `from seeingmon.sinks import Forwarder`. The package
+loads each name on first use, so importing `seeingmon.sinks` stays fast.
+
+- `base`: the `Sink` protocol, `SinkError`, and `StoredRow` (the contract).
+- `forwarder`: `Forwarder`, which sends the rows of the store to every sink with cursors, retries,
+  and backoff.
+"""
 
 from __future__ import annotations
 
+import importlib
+from typing import TYPE_CHECKING, Any
+
 from seeingmon.sinks.base import Sink, SinkError, StoredRow
 
-__all__ = ["Sink", "SinkError", "StoredRow"]
+if TYPE_CHECKING:
+    from seeingmon.sinks.forwarder import Forwarder, ForwardReport, SinkPass, SinkStatus
+
+# The module that defines each lazily loaded name.
+_EXPORTS: dict[str, str] = {
+    "ForwardReport": "forwarder",
+    "Forwarder": "forwarder",
+    "SinkPass": "forwarder",
+    "SinkStatus": "forwarder",
+}
+
+__all__ = [
+    "ForwardReport",
+    "Forwarder",
+    "Sink",
+    "SinkError",
+    "SinkPass",
+    "SinkStatus",
+    "StoredRow",
+]
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(f"{__name__}.{module_name}"), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_EXPORTS})
