@@ -12,7 +12,9 @@ their own state: the scheduler (state, camera, drops), the storage (free space, 
 sink), the driver in `acquire` (queue depth, thread state), the heater and the SQM-LE reader, the
 clock (synchronization and error bound), the dark library (`dark_due`), and the machine (load and
 memory, from `/proc` on Linux and unknown elsewhere). A value that no part can give is `None`, and
-`quality` says why.
+`quality` says why. A component state is `ok`, `degraded`, or `failed`, and `acquire` is `starting`
+while `core` has not heard from it yet and the first seconds of the run last (the scheduler opens
+the camera a moment after the start), so that a restart never shows a failure that is not one.
 """
 
 from __future__ import annotations
@@ -185,6 +187,7 @@ class HealthReporter:
         dark_due: Callable[[float | None, int], bool] | None = None,
         stats: Callable[[], SystemStats] = read_system_stats,
         web_connected: Callable[[], bool] | None = None,
+        startup_grace_s: float = 30.0,
     ) -> None:
         self._clock = clock
         self._station_id = station_id
@@ -199,6 +202,8 @@ class HealthReporter:
         self._stats = stats
         self._web_connected = web_connected
         self._started_ns = clock.monotonic_ns()
+        self._startup_grace_s = startup_grace_s
+        self._acquire_seen = False  # whether `acquire` has answered since the start
 
     def _acquire_health(self) -> dict[str, Any] | None:
         if self._acquire is None:
@@ -218,9 +223,16 @@ class HealthReporter:
 
         components: dict[str, str] = {"core": "ok", **fields["components"]}
         acquire = self._acquire_health()
+        uptime_s = max(0.0, (self._clock.monotonic_ns() - self._started_ns) / NS_PER_S)
         queue_depth: int | None = None
         if self._acquire is not None:
-            components["acquire"] = acquire_component(acquire)
+            self._acquire_seen = self._acquire_seen or acquire is not None
+            # The scheduler opens the camera a moment after the start, and until then `acquire` has
+            # not answered. That is a start, not a failure, for as long as the grace lasts.
+            starting = (
+                acquire is None and not self._acquire_seen and uptime_s < self._startup_grace_s
+            )
+            components["acquire"] = "starting" if starting else acquire_component(acquire)
             if acquire is None:
                 quality["queue_depth"] = "acquire did not answer"
             else:
@@ -289,7 +301,7 @@ class HealthReporter:
             sink_backlog=storage["sink_backlog"],
             time_synchronized=clock_status.synchronized,
             time_error_bound_ms=error_ms,
-            uptime_s=max(0.0, (self._clock.monotonic_ns() - self._started_ns) / NS_PER_S),
+            uptime_s=uptime_s,
             cpu_load_1m=machine.load_1m,
             memory_used_mb=machine.memory_used_mb,
             dark_due=dark_due,

@@ -33,6 +33,7 @@ class _Entry:
     due_ns: int
     runs: int = 0
     failures: int = 0
+    triggered: bool = False  # `trigger` asked for a run before the due time
 
 
 class PeriodicTasks:
@@ -56,13 +57,23 @@ class PeriodicTasks:
         """Remove every task of that name."""
         self._entries = [e for e in self._entries if e.name != name]
 
+    def trigger(self, name: str) -> None:
+        """Ask for the tasks of that name to run at the next `run_due`, whatever their due time.
+
+        Any thread may call it. The task then runs once and keeps its interval afterward.
+        """
+        for entry in self._entries:
+            if entry.name == name:
+                entry.triggered = True
+
     def run_due(self) -> int:
         """Run the tasks that are due, in the order that they were added. Returns how many ran."""
         ran = 0
         for entry in list(self._entries):
             now = self._clock.monotonic_ns()
-            if now < entry.due_ns:
+            if now < entry.due_ns and not entry.triggered:
                 continue
+            entry.triggered = False
             delay_s: float | None = None
             try:
                 delay_s = entry.task()
@@ -82,6 +93,8 @@ class PeriodicTasks:
         if not self._entries:
             return 3600.0
         now = self._clock.monotonic_ns()
+        if any(e.triggered for e in self._entries):
+            return 0.0
         return (min(e.due_ns for e in self._entries) - now) / NS_PER_S
 
     def runs(self, name: str) -> int:

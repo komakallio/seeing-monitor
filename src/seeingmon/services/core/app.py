@@ -502,6 +502,7 @@ class CoreApp:
             sqm=self.sqm,
             dark_due=dark_is_due,
             web_connected=lambda: self.rpc.web_connected,
+            startup_grace_s=self.settings.run_record_wait_s,
         )
         self.pump = EventPump(self.remote, self.acquire_events) if self.remote else None
         self.notifier = self.parts.notifier or SystemdNotifier()
@@ -548,6 +549,7 @@ class CoreApp:
     def _on_camera_opened(self, info: CameraInfo) -> None:
         self._camera = info
         self._write_run_record()
+        self.tasks.trigger("health")  # the first record had no camera to report on
 
     def _on_result(self, result: CommissionResult) -> None:
         _log.info("%s %d finished: %s", result.kind, result.task_id, result.summary)

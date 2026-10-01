@@ -115,10 +115,21 @@ class TestHealth:
         rig.app.tick()
         assert "time_invalid" in rig.records("health")[-1].flags  # type: ignore[attr-defined]
 
+    def test_the_first_open_of_the_camera_brings_a_record_at_once(self, rig: CoreRig) -> None:
+        rig.app.tick()
+        assert len(rig.records("health")) == 1  # the record of the start
+        rig.clock.advance(5.0)
+        rig.app.tick()
+        assert len(rig.records("health")) == 1  # the interval has not passed
+        rig.app.scheduler.step()  # the first step opens the camera
+        rig.app.tick()
+        assert len(rig.records("health")) == 2  # the open asked for a record with the camera
+
     def test_a_lost_acquire_is_a_failed_component(self, rig: CoreRig) -> None:
         rig.remote.health = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
             CameraTimeoutError("no answer")
         )
+        rig.clock.advance(31.0)  # the start has passed, so a silent acquire is a failure
         rig.app.tick()
         record = rig.records("health")[-1]
         assert isinstance(record, HealthRecord)

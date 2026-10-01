@@ -197,11 +197,28 @@ class TestHealthRecord:
         assert health.build().uptime_s == 90.0
 
     def test_an_acquire_that_does_not_answer_is_a_failed_component(self) -> None:
-        record = reporter(acquire=FakeAcquire(None)).build()
+        record = reporter(acquire=FakeAcquire(None), startup_grace_s=0.0).build()
         assert record.components["acquire"] == "failed"
         assert record.degraded is True
         assert record.queue_depth is None
         assert quality_of(record)["queue_depth"]
+
+    def test_an_acquire_that_has_not_answered_yet_is_starting_and_not_a_failure(self) -> None:
+        clock = VirtualClock(START)
+        health = reporter(clock=clock, acquire=FakeAcquire(None), startup_grace_s=30.0)
+        record = health.build()
+        assert record.components["acquire"] == "starting"
+        assert record.degraded is False
+        assert quality_of(record)["queue_depth"]  # the missing value still says why
+        clock.advance(31.0)  # the grace is over, and acquire is still silent
+        assert health.build().components["acquire"] == "failed"
+
+    def test_an_acquire_that_answered_and_then_goes_silent_fails_at_once(self) -> None:
+        acquire = FakeAcquire(GOOD_ACQUIRE)
+        health = reporter(acquire=acquire, startup_grace_s=30.0)
+        assert health.build().components["acquire"] == "ok"
+        acquire.summary = None  # the process died a second after the start
+        assert health.build().components["acquire"] == "failed"
 
     def test_the_degraded_scheduler_makes_the_system_degraded(self) -> None:
         record = reporter(scheduler=FakeScheduler(degraded=True, state="safe")).build()
