@@ -24,6 +24,12 @@ reconfigures through the usual ladder, and the driver never pretends that the st
 started, and every message on the stream carries the epoch of its frame. `read_frame` discards a
 message of another epoch, and a frame of another stream, so the frames of an old stream never
 reach the caller after a new `configure`, even when they were already on the wire.
+
+**Batches.** The stream may carry several frames in one message (see
+`seeingmon.services.acquire.service`). The driver asks for up to `batch_frames` in the hello of
+the stream, decodes a message into its frames, and hands them out one by one. The frames wait in
+a queue of the connection, and each keeps the epoch of its message, so a `configure` or a `start`
+that comes between two reads still discards the frames of the old stream.
 """
 
 from __future__ import annotations
@@ -31,8 +37,9 @@ from __future__ import annotations
 import enum
 import logging
 import threading
+from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from seeingmon.clock import NS_PER_S, Clock, SystemClock
@@ -53,7 +60,7 @@ from seeingmon.frames import (
     Roi,
     StreamConfig,
     StreamKind,
-    decode_frame,
+    decode_frames,
 )
 from seeingmon.services.acquire.events import EventBatch, decode_batch
 from seeingmon.services.config import ServicesConfig
@@ -92,7 +99,8 @@ from seeingmon.services.ipc.stream import (
 RPC_CHANNEL = "rpc"
 FRAMES_CHANNEL = "frames"
 MAX_TAG = 2**32 - 1
-ACK_BATCH = 8  # frames that the reader takes before it acknowledges them (the window limits it)
+ACK_BATCH = 8  # messages that the reader takes before it acknowledges them (the window limits it)
+DEFAULT_BATCH_FRAMES = 16  # frames per message that the driver asks for
 
 _log = logging.getLogger(__name__)
 _REAL_CLOCK = SystemClock()
@@ -111,6 +119,7 @@ class _Link:
     rpc: RpcClient
     frames: StreamReceiver
     instance: str
+    ready: deque[tuple[int, Frame]] = field(default_factory=deque)  # (epoch tag, frame) to hand out
 
     def close(self, reason: str) -> None:
         self.frames.close(reason)
@@ -134,6 +143,7 @@ class RemoteCameraDriver:
         window: StreamWindow | None = None,
         max_rpc_bytes: int = 1024 * 1024,
         max_frame_bytes: int = 128 * 1024 * 1024,
+        batch_frames: int = DEFAULT_BATCH_FRAMES,
         clock: Clock | None = None,
     ) -> None:
         self._endpoint = endpoint
@@ -150,6 +160,7 @@ class RemoteCameraDriver:
         self._window = window or StreamWindow()
         self._max_rpc_bytes = max_rpc_bytes
         self._max_frame_bytes = max_frame_bytes
+        self._batch_frames = max(1, batch_frames)
         self._clock = _REAL_CLOCK if clock is None else clock
         self._lock = threading.RLock()
         self._open_lock = threading.Lock()
@@ -181,6 +192,7 @@ class RemoteCameraDriver:
             window=StreamWindow(settings.stream_window_messages, settings.stream_window_bytes),
             max_rpc_bytes=settings.max_rpc_bytes,
             max_frame_bytes=settings.max_frame_bytes,
+            batch_frames=settings.stream_batch_frames,
             clock=clock,
         )
 
@@ -274,7 +286,7 @@ class RemoteCameraDriver:
             frames, reply = connect_stream(
                 self._endpoint,
                 self._key,
-                {"session": session},
+                {"session": session, "batch_frames": self._batch_frames},
                 channel=FRAMES_CHANNEL,
                 window=self._window,
                 connect_timeout_s=self._connect_timeout_s,
@@ -463,6 +475,12 @@ class RemoteCameraDriver:
                 if state is _State.LOST:
                     raise CameraDisconnectedError("the connection to acquire was lost")
                 raise CameraStateError("read_frame while not capturing")
+            ready = link.ready
+            while ready:  # the rest of a message that held several frames
+                tag, frame = ready.popleft()
+                if tag == epoch & MAX_TAG and frame.stream_id == active.stream_id:
+                    return self._deliver(frame, active, epoch)
+                self.stale_discarded += 1
             remaining_s = timeout_s - (self._clock.monotonic_ns() - started_ns) / NS_PER_S
             if remaining_s <= 0:
                 raise CameraTimeoutError(f"no frame within {timeout_s} s")
@@ -480,18 +498,19 @@ class RemoteCameraDriver:
                 self._handle_event(message.payload, active)
                 continue
             try:
-                frame = decode_frame(message.payload)
+                frames = decode_frames(message.payload)
             except FrameDecodeError as error:
                 raise CameraError(f"acquire sent an unreadable frame: {error}") from None
-            if frame.stream_id != active.stream_id:
-                self.stale_discarded += 1
-                continue
-            self.frames_received += 1
-            if active.config.kind is StreamKind.SNAPSHOT:
-                with self._lock:
-                    if self._epoch == epoch:
-                        self._capturing = False  # one exposure per `start`
-            return frame
+            ready.extend((message.tag, frame) for frame in frames)
+
+    def _deliver(self, frame: Frame, active: ActiveStream, epoch: int) -> Frame:
+        """Count a frame that goes to the caller, and end a snapshot stream after its frame."""
+        self.frames_received += 1
+        if active.config.kind is StreamKind.SNAPSHOT:
+            with self._lock:
+                if self._epoch == epoch:
+                    self._capturing = False  # one exposure per `start`
+        return frame
 
     def _handle_event(self, payload: memoryview, active: ActiveStream) -> None:
         """Raise the camera error that an event carries, unless it belongs to an old stream."""

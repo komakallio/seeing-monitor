@@ -17,12 +17,20 @@ frames. The frame bounds do not apply to them, and a full queue never drops one.
 **Threads.** One lock covers the queue. The sender thread takes the head in two steps: `peek`,
 and `pop` when it can send. The capture thread may drop that frame in between, and then `pop`
 returns `False`, and the sender looks again.
+
+**Batches.** A sender that puts several frames in one message uses `peek_batch` and `pop_items`
+in the same two steps. `peek_batch` holds a short run of frames back until a flush time that the
+sender names (`due_ns`), so a stream of 100 frames a second costs the sender a wake-up for each
+batch and not for each frame. While it holds the run back, `put_frame` does not wake it, unless
+the run is full. A put wakes a sender that waits for the first item, so a frame that arrives in a
+quiet queue goes out at once.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from seeingmon.clock import NS_PER_S, Clock, SystemClock
@@ -69,6 +77,8 @@ class FrameQueue:
         self._frames = 0
         self._events = 0
         self._bytes = 0
+        self._idle_waiters = 0  # threads that wait for the first item: a put wakes them
+        self._wake_at_frames = 0  # a put that brings the queue to this many frames wakes a waiter
         self.stats = QueueStats()
 
     def __len__(self) -> int:
@@ -107,7 +117,10 @@ class FrameQueue:
                 dropped += 1
             self.stats.frames_dropped += dropped
             self.stats.peak_frames = max(self.stats.peak_frames, self._frames)
-            self._cond.notify_all()
+            if self._idle_waiters or (
+                self._wake_at_frames and self._frames >= self._wake_at_frames
+            ):
+                self._cond.notify_all()
         return dropped
 
     def _drop_oldest_frame(self) -> None:
@@ -167,8 +180,98 @@ class FrameQueue:
                 remaining_s = timeout_s - (clock.monotonic_ns() - started_ns) / NS_PER_S
                 if remaining_s <= 0:
                     return None
-                self._cond.wait(remaining_s)
+                self._idle_waiters += 1
+                try:
+                    self._cond.wait(remaining_s)
+                finally:
+                    self._idle_waiters -= 1
             return self._items[0]
+
+    def peek_batch(
+        self,
+        timeout_s: float,
+        *,
+        max_frames: int,
+        max_bytes: int,
+        due_ns: int = 0,
+        clock: Clock | None = None,
+    ) -> tuple[QueueItem, ...]:
+        """The items for the next message, or `()` when the queue stays empty for `timeout_s`.
+
+        The items are one event, or a run of frames of one epoch from the head: at most
+        `max_frames` frames, and at most `max_bytes` bytes (one frame may exceed that alone). The
+        run is final when it has reached a limit, or when something else follows it (an event, or
+        a frame of another epoch). The call returns a final run at once, and it holds any other
+        run back until `due_ns` on `clock`, so that more frames can join it. With `due_ns=0` no
+        run waits.
+
+        The call asks `put_frame` to wake it only for a run that fills up, or for the first item
+        of an empty queue after `due_ns`. Like `peek`, it removes nothing: pass the result to
+        `pop_items`.
+        """
+        clock = _REAL_CLOCK if clock is None else clock
+        give_up_ns = clock.monotonic_ns() + round(timeout_s * NS_PER_S)
+        with self._cond:
+            try:
+                while True:
+                    now_ns = clock.monotonic_ns()
+                    if self._items:
+                        run, final = self._head_run(max_frames, max_bytes)
+                        if final or now_ns >= due_ns:
+                            return run
+                        self._wake_at_frames = max_frames
+                        self._cond.wait((due_ns - now_ns) / NS_PER_S)
+                        continue
+                    remaining_s = (give_up_ns - now_ns) / NS_PER_S
+                    if remaining_s <= 0:
+                        return ()
+                    if now_ns < due_ns:
+                        # A stream in flow: sleep to the flush time, and wake for no arrival.
+                        self._cond.wait(min(remaining_s, (due_ns - now_ns) / NS_PER_S))
+                        continue
+                    self._idle_waiters += 1
+                    try:
+                        self._cond.wait(remaining_s)
+                    finally:
+                        self._idle_waiters -= 1
+            finally:
+                self._wake_at_frames = 0
+
+    def _head_run(self, max_frames: int, max_bytes: int) -> tuple[tuple[QueueItem, ...], bool]:
+        """The items at the head that go in one message, and whether the run is final."""
+        head = self._items[0]
+        if head.frame is None:
+            return (head,), True  # an event goes alone
+        run: list[QueueItem] = []
+        total = 0
+        for item in self._items:
+            if item.frame is None or item.epoch != head.epoch:
+                return tuple(run), True  # something else follows, so the run cannot grow
+            if run and (len(run) >= max_frames or total + item.nbytes > max_bytes):
+                return tuple(run), True
+            run.append(item)
+            total += item.nbytes
+        return tuple(run), len(run) >= max_frames or total >= max_bytes
+
+    def pop_items(self, items: Sequence[QueueItem]) -> bool:
+        """Remove `items` from the head if they are all still there, in order.
+
+        Returns `False` when a drop replaced one of them meanwhile, and removes nothing then.
+        """
+        with self._cond:
+            if len(self._items) < len(items):
+                return False
+            if any(self._items[index] is not item for index, item in enumerate(items)):
+                return False
+            for item in items:
+                self._items.popleft()
+                if item.frame is not None:
+                    self._frames -= 1
+                    self._bytes -= item.nbytes
+                    self.stats.frames_out += 1
+                else:
+                    self._events -= 1
+            return True
 
     def pop(self, item: QueueItem) -> bool:
         """Remove the head if it is `item`. Returns `False` when a drop replaced it meanwhile."""

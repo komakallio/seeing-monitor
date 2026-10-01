@@ -27,6 +27,11 @@ handshake_timeout_s = 5.0
 stream_window_messages = 64
 stream_window_bytes = 67108864
 
+# The most frames that one message of the frame stream holds. `core` asks for this many and
+# `acquire` sends up to this many, so a stream of 100 frames a second pays for a message about
+# every 50 ms (see `batch_delay_s` in the acquire section). 1 sends one frame in each message.
+stream_batch_frames = 16
+
 # The largest message that a connection accepts, in bytes.
 max_rpc_bytes = 1048576
 max_frame_bytes = 134217728
@@ -49,6 +54,13 @@ driver = "sim"
 # The frame queue between the capture thread and the sender thread.
 queue_depth = 256
 queue_max_bytes = 100663296
+
+# Batches. The sender holds a fast stream back for up to this many seconds and sends the frames
+# that arrived in that time as one message, up to `batch_bytes` bytes. A frame waits at most this
+# long, and a stream that delivers fewer than 1.5 frames in that time sends each frame at once.
+# 0 turns the delay off.
+batch_delay_s = 0.05
+batch_bytes = 262144
 
 # A frame read waits this many frame periods plus a margin before it reports a timeout.
 read_timeout_factor = 2.0

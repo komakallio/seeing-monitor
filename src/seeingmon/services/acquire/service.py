@@ -11,7 +11,8 @@
   `read_temperature_c`, `dropped_frames`, and `recover`. Two more calls answer at once on the
   connection's reading thread: `ping` and `health`.
 - The **sender thread** takes frames from the queue and sends them over the stream channel, as
-  far as the receiver's window allows. A full queue drops its oldest frame and counts it.
+  far as the receiver's window allows. A full queue drops its oldest frame and counts it. A
+  receiver that asks for it gets several frames in one message (see below).
 - The **watchdog thread** checks the guard around the driver calls, checks that the other
   threads live, sends the heartbeat to systemd (only when the process runs under it), and logs a
   health summary.
@@ -31,6 +32,15 @@ that nobody reads does not stream.
 epoch. The sender tags each message with the epoch of the frame, and `core` discards a message
 whose epoch is not the one that the last call returned. So no frame of an old stream reaches the
 scheduler as a frame of the new one, even when it was already on the wire.
+
+**Batches.** A message that holds one frame costs the sender, the connection, and `core` a
+wake-up each, and at 100 frames a second the wake-ups cost more than the frames. So when `core`
+asks for it (the hello of the stream names `batch_frames`), the sender puts the frames that
+arrived in the last `batch_delay_s` in one message, up to `batch_frames` frames and `batch_bytes`
+bytes. A frame waits at most `batch_delay_s` for the flush, and a slow stream (under 1.5 frames
+in that time) sends each frame at once, so a survey frame never waits. An event, such as a camera
+error, and a frame of another epoch end a batch. The queue still drops its oldest frame when it
+is full, and each frame carries its own `dropped_before`, so the count stays exact.
 
 **Threads and the driver.** A driver that is not thread-safe is called by one thread at a time
 (see `seeingmon.services.acquire.gate`). A driver that is safe, such as `asi`, is called from
@@ -66,6 +76,7 @@ from seeingmon.frames import (
     StreamKind,
     TimeQuality,
     encode_frame_into,
+    encode_frames_into,
     frame_wire_size,
 )
 from seeingmon.services.acquire.drops import DropAccountant
@@ -110,6 +121,7 @@ INSTANCE_BYTES = 8
 MAX_TAG = 2**32 - 1
 STALL_PERIODS = 5
 STALL_FLOOR_S = 3.0
+MIN_FRAMES_TO_HOLD = 1.5  # a slower stream sends each frame at once
 
 _log = logging.getLogger(__name__)
 _REAL_CLOCK = SystemClock()
@@ -148,6 +160,7 @@ class _Session:
     id: str
     connection: RpcConnection
     sender: StreamSender | None = None
+    batch_frames: int = 1  # frames per message that the receiver accepts, and this side allows
 
 
 @dataclass(slots=True)
@@ -238,6 +251,7 @@ class AcquireService:
         self._exit_reason = "stopped"
         self._restart_reason: str | None = None
         self._frame_rate_hz = 0.0
+        self._batch_due_ns = 0  # when the sender flushes the next batch, on the real clock
         self._capture_since_ns = 0
         self._threads: dict[str, threading.Thread] = {}
 
@@ -615,12 +629,19 @@ class AcquireService:
                     _log.warning("the driver did not stop after %s", reason, exc_info=True)
         _log.info("capture ended: %s", reason)
 
+    def _batch_frames_for(self, params: Mapping[str, Any]) -> int:
+        """The frames per message for a receiver: what it asks for, up to what this side allows."""
+        asked = params.get("batch_frames", 1)
+        if isinstance(asked, bool) or not isinstance(asked, int):
+            return 1
+        return max(1, min(asked, self._settings.stream_batch_frames))
+
     def _validate_stream(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
         with self._lock:
             session = self._session
         if session is None or params.get("session") != session.id:
             raise IpcProtocolError("the frame stream does not belong to an open session")
-        return {"instance": self.instance}
+        return {"instance": self.instance, "batch_frames": self._batch_frames_for(params)}
 
     def _on_sender(self, sender: StreamSender, params: Mapping[str, Any]) -> None:
         with self._lock:
@@ -631,6 +652,7 @@ class AcquireService:
             else:
                 stale = False
                 previous, session.sender = session.sender, sender
+                session.batch_frames = self._batch_frames_for(params)
         if stale:
             sender.close("the session ended")
         elif previous is not None:
@@ -778,10 +800,13 @@ class AcquireService:
 
     # --- The sender thread -----------------------------------------------------------------
 
-    def _current_sender(self) -> StreamSender | None:
+    def _current_sender(self) -> tuple[StreamSender, int] | None:
+        """The sender of the session, and the frames per message that its receiver accepts."""
         with self._lock:
             session = self._session
-            return None if session is None else session.sender
+            if session is None or session.sender is None:
+                return None
+            return session.sender, session.batch_frames
 
     def _drop_sender(self, sender: StreamSender) -> None:
         with self._lock:
@@ -792,12 +817,16 @@ class AcquireService:
 
     def _sender_loop(self) -> None:
         while not self._stop.is_set():
-            sender = self._current_sender()
-            if sender is None:
+            current = self._current_sender()
+            if current is None:
                 self._stop.wait(0.05)
                 continue
+            sender, batch_frames = current
             try:
-                self._send_once(sender)
+                if batch_frames > 1:
+                    self._send_batch(sender, batch_frames)
+                else:
+                    self._send_once(sender)
             except (IpcClosedError, IpcProtocolError) as error:
                 _log.info("the frame stream ended: %s", error)
                 self._drop_sender(sender)
@@ -819,6 +848,58 @@ class AcquireService:
         if not self._queue.pop(item):
             return  # a drop took the head first
         self._send_item(sender, item)
+
+    def _send_batch(self, sender: StreamSender, max_frames: int) -> None:
+        """Send the next run of frames in one message, or one event."""
+        messages, room_bytes = sender.room()
+        if messages <= 0:  # the window has no room for another message
+            self._counters.flow_stalls += 1
+            sender.pump(0.02)  # the receiver is slow, so the queue absorbs and drops
+            return
+        items = self._queue.peek_batch(
+            0.05,
+            max_frames=max_frames,
+            max_bytes=self._cfg.batch_bytes,
+            due_ns=self._batch_due_ns,
+            clock=_REAL_CLOCK,
+        )
+        if not items:
+            sender.pump(0.0)  # notice a receiver that left, and read the acknowledgements
+            return
+        current = self._current_sender()
+        if sender.closed or current is None or current[0] is not sender:
+            return  # the session changed while this thread waited, so the frames wait for the next
+        fits: list[QueueItem] = []
+        total = 0
+        for item in items:
+            if total + item.nbytes > room_bytes:
+                break
+            fits.append(item)
+            total += item.nbytes
+        if not fits:
+            self._counters.flow_stalls += 1
+            sender.pump(0.02)
+            return
+        if not self._queue.pop_items(fits):
+            return  # a drop took a frame first
+        if fits[0].event is not None:
+            self._send_item(sender, fits[0])
+            return
+        frames = [item.frame for item in fits if item.frame is not None]
+        sender.send_into(
+            total,
+            partial(encode_frames_into, frames=frames),
+            tag=fits[0].epoch & MAX_TAG,
+        )
+        self._counters.frames_sent += len(frames)
+        self._batch_due_ns = self._next_flush_ns()
+
+    def _next_flush_ns(self) -> int:
+        """When to flush the next batch: a delay from now for a stream in flow, else now."""
+        delay_s = self._cfg.batch_delay_s
+        if delay_s <= 0 or self._frame_rate_hz * delay_s < MIN_FRAMES_TO_HOLD:
+            return 0
+        return _REAL_CLOCK.monotonic_ns() + round(delay_s * NS_PER_S)
 
     def _send_item(self, sender: StreamSender, item: QueueItem) -> None:
         tag = item.epoch & MAX_TAG

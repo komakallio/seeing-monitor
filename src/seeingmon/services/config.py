@@ -94,6 +94,12 @@ class AcquireSettings(SectionModel):
     queue_depth: int = Field(256, ge=1)
     queue_max_bytes: int = Field(96 * MIB, ge=1)
 
+    # Batches. A receiver that asks for it gets the frames of the last `batch_delay_s` in one
+    # message, up to `stream_batch_frames` frames and `batch_bytes` bytes (see
+    # `seeingmon.services.acquire.service`). A delay of 0 sends each frame at once.
+    batch_delay_s: float = Field(0.05, ge=0, le=1.0)
+    batch_bytes: int = Field(256 * 1024, ge=1024)
+
     # Waits. A frame read waits `read_timeout_factor` frame periods plus `read_timeout_margin_s`.
     read_timeout_factor: float = Field(2.0, ge=1.0)
     read_timeout_margin_s: float = Field(0.5, gt=0)
@@ -162,6 +168,9 @@ class ServicesConfig(SectionModel):
     # it has consumed the first ones.
     stream_window_messages: int = Field(64, ge=1)
     stream_window_bytes: int = Field(64 * MIB, ge=1)
+    # The most frames that one message of the stream holds. `core` asks for this many, and
+    # `acquire` sends up to this many. 1 turns batches off.
+    stream_batch_frames: int = Field(16, ge=1, le=1024)
     max_rpc_bytes: int = Field(1 * MIB, ge=1024)
     max_frame_bytes: int = Field(128 * MIB, ge=1024)
 

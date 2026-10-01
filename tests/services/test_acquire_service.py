@@ -259,7 +259,10 @@ class TestDrops:
 
     def test_a_slow_consumer_makes_the_queue_drop_and_count(self, build: RigFactory) -> None:
         rig = virtual_rig(
-            build, 200, acquire={"queue_depth": 4}, services={"stream_window_messages": 2}
+            build,
+            200,
+            acquire={"queue_depth": 4},
+            services={"stream_window_messages": 2, "stream_batch_frames": 1},
         )
         assert isinstance(rig.fake, ParkingFake)
         driver = streaming(rig)
