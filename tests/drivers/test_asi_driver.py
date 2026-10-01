@@ -634,6 +634,12 @@ class TestCreate:
         assert isinstance(driver, AsiDriver)
         assert driver.open().model == "ZWO ASI294MM (fake)"
 
+    def test_no_options_at_all_use_the_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = VirtualClock()
+        monkeypatch.setattr("seeingmon.drivers.asi.load_asi_api", lambda path: FakeAsiSdk(clock))
+        driver = create(profile=reference_profile(), clock=clock, options=None)
+        assert driver.name == "asi"
+
     def test_the_options_reach_the_driver(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from seeingmon.clock import VirtualClock
 

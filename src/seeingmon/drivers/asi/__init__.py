@@ -2,7 +2,7 @@
 
     from seeingmon.drivers import asi
 
-    driver = asi.create(profile=config.profile, clock=clock, options=config.section("asi", ...))
+    driver = asi.create(profile=config.profile, clock=clock, options={"library_path": "..."})
 
 `create` follows the factory convention of `seeingmon.drivers.base`. It loads the vendor library
 (see `seeingmon.hardware.asi.ctypes_api` for where it looks), builds the USB resetter and the call
@@ -28,19 +28,19 @@ def create(
     *,
     profile: Profile | None,
     clock: Clock,
-    options: Mapping[str, object],
+    options: Mapping[str, object] | None,
     on_event: EventCallback | None = None,
 ) -> AsiDriver:
     """Build the driver for the connected camera.
 
-    `options` holds the keys of `AsiOptions`, such as `library_path`. An empty mapping uses the
-    defaults. The profile is required, because it holds the readout modes and the timing. Raises
-    `CameraConfigError` for a missing profile or a bad option, and `AsiLibraryError` when the
-    vendor library is missing. The camera opens when you call `open`.
+    `options` holds the keys of `AsiOptions`, such as `library_path`. An empty mapping or `None`
+    uses the defaults. The profile is required, because it holds the readout modes and the
+    timing. Raises `CameraConfigError` for a missing profile or a bad option, and
+    `AsiLibraryError` when the vendor library is missing. The camera opens when you call `open`.
     """
     if profile is None:
         raise CameraConfigError("the asi driver needs a profile")
-    opts = AsiOptions.from_mapping(options)
+    opts = AsiOptions.from_mapping(options or {})
     api = load_asi_api(opts.library_path)
     resetter = (
         None

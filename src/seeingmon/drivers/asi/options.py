@@ -1,9 +1,9 @@
 """The options of the `asi` driver.
 
-Read them from the `[asi]` section of the configuration (`config.section("asi", AsiOptions)`),
-or build them from a mapping (`AsiOptions.from_mapping`), which is what `create` receives.
-Every key has a default, so an empty mapping works on a camera with the vendor library on the
-system search path.
+`create` builds the options from the mapping that it receives (`AsiOptions.from_mapping`). The
+`acquire` process takes that mapping from `[services.acquire.driver_options]` in the
+configuration, so you set `library_path` and the other keys there. Every key has a default, so an
+empty mapping works on a camera with the vendor library on the system search path.
 
 The values below are starting points that suit the reference camera. Phase 3 (commissioning)
 tunes them on hardware. None of them is a measured result.

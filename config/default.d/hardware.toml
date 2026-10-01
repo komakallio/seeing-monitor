@@ -1,0 +1,80 @@
+# Defaults of the hardware-facing lane: the dew heater, the SQM-LE reader, and the power-cycle
+# hook. Each part stays off until you enable it in local/config.toml, because the pin map, the
+# sensors, the addresses, and the power-cycle route belong to one installation and never to this
+# file. config/local.example.toml shows the shape of the local values.
+#
+# The camera driver takes its options from [services.acquire.driver_options], and its defaults
+# live in seeingmon.drivers.asi.options.AsiOptions.
+
+# The dew heater (seeingmon.hardware.heater). The heater is off at boot, and the controller
+# switches it off on any fault.
+[heater]
+enabled = false
+
+# The name of the line that switches the heater. It must be a key of [heater.pins] in the local
+# file. Name a keepalive output (a HAT watchdog heartbeat) or a fault input only if your HAT has
+# one.
+output = "heater"
+
+# The controller aims at the dew point plus this margin (degrees Celsius).
+margin_c = 3.0
+
+# Proportional band. An error of band_c or more gives the full duty. The integral time applies
+# only with an optics sensor, and 0 turns it off.
+band_c = 4.0
+integral_time_s = 0.0
+
+# The output is one pulse per period. A pulse or a gap shorter than min_pulse_s is skipped.
+period_s = 30.0
+max_duty = 1.0
+min_pulse_s = 1.0
+
+# A temperature above this limit cuts the heater, and the cutoff holds until every temperature
+# falls the hysteresis below it.
+over_temp_c = 40.0
+over_temp_hysteresis_c = 2.0
+
+# How often the controller reads the sensors, how long without a valid reading stops the heating,
+# and the longest sleep of the control loop.
+sensor_interval_s = 5.0
+sensor_stale_s = 120.0
+tick_s = 1.0
+
+# How long the controller keeps the log of switch times that mean_duty reads, in hours.
+history_h = 48.0
+
+# The SQM-LE reader (seeingmon.hardware.sqm). Set enabled and host in the local file.
+[sqm]
+enabled = false
+host = ""
+port = 10001
+
+# Seconds between polls. The reader backs off from backoff_initial_s to backoff_max_s after a
+# failure and returns to this cadence after a success.
+poll_interval_s = 60.0
+connect_timeout_s = 5.0
+read_timeout_s = 10.0
+backoff_initial_s = 5.0
+backoff_max_s = 300.0
+
+# Keep one connection open between polls. By default each poll opens its own, so another program on
+# the LAN can read the unit between polls.
+persistent = false
+
+# `rx` asks for the averaged reading and `ux` for the unaveraged one.
+request = "rx"
+
+# The name that the records carry in `instrument`.
+instrument = "sqm_le"
+
+# The remote power cycle (seeingmon.hardware.power). Choose a route in the local file.
+[power]
+route = "none"
+dry_run = false
+
+# At least this many seconds between two attempts, and at most this many in any 24 hours.
+min_interval_s = 3600.0
+max_per_day = 3
+
+# How long a command or a request may take before it counts as a failure.
+timeout_s = 30.0

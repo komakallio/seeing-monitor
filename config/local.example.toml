@@ -71,3 +71,53 @@ token_hash = "<hash of the API token>"
 # database = "<database name>"
 # user = "<user name>"
 # password = "<password>"
+
+# Hardware. Every part below stays off until you enable it, and every value is a placeholder. The
+# lines only show the shape. See docs/hardware-checks.md for how to test each part.
+#
+# The camera. Choose the asi driver in [services.acquire], and give it the vendor library. The
+# environment variable SEEINGMON_ASI__LIBRARY_PATH works too. The installer puts the library in a
+# private folder and sets the path for you.
+# [services.acquire]
+# driver = "asi"
+# [services.acquire.driver_options]
+# library_path = "<path to the ASI SDK library>"
+#
+# The dew heater. Name each line by a logical name, and map the name to a chip and a line offset
+# (find the chip with `gpiodetect`). `active_low` flips the level for a relay board that switches
+# on a low level. The sensors read files that a kernel driver exposes (hwmon or iio). `optics` is
+# optional, and `keepalive` and `fault_input` suit a HAT with a watchdog or a fault output.
+# [heater]
+# enabled = true
+# output = "heater"
+# [heater.pins.heater]
+# chip = "<GPIO chip, such as gpiochip0>"
+# line = 0
+# active_low = false
+# [heater.ambient]
+# kind = "sysfs"
+# temperature_file = "<path to the temperature file of the air sensor>"
+# humidity_file = "<path to the humidity file of the air sensor>"
+# [heater.optics]
+# kind = "sysfs"
+# temperature_file = "<path to the temperature file of the dew shield sensor>"
+#
+# The SQM-LE. The pointing is optional. The values below are examples.
+# [sqm]
+# enabled = true
+# host = "<address of the SQM-LE>"
+# altitude_deg = 45.0
+# azimuth_deg = 0.0
+#
+# The remote power cycle. Choose one route, `http` or `command`. A ${NAME} in an argument, the URL, a
+# header, or the body expands from the environment when the cycle runs, so no secret needs to sit
+# in this file. Set state_file, so that the limits survive the reboot that the cycle causes.
+# [power]
+# route = "http"
+# state_file = "<path to a writable file>"
+# [power.http]
+# method = "POST"
+# url = "http://<address of the smart plug>/<path of the cycle request>"
+# headers = { Authorization = "Bearer ${PLUG_TOKEN}" }
+# [power.command]
+# argv = ["<path to the program>", "<argument>"]
