@@ -285,7 +285,7 @@ def encode_frame_into(out: bytearray | memoryview, frame: Frame) -> None:
         frame.data.nbytes,
     )
     data = frame.data if frame.data.flags.c_contiguous else np.ascontiguousarray(frame.data)
-    memoryview(out)[FRAME_HEADER_SIZE:] = memoryview(data).cast("B")
+    memoryview(out)[FRAME_HEADER_SIZE:] = data.data.cast("B")
 
 
 def encode_frames_into(out: bytearray | memoryview, frames: Sequence[Frame]) -> None:
