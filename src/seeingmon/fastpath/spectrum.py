@@ -206,7 +206,9 @@ def log_bins(
     if len(freq_hz) == 0 or bins < 1:
         empty = np.empty(0, dtype=np.float64)
         return empty, empty, empty
-    edges = np.geomspace(freq_hz[0] * 0.999, freq_hz[-1] * 1.001, bins + 1)
+    edges = np.asarray(
+        np.geomspace(freq_hz[0] * 0.999, freq_hz[-1] * 1.001, bins + 1), dtype=np.float64
+    )
     which = np.clip(np.searchsorted(edges, freq_hz, side="right") - 1, 0, bins - 1)
     counts = np.bincount(which, minlength=bins)
     used = counts > 0
@@ -242,7 +244,7 @@ def compute_spectrum(
         raise ValueError("period_s must be positive and the two series must have equal length")
     length = max(16, round(segment_s / period_s))
     hop = max(1, round(length * (1.0 - overlap)))
-    window = np.hanning(length + 2)[1:-1]  # the Hann window without its zero end points
+    window = np.asarray(np.hanning(length + 2)[1:-1], dtype=np.float64)  # no zero end points
     filled_x, interp_x = fill_short_gaps(x_arcsec, max_interp_gap)
     filled_y, interp_y = fill_short_gaps(y_arcsec, max_interp_gap)
     joint = np.where(np.isfinite(filled_x) & np.isfinite(filled_y), 0.0, np.nan)
@@ -251,7 +253,7 @@ def compute_spectrum(
         return None
     psd_x = _periodograms(np.nan_to_num(filled_x), starts, length, window, period_s)
     psd_y = _periodograms(np.nan_to_num(filled_y), starts, length, window, period_s)
-    freq = np.fft.rfftfreq(length, d=period_s)
+    freq = np.asarray(np.fft.rfftfreq(length, d=period_s), dtype=np.float64)
     psd_x, psd_y, freq = psd_x[1:], psd_y[1:], freq[1:]
     lines = find_lines(
         freq, psd_x, threshold=threshold, local_bins=local_bins, min_line_hz=min_line_hz
