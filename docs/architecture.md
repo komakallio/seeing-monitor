@@ -218,10 +218,10 @@ A profile describes the sensor (cooling, temperature sensor), the optics (focal 
 
 ## Commissioning support
 
-- **Burst.** `seeingmon burst` or `POST /commands/burst` records frames to a SER file with a JSON sidecar. Pinned bursts are exempt from retention.
+- **Burst.** `seeingmon burst` or `POST /commands/burst` records frames to a SER file (`seeingmon.recordings.ser.SerWriter`, which stores each frame's `t_arrival_ns` in the timestamp trailer) with a JSON sidecar (`seeingmon.recordings.sidecar.BurstSidecar`). The sidecar holds a schema version, the stream settings, the profile ID, and the time quality, and it has no host name, path, or serial number. Pinned bursts are exempt from retention.
 - **Sweep.** `seeingmon sweep` runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise.
 - **Dark.** There is no lens cap, so `seeingmon dark` waits while you cover the camera, checks that the frame is dark, and records a set at the current sensor temperature.
-- **Replay.** The `replay` driver feeds a recorded burst through `acquire` at the original or the maximum rate, and the production analysis runs unchanged. A replay writes to a separate store.
+- **Replay.** The `replay` driver (`seeingmon.drivers.replay`) feeds a SER recording, such as a burst or a SharpCap capture, through `acquire` at the original rate, at the maximum rate, or at a speed factor, and the production analysis runs unchanged. It reads the readout mode, exposure, gain, and sensor temperature from the sidecar next to the file (a burst's JSON sidecar, or SharpCap's `<capture>.CameraSettings.txt`), and driver options override them. Frames carry the recorded settings, the recorded timestamp as `t_arrival_ns`, `TimeQuality.ESTIMATED`, and the `REPLAYED` flag, and a gap of more than 1.5 frame periods becomes `dropped_before`. A request that does not fit the recording is refused, and a smaller ROI is cropped in software. A replay writes to a separate store. `seeingmon recordings info PATH` prints the geometry, frame count, duration, and frame timing of a recording.
 
 ## Measurement modes
 ### Seeing (fast)
