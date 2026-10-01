@@ -67,6 +67,7 @@ class ScriptedQuality(SurveyPipeline):
         reference: object = None,
         index: int = 0,
         zp_reference: ZeroPointReference | None = None,
+        sky_quality: bool | None = None,
     ) -> FrameAnalysis:
         self.references.append(zp_reference)
         survey = SurveyFrameRecord(

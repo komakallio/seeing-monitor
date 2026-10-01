@@ -113,6 +113,7 @@ def analyze(
     reference: ZeroPointReference | None = None,
     config: SurveyConfig | None = None,
     solve: bool = True,
+    sky_quality: bool | None = None,
 ) -> FrameAnalysis:
     solvers: list[PlateSolver] = (
         [synth.QueueSolver([synth.truth_solve_result(truth, catalog)])] if solve else []
@@ -126,7 +127,7 @@ def analyze(
         dark_library=library,
         flat=flat,
     )
-    return pipeline.analyze(frame, zp_reference=reference)
+    return pipeline.analyze(frame, zp_reference=reference, sky_quality=sky_quality)
 
 
 def sky_record(analysis: FrameAnalysis) -> SkyQualityRecord:
@@ -498,6 +499,32 @@ def test_hot_pixels_in_the_dark_library_stay_out_of_the_detections(
     record = sky_record(known)
     assert record.zero_point_mag is not None
     assert abs(record.zero_point_mag - ZP_TRUE) < 0.03
+
+
+def test_a_short_exposure_gets_no_sky_quality_and_costs_nothing_for_it(
+    profile: Profile, catalog: CapCatalog, tmp_path: Path
+) -> None:
+    """The alignment helper analyzes frames of a second or less: it must not pay for the sky."""
+    frame, truth = render(profile, catalog, exposure_s=2.0, seed=13)
+    library = dark_library(tmp_path)
+    short = analyze(profile, catalog, frame, truth, library=library)
+    assert [r.record_type for r in short.records] == ["survey_frame", "pointing", "star_list"]
+    assert short.quality is None
+    assert short.epoch_stars is not None
+    assert len(short.epoch_stars) == 0
+    assert "quality" not in short.timings
+    assert short.solved  # the pointing and the cloud fraction are unaffected
+    # A caller can force the step, or lower the limit in the configuration.
+    forced = analyze(profile, catalog, frame, truth, library=library, sky_quality=True)
+    assert "sky_quality" in [r.record_type for r in forced.records]
+    assert "quality" in forced.timings
+    config = SurveyConfig(sky=SkyConfig(min_exposure_s=1.0))
+    lowered = analyze(profile, catalog, frame, truth, library=library, config=config)
+    assert "sky_quality" in [r.record_type for r in lowered.records]
+    # And a long frame can be switched off.
+    clear_frame, clear_truth = render(profile, catalog, seed=14)
+    off = analyze(profile, catalog, clear_frame, clear_truth, library=library, sky_quality=False)
+    assert "sky_quality" not in [r.record_type for r in off.records]
 
 
 def test_the_sky_quality_step_is_a_small_part_of_the_frame_time(

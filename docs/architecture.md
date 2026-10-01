@@ -268,7 +268,7 @@ Your two recorded 10 ms videos (bin2 mode, 8-bit, 320 × 240, 97.9 fps) replay t
 
 ### Sky quality
 
-Survey frames use bin2 at gain 120 or higher. After detection and the pointing fit, the survey worker makes the `sky_quality` record of each frame (`seeingmon.survey.quality`).
+Survey frames use bin2 at gain 120 or higher. After detection and the pointing fit, the survey worker makes the `sky_quality` record of each frame (`seeingmon.survey.quality`). A frame with an exposure under 5 s (`[survey.sky] min_exposure_s`) gets no such record: it shows too few stars and too little sky, and the alignment helper analyzes short frames about once a second, so the step would cost time and give nothing.
 
 **Stars.** Aperture photometry measures the matched, unsaturated, isolated stars in electrons per second. The aperture is a circle of 5 pixels, stretched by the trail into a stadium, and a clipped ring of 9 to 14 pixels gives the local background. A star with a saturated or hot pixel in the aperture, or a neighbor that holds more than 2% of its flux, gets no measurement. A finite aperture misses the wings of the profile (2.7% of the light in the simulated optics, which is 0.03 mag), and the sky is measured pixel by pixel, so the 40 brightest isolated stars also get a 12-pixel aperture, and the median ratio of the two fluxes corrects the rest. The zero point then refers to the light within 12 pixels.
 

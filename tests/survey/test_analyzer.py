@@ -67,6 +67,7 @@ class ScriptedPipeline(SurveyPipeline):
         reference: pt.ReferenceSolution | None = None,
         index: int = 0,
         zp_reference: ZeroPointReference | None = None,
+        sky_quality: bool | None = None,
     ) -> FrameAnalysis:
         self.calls.append((frame.t_utc_ns, index))
         self.references.append(zp_reference)

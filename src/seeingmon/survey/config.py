@@ -130,6 +130,7 @@ class SkyConfig(SectionModel):
     mask_radius_scale: float = 3.0  # each star hides a disk of this many PSF sigmas
     bp_rp: float = 1.0  # the color that the V conversion assumes for the sky
     sqm_offset_mag: float = 0.0  # the offset that `seeingmon.survey.sqm_fit` gives
+    min_exposure_s: float = 5.0  # a shorter frame gets no sky quality record (and no extra cost)
 
 
 class TransparencyConfig(SectionModel):

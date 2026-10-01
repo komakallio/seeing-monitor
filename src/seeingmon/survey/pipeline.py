@@ -14,7 +14,10 @@
    the star list, the cloud fraction, and the matched stars for photometry.
 4. **Sky quality.** `seeingmon.survey.quality` measures the stars (photometry and the zero
    point), the sky (the dark level, the flat, and a clipped median), the transparency, and the
-   limiting magnitude.
+   limiting magnitude. A frame with an exposure under `SkyConfig.min_exposure_s` (5 s) skips this
+   step: it shows too few stars and too little sky, and the alignment helper, which analyzes
+   short frames about once a second, would pay for work that it never uses. Pass
+   `sky_quality=True` to `analyze` to force the step.
 5. **Records.** The pipeline builds the `survey_frame`, `sky_quality`, `pointing`, and
    `star_list` records.
 
@@ -299,12 +302,15 @@ class SurveyPipeline:
         reference: ReferenceSolution | None = None,
         index: int = 0,
         zp_reference: ZeroPointReference | None = None,
+        sky_quality: bool | None = None,
     ) -> FrameAnalysis:
         """Analyze a frame. `previous` is the latest solution, `reference` the saved one.
 
         `index` counts the frames that the caller has analyzed, and it picks the frames for the
         second-solver check. `zp_reference` is the reference zero point of the clearest
         conditions (see `seeingmon.survey.transparency`), which gives the transparency.
+        `sky_quality` forces the sky quality step on or off. The default (`None`) runs it for
+        frames with an exposure of at least `SkyConfig.min_exposure_s`.
         """
         timings: dict[str, float] = {}
         started = self._clock.monotonic_ns()
@@ -408,32 +414,45 @@ class SurveyPipeline:
                 rms_arcsec=fit.rms_arcsec,
                 solver="" if solved is None else solved.solver,
             )
-        dark_model, status = self._dark_for(frame)
-        quality = assess_frame(
-            station_id=self._station_id,
-            profile=self._profile,
-            frame=frame,
-            data=native,
-            detections=detections,
-            cat_row=cat_row,
-            catalog=self._catalog,
-            attitude=attitude,
-            field_rows=field_rows,
-            field_vectors=field_vectors,
-            field=coverage,
-            cloud_fraction=cloud,
-            dark_model=dark_model,
-            dark_status=status,
-            flat=self._flat,
-            hot_pixels=hot,
-            zp_reference=zp_reference,
-            options=self._quality,
-            provenance=self._provenance(self._quality_provenance(dark_model)),
-            time_invalid=frame_time_invalid(frame),
+        quality: SkyQualityResult | None = None
+        wanted = (
+            exposure_s >= self._config.sky.min_exposure_s if sky_quality is None else sky_quality
         )
-        lap("quality")
+        if wanted:
+            dark_model, status = self._dark_for(frame)
+            quality = assess_frame(
+                station_id=self._station_id,
+                profile=self._profile,
+                frame=frame,
+                data=native,
+                detections=detections,
+                cat_row=cat_row,
+                catalog=self._catalog,
+                attitude=attitude,
+                field_rows=field_rows,
+                field_vectors=field_vectors,
+                field=coverage,
+                cloud_fraction=cloud,
+                dark_model=dark_model,
+                dark_status=status,
+                flat=self._flat,
+                hot_pixels=hot,
+                zp_reference=zp_reference,
+                options=self._quality,
+                provenance=self._provenance(self._quality_provenance(dark_model)),
+                time_invalid=frame_time_invalid(frame),
+            )
+            lap("quality")
         records = self._records(
-            frame, detections, solved, solution, epoch, reference, cat_row, focus, quality.record
+            frame,
+            detections,
+            solved,
+            solution,
+            epoch,
+            reference,
+            cat_row,
+            focus,
+            None if quality is None else quality.record,
         )
         lap("records")
         return FrameAnalysis(
@@ -450,7 +469,7 @@ class SurveyPipeline:
             epoch=epoch,
             field_rows=field_rows,
             field_vectors=field_vectors,
-            epoch_stars=quality.stars,
+            epoch_stars=FrameStars.empty() if quality is None else quality.stars,
             quality=quality,
         )
 
@@ -808,7 +827,7 @@ class SurveyPipeline:
         reference: ReferenceSolution | None,
         cat_row: npt.NDArray[np.intp],
         focus: float | None,
-        sky_quality: SkyQualityRecord,
+        sky_quality: SkyQualityRecord | None,
     ) -> tuple[Record, ...]:
         base: dict[str, Any] = {
             "station_id": self._station_id,
@@ -852,7 +871,9 @@ class SurveyPipeline:
             time_invalid=time_invalid,
             limits=self._limits,
         )
-        records: list[Record] = [survey_frame, sky_quality, pointing]
+        records: list[Record] = [survey_frame, pointing]
+        if sky_quality is not None:
+            records.insert(1, sky_quality)
         if solved is not None:
             records.append(self._star_list(frame, detections, cat_row, base))
         return tuple(records)

@@ -138,6 +138,7 @@ edge_px = 8
 mask_radius_scale = 3.0
 bp_rp = 1.0                    # The color that the V conversion assumes for the sky.
 sqm_offset_mag = 0.0           # The offset that seeingmon.survey.sqm_fit gives at commissioning.
+min_exposure_s = 5.0           # A shorter frame, such as an alignment frame, gets no sky quality.
 
 # The reference zero point, transparency, and the cloud flag.
 [survey.transparency]
