@@ -26,7 +26,16 @@ if TYPE_CHECKING:
         get_record_type,
         quantity,
     )
+    from seeingmon.records.reference import ReferenceRecord
     from seeingmon.records.seeing import FrameRecord, SeeingWindowRecord
+    from seeingmon.records.survey import (
+        PointingRecord,
+        SkyQualityRecord,
+        StarEpochRecord,
+        StarListRecord,
+        SurveyFrameRecord,
+    )
+    from seeingmon.records.system import EventRecord, HealthRecord, RunRecord
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
@@ -40,16 +49,34 @@ _EXPORTS: dict[str, str] = {
     "quantity": "base",
     "FrameRecord": "seeing",
     "SeeingWindowRecord": "seeing",
+    "SurveyFrameRecord": "survey",
+    "SkyQualityRecord": "survey",
+    "PointingRecord": "survey",
+    "StarListRecord": "survey",
+    "StarEpochRecord": "survey",
+    "ReferenceRecord": "reference",
+    "HealthRecord": "system",
+    "EventRecord": "system",
+    "RunRecord": "system",
 }
 
 __all__ = [
     "KEY_FIELDS",
     "RECORD_TYPES",
+    "EventRecord",
     "FieldSpec",
     "FrameRecord",
+    "HealthRecord",
+    "PointingRecord",
     "Record",
+    "ReferenceRecord",
+    "RunRecord",
     "SeeingWindowRecord",
+    "SkyQualityRecord",
+    "StarEpochRecord",
+    "StarListRecord",
     "Storage",
+    "SurveyFrameRecord",
     "field_specs",
     "get_record_type",
     "quantity",
