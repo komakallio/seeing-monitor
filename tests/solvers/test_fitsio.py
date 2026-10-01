@@ -171,3 +171,42 @@ def test_read_table_refuses_a_file_without_a_table(tmp_path: Path) -> None:
     path.write_bytes(fitsio.primary_bytes())
     with pytest.raises(fitsio.FitsError, match="no table"):
         fitsio.read_table(path)
+
+
+def test_image_bytes_equal_the_file_that_write_image_makes(tmp_path: Path) -> None:
+    image = np.arange(24, dtype=np.uint16).reshape(4, 6) * 1000
+    header = {"EXPTIME": 30.0, "MODE": "bin2", "NFRAMES": 9}
+    path = tmp_path / "image.fits"
+    fitsio.write_image(path, image, header=header)
+    assert path.read_bytes() == fitsio.image_bytes(image, header=header)
+
+
+def test_read_image_gives_the_header_and_the_pixels(tmp_path: Path) -> None:
+    image = (np.arange(35, dtype=np.float32) / 7.0).reshape(5, 7)
+    path = tmp_path / "image.fits"
+    fitsio.write_image(path, image, header={"SENSTEMP": 18.4, "KIND": "dark"})
+    header, back = fitsio.read_image(path)
+    assert header["SENSTEMP"] == pytest.approx(18.4)
+    assert header["KIND"] == "dark"
+    np.testing.assert_array_equal(back, image)
+    empty = tmp_path / "empty.fits"
+    empty.write_bytes(fitsio.primary_bytes())
+    with pytest.raises(fitsio.FitsError, match="no image"):
+        fitsio.read_image(empty)
+
+
+def test_read_header_does_not_need_the_data(tmp_path: Path) -> None:
+    """A file that holds a large image gives its header from the first blocks alone."""
+    image = np.zeros((300, 300), dtype=np.float32)
+    path = tmp_path / "big.fits"
+    data = fitsio.image_bytes(image, header={"EXPTIME": 30.0})
+    path.write_bytes(data[: fitsio.BLOCK])  # the header only: the data blocks are missing
+    assert fitsio.read_header(path)["EXPTIME"] == 30.0
+    with pytest.raises(fitsio.FitsError, match="ends inside the data"):
+        fitsio.read_fits(path)
+    path.write_bytes(data[:100])  # a header that ends before END
+    with pytest.raises(fitsio.FitsError, match="inside a header"):
+        fitsio.read_header(path)
+    path.write_bytes(b"x" * fitsio.BLOCK)
+    with pytest.raises(fitsio.FitsError, match="not FITS"):
+        fitsio.read_header(path)

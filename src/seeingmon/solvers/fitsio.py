@@ -172,6 +172,14 @@ def write_image(
     header: Header | None = None,
 ) -> None:
     """Write a 2-D image as the primary HDU. A `uint16` image uses BZERO, as FITS says."""
+    Path(path).write_bytes(image_bytes(image, header=header))
+
+
+def image_bytes(image: npt.NDArray[Any], *, header: Header | None = None) -> bytes:
+    """The bytes of a FITS file with a 2-D image as the primary HDU.
+
+    Use it to write the file in one atomic step, for example with `DataLayout.write_atomic`.
+    """
     array = np.asarray(image)
     if array.ndim != 2:
         raise FitsError("an image must be 2-D")
@@ -192,7 +200,7 @@ def write_image(
         raise FitsError(f"unsupported image type {array.dtype}")
     cards += [("NAXIS", 2), ("NAXIS1", array.shape[1]), ("NAXIS2", array.shape[0])]
     cards += extra + list((header or {}).items())
-    Path(path).write_bytes(_header_bytes(cards) + _pad(stored.tobytes()))
+    return _header_bytes(cards) + _pad(stored.tobytes())
 
 
 # --- Reading -----------------------------------------------------------------------------
@@ -377,12 +385,31 @@ def read_fits(path: str | os.PathLike[str]) -> list[Hdu]:
 
 
 def read_header(path: str | os.PathLike[str]) -> Header:
-    """The header of the primary HDU of a FITS file."""
-    buffer = Path(path).read_bytes()
-    if not buffer.startswith(b"SIMPLE"):
-        raise FitsError("the file is not FITS (it does not start with SIMPLE)")
-    header, _ = _read_header(buffer, 0)
+    """The header of the primary HDU of a FITS file.
+
+    The function reads only the header blocks, so it is cheap for a file that holds a large image.
+    """
+    buffer = bytearray()
+    with Path(path).open("rb") as handle:
+        while True:
+            block = handle.read(BLOCK)
+            if len(block) < BLOCK:
+                raise FitsError("the file ends inside a header")
+            buffer += block
+            if not buffer.startswith(b"SIMPLE"):
+                raise FitsError("the file is not FITS (it does not start with SIMPLE)")
+            if any(block[i : i + CARD][:8].strip() == b"END" for i in range(0, BLOCK, CARD)):
+                break
+    header, _ = _read_header(bytes(buffer), 0)
     return header
+
+
+def read_image(path: str | os.PathLike[str]) -> tuple[Header, npt.NDArray[Any]]:
+    """The header and the 2-D image of the primary HDU. Raises `FitsError` when it has none."""
+    unit = read_fits(path)[0]
+    if "image" not in unit.data:
+        raise FitsError("the primary HDU holds no image")
+    return unit.header, unit.data["image"]
 
 
 def read_table(path: str | os.PathLike[str], hdu: int = 1) -> dict[str, npt.NDArray[Any]]:
