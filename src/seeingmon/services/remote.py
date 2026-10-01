@@ -503,6 +503,18 @@ class RemoteCameraDriver:
         except CodecError as error:
             raise CameraError(f"acquire sent unreadable events: {error}") from None
 
+    def request_restart(self, reason: str = "requested by core") -> None:
+        """Ask `acquire` to exit, so that its supervisor starts a new process.
+
+        The process answers and then exits with `EXIT_RESTART_REQUESTED`. A connection that
+        closes before the answer arrives counts as success, because `acquire` is going away
+        either way. The driver then reports a disconnect, and `open` reconnects to the new process.
+        """
+        try:
+            self._call("restart", {"reason": reason[:200]})
+        except CameraDisconnectedError:
+            return
+
     def ping(self) -> str:
         """The identity of the `acquire` process. Answers even while a slow call runs."""
         return get_str(as_mapping(self._call("ping"), "ping answer"), "instance", "ping answer")

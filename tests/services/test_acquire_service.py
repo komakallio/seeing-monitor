@@ -714,6 +714,25 @@ class TestGuardAndWatchdog:
             rig.close()
 
 
+class TestRestartRequest:
+    def test_a_restart_request_stops_the_service_with_a_reason(self, build: RigFactory) -> None:
+        rig = build()
+        driver = rig.driver()
+        driver.open()
+        assert not rig.service.wait(0)
+        driver.request_restart("the camera hangs")
+        assert rig.service.wait(10.0)
+        assert rig.service.exit_reason == "restart requested: the camera hangs"
+
+    def test_a_long_reason_is_cut_and_an_empty_one_gets_a_default(self, build: RigFactory) -> None:
+        rig = build()
+        driver = rig.driver()
+        driver.open()
+        driver.request_restart("x" * 1000)
+        assert rig.service.wait(10.0)
+        assert rig.service.exit_reason == "restart requested: " + "x" * 200
+
+
 class TestThreadingOfTheDriver:
     def test_the_driver_is_never_called_by_two_threads_at_once(self, build: RigFactory) -> None:
         rig = build()

@@ -254,6 +254,28 @@ def test_a_hung_driver_call_ends_the_process_so_that_systemd_can_restart_it(
     assert "ran for" in process.log_text()  # the guard's report names the call
 
 
+def test_a_restart_request_ends_the_process_with_the_restart_code(
+    start_process: StartProcess,
+) -> None:
+    process = start_process()
+    driver = process.driver()
+    driver.open()
+    driver.configure(SMALL)
+    driver.start()
+    read_frames(driver, 3)
+    first = process.driver()
+    first.open()
+    first.request_restart("a test of the ladder")
+    assert process.wait(30.0) == 75  # EXIT_RESTART_REQUESTED: a supervisor starts a new process
+    assert "asked acquire to restart" in process.log_text()
+    process.start()  # what systemd does
+    again = process.driver()
+    again.open()
+    again.configure(SMALL)
+    again.start()
+    assert again.read_frame(15.0).seq == 0
+
+
 def test_a_stop_signal_ends_the_process_cleanly(start_process: StartProcess) -> None:
     process = start_process()
     driver = process.driver()

@@ -103,6 +103,7 @@ from seeingmon.services.ipc.stream import (
 RPC_CHANNEL = "rpc"
 FRAMES_CHANNEL = "frames"
 EXIT_THREAD_DIED = 71
+EXIT_RESTART_REQUESTED = 75  # core asked for a restart, so systemd starts a new process
 INSTANCE_BYTES = 8
 MAX_TAG = 2**32 - 1
 STALL_PERIODS = 5
@@ -233,6 +234,7 @@ class AcquireService:
         self._stopped = False
         self._fatal_reason: str | None = None
         self._exit_reason = "stopped"
+        self._restart_reason: str | None = None
         self._frame_rate_hz = 0.0
         self._capture_since_ns = 0
         self._threads: dict[str, threading.Thread] = {}
@@ -241,7 +243,7 @@ class AcquireService:
             self._handlers(),
             workers=1,
             worker_name="acquire-control",
-            inline={"ping", "health", "events"},
+            inline={"ping", "health", "events", "restart"},
             max_connections=1,
             max_message_bytes=settings.max_rpc_bytes,
             on_connect=self._on_connect,
@@ -318,7 +320,9 @@ class AcquireService:
                 pass
         finally:
             self.stop()
-        return 0 if self._fatal_reason is None else EXIT_THREAD_DIED
+        if self._fatal_reason is not None:
+            return EXIT_THREAD_DIED
+        return 0 if self._restart_reason is None else EXIT_RESTART_REQUESTED
 
     def stop(self) -> None:
         """Stop the threads, close the connections, and release the camera. Safe to call twice."""
@@ -443,6 +447,7 @@ class AcquireService:
             "ping": self._h_ping,
             "health": self._h_health,
             "events": self._h_events,
+            "restart": self._h_restart,
         }
 
     def _h_ping(self, params: Mapping[str, Any]) -> Any:
@@ -453,6 +458,15 @@ class AcquireService:
 
     def _h_events(self, params: Mapping[str, Any]) -> Any:
         return encode_batch(self.events.since(after_of(params)))
+
+    def _h_restart(self, params: Mapping[str, Any]) -> Any:
+        """Stop the process with `EXIT_RESTART_REQUESTED`. The reply may race the shutdown."""
+        reason = params.get("reason")
+        text = reason[:200] if isinstance(reason, str) and reason else "requested"
+        self._restart_reason = text
+        _log.warning("core asked acquire to restart: %s", text)
+        self.request_stop(f"restart requested: {text}")
+        return {"restarting": True, "instance": self.instance}
 
     def _h_open(self, params: Mapping[str, Any]) -> Any:
         with self._exclusive():
@@ -918,6 +932,7 @@ class AcquireService:
 
 
 __all__ = [
+    "EXIT_RESTART_REQUESTED",
     "EXIT_THREAD_DIED",
     "AcquireService",
     "CallGuard",
