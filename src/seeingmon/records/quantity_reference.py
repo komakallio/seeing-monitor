@@ -46,8 +46,8 @@ so sending a record twice changes nothing. A correction is a new record with the
 or `exposure_us`. The unit column repeats it.
 - **Missing values.** A missing value is `null`, and the `quality` field says why. A field that \
 is optional can be `null`, and a required field never is.
-- **Time.** `t_utc_ns` is a number of nanoseconds since the Unix epoch, in UTC. The API can \
-add an ISO 8601 time next to it.
+- **Time.** `t_utc_ns` is a number of nanoseconds since the Unix epoch, in UTC. A JavaScript \
+number cannot hold it exactly, so the API also serves an ISO 8601 time.
 - **Types.** A `bytes` value is base64 text in a row and a BLOB in SQLite. A `list` or a `dict` \
 is a JSON array or object in a row and JSON text in SQLite.
 - **Storage.** A `table` record is a row of a SQLite table, and its `row_id` is the sink \

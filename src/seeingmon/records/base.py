@@ -42,7 +42,8 @@ without an explicit import.
 **Change a record type.** Add a field at the end of the class, and make it optional or give
 it a default. The generated migration adds the column to an existing database. Never remove,
 rename, or retype a field, because the generators refuse the change. Add a new field and stop
-writing the old one. Then regenerate `docs/quantities.md` (`seeingmon records reference`).
+writing the old one. To allow a new value in a field that declares `codes`, add the code and its
+meaning to the map. Then regenerate `docs/quantities.md` (`seeingmon records reference`).
 
 **Rows.** `Record.to_row` returns a dict of JSON-compatible values (`bytes` become base64
 text), and `Record.from_row` reverses it. `from_row` is lenient, because a stored row can

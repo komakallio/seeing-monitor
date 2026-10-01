@@ -10,8 +10,8 @@ adds these extensions:
 - `x-record-type`, `x-storage`, `x-retention-days`, and `x-key` on a record.
 
 The component for a record is named after the record type in CamelCase: `seeing_window` becomes
-`SeeingWindow`. `t_utc_ns` is an integer number of nanoseconds. The REST API can add an ISO 8601
-time next to it.
+`SeeingWindow`. `t_utc_ns` is an integer number of nanoseconds, which a JavaScript number cannot
+hold exactly, so the REST API also serves an ISO 8601 time next to it.
 """
 
 from __future__ import annotations

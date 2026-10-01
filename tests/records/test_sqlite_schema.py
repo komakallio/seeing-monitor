@@ -17,6 +17,8 @@ from seeingmon.records.sqlite_schema import (
     create_index_sql,
     create_table_sql,
     ensure_schema,
+    fetch_after,
+    insert_record,
     insert_sql,
     migration_statements,
     row_to_sqlite,
@@ -282,6 +284,32 @@ class TestKeyAndCursor:
                 seen.extend(row["row_id"] for row in page)
                 cursor = page[-1]["row_id"]
         assert seen == list(range(1, 8))
+
+    def test_insert_record_returns_the_row_id_and_refuses_a_duplicate(self) -> None:
+        with memory_db() as db:
+            db.execute(create_table_sql(EventRecord))
+            assert insert_record(db, event(t_utc_ns=1)) == 1
+            assert insert_record(db, event(t_utc_ns=2)) == 2
+            with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+                insert_record(db, event(t_utc_ns=2))
+
+    def test_fetch_after_returns_pairs_that_a_sink_can_forward(self) -> None:
+        sent = [event(t_utc_ns=n, detail={"n": n}) for n in range(5)]
+        # The connection can use the default row factory or sqlite3.Row.
+        for factory in (None, sqlite3.Row):
+            with memory_db() as db:
+                db.row_factory = factory
+                db.execute(create_table_sql(EventRecord))
+                for record in sent:
+                    insert_record(db, record)
+                first = fetch_after(db, EventRecord, 0, 2)
+                second = fetch_after(db, "event", first[-1][0], 10)
+                assert fetch_after(db, "event", 5) == []
+            assert [row_id for row_id, _ in first] == [1, 2]
+            assert [row_id for row_id, _ in second] == [3, 4, 5]
+            rows = [row for _, row in first + second]
+            assert rows == [record.to_row() for record in sent]
+            assert [EventRecord.from_row(row, strict=True) for row in rows] == sent
 
     def test_a_new_sink_starts_at_row_zero(self) -> None:
         with memory_db() as db:

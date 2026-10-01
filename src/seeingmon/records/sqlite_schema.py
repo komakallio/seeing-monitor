@@ -29,6 +29,7 @@ tables and applies the migrations.
 
 **Rows.** `row_to_sqlite` turns the output of `Record.to_row` into parameters for the
 statements, and `sqlite_to_row` turns a fetched row back into the input of `Record.from_row`.
+`insert_record` appends a record, and `fetch_after` reads the rows after a sink cursor.
 """
 
 from __future__ import annotations
@@ -335,3 +336,37 @@ def sqlite_to_row(
         else:
             row[spec.name] = value
     return row
+
+
+def insert_record(connection: sqlite3.Connection, record: Record) -> int:
+    """Append a record to its table and return its row ID. The caller owns the transaction.
+
+    Raises `sqlite3.IntegrityError` when the table already holds the key of the record.
+    """
+    cls = type(record)
+    cursor = connection.execute(insert_sql(cls), row_to_sqlite(cls, record.to_row()))
+    if cursor.lastrowid is None:
+        raise RuntimeError(f"SQLite returned no row ID for the {cls.record_type} insert")
+    return cursor.lastrowid
+
+
+def fetch_after(
+    connection: sqlite3.Connection,
+    record: str | type[Record],
+    after_row_id: int = 0,
+    limit: int = 1000,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Read the rows after a cursor, in row order, as `(row_id, row)` pairs.
+
+    `row` is a dict that `Record.from_row` accepts, and the sink layer hands it on as the values
+    of a stored row. A sink that has acknowledged row `n` reads the next batch with
+    `after_row_id=n`, and a new sink starts at 0.
+    """
+    cls = _require_table(record)
+    cursor = connection.execute(select_after_sql(cls), {"after": after_row_id, "limit": limit})
+    names = [column[0] for column in cursor.description]
+    pairs: list[tuple[int, dict[str, Any]]] = []
+    for fetched in cursor.fetchall():
+        values = dict(zip(names, fetched, strict=True))
+        pairs.append((int(values[ROW_ID]), sqlite_to_row(cls, values)))
+    return pairs

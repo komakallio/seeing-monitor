@@ -466,6 +466,14 @@ class TestPackageExports:
         assert set(records_package.__all__) == set(records_package._EXPORTS)
         assert set(records_package.__all__) <= set(dir(records_package))
 
+    def test_every_exported_name_resolves_to_the_object_that_it_names(self) -> None:
+        for name in records_package.__all__:
+            value = getattr(records_package, name)
+            assert value is not None, name
+            if name.endswith("Record") and name != "Record":
+                assert issubclass(value, Record), name
+                assert RECORD_TYPES[value.record_type] is value, name
+
     def test_an_unknown_name_is_an_attribute_error(self) -> None:
         with pytest.raises(AttributeError, match="no attribute"):
             _ = records_package.nothing_here

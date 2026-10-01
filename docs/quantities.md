@@ -11,7 +11,7 @@ This reference lists every field of every record type that the system stores and
 - **Key.** A record is identified by its record type and `(station_id, t_utc_ns, revision)`. A sink upserts by this key, so sending a record twice changes nothing. A correction is a new record with the next `revision`.
 - **Names carry units.** The name of a field ends with its unit, such as `seeing_fwhm_arcsec` or `exposure_us`. The unit column repeats it.
 - **Missing values.** A missing value is `null`, and the `quality` field says why. A field that is optional can be `null`, and a required field never is.
-- **Time.** `t_utc_ns` is a number of nanoseconds since the Unix epoch, in UTC. The API can add an ISO 8601 time next to it.
+- **Time.** `t_utc_ns` is a number of nanoseconds since the Unix epoch, in UTC. A JavaScript number cannot hold it exactly, so the API also serves an ISO 8601 time.
 - **Types.** A `bytes` value is base64 text in a row and a BLOB in SQLite. A `list` or a `dict` is a JSON array or object in a row and JSON text in SQLite.
 - **Storage.** A `table` record is a row of a SQLite table, and its `row_id` is the sink cursor. A `segment` record is a row of a binary segment file.
 - **Changes.** A new field goes at the end of its record, and it is optional or has a default. The rules are in the documentation of `src/seeingmon/records/base.py`.
