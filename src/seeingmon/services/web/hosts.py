@@ -24,6 +24,7 @@ from collections.abc import Iterable
 from urllib.parse import urlsplit
 
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+SECURE_SCHEMES = ("https", "wss")
 MAX_HOST_CHARS = 253
 MAX_PORT = 65535
 
@@ -133,6 +134,27 @@ def host_of_origin(value: str) -> str | None:
     if parts.path not in ("", "/") or parts.query or parts.fragment or "@" in parts.netloc:
         return None
     return host_of_header(parts.netloc)
+
+
+def is_trustworthy_origin(host: str | None, scheme: str) -> bool:
+    """Whether a browser treats the origin of a page as secure ("potentially trustworthy").
+
+    A page on `https`, on `localhost` (or a name under it), or on a loopback address is secure. A
+    page on a LAN address or a VPN name over plain `http` is not, and the browser ignores the
+    headers that need a secure origin, such as `Cross-Origin-Opener-Policy`, and logs an error for
+    each one. `host` is the canonical host (see `host_of_header`). The caller passes the scheme of
+    the request, and never a forwarded scheme, because the server does not trust one.
+    """
+    if scheme in SECURE_SCHEMES:
+        return True
+    if host is None:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def allowed_set(

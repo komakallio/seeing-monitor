@@ -6,11 +6,12 @@ leave WebSocket traffic alone too.
 - `AllowedHosts` is the outermost layer. It refuses an HTTP request or a WebSocket handshake whose
   `Host` is not an allowed host, and a handshake whose `Origin` is not. It never looks at the
   token, so it does not change who may read or send commands.
-- `SecurityHeaders` adds the headers that tell a browser to treat the UI strictly, and the default
-  `Cache-Control` of each part of the site. An API response is `no-store`, because it is live data.
-  A static file is `no-cache`, which makes the browser ask again and accept a `304` answer, so an
-  update of the UI shows at once and a visit costs almost no data. A route that sets its own
-  `Cache-Control` (an image, which never changes) keeps it.
+- `SecurityHeaders` adds the headers that tell a browser to treat the UI strictly (the opener
+  policy only on a secure origin, because a browser ignores it elsewhere and logs an error), and
+  the default `Cache-Control` of each part of the site. An API response is `no-store`, because it
+  is live data. A static file is `no-cache`, which makes the browser ask again and accept a `304`
+  answer, so an update of the UI shows at once and a visit costs almost no data. A route that sets
+  its own `Cache-Control` (an image, which never changes) keeps it.
 - `BodyLimit` refuses a request body above the limit, by its `Content-Length` and while it streams.
 - `SelectiveGZip` compresses the text responses and leaves the images alone.
 """
@@ -27,7 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from seeingmon.services.web.errors import ApiError, error_body
-from seeingmon.services.web.hosts import host_of_header, host_of_origin
+from seeingmon.services.web.hosts import host_of_header, host_of_origin, is_trustworthy_origin
 
 _log = logging.getLogger(__name__)
 
@@ -45,11 +46,29 @@ SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("x-content-type-options", "nosniff"),
     ("x-frame-options", "DENY"),
     ("referrer-policy", "no-referrer"),
-    ("cross-origin-opener-policy", "same-origin"),
     ("cross-origin-resource-policy", "same-origin"),
     ("permissions-policy", "camera=(), microphone=(), geolocation=()"),
     ("content-security-policy", CONTENT_SECURITY_POLICY),
 )
+
+# A browser ignores these headers on an origin that is not secure, and it logs an error for each one
+# on each page load. A LAN or VPN deployment serves plain HTTP, so the server sends them only on a
+# secure origin: https, or a loopback address (see `is_trustworthy_origin`).
+SECURE_ORIGIN_HEADERS: tuple[tuple[str, str], ...] = (
+    ("cross-origin-opener-policy", "same-origin"),
+)
+
+
+def security_headers(scope: Scope) -> tuple[tuple[str, str], ...]:
+    """The security headers for a request: the opener policy goes out only on a secure origin.
+
+    The origin is the scheme of the request and its `Host`. `X-Forwarded-Proto` does not count,
+    because the server does not sit behind a proxy that it trusts.
+    """
+    host = host_of_header(Headers(scope=scope).get("host", ""))
+    if is_trustworthy_origin(host, str(scope.get("scheme", "http"))):
+        return (*SECURITY_HEADERS, *SECURE_ORIGIN_HEADERS)
+    return SECURITY_HEADERS
 
 
 HOST_CODE = "host_not_allowed"
@@ -164,7 +183,7 @@ class AllowedHosts:
         if websocket and "websocket.http.response" not in (scope.get("extensions") or {}):
             await send({"type": "websocket.close", "code": WS_CLOSE_POLICY})
             return
-        headers = {**dict(SECURITY_HEADERS), "cache-control": "no-store"}
+        headers = {**dict(security_headers(scope)), "cache-control": "no-store"}
         if not websocket:
             headers["connection"] = "close"
         response = JSONResponse(error_body(code, message), status_code=status, headers=headers)
@@ -182,11 +201,12 @@ class SecurityHeaders:
             await self.app(scope, receive, send)
             return
         default_cache = "no-store" if scope["path"].startswith(API_PREFIX) else "no-cache"
+        added = security_headers(scope)
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                for name, value in SECURITY_HEADERS:
+                for name, value in added:
                     headers.setdefault(name, value)
                 headers.setdefault("cache-control", default_cache)
             await send(message)

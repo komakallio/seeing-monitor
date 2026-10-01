@@ -87,6 +87,116 @@ def test_a_body_that_is_too_large_gets_the_headers_too(client: TestClient) -> No
     assert response.headers["cache-control"] == "no-store"
 
 
+# --- The opener policy needs a secure origin ---------------------------------------------------
+
+OPENER = "cross-origin-opener-policy"
+OTHER_SECURITY_HEADERS = (
+    "x-content-type-options",
+    "x-frame-options",
+    "referrer-policy",
+    "cross-origin-resource-policy",
+    "permissions-policy",
+    "content-security-policy",
+)
+LISTED_HOSTS = ["foo.localhost", "127.1.2.3", "pi.example", "192.0.2.10", "2001:db8::10"]
+
+
+@pytest.fixture
+def listed_client(
+    settings: WebSettings,
+    make_app: Callable[..., FastAPI],
+    open_client: Callable[..., TestClient],
+    seeded: Store,
+) -> TestClient:
+    """A client of a server that allows `LISTED_HOSTS` and the loopback names."""
+    chosen = WebSettings.model_validate({**settings.model_dump(), "allowed_hosts": LISTED_HOSTS})
+    return open_client(make_app(settings=chosen))
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost",
+        "localhost:8080",
+        "LOCALHOST.",
+        "127.0.0.1",
+        "127.0.0.1:8080",
+        "[::1]",
+        "[::1]:8080",
+        "foo.localhost",
+        "127.1.2.3",
+    ],
+)
+def test_the_opener_policy_goes_out_on_a_loopback_origin(
+    listed_client: TestClient, host: str
+) -> None:
+    response = listed_client.get(f"{API}/status", headers={"host": host})
+    assert response.status_code == 200
+    assert response.headers[OPENER] == "same-origin"
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["pi.example", "pi.example:8080", "192.0.2.10", "192.0.2.10:8080", "[2001:db8::10]:8080"],
+)
+def test_the_opener_policy_stays_home_on_a_lan_or_vpn_origin_and_the_other_headers_stay(
+    listed_client: TestClient, host: str
+) -> None:
+    for path in ("/", f"{API}/status", f"{API}/nothing", f"{API}/seeing?limit=0", "/missing.js"):
+        response = listed_client.get(path, headers={"host": host})
+        assert OPENER not in response.headers, (host, path)
+        for name in OTHER_SECURITY_HEADERS:
+            assert name in response.headers, (host, path, name)
+        assert response.headers["cross-origin-resource-policy"] == "same-origin"
+        assert response.headers["x-frame-options"] == "DENY"
+
+
+def test_the_opener_policy_goes_out_over_https_on_any_host(
+    listed_client: TestClient, open_client: Callable[..., TestClient]
+) -> None:
+    client = open_client(
+        listed_client.app, base_url="https://pi.example", headers={"host": "pi.example"}
+    )
+    response = client.get(f"{API}/status")
+    assert response.status_code == 200
+    assert response.request.url.scheme == "https"
+    assert response.headers[OPENER] == "same-origin"
+
+
+def test_a_forwarded_scheme_is_not_trusted(listed_client: TestClient) -> None:
+    forwarded = {
+        "host": "pi.example",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "localhost",
+        "forwarded": "proto=https;host=localhost",
+    }
+    response = listed_client.get(f"{API}/status", headers=forwarded)
+    assert response.status_code == 200
+    assert OPENER not in response.headers
+
+
+def test_a_refusal_follows_the_same_rule(client: TestClient) -> None:
+    refused = client.get(f"{API}/status", headers={"host": "evil.example"})
+    assert refused.status_code == 400
+    assert OPENER not in refused.headers
+    for name in OTHER_SECURITY_HEADERS:
+        assert name in refused.headers
+    on_loopback = client.get(f"{API}/status", headers={"host": "localhost"})
+    assert on_loopback.headers[OPENER] == "same-origin"
+
+
+def test_a_response_with_no_usable_host_gets_no_opener_policy_and_all_the_rest() -> None:
+    from seeingmon.services.web.middleware import security_headers
+
+    names = {name for name, _ in security_headers({"type": "http", "headers": []})}
+    assert OPENER not in names
+    assert set(OTHER_SECURITY_HEADERS) <= names
+    secure = {
+        name for name, _ in security_headers({"type": "http", "scheme": "https", "headers": []})
+    }
+    assert OPENER in secure
+
+
 # --- The cache headers -----------------------------------------------------------------------
 
 

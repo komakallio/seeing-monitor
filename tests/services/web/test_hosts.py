@@ -9,6 +9,7 @@ from seeingmon.services.web.hosts import (
     allowed_set,
     host_of_header,
     host_of_origin,
+    is_trustworthy_origin,
     normalize_entries,
     normalize_entry,
 )
@@ -210,3 +211,43 @@ def test_the_set_of_a_localhost_bind_address_is_the_loopback_names() -> None:
 def test_an_entry_that_does_not_validate_fails_the_set() -> None:
     with pytest.raises(ValueError, match="wildcards"):
         allowed_set("127.0.0.1", (), ["*.example"])
+
+
+@pytest.mark.parametrize(
+    ("host", "scheme"),
+    [
+        ("localhost", "http"),
+        ("foo.localhost", "http"),
+        ("127.0.0.1", "http"),
+        ("127.255.255.254", "http"),
+        ("::1", "http"),
+        ("localhost", "ws"),
+        ("pi.example", "https"),
+        ("192.0.2.5", "https"),
+        ("2001:db8::5", "wss"),
+        (None, "https"),
+    ],
+)
+def test_a_secure_origin_is_https_or_loopback(host: str | None, scheme: str) -> None:
+    assert is_trustworthy_origin(host, scheme) is True
+
+
+@pytest.mark.parametrize(
+    ("host", "scheme"),
+    [
+        ("pi.example", "http"),
+        ("192.0.2.5", "http"),
+        ("198.51.100.7", "http"),
+        ("2001:db8::5", "http"),
+        ("localhost.evil.example", "http"),
+        ("notlocalhost", "http"),
+        ("localhost.example", "http"),
+        ("128.0.0.1", "http"),
+        ("::2", "http"),
+        ("pi.example", "ws"),
+        ("", "http"),
+        (None, "http"),
+    ],
+)
+def test_an_origin_on_a_lan_or_a_vpn_over_http_is_not_secure(host: str | None, scheme: str) -> None:
+    assert is_trustworthy_origin(host, scheme) is False
