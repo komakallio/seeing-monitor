@@ -1,0 +1,470 @@
+"""What `web` and `core` agree on: the RPC methods, the JSON shapes, and the alignment frame.
+
+`core` serves two channels on its `IpcServer`, and `web` is the client of both. This module holds
+the names and the codecs, so that both sides build and read the same bytes. It needs no FastAPI, so
+`core` can import it.
+
+**Channel `rpc`** (an `RpcService`). Every request is a JSON object, and every answer is a JSON
+value. A call that fails raises an exception that the connection layer sends back as an error.
+
+- `ping` takes no parameters and answers `{"instance": "<ID of this core process>"}`. The ID
+  changes at a restart.
+- `status` takes no parameters and answers `{"instance": ..., "scheduler": {...}}`, where the
+  scheduler object holds the fields of `SchedulerStatus` (`encode_status`).
+- `submit` takes `{"command": <a command>}` (`encode_command`) and answers with the
+  `CommandResult` as JSON (`encode_result`).
+- `alignment_state` takes no parameters and answers with the `AlignmentState` as JSON, with
+  `"active": false` outside alignment.
+
+`submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
+normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
+is a malformed request: raise the `CodecError` (the connection layer turns it into an
+`InvalidParams` error).
+
+**Channel `alignment`** (a `StreamService`). `web` opens one stream at a time, and only while a
+person watches the live view. While the scheduler is in `align`, `core` sends one data message for
+each frame that it encodes: `pack_frame(state, jpeg)`. A data message holds the magic `SMAF`, the
+length of the JSON state (4 bytes, little endian), the JSON state, and then the JPEG to the end of
+the message. The state describes the same frame as the JPEG. `core` skips frames when the window is
+full, so a slow consumer never makes `core` buffer. While the stream is open, `core` treats the
+person as present and calls `Scheduler.touch_alignment` now and then, so the idle timer does not end
+`align`. Outside alignment, the stream stays open and sends nothing.
+
+**Commands.** `encode_command` writes a command as `{"type": <name>, ...fields}`. The names are
+`start_alignment`, `stop_alignment`, `pause`, `resume`, `queue_burst`, `queue_sweep`, and
+`queue_replay`. A field that the command lacks takes the default of the dataclass. `queue_replay`
+names its source (`source`) as a recording name without a directory part, and `core` resolves it
+under the configured recordings folder.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import struct
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from seeingmon.scheduler.commands import (
+    Command,
+    CommandResult,
+    Pause,
+    QueueBurst,
+    QueueReplay,
+    QueueSweep,
+    RejectReason,
+    Resume,
+    StartAlignment,
+    StopAlignment,
+)
+from seeingmon.scheduler.status import SchedulerStatus
+from seeingmon.services.ipc.codec import (
+    CodecError,
+    as_mapping,
+    decode_stream_config,
+    encode_stream_config,
+    get_float,
+    get_int,
+    get_opt_float,
+    get_opt_int,
+    get_str,
+)
+
+RPC_CHANNEL = "rpc"
+ALIGNMENT_CHANNEL = "alignment"
+
+METHOD_PING = "ping"
+METHOD_STATUS = "status"
+METHOD_SUBMIT = "submit"
+METHOD_ALIGNMENT_STATE = "alignment_state"
+METHODS = (METHOD_PING, METHOD_STATUS, METHOD_SUBMIT, METHOD_ALIGNMENT_STATE)
+
+FRAME_MAGIC = b"SMAF"
+MAX_STATE_BYTES = 64 * 1024
+JPEG_MAGIC = b"\xff\xd8\xff"
+MAX_LIST_ITEMS = 256
+MAX_TEXT_CHARS = 4000
+
+
+# --- Commands --------------------------------------------------------------------------------
+
+
+def _expect_keys(
+    data: Mapping[str, Any], what: str, required: Iterable[str], optional: Iterable[str] = ()
+) -> None:
+    required_set, optional_set = set(required), set(optional)
+    missing = required_set - data.keys()
+    if missing:
+        raise CodecError(f"{what} lacks {', '.join(sorted(missing))}")
+    unknown = data.keys() - required_set - optional_set
+    if unknown:
+        raise CodecError(f"{what} has unknown fields: {', '.join(sorted(unknown))}")
+
+
+def _number_list(data: Mapping[str, Any], key: str, what: str, *, integer: bool) -> tuple[Any, ...]:
+    value = data.get(key)
+    if not isinstance(value, list) or len(value) > MAX_LIST_ITEMS:
+        raise CodecError(f"{what}.{key} must be a list of at most {MAX_LIST_ITEMS} numbers")
+    read = get_int if integer else get_float
+    return tuple(read({"value": item}, "value", f"{what}.{key}") for item in value)
+
+
+def _text_list(data: Mapping[str, Any], key: str, what: str) -> tuple[str, ...]:
+    value = data.get(key)
+    if not isinstance(value, list) or len(value) > MAX_LIST_ITEMS:
+        raise CodecError(f"{what}.{key} must be a list of at most {MAX_LIST_ITEMS} strings")
+    if not all(isinstance(item, str) for item in value):
+        raise CodecError(f"{what}.{key} must be a list of strings")
+    return tuple(value)
+
+
+def encode_command(command: Command) -> dict[str, Any]:
+    """A scheduler command as the JSON object that `submit` carries. Raises `TypeError`."""
+    if isinstance(command, StartAlignment):
+        return {"type": "start_alignment", "exposure_s": command.exposure_s, "gain": command.gain}
+    if isinstance(command, StopAlignment):
+        return {"type": "stop_alignment"}
+    if isinstance(command, Pause):
+        return {"type": "pause"}
+    if isinstance(command, Resume):
+        return {"type": "resume"}
+    if isinstance(command, QueueBurst):
+        return {
+            "type": "queue_burst",
+            "duration_s": command.duration_s,
+            "stream": None if command.stream is None else encode_stream_config(command.stream),
+            "label": command.label,
+            "priority": command.priority,
+        }
+    if isinstance(command, QueueSweep):
+        return {
+            "type": "queue_sweep",
+            "exposure_us": list(command.exposure_us),
+            "gain": list(command.gain),
+            "roi_arcmin": list(command.roi_arcmin),
+            "modes": list(command.modes),
+            "window_s": command.window_s,
+            "priority": command.priority,
+        }
+    if isinstance(command, QueueReplay):
+        return {
+            "type": "queue_replay",
+            "source": command.source,
+            "speed": command.speed,
+            "options": dict(command.options),
+            "priority": command.priority,
+        }
+    raise TypeError(f"cannot send {type(command).__name__} to core")
+
+
+def decode_command(value: Any) -> Command:
+    """The inverse of `encode_command`. Raises `CodecError` for anything malformed."""
+    data = as_mapping(value, "command")
+    kind = get_str(data, "type", "command")
+    what = f"command {kind}"
+    body = {key: item for key, item in data.items() if key != "type"}
+    if kind == "start_alignment":
+        _expect_keys(body, what, (), ("exposure_s", "gain"))
+        return StartAlignment(
+            exposure_s=get_opt_float(body, "exposure_s", what),
+            gain=get_opt_int(body, "gain", what),
+        )
+    if kind in ("stop_alignment", "pause", "resume"):
+        _expect_keys(body, what, ())
+        return {"stop_alignment": StopAlignment, "pause": Pause, "resume": Resume}[kind]()
+    if kind == "queue_burst":
+        _expect_keys(body, what, (), ("duration_s", "stream", "label", "priority"))
+        stream = body.get("stream")
+        return QueueBurst(
+            duration_s=get_float(body, "duration_s", what) if "duration_s" in body else 10.0,
+            stream=None if stream is None else decode_stream_config(stream),
+            label=get_str(body, "label", what) if "label" in body else "",
+            priority=get_int(body, "priority", what) if "priority" in body else 0,
+        )
+    if kind == "queue_sweep":
+        _expect_keys(
+            body, what, (), ("exposure_us", "gain", "roi_arcmin", "modes", "window_s", "priority")
+        )
+        return QueueSweep(
+            exposure_us=(
+                _number_list(body, "exposure_us", what, integer=True)
+                if "exposure_us" in body
+                else ()
+            ),
+            gain=_number_list(body, "gain", what, integer=True) if "gain" in body else (),
+            roi_arcmin=(
+                _number_list(body, "roi_arcmin", what, integer=False)
+                if "roi_arcmin" in body
+                else ()
+            ),
+            modes=_text_list(body, "modes", what) if "modes" in body else (),
+            window_s=get_opt_float(body, "window_s", what),
+            priority=get_int(body, "priority", what) if "priority" in body else 0,
+        )
+    if kind == "queue_replay":
+        _expect_keys(body, what, (), ("source", "speed", "options", "priority"))
+        options = body.get("options")
+        return QueueReplay(
+            source=get_str(body, "source", what) if "source" in body else "",
+            speed=get_float(body, "speed", what) if "speed" in body else 1.0,
+            options={} if options is None else dict(as_mapping(options, f"{what}.options")),
+            priority=get_int(body, "priority", what) if "priority" in body else 0,
+        )
+    raise CodecError("command.type is not a command that core accepts")
+
+
+def encode_result(result: CommandResult) -> dict[str, Any]:
+    """A `CommandResult` as the JSON object that `submit` answers with."""
+    return {
+        "accepted": result.accepted,
+        "message": result.message,
+        "state": result.state,
+        "reason": None if result.reason is None else result.reason.value,
+        "task_id": result.task_id,
+    }
+
+
+def decode_result(value: Any) -> CommandResult:
+    """The inverse of `encode_result`. Raises `CodecError` for anything malformed."""
+    data = as_mapping(value, "command result")
+    _expect_keys(data, "command result", ("accepted", "message", "state"), ("reason", "task_id"))
+    accepted = data.get("accepted")
+    if not isinstance(accepted, bool):
+        raise CodecError("command result.accepted must be true or false")
+    reason = data.get("reason")
+    try:
+        parsed = None if reason is None else RejectReason(reason)
+    except ValueError:
+        raise CodecError("command result.reason is not a known reason") from None
+    return CommandResult(
+        accepted=accepted,
+        message=get_str(data, "message", "command result")[:MAX_TEXT_CHARS],
+        state=get_str(data, "state", "command result"),
+        reason=parsed,
+        task_id=get_opt_int(data, "task_id", "command result"),
+    )
+
+
+# --- Status ----------------------------------------------------------------------------------
+
+
+class _View(BaseModel):
+    """A frozen model that ignores unknown fields, so a newer `core` can serve an older `web`.
+
+    The model is strict: it rejects a string where a number belongs and a number where a boolean
+    belongs, because the bytes come from another process.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore", strict=True, allow_inf_nan=False)
+
+
+class RoiView(_View):
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class StreamView(_View):
+    """The stream that the camera runs or ran last."""
+
+    stream_id: int
+    purpose: str
+    mode: str
+    exposure_us: int
+    gain: int
+    roi: RoiView | None = None
+
+
+class FaultView(_View):
+    """Where the scheduler stands in a fault episode."""
+
+    failures: int = 0
+    good_frames: int = 0
+    last_error: str | None = None
+    next_attempt_utc_ns: int | None = None
+    next_step: str | None = None
+
+
+class SchedulerView(_View):
+    """The fields of `SchedulerStatus` as JSON. Every field is plain, so `asdict` fills it."""
+
+    t_utc_ns: int
+    state: str
+    state_reason: str = ""
+    state_since_utc_ns: int
+    last_transition_utc_ns: int | None = None
+    degraded: bool = False
+    stream: StreamView | None = None
+    cloud: bool = False
+    cloud_fraction: float | None = None
+    twilight: bool = False
+    sun_elevation_deg: float | None = None
+    background_fraction: float | None = None
+    sensor_temperature_c: float | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+    fault: FaultView = Field(default_factory=FaultView)
+    queued_tasks: int = 0
+    survey_pending: int = 0
+    alignment_idle_s: float | None = None
+
+
+class CoreStatus(_View):
+    """The answer of the `status` method."""
+
+    instance: str
+    scheduler: SchedulerView
+
+
+def encode_status(status: SchedulerStatus, instance: str) -> dict[str, Any]:
+    """The answer of the `status` method: the process identity and the scheduler status."""
+    return {"instance": instance, "scheduler": dataclasses.asdict(status)}
+
+
+def decode_status(value: Any) -> CoreStatus:
+    """The inverse of `encode_status`. Raises `CodecError` for anything malformed."""
+    try:
+        return CoreStatus.model_validate(value)
+    except ValidationError as error:
+        fields = ", ".join(
+            sorted({".".join(str(part) for part in e["loc"]) for e in error.errors()})
+        )
+        raise CodecError(f"the status is not valid: {fields}") from None
+
+
+# --- Alignment -------------------------------------------------------------------------------
+
+
+class AlignmentFrameInfo(_View):
+    """The frame that the state describes. Coordinates elsewhere are pixels of this frame."""
+
+    seq: int = Field(ge=0)
+    width_px: int = Field(gt=0)
+    height_px: int = Field(gt=0)
+    readout_mode: str = Field("", max_length=64)
+    exposure_s: float | None = Field(None, gt=0)
+    gain: int | None = Field(None, ge=0)
+    plate_scale_arcsec_px: float | None = Field(None, gt=0)
+
+
+class TargetView(_View):
+    """Where the star belongs: the position of Polaris in the reference solution."""
+
+    x_px: float
+    y_px: float
+    roll_deg: float | None = None
+
+
+class SolvedView(_View):
+    """Where the latest solution puts the star, and how good the solution is."""
+
+    x_px: float
+    y_px: float
+    roll_deg: float | None = None
+    n_matched: int = Field(0, ge=0)
+    rms_arcsec: float | None = Field(None, ge=0)
+    age_s: float | None = Field(None, ge=0)
+
+
+class OffsetView(_View):
+    """The solved position minus the target, in pixels and in arcseconds."""
+
+    dx_px: float
+    dy_px: float
+    distance_px: float = Field(ge=0)
+    dx_arcsec: float | None = None
+    dy_arcsec: float | None = None
+    distance_arcsec: float | None = Field(None, ge=0)
+    roll_deg: float | None = None
+
+
+class FocusView(_View):
+    """The focus measure: the median FWHM of the unsaturated stars, and the best of the session."""
+
+    fwhm_px: float | None = Field(None, ge=0)
+    best_fwhm_px: float | None = Field(None, ge=0)
+    n_stars: int | None = Field(None, ge=0)
+
+
+class HistogramView(_View):
+    """Counts of pixels in equal bins from `min_dn` to `max_dn`. The UI draws them on a log axis."""
+
+    counts: list[int] = Field(max_length=MAX_LIST_ITEMS)
+    min_dn: float = 0.0
+    max_dn: float = Field(gt=0)
+
+
+class SaturationView(_View):
+    """The share of saturated pixels, and whether it is enough to warn about."""
+
+    fraction: float = Field(ge=0, le=1)
+    warning: bool = False
+
+
+class AlignmentState(_View):
+    """What the Align page shows next to the live view. The answer of `alignment_state`.
+
+    Every part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an
+    ISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to
+    the size of the image that it shows.
+    """
+
+    active: bool = False
+    t_utc: str | None = Field(None, max_length=40)
+    frame: AlignmentFrameInfo | None = None
+    target: TargetView | None = None
+    solved: SolvedView | None = None
+    offset: OffsetView | None = None
+    focus: FocusView | None = None
+    histogram: HistogramView | None = None
+    saturation: SaturationView | None = None
+    quality: dict[str, str] = Field(default_factory=dict, max_length=32)
+
+
+def decode_alignment_state(value: Any) -> AlignmentState:
+    """Check the JSON that `alignment_state` answered with. Raises `CodecError`."""
+    try:
+        return AlignmentState.model_validate(value)
+    except ValidationError as error:
+        fields = ", ".join(
+            sorted({".".join(str(part) for part in e["loc"]) for e in error.errors()})
+        )
+        raise CodecError(f"the alignment state is not valid: {fields}") from None
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentFrame:
+    """One live-view frame: the JPEG of the image and the state that describes it."""
+
+    state: AlignmentState
+    jpeg: bytes
+
+
+def pack_frame(state: AlignmentState, jpeg: bytes) -> bytes:
+    """The payload of one data message of the `alignment` channel."""
+    body = state.model_dump_json().encode("utf-8")
+    if len(body) > MAX_STATE_BYTES:
+        raise ValueError("the alignment state is too large")
+    if not jpeg.startswith(JPEG_MAGIC):
+        raise ValueError("the frame is not a JPEG image")
+    return FRAME_MAGIC + struct.pack("<I", len(body)) + body + jpeg
+
+
+def unpack_frame(payload: bytes | bytearray | memoryview) -> AlignmentFrame:
+    """The inverse of `pack_frame`. Raises `CodecError` for a message that is not a frame."""
+    raw = bytes(payload)
+    if len(raw) < 8 or raw[:4] != FRAME_MAGIC:
+        raise CodecError("the message is not an alignment frame")
+    (length,) = struct.unpack_from("<I", raw, 4)
+    if length > MAX_STATE_BYTES or 8 + length >= len(raw):
+        raise CodecError("the alignment frame has a bad state length")
+    jpeg = raw[8 + length :]
+    if not jpeg.startswith(JPEG_MAGIC):
+        raise CodecError("the alignment frame holds no JPEG image")
+    try:
+        state = AlignmentState.model_validate_json(raw[8 : 8 + length])
+    except ValidationError:
+        raise CodecError("the alignment frame has an unreadable state") from None
+    return AlignmentFrame(state, jpeg)

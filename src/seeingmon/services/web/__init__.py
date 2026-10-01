@@ -9,6 +9,9 @@ modules that need them. The modules are:
 
 - `config`: the `[web]` and `[auth]` configuration sections.
 - `auth`: the token hash, the bearer-token check, and the per-client rate limiter.
+- `contract`: what `web` and `core` agree on (the RPC method names, the command and status
+  codecs, and the alignment frame format). It needs no FastAPI, so `core` can import it.
+- `core_client`: the `CoreClient` protocol, `RpcCoreClient`, and `FakeCoreClient`.
 """
 
 from __future__ import annotations
@@ -18,14 +21,18 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from seeingmon.services.web.config import AuthSettings, WebSettings
+    from seeingmon.services.web.core_client import CoreClient, FakeCoreClient, RpcCoreClient
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
     "AuthSettings": "config",
     "WebSettings": "config",
+    "CoreClient": "core_client",
+    "FakeCoreClient": "core_client",
+    "RpcCoreClient": "core_client",
 }
 
-__all__ = ["AuthSettings", "WebSettings"]
+__all__ = ["AuthSettings", "CoreClient", "FakeCoreClient", "RpcCoreClient", "WebSettings"]
 
 
 def __getattr__(name: str) -> Any:
