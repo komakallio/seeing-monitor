@@ -1,0 +1,319 @@
+"""The commands of the services lane beyond `acquire`: `core` and the commissioning tools.
+
+- `seeingmon core` runs the core process (`seeingmon.services.core.main`).
+- `seeingmon heater-off` switches the heater outputs off. The unit of `core` runs it after the
+  service stops, whatever the reason that it stopped.
+- `seeingmon burst`, `sweep`, and `replay` queue a commissioning task in the running `core`
+  through the RPC. They wait for the result and print it. With `--standalone`, they run the task
+  in a private scheduler against the configured driver, for bench work (see
+  `seeingmon.services.core.commissioning.standalone`).
+
+Exit codes of the commissioning commands: 0 when the task finished with the status `ok`, 1 when it
+failed, was aborted, or did not finish in time, and 2 when `core` rejected the command.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from seeingmon.cli import CliError, Subparsers, add_command
+
+if TYPE_CHECKING:
+    from seeingmon.scheduler.commands import Command
+
+EXIT_FAILED = 1
+EXIT_REJECTED = 2
+DEFAULT_WAIT_S = 900.0
+LOG_LEVELS = ("debug", "info", "warning", "error")
+
+
+def _common(parser: argparse.ArgumentParser, *, standalone: bool = True) -> None:
+    parser.add_argument(
+        "--local-config",
+        type=Path,
+        help="read this file instead of local/config.toml (an absent file is ignored)",
+    )
+    parser.add_argument(
+        "--address", help="the address of core (default: [services] core_address, or the default)"
+    )
+    parser.add_argument("--no-wait", action="store_true", help="queue the task and do not wait")
+    parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=DEFAULT_WAIT_S,
+        help=f"seconds to wait for the result (default {DEFAULT_WAIT_S:g})",
+    )
+    parser.add_argument("--priority", type=int, default=0, help="a higher number runs first")
+    if standalone:
+        parser.add_argument(
+            "--standalone",
+            action="store_true",
+            help="run the task here, with the configured camera driver and without core. "
+            "Stop acquire first, because one process may hold the camera.",
+        )
+    parser.add_argument("--log-level", choices=LOG_LEVELS, default="warning")
+
+
+def register(subparsers: Subparsers) -> None:
+    from seeingmon.services.core.main import local_config_option
+
+    core = add_command(
+        subparsers,
+        "core",
+        help="Run the core process: scheduler, analysis, store, and the commands of web.",
+        handler=_core,
+    )
+    local_config_option(core)
+    core.add_argument(
+        "--address", help="the address to listen at (default: [services] core_address)"
+    )
+    core.add_argument("--log-level", choices=LOG_LEVELS, default="info")
+
+    heater = add_command(
+        subparsers,
+        "heater-off",
+        help="Switch the dew-heater outputs off and exit.",
+        handler=_heater_off,
+    )
+    local_config_option(heater)
+    heater.add_argument("--log-level", choices=LOG_LEVELS, default="info")
+
+    burst = add_command(
+        subparsers,
+        "burst",
+        help="Record raw frames to a SER file with a JSON sidecar, and pin them.",
+        handler=_burst,
+    )
+    burst.add_argument("--duration", type=float, default=10.0, help="seconds (default 10)")
+    burst.add_argument("--label", default="", help="a short label for the folder of the burst")
+    burst.add_argument("--exposure-us", type=int, help="stream settings: the exposure")
+    burst.add_argument("--mode", help="stream settings: the readout mode (default: the fast mode)")
+    burst.add_argument("--gain", type=int, default=0, help="stream settings: the gain")
+    burst.add_argument(
+        "--roi",
+        metavar="X,Y,WIDTH,HEIGHT",
+        help="stream settings: the ROI in pixels (default: the full frame)",
+    )
+    _common(burst)
+
+    sweep = add_command(
+        subparsers,
+        "sweep",
+        help="Run a short fast window for each cell of a grid, and print the table.",
+        handler=_sweep,
+    )
+    sweep.add_argument("--exposure-us", help="exposures in microseconds, separated by commas")
+    sweep.add_argument("--gain", help="gains, separated by commas")
+    sweep.add_argument("--roi-arcmin", help="ROI sizes in arcminutes, separated by commas")
+    sweep.add_argument("--mode", help="readout modes, separated by commas")
+    sweep.add_argument("--window-s", type=float, help="seconds of each cell")
+    _common(sweep)
+
+    replay = add_command(
+        subparsers,
+        "replay",
+        help="Replay a recording through the production analysis into a separate store.",
+        handler=_replay,
+    )
+    replay.add_argument("source", help="the name of a recording, without a directory part")
+    replay.add_argument(
+        "--speed",
+        type=float,
+        default=0.0,
+        help="a factor of the recorded rate; 0 is as fast as possible",
+    )
+    replay.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="start_frame, max_frames, mode, exposure_us, gain, or adc_bits. Repeatable.",
+    )
+    _common(replay)
+
+
+def _core(args: argparse.Namespace) -> int:
+    from seeingmon.services.core.main import run_core
+
+    return run_core(args)
+
+
+def _heater_off(args: argparse.Namespace) -> int:
+    from seeingmon.services.core.main import heater_off
+
+    return heater_off(args)
+
+
+# --- The commissioning commands ----------------------------------------------------------------
+
+
+def _split(text: str | None, convert: Callable[[str], Any], what: str) -> tuple[Any, ...]:
+    if not text:
+        return ()
+    try:
+        return tuple(convert(item.strip()) for item in text.split(",") if item.strip())
+    except ValueError:
+        raise CliError(
+            f"{what} must be a list of numbers separated by commas", exit_code=2
+        ) from None
+
+
+def _burst(args: argparse.Namespace) -> int:
+    from seeingmon.scheduler.commands import QueueBurst
+
+    stream = None
+    if args.exposure_us is not None or args.mode or args.roi:
+        if args.exposure_us is None:
+            raise CliError("stream settings need --exposure-us", exit_code=2)
+        stream = _stream_from(args)
+    return _queue(args, QueueBurst(args.duration, stream, args.label, args.priority))
+
+
+def _stream_from(args: argparse.Namespace) -> Any:
+    from seeingmon.config import ConfigError, load_config
+    from seeingmon.frames import Roi, StreamConfig
+
+    try:
+        profile = load_config(local_file=args.local_config).profile
+    except Exception as error:
+        raise CliError(f"cannot read the profile: {error}") from None
+    roi = None
+    if args.roi:
+        numbers = _split(args.roi, int, "--roi")
+        if len(numbers) != 4:
+            raise CliError("--roi wants X,Y,WIDTH,HEIGHT", exit_code=2)
+        roi = Roi(*numbers)
+    mode = args.mode or profile.fast_mode.mode
+    pixel_format = profile.fast_mode.pixel_format
+    try:
+        kwargs: dict[str, Any] = {} if pixel_format is None else {"pixel_format": pixel_format}
+        return StreamConfig(mode, args.exposure_us, args.gain, roi=roi, **kwargs)
+    except (ValueError, ConfigError) as error:
+        raise CliError(f"the stream settings are not valid: {error}", exit_code=2) from None
+
+
+def _sweep(args: argparse.Namespace) -> int:
+    from seeingmon.scheduler.commands import QueueSweep
+
+    command = QueueSweep(
+        exposure_us=_split(args.exposure_us, int, "--exposure-us"),
+        gain=_split(args.gain, int, "--gain"),
+        roi_arcmin=_split(args.roi_arcmin, float, "--roi-arcmin"),
+        modes=tuple(m.strip() for m in (args.mode or "").split(",") if m.strip()),
+        window_s=args.window_s,
+        priority=args.priority,
+    )
+    return _queue(args, command)
+
+
+def _replay(args: argparse.Namespace) -> int:
+    from seeingmon.config.layers import parse_env_value
+    from seeingmon.scheduler.commands import QueueReplay
+
+    options: dict[str, Any] = {}
+    for item in args.option:
+        name, separator, text = item.partition("=")
+        if not separator or not name.strip():
+            raise CliError(f"--option wants KEY=VALUE, not {item!r}", exit_code=2)
+        options[name.strip()] = parse_env_value(text)
+    return _queue(args, QueueReplay(args.source, args.speed, options, args.priority))
+
+
+def _queue(args: argparse.Namespace, command: Command) -> int:
+    from seeingmon.config import ConfigError, load_config
+    from seeingmon.services.config import ServicesConfig
+    from seeingmon.services.core.main import setup_logging
+
+    setup_logging(args.log_level)
+    try:
+        config = load_config(local_file=args.local_config)
+        services = config.section("services", ServicesConfig)
+    except (ConfigError, ValueError) as error:
+        raise CliError(str(error)) from None
+    if args.standalone:
+        return _run_here(args, config, services, command)
+    return _run_through_core(args, services, command)
+
+
+def _run_through_core(args: argparse.Namespace, services: Any, command: Command) -> int:
+    from seeingmon.services.core.commissioning.client import CoreCommandClient, CoreCommandError
+    from seeingmon.services.ipc.endpoint import Endpoint
+    from seeingmon.services.ipc.errors import IpcError
+
+    try:
+        endpoint = Endpoint.parse(args.address) if args.address else services.endpoint("core")
+        key = services.load_key()
+    except IpcError as error:
+        raise CliError(str(error)) from None
+    try:
+        client = CoreCommandClient(endpoint, key, connect_timeout_s=services.connect_timeout_s)
+    except CoreCommandError as error:
+        raise CliError(
+            f"{error}. Start core with `seeingmon core`, or add --standalone to run on this "
+            "machine without it."
+        ) from None
+    try:
+        answer = client.submit(command)
+        if not answer.accepted:
+            print(f"core rejected the command: {answer.message}")
+            return EXIT_REJECTED
+        print(answer.message)
+        if args.no_wait or answer.task_id is None:
+            return 0
+        print(f"waiting for task {answer.task_id}, which runs at the next cycle boundary ...")
+        outcome = client.wait_for(answer.task_id, timeout_s=args.wait_timeout)
+    except CoreCommandError as error:
+        raise CliError(str(error)) from None
+    finally:
+        client.close()
+    if outcome.result is None:
+        print(f"the task did not finish within {args.wait_timeout:g} s; it still runs in core")
+        return EXIT_FAILED
+    return _print_result(outcome.result)
+
+
+def _run_here(args: argparse.Namespace, config: Any, services: Any, command: Command) -> int:
+    import threading
+
+    from seeingmon.services.core.commissioning.standalone import run_standalone
+
+    stop = threading.Event()
+    try:
+        outcome = run_standalone(
+            config,
+            services,
+            command,
+            clock=services.clock.build(),
+            show=lambda line: print(line, flush=True),
+            timeout_s=args.wait_timeout,
+            should_stop=stop.is_set,
+        )
+    except KeyboardInterrupt:
+        stop.set()
+        raise CliError("interrupted") from None
+    except Exception as error:
+        raise CliError(f"the standalone run failed: {type(error).__name__}: {error}") from None
+    if not outcome.answer.accepted:
+        print(f"the scheduler rejected the command: {outcome.answer.message}")
+        return EXIT_REJECTED
+    if outcome.result is None:
+        print("the task did not finish")
+        return EXIT_FAILED
+    return _print_result(outcome.result.to_detail())
+
+
+def _print_result(result: Any) -> int:
+    from seeingmon.scheduler.commission import format_sweep_table
+    from seeingmon.services.core.commissioning.client import cells_from_result
+
+    status = str(result.get("status"))
+    print(f"{result.get('kind')} {result.get('task_id')}: {status}. {result.get('summary')}")
+    data = result.get("data") or {}
+    if result.get("kind") == "sweep":
+        print(format_sweep_table(cells_from_result(data)))
+    for artifact in result.get("artifacts") or ():
+        print(f"  file: {artifact}")
+    return 0 if status == "ok" else EXIT_FAILED

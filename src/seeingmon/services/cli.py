@@ -2,9 +2,8 @@
 
 `seeingmon acquire` runs the process that owns the camera driver (see
 `seeingmon.services.acquire`). Under systemd, its unit runs this command with `Type=notify`.
-`seeingmon core` is registered so that unit files can name it. It exits with a message until the
-next part of step 9 builds it. `seeingmon web` lives in `seeingmon.services.web.cli`, which this
-module registers.
+`seeingmon core` and the commissioning commands are in `seeingmon.services.commands`.
+`seeingmon web` lives in `seeingmon.services.web.cli`, which this module registers.
 
 `acquire` reads the `[services]` section of the configuration (see
 `seeingmon.services.config`). The options override a few values for a single run:
@@ -25,7 +24,6 @@ from typing import Any
 from seeingmon.cli import CliError, Subparsers, add_command
 from seeingmon.services.web.cli import register as register_web
 
-EXIT_NOT_IMPLEMENTED = 3
 LOG_LEVELS = ("debug", "info", "warning", "error")
 
 
@@ -55,22 +53,10 @@ def register(subparsers: Subparsers) -> None:
         help="read this file instead of local/config.toml (an absent file is ignored)",
     )
     acquire.add_argument("--log-level", choices=LOG_LEVELS, default="info")
-    for name, text in (
-        ("core", "Run the core process: scheduler, analysis, and store. Not available yet."),
-    ):
-        add_command(subparsers, name, help=text, handler=_not_available(name))
+    from seeingmon.services import commands
+
+    commands.register(subparsers)
     register_web(subparsers)
-
-
-def _not_available(name: str) -> Any:
-    def handler(args: argparse.Namespace) -> int:
-        raise CliError(
-            f"seeingmon {name} is not available yet: the {name} process follows in the next "
-            "part of step 9. Only seeingmon acquire runs now.",
-            exit_code=EXIT_NOT_IMPLEMENTED,
-        )
-
-    return handler
 
 
 def _parse_options(items: list[str]) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""The `seeingmon acquire`, `core`, and `web` commands."""
+"""The commands of the services lane: `acquire`, `core`, and the commissioning tools."""
 
 from __future__ import annotations
 
@@ -20,21 +20,11 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
 
 
-@pytest.mark.parametrize("name", ["core"])
-def test_the_other_processes_exit_with_a_clear_message_until_they_exist(
-    name: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert main([name]) == 3
-    error = capsys.readouterr().err
-    assert f"seeingmon {name} is not available yet" in error
-    assert "next part of step 9" in error
-
-
 def test_the_commands_are_listed(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         main(["--help"])
     output = capsys.readouterr().out
-    for name in ("acquire", "core", "web"):
+    for name in ("acquire", "core", "web", "burst", "sweep", "replay", "heater-off"):
         assert name in output
 
 
