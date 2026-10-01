@@ -272,29 +272,28 @@ def test_pupil_tilt_weights_are_exact_for_a_linear_phase(pupil: PupilGrid) -> No
 # --- sampling tests: the done criteria ----------------------------------------------------
 
 
-@pytest.mark.parametrize("r0", [0.05, 0.10, 0.15])
-def test_kolmogorov_image_motion_matches_theory(r0: float, pupil: PupilGrid) -> None:
+def test_kolmogorov_image_motion_matches_theory(pupil: PupilGrid) -> None:
     """One-axis G-tilt variance within 5% of 0.170 lambda^2 D^(-1/3) r0^(-5/3), L0 = infinity.
 
     3,000 seeds with both axes give 6,000 samples. The standard error is about 1.8%, so the
     5% tolerance is about 2.8 sigma. A small 128-point screen (0.4 m) keeps the test fast and
-    puts most of the variance into the sinusoid part. The slow test below uses the default screen.
+    puts most of the variance into the sinusoid part. This fast test uses `r0` of 10 cm. The
+    slow test below covers 5, 10, and 15 cm with the default screen.
     """
-    base = single_layer(r0_m=r0, screen_points=128)
+    base = single_layer(r0_m=0.10, screen_points=128)
     ratio, standard_error = tilt_ratio(base, range(100, 3100), pupil)
     assert standard_error < 0.025
     assert ratio == pytest.approx(1.0, abs=0.05), (ratio, standard_error)
 
 
-@pytest.mark.parametrize("outer_scale", sorted(OUTER_SCALE_RATIOS))
-def test_outer_scale_reduction_matches_the_research_notes(
-    outer_scale: float, pupil: PupilGrid
-) -> None:
-    """A finite outer scale lowers the variance by 0.740, 0.793, and 0.848 (within 5%).
+def test_outer_scale_reduction_matches_the_research_notes(pupil: PupilGrid) -> None:
+    """An outer scale of 20 m lowers the variance to 0.793 of the Kolmogorov value (within 5%).
 
     With 2,000 seeds and both axes, the standard error is about 2.2%, so 5% is about 2.3 sigma.
+    The slow test below covers 10, 20, and 50 m. The ratios themselves are exact in the test of
+    the built spectrum above.
     """
-    base = single_layer(outer_scale_m=outer_scale, screen_points=128)
+    base = single_layer(outer_scale_m=20.0, screen_points=128)
     ratio, standard_error = tilt_ratio(base, range(300, 2300), pupil)
     assert standard_error < 0.03
     assert ratio == pytest.approx(1.0, abs=0.05), (ratio, standard_error)

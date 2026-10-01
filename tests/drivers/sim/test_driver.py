@@ -26,10 +26,12 @@ from seeingmon.drivers import (
 )
 from seeingmon.drivers.sim import (
     GeometryChange,
+    PsfConfig,
     SimDriver,
     SimFaults,
     SimOptions,
     SimParams,
+    TurbulenceConfig,
     create,
     sim_camera,
 )
@@ -44,6 +46,7 @@ from seeingmon.frames import (
     encode_frame,
     frames_equal,
 )
+from seeingmon.profile import load_profile
 
 # Polaris sits at the centre of the full bin1 frame (8288 x 5644) at the reference time.
 FAST = StreamConfig(mode="bin1", exposure_us=2000, gain=0, roi=Roi(4080, 2758, 128, 128))
@@ -242,6 +245,26 @@ class TestLifecycle:
         with pytest.raises(ValueError, match="not a driver name"):
             create_driver("base.x", profile=None, clock=clock)
         assert create(profile=SimParams.reference("bin1"), clock=clock).modes.keys() == {"bin1"}
+
+    def test_the_factory_reads_a_profile_and_a_bandwidth(self, clock: VirtualClock) -> None:
+        profile = load_profile("asi294mm-gs250")
+        options = SimOptions(
+            psf=PsfConfig(bandwidth_fraction=0.2),
+            turbulence=TurbulenceConfig(screen_points=128),
+        )
+        camera = create(profile=profile, clock=clock, options=options)
+        assert set(camera.modes) == {"bin1", "bin2"}
+        for name in ("bin1", "bin2"):
+            assert camera.modes[name].plate_scale_arcsec_per_px == pytest.approx(
+                profile.plate_scale_arcsec_per_px(name)
+            )
+        camera.open()
+        active = camera.configure(StreamConfig("bin1", 2000, 0, roi=FAST.roi))
+        assert active.frame_period_s == pytest.approx(profile.frame_period_s("bin1", 128, 2000))
+        camera.start()
+        frame = camera.read_frame(1.0)  # three wavelengths through the wave optics
+        assert frame.data.shape == (128, 128)
+        assert camera.truth.frames[-1].flux_e > 1000
 
 
 class TestTiming:

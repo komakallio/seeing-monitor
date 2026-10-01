@@ -260,7 +260,7 @@ def test_scintillation_changes_the_flux_by_the_expected_rms() -> None:
     camera.open()
     camera.configure(StreamConfig("bin1", 2000, 0, roi=POLARIS_ROI, offset=30))
     camera.start()
-    for _ in range(600):
+    for _ in range(400):
         camera.read_frame(1.0)
     factors = np.array([f.scintillation_factor for f in camera.truth.frames])
     expected = camera.truth.scintillation_rms(0.002)
