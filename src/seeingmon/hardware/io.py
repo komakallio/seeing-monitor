@@ -194,7 +194,8 @@ class _GpiodV2:
 
     DIRECTION_INPUT = 2
     DIRECTION_OUTPUT = 3
-    BIAS: ClassVar[Mapping[str, int]] = {"none": 1, "pull_up": 3, "pull_down": 4}
+    # The bias enumeration: as-is 1, unknown 2, disabled 3, pull-up 4, pull-down 5.
+    BIAS: ClassVar[Mapping[str, int]] = {"none": 1, "pull_up": 4, "pull_down": 5}
 
     def __init__(self, lib: Any) -> None:
         self._lib = lib
@@ -250,7 +251,8 @@ class _GpiodV2:
                 lib.gpiod_line_settings_set_output_value(settings, int(physical))
             else:
                 lib.gpiod_line_settings_set_direction(settings, self.DIRECTION_INPUT)
-                lib.gpiod_line_settings_set_bias(settings, self.BIAS[spec.bias])
+                if spec.bias != "none":  # without a bias, leave the pull resistor as it is
+                    lib.gpiod_line_settings_set_bias(settings, self.BIAS[spec.bias])
             offsets = (ctypes.c_uint * 1)(spec.line)
             if lib.gpiod_line_config_add_line_settings(line_config, offsets, 1, settings) != 0:
                 raise IoError("libgpiod rejected the line settings")

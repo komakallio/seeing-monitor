@@ -155,7 +155,15 @@ class TestLibgpiodV2:
         pin = PinSpec(chip="gpiochip0", line=27, direction="input", bias="pull_up")
         library = FakeGpiodV2()
         LibgpiodIo({"fault": pin}, library=library)
-        assert list(library.settings.values())[-1]["bias"] == 3
+        assert list(library.settings.values())[-1]["bias"] == 4  # pull-up in the enumeration
+
+    def test_no_bias_leaves_the_pull_resistor_alone(self) -> None:
+        library = FakeGpiodV2()
+        LibgpiodIo({"fault": FAULT}, library=library)
+        assert "gpiod_line_settings_set_bias" not in library.log
+        pull_down = PinSpec(chip="gpiochip0", line=28, direction="input", bias="pull_down")
+        LibgpiodIo({"other": pull_down}, library=library)
+        assert list(library.settings.values())[-1]["bias"] == 5  # pull-down
 
     def test_close_turns_the_output_off_then_releases_every_line_and_the_chip(self) -> None:
         io, library = self.make()
