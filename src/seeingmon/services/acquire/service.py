@@ -70,7 +70,6 @@ from seeingmon.services.acquire.drops import DropAccountant
 from seeingmon.services.acquire.events import HardwareEventLog, after_of, encode_batch
 from seeingmon.services.acquire.gate import DriverGate
 from seeingmon.services.acquire.health import AcquireHealth
-from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.acquire.priority import raise_current_thread_priority
 from seeingmon.services.acquire.queue import FrameQueue, QueueItem
 from seeingmon.services.acquire.timing import StreamTiming, TimeStamper, TimingConfig
@@ -99,6 +98,7 @@ from seeingmon.services.ipc.stream import (
     StreamService,
     StreamWindow,
 )
+from seeingmon.services.notify import SystemdNotifier
 
 RPC_CHANNEL = "rpc"
 FRAMES_CHANNEL = "frames"

@@ -16,8 +16,8 @@ from seeingmon.clock import VirtualClock
 from seeingmon.drivers.base import CameraConfigError
 from seeingmon.services.acquire.factory import create_camera_driver
 from seeingmon.services.acquire.gate import DriverGate
-from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.acquire.priority import raise_current_thread_priority
+from seeingmon.services.notify import SystemdNotifier
 from seeingmon.testing import FakeCameraDriver
 
 
@@ -136,6 +136,21 @@ class TestDriverGate:
 
 
 class TestSystemdNotifier:
+    def test_the_old_import_path_still_works(self) -> None:
+        from seeingmon.services.acquire import notify as old_path
+
+        assert old_path.SystemdNotifier is SystemdNotifier
+
+    def test_the_status_goes_out_only_when_it_changes(self) -> None:
+        sent: list[bytes] = []
+        notifier = SystemdNotifier(env={}, send=sent.append)
+        assert notifier.status_changed("running") is True
+        assert notifier.status_changed("running") is False
+        assert notifier.status_changed("degraded") is True
+        assert sent == [b"STATUS=running", b"STATUS=degraded"]
+        notifier.ready("running")  # READY=1 carries the text that it names as the last status
+        assert notifier.status_changed("running") is False
+
     def collect(self, **env: str) -> tuple[SystemdNotifier, list[bytes]]:
         sent: list[bytes] = []
         return SystemdNotifier(env=env, send=sent.append, pid=1234), sent

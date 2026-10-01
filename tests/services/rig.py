@@ -21,11 +21,11 @@ from seeingmon.clock import DEFAULT_START_UTC_NS, Clock, ClockStatus, ScaledCloc
 from seeingmon.drivers.base import CameraInfo, CameraStateError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, Roi, StreamConfig
 from seeingmon.hardware.asi.watchdog import CallWatchdog, HangReport
-from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.acquire.service import AcquireService
 from seeingmon.services.config import AcquireSettings, ServicesConfig
 from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey
+from seeingmon.services.notify import SystemdNotifier
 from seeingmon.services.remote import RemoteCameraDriver
 from seeingmon.testing import FakeCameraDriver
 
