@@ -523,6 +523,14 @@ class TestLog:
         assert rig.duty(0, 60, origin) == pytest.approx(1.0)
         assert rig.duty(60, 120, origin) == pytest.approx(0.0)
 
+    def test_recent_duty_looks_back_from_now(self) -> None:
+        rig = make(temperature_c=0.0, humidity_pct=100.0, margin_c=3.0)  # duty 0.75
+        rig.heater.start()
+        rig.advance_running(60.0)
+        assert rig.heater.recent_duty(60.0) == pytest.approx(0.75, abs=0.001)
+        assert rig.heater.recent_duty(10.0) is not None
+        assert rig.heater.recent_duty(3600.0) is None  # the log starts at construction
+
     def test_a_wall_clock_step_back_keeps_the_log_in_order(self) -> None:
         rig = make(temperature_c=0.0, humidity_pct=100.0, margin_c=5.0)
         origin = rig.clock.utc_ns()

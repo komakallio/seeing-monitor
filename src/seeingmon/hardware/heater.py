@@ -500,6 +500,13 @@ class HeaterController:
                     on_ns += max(0, min(until, end) - max(since, t_start_ns))
             return on_ns / (end - t_start_ns)
 
+    def recent_duty(self, window_s: float) -> float | None:
+        """The share of the last `window_s` seconds that the heater was on, or `None` when the log
+        does not reach back that far. Use it to fill `FastContext.heater_duty` for the window
+        that closes now."""
+        now = self._clock.utc_ns()
+        return self.mean_duty(now - round(window_s * NS_PER_S), now)
+
     def status(self) -> HeaterStatus:
         """A snapshot of the controller for the health record and the API."""
         with self._lock:

@@ -44,6 +44,7 @@ import os
 import re
 import ssl
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -268,6 +269,7 @@ class PowerCycle:
         self._on_event = on_event
         self._env = os.environ if env is None else env
         self._state_file = None if config.state_file is None else Path(config.state_file)
+        self._lock = threading.Lock()  # two requests at once must not both pass the limits
         self._attempts: list[int] = self._load_attempts()
 
     # --- Events ---
@@ -339,7 +341,10 @@ class PowerCycle:
         The method returns a `PowerResult` and never raises for a failed route. With a working
         route, the cycle may kill the process before this method returns.
         """
-        reason = reason[:MAX_REASON_CHARS]
+        with self._lock:
+            return self._request(reason[:MAX_REASON_CHARS])
+
+    def _request(self, reason: str) -> PowerResult:
         route = self._cfg.route
         if route == "none":
             self._emit(

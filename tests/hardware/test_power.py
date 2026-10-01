@@ -481,6 +481,21 @@ class TestRateLimits:
         blocked = rig.power.request("second")
         assert blocked.detail == "clock_behind_the_last_attempt"
 
+    def test_two_requests_at_once_cannot_both_pass_the_limit(self) -> None:
+        rig = make(command_config(max_per_day=1, min_interval_s=0.0))
+        rig.runner.on_run = lambda: time.sleep(0.1)  # the first command is still running
+        outcomes: list[PowerOutcome] = []
+        threads = [
+            threading.Thread(target=lambda: outcomes.append(rig.power.request("a").outcome))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10.0)
+        assert sorted(outcomes) == [PowerOutcome.DONE, PowerOutcome.RATE_LIMITED]
+        assert len(rig.runner.calls) == 1
+
     def test_the_reason_is_cut_to_200_characters(self) -> None:
         rig = make(command_config())
         rig.power.request("x" * 500)
