@@ -15,7 +15,7 @@ from seeingmon.drivers import (
     CameraTimeoutError,
     RecoveryLevel,
 )
-from seeingmon.frames import FrameFlag, Roi
+from seeingmon.frames import FrameFlag, Roi, StreamConfig
 from seeingmon.hardware.asi.api import AsiControl, AsiErrorCode
 from seeingmon.hardware.asi.fake import FakeAsiSdk
 from seeingmon.hardware.asi.usb import UsbResetError
@@ -342,3 +342,40 @@ class TestWatchdog:
             rig.driver.configure(FAST)
         assert rig.watchdog.armed == 0
         assert rig.hangs == []
+
+
+class TestSystemClock:
+    """The driver on real time and real threads, with loose bounds so a slow machine passes."""
+
+    def test_frames_flow_and_stop_ends_a_read_that_waits(self) -> None:
+        from seeingmon.clock import SystemClock
+        from seeingmon.drivers.asi import AsiDriver, AsiOptions
+        from tests.hardware.asi_support import reference_profile
+
+        clock = SystemClock()
+        sdk = FakeAsiSdk(clock)
+        driver = AsiDriver(
+            api=sdk,
+            profile=reference_profile(),
+            clock=clock,
+            options=AsiOptions(discard_frames=0, call_timeout_s=5.0),
+        )
+        driver.open()
+        driver.configure(
+            StreamConfig(mode="bin1", exposure_us=5000, gain=120, roi=Roi(0, 0, 16, 8))
+        )
+        driver.start()
+        frames = [driver.read_frame(5.0) for _ in range(20)]
+        assert [frame.seq for frame in frames] == list(range(20))
+        arrivals = [frame.t_arrival_ns for frame in frames]
+        assert arrivals == sorted(arrivals)
+        assert arrivals[-1] - arrivals[0] > 50_000_000  # 19 periods of about 6.6 ms
+        # A stop from another thread ends a read that waits for a frame that never comes.
+        sdk.stall_reads(1)
+        reader, outcome = run_in_thread(lambda: driver.read_frame(5.0))
+        assert wait_until(lambda: sdk.calls[-1][0] == "get_video_data")
+        driver.stop()  # waits for the reader, which times out after its bound
+        reader.join(10.0)
+        assert not reader.is_alive()
+        assert isinstance(outcome[0], CameraTimeoutError)
+        driver.close()
