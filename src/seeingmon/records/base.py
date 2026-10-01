@@ -542,6 +542,11 @@ def field_specs(record: str | type[Record]) -> tuple[FieldSpec, ...]:
     return _specs_for(resolve_record_type(record))
 
 
+def base_field_specs() -> tuple[FieldSpec, ...]:
+    """Return the declarations of the fields that every record has, in order."""
+    return _specs_for(Record)
+
+
 class RecordRegistry(Mapping[str, "type[Record]"]):
     """The record types by name. The first read imports the declaration modules.
 

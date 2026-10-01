@@ -25,6 +25,7 @@ from seeingmon.records.base import (
     RECORD_TYPES,
     FieldSpec,
     Record,
+    base_field_specs,
     field_specs,
     resolve_record_type,
 )
@@ -136,7 +137,7 @@ def record_schema(record: str | type[Record]) -> dict[str, Any]:
 
 def quality_schema() -> dict[str, Any]:
     """The schema of the `quality` object that every record shares."""
-    definition = Record.model_fields["quality"].description or ""
+    definition = next(spec.definition for spec in base_field_specs() if spec.name == "quality")
     return {
         "type": "object",
         "title": "Quality",

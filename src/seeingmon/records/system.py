@@ -39,7 +39,7 @@ EVENT_KIND_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 class HealthRecord(Record):
     """A snapshot of the state of the system, every 60 seconds.
 
-    `t_utc_ns` is the time of the snapshot. A measurement that the system cannot read is `None`.
+    `t_utc_ns` is the time of the snapshot. A measurement that the system cannot read is `null`.
     """
 
     record_type: ClassVar[str] = "health"

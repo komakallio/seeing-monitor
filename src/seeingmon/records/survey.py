@@ -97,7 +97,7 @@ class SkyQualityRecord(Record):
     """The sky brightness and the transparency from one survey frame.
 
     `t_utc_ns` is the UTC time at the middle of the exposure. A value that the frame cannot
-    support is `None`, and `quality` says why.
+    support is `null`, and `quality` says why.
     """
 
     record_type: ClassVar[str] = "sky_quality"
@@ -182,7 +182,7 @@ class PointingRecord(Record):
 
     `t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix,
     so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the
-    readout mode in `readout_mode`. A frame that the solver cannot solve has `None` in every
+    readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every
     geometry field and the `unsolved` flag.
     """
 
@@ -329,8 +329,8 @@ class StarListRecord(Record):
 class StarEpochRecord(Record):
     """The nightly summary of the stars that the survey matched.
 
-    `t_utc_ns` is the start of the night. A row describes one star: its mean position offset,
-    its mean magnitude, its scatter, and the number of frames that contribute.
+    `t_utc_ns` is the start of the night. Each row of `data` describes one star: its mean
+    position offset, its mean magnitude, its scatter, and the number of frames that contribute.
     """
 
     record_type: ClassVar[str] = "star_epoch"

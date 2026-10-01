@@ -33,7 +33,7 @@ class FrameRecord(Record):
     SQLite rows. A segment stores `station_id`, `profile_id`, `provenance`, `revision`,
     `quality`, and `stream_id` once, in its header, and it stores every other field in each
     row. `t_utc_ns` is the UTC time at the middle of the exposure of the first row of the ROI.
-    A float that analysis could not compute is NaN in a row and `None` in the record.
+    A float that analysis could not compute is NaN in a row and `null` in the record.
     """
 
     record_type: ClassVar[str] = "frame"
@@ -129,7 +129,7 @@ class SeeingWindowRecord(Record):
 
     `t_utc_ns` is the start of the window. A window never spans a reconfiguration of the camera,
     so one `stream_id` covers all of its frames. A statistic that the window cannot support is
-    `None`, and `quality` says why.
+    `null`, and `quality` says why.
     """
 
     record_type: ClassVar[str] = "seeing_window"
