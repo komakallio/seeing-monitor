@@ -374,23 +374,34 @@ class TestErrorsFromTheDriver:
         assert health["last_error"] == "CameraDisconnectedError: unplugged"
 
     def test_an_error_that_repeats_takes_one_place_in_the_queue(self, build: RigFactory) -> None:
-        rig = build(
-            speed=50.0,
+        rig = virtual_rig(
+            build,
+            10,
             acquire={"error_backoff_s": 0.0},
-            services={"stream_window_messages": 1},  # the sender sends one event and then waits
+            services={"stream_window_messages": 1},  # the sender sends one message and then waits
         )
+        assert isinstance(rig.fake, ParkingFake)
         driver = rig.driver()
         driver.open()
         driver.configure(FAST)
         rig.fake.fail_reads(*[CameraDisconnectedError("unplugged") for _ in range(40)])
         driver.start()
-        assert wait_until(lambda: driver.health()["read_errors"] == 40, 20.0)
-        assert rig.service._queue.events == 1  # 39 repeats took one place
-        with pytest.raises(CameraDisconnectedError):
-            driver.read_frame(10.0)
-        with pytest.raises(CameraDisconnectedError):
-            driver.read_frame(10.0)  # the one place that the repeats shared
-        assert driver.read_frame(10.0).seq == 0
+        assert rig.fake.parked.wait(30.0)  # the 40 errors came first, and then ten frames
+        assert driver.health()["read_errors"] == 40
+        stats = rig.service._queue.stats
+        assert (stats.events_in, stats.events_dropped) == (40, 0)  # nothing was lost
+        # The queue held at most one event at a time, and the sender may have sent the first of
+        # them before the rest came, so the caller sees the error once or twice, and then frames.
+        errors = 0
+        frames: list[Frame] = []
+        while len(frames) < 10:
+            try:
+                frames.append(driver.read_frame(10.0))
+            except CameraDisconnectedError:
+                errors += 1
+                assert errors <= 2
+        assert errors >= 1
+        assert [f.seq for f in frames] == list(range(10))
 
     def test_the_driver_stopping_by_itself_is_a_state_error_for_the_caller(
         self, build: RigFactory
