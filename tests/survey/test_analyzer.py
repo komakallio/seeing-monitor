@@ -621,3 +621,32 @@ def test_create_survey_analyzer_builds_from_the_configuration(
     assert pointing.flags == ["unsolved"]
     analyzer.close()
     assert replace(frame, seq=1).seq == 1
+
+
+def test_a_built_pipeline_loads_the_catalog_and_the_hot_pixel_file(
+    profile: Profile, catalog: CapCatalog, tmp_path: Path
+) -> None:
+    from seeingmon.survey.pipeline import build_pipeline
+
+    write_catalog(tmp_path / "cap.smcat", catalog)
+    mask = np.zeros((800, 1200), dtype=bool)
+    mask[10, 10] = True
+    np.save(tmp_path / "hot.npy", mask)
+    config = SurveyConfig(
+        catalog_path=str(tmp_path / "cap.smcat"),
+        hot_pixel_file=str(tmp_path / "hot.npy"),
+        solvers=(),
+    )
+    spec = analyzer_spec(profile=profile, station_id="s", config=config)
+    assert spec.hot_pixel_file == str(tmp_path / "hot.npy")
+    pipeline = build_pipeline(spec)
+    assert pipeline.catalog.content_id == catalog.content_id
+    frame, truth = synth.render_frame(
+        catalog, profile, rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0), seed=61
+    )
+    analysis = pipeline.analyze(frame)
+    assert analysis.detections is not None
+    assert analysis.cat_row is not None
+    assert analysis.cat_row.shape == (len(analysis.detections),)
+    assert not analysis.solved  # no solver, no previous solution
+    assert truth.rows.size > 0

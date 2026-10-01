@@ -607,3 +607,31 @@ def test_an_unsolved_result_with_a_solver_that_returns_no_cd_is_handled(
     odd = synth.QueueSolver([SolveResult(solved=True, solver="odd", elapsed_s=0.1)])
     analysis = pipeline_for(profile, catalog, [odd]).analyze(frame)
     assert not analysis.solved
+
+
+def test_the_analysis_keeps_what_the_steps_after_the_pointing_need(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    analysis = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert analysis.detections is not None
+    assert analysis.cat_row is not None
+    assert analysis.attitude is not None
+    assert analysis.epoch is not None
+    assert analysis.field_rows is not None
+    assert analysis.field_vectors is not None
+    assert analysis.cat_row.shape == (len(analysis.detections),)
+    assert analysis.field_vectors.shape == (analysis.field_rows.size, 3)
+    matched = analysis.cat_row >= 0
+    assert matched.sum() > analysis.fit.n_matched * 0.9 if analysis.fit else False
+    # Every matched row is a row of the catalog field, and no row matches twice.
+    assert set(analysis.cat_row[matched]) <= set(analysis.field_rows)
+    assert len(set(analysis.cat_row[matched])) == int(matched.sum())
+    # The matched stars sit where the truth puts them.
+    rows = analysis.cat_row[matched]
+    where = {int(row): i for i, row in enumerate(truth.rows)}
+    reliable = matched & analysis.detections.reliable()
+    for i in np.flatnonzero(reliable)[:30]:
+        j = where[int(analysis.cat_row[i])]
+        assert abs(analysis.detections.x[i] - truth.x[j]) < 0.1
+    assert rows.size > 100

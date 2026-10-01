@@ -166,8 +166,12 @@ class FrameAnalysis:
     """The result of one frame.
 
     `solution` is the new pointing solution (`None` for an unsolved frame), which the caller
-    gives to the tracker. `detections` stays in the process that ran the pipeline. `timings`
-    maps each step to its time in seconds. `notes` explain a failure or a disagreement.
+    gives to the tracker. `detections` and the fields after it stay in the process that ran the
+    pipeline, for the steps that build on the pointing (the sky quality uses them):
+    `cat_row` holds the catalog row that each detection matched (-1 for none), `attitude` is
+    the final camera model, `epoch` the time parameters, and `field_rows` and `field_vectors`
+    the catalog stars of the field with their apparent places. `timings` maps each step to
+    its time in seconds, and `notes` explain a failure or a disagreement.
     """
 
     records: tuple[Record, ...]
@@ -178,6 +182,11 @@ class FrameAnalysis:
     fit: FitResult | None = None
     timings: dict[str, float] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+    cat_row: npt.NDArray[np.intp] | None = None
+    attitude: CameraAttitude | None = None
+    epoch: apparent.ObservationEpoch | None = None
+    field_rows: npt.NDArray[np.intp] | None = None
+    field_vectors: FloatArray | None = None
 
 
 @dataclass(slots=True)
@@ -371,6 +380,11 @@ class SurveyPipeline:
             fit=fit,
             timings=timings,
             notes=tuple(notes),
+            cat_row=cat_row,
+            attitude=attitude,
+            epoch=epoch,
+            field_rows=field_rows,
+            field_vectors=field_vectors,
         )
 
     def _hot_mask_for(self, frame: Frame) -> npt.NDArray[np.bool_] | None:
