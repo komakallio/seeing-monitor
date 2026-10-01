@@ -370,6 +370,25 @@ def test_only_acquire_touches_usb(texts: dict[str, str]) -> None:
     assert rules(lint_unit_set(units)) == {"unit-set-devices"}
 
 
+def test_web_loads_the_token_hash_and_the_other_units_do_not(texts: dict[str, str]) -> None:
+    line = "LoadCredential=seeingmon-token-hash:@CONFIG_DIR@/credentials/seeingmon-token-hash\n"
+    assert lint_unit_set(parsed(texts)) == []
+    assert rules(lint_unit_set(parsed(texts, web=(line, "")))) == {"unit-set-credential"}
+    core = ("OOMScoreAdjust=-200", "OOMScoreAdjust=-200\n" + line.rstrip())
+    assert rules(lint_unit_set(parsed(texts, core=core))) == {"unit-set-credential"}
+
+
+def test_a_unit_may_load_several_credentials(texts: dict[str, str]) -> None:
+    assert texts[WEB].count("LoadCredential=") == 2
+    assert lint(WEB, texts[WEB]) == []
+    only_key = mutate(
+        texts[WEB],
+        "LoadCredential=seeingmon-connection-key:",
+        "LoadCredential=another-key:",
+    )
+    assert "unit-credential" in rules(lint(WEB, only_key))
+
+
 def test_only_acquire_raises_its_priority(texts: dict[str, str]) -> None:
     units = parsed(texts, core=("AmbientCapabilities=\n", "AmbientCapabilities=CAP_SYS_NICE\n"))
     assert "unit-set-devices" in rules(lint_unit_set(units))

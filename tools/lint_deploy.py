@@ -58,6 +58,7 @@ MARKER = "Managed by the seeingmon installer"
 EXEC_PREFIX = "@PREFIX@/"
 ZWO_VENDOR_ID = "03c3"  # the USB vendor ID of ZWO, a public value
 CREDENTIAL = "seeingmon-connection-key"
+TOKEN_CREDENTIAL = "seeingmon-token-hash"
 
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 
@@ -454,8 +455,7 @@ def _lint_long_running(unit: Unit, add: Add) -> None:
     for key in ("OOMScoreAdjust", "MemoryMax", "SyslogIdentifier"):
         if not unit.has("Service", key):
             add(0, "unit-memory", f"a long-running service needs {key}=")
-    credential = unit.value("Service", "LoadCredential") or ""
-    if not credential.startswith(f"{CREDENTIAL}:@CONFIG_DIR@/"):
+    if not _loads(unit, CREDENTIAL):
         add(0, "unit-credential", f"LoadCredential= must load {CREDENTIAL} from @CONFIG_DIR@")
     if unit.value("Service", "RuntimeDirectory") != "seeingmon":
         add(0, "unit-runtime", "RuntimeDirectory= must be seeingmon, the directory of the sockets")
@@ -467,6 +467,12 @@ def _lint_long_running(unit: Unit, add: Add) -> None:
         add(0, "unit-install", f"PartOf={TARGET_UNIT} ties the unit to the target")
     if TARGET_UNIT not in unit.words("Install", "WantedBy"):
         add(0, "unit-install", f"[Install] needs WantedBy={TARGET_UNIT}")
+
+
+def _loads(unit: Unit, credential: str) -> bool:
+    """Whether the unit loads the credential from a file under `@CONFIG_DIR@`."""
+    prefix = f"{credential}:@CONFIG_DIR@/"
+    return any(value.startswith(prefix) for value in unit.values("Service", "LoadCredential"))
 
 
 def lint_unit_set(units: Mapping[str, Unit]) -> list[Finding]:
@@ -506,6 +512,12 @@ def lint_unit_set(units: Mapping[str, Unit]) -> list[Finding]:
             add(name, "unit-set-data", "web needs ReadOnlyPaths=@DATA_DIR@")
         if name == ACQUIRE and DATA_DIR not in unit.words("Service", "InaccessiblePaths"):
             add(name, "unit-set-data", "acquire needs InaccessiblePaths=@DATA_DIR@")
+    for name in MAIN_SERVICES:
+        loads_token = _loads(units[name], TOKEN_CREDENTIAL)
+        if name == WEB and not loads_token:
+            add(name, "unit-set-credential", f"web checks the API token: load {TOKEN_CREDENTIAL}")
+        if name != WEB and loads_token:
+            add(name, "unit-set-credential", f"only web needs {TOKEN_CREDENTIAL}")
     web = units[WEB]
     if (web.value("Service", "PrivateDevices") or "").lower() not in _TRUE:
         add(WEB, "unit-set-devices", "web has no camera access, so it needs PrivateDevices=yes")
@@ -1283,6 +1295,16 @@ def lint_shell(label: str, text: str) -> list[Finding]:
     for number, line in code:
         if re.search(r"(?<![\w-])eval(?![\w-])", line):
             findings.append(Finding(label, number, "shell-eval", "avoid eval: it runs its input"))
+        if "`" in line:
+            findings.append(
+                Finding(
+                    label,
+                    number,
+                    "shell-backtick",
+                    "avoid backticks: they run a command, even in the text of an unquoted here "
+                    "document. Use $(...) for a command, and plain words in text",
+                )
+            )
     check_line = _check_line()
     for number, line in enumerate(lines, start=1):
         if "repo-check: allow" in line:

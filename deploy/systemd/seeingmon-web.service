@@ -44,6 +44,9 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=SEEINGMON_PATHS__DATA_DIR=@DATA_DIR@
 EnvironmentFile=-@CONFIG_DIR@/seeingmon.env
 LoadCredential=seeingmon-connection-key:@CONFIG_DIR@/credentials/seeingmon-connection-key
+# The hash of the API token. The installer keeps an empty file here until you give it a hash, and
+# an empty hash means that web has none. A hash in [auth] of the local configuration wins.
+LoadCredential=seeingmon-token-hash:@CONFIG_DIR@/credentials/seeingmon-token-hash
 RuntimeDirectory=seeingmon
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes

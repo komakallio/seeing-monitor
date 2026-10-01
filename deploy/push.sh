@@ -34,6 +34,9 @@ Optional parameters:
   --connection-key-file FILE
                        a file with the key that the three services share. Without it, the
                        installer makes a key on the Pi at the first install.
+  --token-hash-file FILE
+                       a file with the hash of the API token, which the command web hash-token
+                       makes. Without it, web has no token hash.
   --env-file FILE      a file of NAME=value lines that the services read (sink tokens, for example).
   --python PATH        the Python interpreter that uv uses to build the release.
   --dist-dir DIR       use the wheel and requirements.txt in DIR, and build nothing.
@@ -125,6 +128,7 @@ LOCAL_CONFIG=''
 SDK_ARCHIVE=''
 SDK_SHA256=''
 CONNECTION_KEY_FILE=''
+TOKEN_HASH_FILE=''
 ENV_FILE=''
 PYTHON=''
 DIST_DIR=''
@@ -149,6 +153,7 @@ while [ "$#" -gt 0 ]; do
     --sdk-archive) need_value "$@"; SDK_ARCHIVE=$2; shift 2 ;;
     --sdk-sha256) need_value "$@"; SDK_SHA256=$2; shift 2 ;;
     --connection-key-file) need_value "$@"; CONNECTION_KEY_FILE=$2; shift 2 ;;
+    --token-hash-file) need_value "$@"; TOKEN_HASH_FILE=$2; shift 2 ;;
     --env-file) need_value "$@"; ENV_FILE=$2; shift 2 ;;
     --python) need_value "$@"; PYTHON=$2; shift 2 ;;
     --dist-dir) need_value "$@"; DIST_DIR=$2; shift 2 ;;
@@ -186,6 +191,7 @@ for time_source in "${TIME_SOURCES[@]}"; do
 done
 if [ -n "$LOCAL_CONFIG" ]; then check_file --local-config "$LOCAL_CONFIG"; fi
 if [ -n "$CONNECTION_KEY_FILE" ]; then check_file --connection-key-file "$CONNECTION_KEY_FILE"; fi
+if [ -n "$TOKEN_HASH_FILE" ]; then check_file --token-hash-file "$TOKEN_HASH_FILE"; fi
 if [ -n "$ENV_FILE" ]; then check_file --env-file "$ENV_FILE"; fi
 if [ -n "$SDK_ARCHIVE" ] || [ -n "$SDK_SHA256" ]; then
   [ -n "$SDK_ARCHIVE" ] || usage_error "--sdk-sha256 needs --sdk-archive"
@@ -280,6 +286,7 @@ add_file "$BUILD_DIR/requirements.txt" requirements.txt
 if [ -n "$LOCAL_CONFIG" ]; then add_file "$LOCAL_CONFIG" local-config.toml; fi
 if [ -n "$SDK_ARCHIVE" ]; then add_file "$SDK_ARCHIVE" "sdk-${SDK_ARCHIVE##*/}"; fi
 if [ -n "$CONNECTION_KEY_FILE" ]; then add_file "$CONNECTION_KEY_FILE" connection-key; fi
+if [ -n "$TOKEN_HASH_FILE" ]; then add_file "$TOKEN_HASH_FILE" token-hash; fi
 if [ -n "$ENV_FILE" ]; then add_file "$ENV_FILE" seeingmon.env; fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -327,6 +334,7 @@ fi
 if [ -n "$CONNECTION_KEY_FILE" ]; then
   INSTALL_ARGS+=(--connection-key-file "$STAGE/connection-key")
 fi
+if [ -n "$TOKEN_HASH_FILE" ]; then INSTALL_ARGS+=(--token-hash-file "$STAGE/token-hash"); fi
 if [ -n "$ENV_FILE" ]; then INSTALL_ARGS+=(--env-file "$STAGE/seeingmon.env"); fi
 if [ "$NO_TIME_CONFIG" -eq 1 ]; then INSTALL_ARGS+=(--no-time-config); fi
 for time_source in "${TIME_SOURCES[@]}"; do

@@ -49,6 +49,10 @@ Optional parameters:
   --connection-key-file FILE
                        the key that the three services share. Without it, the installer makes a
                        key at the first install and keeps it.
+  --token-hash-file FILE
+                       the hash of the API token, which the command web hash-token makes. The web
+                       service loads it as a systemd credential. Without it, the installer keeps
+                       an empty file, and web has no hash until you give one.
   --env-file FILE      a file of NAME=value lines that the services read. Put secrets in it.
   --wheelhouse DIR     install from the wheels in DIR and not from the internet.
   --python PATH        the Python interpreter that makes the virtual environment (default:
@@ -141,6 +145,7 @@ SDK_ARCHIVE=''
 SDK_SHA256=''
 LOCAL_CONFIG=''
 CONNECTION_KEY_FILE=''
+TOKEN_HASH_FILE=''
 ENV_FILE=''
 WHEELHOUSE=''
 PYTHON=''
@@ -164,6 +169,7 @@ while [ "$#" -gt 0 ]; do
     --sdk-sha256) need_value "$@"; SDK_SHA256=$2; shift 2 ;;
     --local-config) need_value "$@"; LOCAL_CONFIG=$2; shift 2 ;;
     --connection-key-file) need_value "$@"; CONNECTION_KEY_FILE=$2; shift 2 ;;
+    --token-hash-file) need_value "$@"; TOKEN_HASH_FILE=$2; shift 2 ;;
     --env-file) need_value "$@"; ENV_FILE=$2; shift 2 ;;
     --wheelhouse) need_value "$@"; WHEELHOUSE=$2; shift 2 ;;
     --python) need_value "$@"; PYTHON=$2; shift 2 ;;
@@ -232,6 +238,7 @@ if [ -n "$SDK_ARCHIVE" ] || [ -n "$SDK_SHA256" ]; then
 fi
 if [ -n "$LOCAL_CONFIG" ]; then check_file --local-config "$LOCAL_CONFIG"; fi
 if [ -n "$CONNECTION_KEY_FILE" ]; then check_file --connection-key-file "$CONNECTION_KEY_FILE"; fi
+if [ -n "$TOKEN_HASH_FILE" ]; then check_file --token-hash-file "$TOKEN_HASH_FILE"; fi
 if [ -n "$ENV_FILE" ]; then check_file --env-file "$ENV_FILE"; fi
 if [ -n "$WHEELHOUSE" ]; then
   check_path --wheelhouse "$WHEELHOUSE"
@@ -276,6 +283,7 @@ CONFIG_LOCAL_DIR=$CONFIG_DIR/local
 CONFIG_FILE=$CONFIG_LOCAL_DIR/config.toml
 CREDENTIALS_DIR=$CONFIG_DIR/credentials
 KEY_FILE=$CREDENTIALS_DIR/seeingmon-connection-key
+TOKEN_FILE=$CREDENTIALS_DIR/seeingmon-token-hash
 ENV_TARGET=$CONFIG_DIR/seeingmon.env
 SDK_ENV_FILE=$CONFIG_DIR/sdk.env
 UNIT_DIR=$SYSTEM_ROOT/etc/systemd/system
@@ -670,6 +678,30 @@ install_credentials() {
     install_file "$ENV_FILE" "$ENV_TARGET" 0600 root root
     if [ "$LAST_CHANGED" -eq 1 ]; then RESTART_NEEDED=1; fi
   fi
+  install_token_hash
+}
+
+# The web unit loads the token hash as a credential, so the file must exist. When you give no hash,
+# the installer keeps an empty file, which web reads as no hash.
+install_token_hash() {
+  local empty
+  if [ -n "$TOKEN_HASH_FILE" ]; then
+    install_file "$TOKEN_HASH_FILE" "$TOKEN_FILE" 0600 "$SERVICE_USER" "$GROUP"
+  elif [ -f "$TOKEN_FILE" ]; then
+    chmod 0600 "$TOKEN_FILE"
+    chown "$SERVICE_USER:$GROUP" "$TOKEN_FILE"
+    LAST_CHANGED=0
+  else
+    empty=$WORK_DIR/token-hash
+    : >"$empty"
+    install_file "$empty" "$TOKEN_FILE" 0600 "$SERVICE_USER" "$GROUP"
+  fi
+  if [ "$LAST_CHANGED" -eq 1 ]; then RESTART_NEEDED=1; fi
+  if [ ! -s "$TOKEN_FILE" ] &&
+    ! { [ -f "$CONFIG_FILE" ] && grep -Eq '^[[:space:]]*token_hash(_file)?[[:space:]]*=' "$CONFIG_FILE"; } &&
+    ! { [ -f "$ENV_TARGET" ] && grep -q '^SEEINGMON_AUTH__TOKEN_HASH=' "$ENV_TARGET"; }; then
+    warn "the API has no token hash, so no client can send a command. Make a token and its hash with: $BIN_DIR/seeingmon web hash-token. Then run the installer with --token-hash-file, or set token_hash in [auth] of the local configuration."
+  fi
 }
 
 install_local_config() {
@@ -863,8 +895,8 @@ ensure_user
 make_directories
 install_release
 install_sdk
-install_credentials
 install_local_config
+install_credentials
 install_system_files
 activate_release
 prune_releases

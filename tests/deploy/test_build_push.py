@@ -224,6 +224,7 @@ def test_push_checks_the_values(stubs: Stubs, changes: dict[str, str], message: 
         (["--local-config", "MISSING"], "--local-config names a file that does not exist"),
         (["--env-file", "MISSING"], "--env-file names a file that does not exist"),
         (["--connection-key-file", "MISSING"], "--connection-key-file names a file"),
+        (["--token-hash-file", "MISSING"], "--token-hash-file names a file that does not exist"),
         (["--identity", "MISSING"], "--identity names a file that does not exist"),
         (["--sdk-archive", "THIS"], "--sdk-archive needs --sdk-sha256"),
         (["--sdk-sha256", "0" * 64], "--sdk-sha256 needs --sdk-archive"),
@@ -397,6 +398,8 @@ def test_push_copies_the_release_and_runs_the_installer(stubs: Stubs, tmp_path: 
     key.write_text("a-connection-key-for-the-tests\n", encoding="utf-8")
     config = tmp_path / "config.toml"
     config.write_text("station_id = 'x'\n", encoding="utf-8")
+    token = tmp_path / "token-hash.txt"
+    token.write_text("a-token-hash-for-the-tests\n", encoding="utf-8")
     sdk = tmp_path / "sdk.tar.bz2"
     sdk.write_bytes(b"not really an archive")
     result, remote, _ = real_push(
@@ -406,6 +409,8 @@ def test_push_copies_the_release_and_runs_the_installer(stubs: Stubs, tmp_path: 
         str(config),
         "--connection-key-file",
         str(key),
+        "--token-hash-file",
+        str(token),
         "--sdk-archive",
         str(sdk),
         "--sdk-sha256",
@@ -423,6 +428,7 @@ def test_push_copies_the_release_and_runs_the_installer(stubs: Stubs, tmp_path: 
         "requirements.txt",
         "local-config.toml",
         "connection-key",
+        "token-hash",
         "sdk-sdk.tar.bz2",
     } <= staged
     install = next(line for line in calls if line.startswith("INSTALL "))
@@ -433,6 +439,7 @@ def test_push_copies_the_release_and_runs_the_installer(stubs: Stubs, tmp_path: 
         f"--requirements {stage}/requirements.txt",
         f"--local-config {stage}/local-config.toml",
         f"--connection-key-file {stage}/connection-key",
+        f"--token-hash-file {stage}/token-hash",
         f"--sdk-archive {stage}/sdk-sdk.tar.bz2 --sdk-sha256 {'a' * 64}",
     ):
         assert word in install, word

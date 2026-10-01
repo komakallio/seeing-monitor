@@ -331,3 +331,14 @@ def test_a_finding_prints_its_place_and_rule() -> None:
     assert str(Finding("deploy/x.sh", 0, "shell-eval", "avoid eval")) == (
         "deploy/x.sh: [shell-eval] avoid eval"
     )
+
+
+def test_a_backtick_is_a_finding_even_inside_a_here_document() -> None:
+    inside = mutate(GOOD_SCRIPT, "  --keep N       how many", "  --keep N       `date` how many")
+    assert rules(check(inside)) == {"shell-backtick"}
+    command = GOOD_SCRIPT + "stamp=`date`\n"
+    assert rules(check(command)) == {"shell-backtick"}
+
+
+def test_a_backtick_in_a_comment_is_not_a_finding() -> None:
+    assert check(GOOD_SCRIPT + "# the `date` command\n") == []

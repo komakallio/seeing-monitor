@@ -160,6 +160,7 @@ def test_the_files_must_exist_and_look_right(rig: Rig, tmp_path: Path) -> None:
         ({"local_config": missing}, "--local-config names a file that does not exist"),
         ({"env_file": missing}, "--env-file names a file that does not exist"),
         ({"connection_key_file": missing}, "--connection-key-file names a file"),
+        ({"token_hash_file": missing}, "--token-hash-file names a file that does not exist"),
     ]
     for changes, message in cases:
         result = rig.install(**changes)
@@ -202,6 +203,7 @@ def test_help_lists_every_option(rig: Rig) -> None:
         "--sdk-sha256",
         "--local-config",
         "--connection-key-file",
+        "--token-hash-file",
         "--env-file",
         "--wheelhouse",
         "--python",
@@ -440,6 +442,59 @@ def test_a_connection_key_of_the_wrong_length_stops_the_run_before_any_change(
     assert rig.calls("useradd") == []
 
 
+def test_the_token_hash_you_give_becomes_the_web_credential(rig: Rig) -> None:
+    hash_file = rig.write("hash.txt", "a-token-hash-for-the-tests\n")
+    result = rig.install(token_hash_file=str(hash_file))
+    assert result.returncode == 0, result.output
+    target = rig.config_dir / "credentials" / "seeingmon-token-hash"
+    assert target.read_text(encoding="utf-8") == "a-token-hash-for-the-tests\n"
+    assert rig.mode(target) == 0o600
+    assert f"[seeingmon:seeingmon] [{target}.new]" in rig.calls("chown")
+    assert "the API has no token hash" not in result.stderr
+
+
+def test_without_a_token_hash_the_installer_keeps_an_empty_file_and_warns(rig: Rig) -> None:
+    result = rig.install()
+    target = rig.config_dir / "credentials" / "seeingmon-token-hash"
+    assert target.read_text(encoding="utf-8") == ""  # the web unit loads this file at every start
+    assert rig.mode(target) == 0o600
+    assert "the API has no token hash" in result.stderr
+    assert "web hash-token" in result.stderr
+    rig.clear_calls()
+    again = rig.install()
+    assert "Nothing changed" in again.stdout
+    assert target.read_text(encoding="utf-8") == ""
+
+
+def test_a_later_token_hash_replaces_the_empty_file(rig: Rig) -> None:
+    rig.install()
+    hash_file = rig.write("hash.txt", "a-token-hash-for-the-tests\n")
+    result = rig.install(token_hash_file=str(hash_file))
+    assert result.returncode == 0, result.output
+    target = rig.config_dir / "credentials" / "seeingmon-token-hash"
+    assert target.read_text(encoding="utf-8") == "a-token-hash-for-the-tests\n"
+    assert "[restart] [seeingmon.target]" in rig.calls("systemctl")
+    again = rig.install()  # a run without the file keeps the hash
+    assert target.read_text(encoding="utf-8") == "a-token-hash-for-the-tests\n"
+    assert "the API has no token hash" not in again.stderr
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['[auth]\ntoken_hash = "x"\n', '[auth]\ntoken_hash_file = "/etc/some-file"\n'],
+)
+def test_a_hash_in_the_local_configuration_needs_no_warning(rig: Rig, text: str) -> None:
+    config = rig.write("local.toml", 'station_id = "x"\n' + text)
+    result = rig.install(local_config=str(config))
+    assert "the API has no token hash" not in result.stderr
+
+
+def test_a_hash_in_the_environment_file_needs_no_warning(rig: Rig) -> None:
+    env_file = rig.write("env.txt", "SEEINGMON_AUTH__TOKEN_HASH=value\n")
+    result = rig.install(env_file=str(env_file))
+    assert "the API has no token hash" not in result.stderr
+
+
 def test_the_environment_file_is_installed_for_systemd_only(rig: Rig) -> None:
     env_file = rig.write("env.txt", "SEEINGMON_AUTH__TOKEN_HASH=value\n")
     result = rig.install(env_file=str(env_file))
@@ -458,7 +513,13 @@ def test_the_local_configuration_is_installed_for_the_service_user_only(rig: Rig
     assert target.read_text(encoding="utf-8") == config.read_text(encoding="utf-8")
     assert rig.mode(target) == 0o600
     assert f"[seeingmon:seeingmon] [{target}.new]" in rig.calls("chown")
-    assert "local configuration" not in result.stderr
+    for warning in (
+        "there is no local configuration",
+        "does not select the asi camera driver",
+        "sets no station_id",
+        "differs from --data-dir",
+    ):
+        assert warning not in result.stderr, warning
 
 
 def test_the_local_template_comes_with_the_release(rig: Rig) -> None:
