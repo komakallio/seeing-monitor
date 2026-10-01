@@ -5,7 +5,7 @@ You are the lead engineer for a seeing monitor: a fixed-mount, monochrome camera
 ## Reference setup
 
 - **Camera:** ZWO ASI294MM.
-- **Optics:** ToupTek GS-250 PAPO guide scope: 250 mm focal length, 50 mm aperture (f/5), and a corrected image circle of about 1 inch, possibly smaller than the sensor. Verify these figures in vendor documentation.
+- **Optics:** ToupTek GS-250 PAPO guide scope: 250 mm focal length and 50 mm aperture (f/5). The vendor's "1-inch" figure follows the vidicon-tube sensor-format convention, not the diameter of the corrected image circle. I tested it: image quality is good to the edges of the ASI294MM sensor, and Polaris should always stay inside the corrected field. Verify the remaining specifications in vendor documentation.
 - **Computer:** Raspberry Pi, headless, unattended every night. Confirm the model with me. Assume a Pi 4 or Pi 5 class device with USB 3 and a 64-bit OS.
 - **Mount:** fixed, aimed at Polaris. Polaris moves on a small circle around the celestial pole, so the fast-mode region of interest (ROI) must follow it.
 
@@ -56,6 +56,8 @@ Ask me, in one batch before you write, about decisions that are mine to make, su
 ### Implementation (phase 2)
 
 After I approve the design, build in small, tested steps. Start with the simulator and the hardware-independent core. Commit and push each step.
+
+When you reach the analysis code, ask me for the recorded data: a few gigabytes of real 10 ms exposure video. Use it to build the replay driver and to validate the algorithms against real data. Never write its location to the repository.
 
 ### Commissioning (phase 3)
 
