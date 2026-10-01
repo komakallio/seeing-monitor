@@ -33,10 +33,11 @@ nothing repeats. The wind speed of every layer also fluctuates slowly
 of fixed length puts at multiples of `v / L`. With a 10 m/s wind and the default settings,
 a Welch estimate of the spectrum, averaged over bands of +-15%, follows the von Karman
 prediction within about 10% from 2 Hz to 100 Hz (the mean of six runs of 200 s). A search
-for lines above five times the local median finds none. Below about 3 Hz, a single run
-scatters by 20% to 50%, which is more than a Gaussian process would, because only a few
-sinusoids fall in each band. With `wind_variability=0` the flow is exactly frozen, and the
-comb adds a ripple of up to 25% above 10 Hz.
+for lines above five times the local median finds none in 40 s of data at 90 frames per
+second. In windows of 6 s it flags 4% of them, against 2% for an ideal Gaussian process,
+because below about 3 Hz a single run scatters by 20% to 50%: only a few sinusoids fall in
+each band. With `wind_variability=0` the flow is exactly frozen, and the comb adds a ripple
+of up to 25% above 10 Hz.
 
 **Conventions.** Phase is in radians at 500 nm, and `r0` is the Fried parameter at 500 nm.
 Scale the phase by 500 nm over the wavelength to get the phase at another wavelength. The
