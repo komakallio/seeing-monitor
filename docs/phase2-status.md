@@ -33,7 +33,6 @@ States are not started, in progress, blocked, and done.
 | B5 | A sample SQM-LE reading and its protocol notes | Owner | The SQM-LE reader in step 10 | A fake TCP server |
 | B6 | The InfluxDB version and field names | Owner (deferred) | Nothing | A configurable adapter |
 | B7 | The web access rule | Owner (deferred) | Nothing | The default rule in the architecture |
-| B8 | Permission to read the recordings' sidecar text files (the permission classifier denied a read, because the sidecars hold the camera serial number) | Owner | Checking the sidecar parser against the real files in step 8 | A synthetic sidecar fixture built from the format in the research notes. The SER files themselves are not affected. |
 
 ## Next unblocked work
 
