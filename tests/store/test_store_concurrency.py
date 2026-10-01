@@ -52,19 +52,29 @@ def test_readers_see_a_consistent_growing_table_while_one_thread_writes(
             last_count = 0
             while True:
                 finished = done.is_set()  # read it first, so a last full pass follows the end
-                count = read.count("health")
-                rows = read.after("health", 0, TOTAL + 10)
-                assert [row.row_id for row in rows] == list(range(1, len(rows) + 1))
-                assert [row.values["t_utc_ns"] for row in rows] == [
-                    T0 + n for n in range(len(rows))
-                ]
-                assert count >= last_count
-                assert len(rows) >= count or len(rows) <= TOTAL
-                last_count = count
-                latest = read.latest("health")
+                # Two separate reads can see different commits, so they agree only in one
+                # direction: the table only grows, and the second read happens later.
+                count_first = read.count("health")
+                rows_later = read.after("health", 0, TOTAL + 10)
+                assert len(rows_later) >= count_first
+                # The reads of one snapshot all see the same state of the database.
+                with read.snapshot() as snap:
+                    count = snap.count("health")
+                    rows = snap.after("health", 0, TOTAL + 10)
+                    latest = snap.latest("health")
+                    last_id = snap.last_row_id("health")
+                    behind = snap.count_after("health", 0)
+                assert count == len(rows) == behind == last_id
+                assert [row.row_id for row in rows] == list(range(1, count + 1))
+                assert [row.values["t_utc_ns"] for row in rows] == [T0 + n for n in range(count)]
                 assert (latest is None) == (count == 0)
+                if latest is not None:
+                    assert latest.row_id == count
+                # Separate snapshots: the table never shrinks.
+                assert count >= last_count
+                last_count = count
                 if finished:
-                    seen_final.append(len(rows))
+                    seen_final.append(count)
                     return
 
         return reader

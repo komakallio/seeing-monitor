@@ -44,7 +44,7 @@ import functools
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -291,78 +291,11 @@ class _ReaderPool:
             connection.close()
 
 
-class StoreReader:
-    """Read access to a store database through a pool of read-only connections.
+class _ReadView:
+    """The read methods. A subclass says where its connection comes from."""
 
-    Open it with `StoreReader.open`. Every read returns `StoredRow` values: the row ID and a
-    dict of JSON-compatible values keyed by the declared field names (`Record.to_row` form).
-    `record_from_row` turns a row back into a record.
-    """
-
-    def __init__(self, path: Path, *, busy_timeout_ms: int, max_readers: int) -> None:
-        if max_readers < 1:
-            raise ValueError("max_readers must be at least 1")
-        self._path = path
-        self._busy_timeout_ms = busy_timeout_ms
-        self._pool = _ReaderPool(self._connect_reader, max_readers)
-
-    @classmethod
-    def open(
-        cls,
-        path: Path | str,
-        *,
-        busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
-        max_readers: int = DEFAULT_READERS,
-    ) -> Self:
-        """Open an existing store database for reading only.
-
-        Raises `FileNotFoundError` when the file does not exist and `StoreFormatError` when it
-        is not a store database. SQLite needs write access to the directory to create the
-        shared-memory file of a WAL database, unless a writer already keeps it open.
-        """
-        database = Path(path)
-        if not database.is_file():
-            raise FileNotFoundError(f"there is no store database at {database}")
-        reader = cls(database, busy_timeout_ms=busy_timeout_ms, max_readers=max_readers)
-        try:
-            with reader._pool.connection() as connection:
-                _check_identity(connection, writer=False)
-        except BaseException:
-            reader.close()
-            raise
-        return reader
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    def _connect_reader(self) -> sqlite3.Connection:
-        uri = f"{self._path.resolve().as_uri()}?mode=ro"
-        connection = sqlite3.connect(
-            uri,
-            uri=True,
-            timeout=self._busy_timeout_ms / 1000,
-            isolation_level=None,
-            check_same_thread=False,
-        )
-        try:
-            connection.execute("PRAGMA query_only = ON")
-        except BaseException:
-            connection.close()
-            raise
-        return connection
-
-    def close(self) -> None:
-        """Close every connection. Calling it again does nothing."""
-        self._pool.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
-
-    # --- reads -------------------------------------------------------------------------------
+    def _connection(self) -> AbstractContextManager[sqlite3.Connection]:
+        raise NotImplementedError
 
     @staticmethod
     def _table_type(record_type: str) -> type[Record]:
@@ -378,11 +311,11 @@ class StoreReader:
         return cls
 
     def _select(self, cls: type[Record], sql: str, params: dict[str, Any]) -> list[StoredRow]:
-        with self._pool.connection() as connection:
+        with self._connection() as connection:
             return _stored_rows(connection.execute(sql, params), cls)
 
     def _scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
-        with self._pool.connection() as connection:
+        with self._connection() as connection:
             row = connection.execute(sql, params).fetchone()
         return None if row is None else row[0]
 
@@ -508,7 +441,7 @@ class StoreReader:
             f'FROM {quote(CURSOR_TABLE)} ORDER BY "sink", "record_type"'
         )
         try:
-            with self._pool.connection() as connection:
+            with self._connection() as connection:
                 fetched = connection.execute(sql).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc):
@@ -518,6 +451,116 @@ class StoreReader:
             SinkCursor(str(sink), str(kind), int(row_id), None if stamp is None else int(stamp))
             for sink, kind, row_id, stamp in fetched
         ]
+
+
+class StoreSnapshot(_ReadView):
+    """The reads of one read transaction: every call sees the same state of the database.
+
+    Get it from `StoreReader.snapshot`. Each separate read of a `StoreReader` sees the commits
+    that happened since the one before, so a count and a list that you read one after the other
+    can disagree while a writer commits. Read them from one snapshot when they must agree. Use a
+    snapshot in one thread, and finish it soon, because it holds one of the pooled connections.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._snapshot_connection = connection
+
+    def _connection(self) -> AbstractContextManager[sqlite3.Connection]:
+        return nullcontext(self._snapshot_connection)
+
+
+class StoreReader(_ReadView):
+    """Read access to a store database through a pool of read-only connections.
+
+    Open it with `StoreReader.open`. Every read returns `StoredRow` values: the row ID and a
+    dict of JSON-compatible values keyed by the declared field names (`Record.to_row` form).
+    `record_from_row` turns a row back into a record. Each read borrows a connection and sees the
+    latest commit. Use `snapshot` for reads that must agree with one another.
+    """
+
+    def __init__(self, path: Path, *, busy_timeout_ms: int, max_readers: int) -> None:
+        if max_readers < 1:
+            raise ValueError("max_readers must be at least 1")
+        self._path = path
+        self._busy_timeout_ms = busy_timeout_ms
+        self._pool = _ReaderPool(self._connect_reader, max_readers)
+
+    @classmethod
+    def open(
+        cls,
+        path: Path | str,
+        *,
+        busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+        max_readers: int = DEFAULT_READERS,
+    ) -> Self:
+        """Open an existing store database for reading only.
+
+        Raises `FileNotFoundError` when the file does not exist and `StoreFormatError` when it
+        is not a store database. SQLite needs write access to the directory to create the
+        shared-memory file of a WAL database, unless a writer already keeps it open.
+        """
+        database = Path(path)
+        if not database.is_file():
+            raise FileNotFoundError(f"there is no store database at {database}")
+        reader = cls(database, busy_timeout_ms=busy_timeout_ms, max_readers=max_readers)
+        try:
+            with reader._pool.connection() as connection:
+                _check_identity(connection, writer=False)
+        except BaseException:
+            reader.close()
+            raise
+        return reader
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _connect_reader(self) -> sqlite3.Connection:
+        uri = f"{self._path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=self._busy_timeout_ms / 1000,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+        try:
+            connection.execute("PRAGMA query_only = ON")
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def _connection(self) -> AbstractContextManager[sqlite3.Connection]:
+        return self._pool.connection()
+
+    @contextmanager
+    def snapshot(self) -> Iterator[StoreSnapshot]:
+        """Open a read transaction, so that every read inside the block sees one state.
+
+        SQLite in WAL mode gives the transaction the database as of its first read, and later
+        commits stay invisible until the block ends:
+
+            with store.snapshot() as snap:
+                count = snap.count("health")
+                rows = snap.after("health", 0)  # holds the rows that `count` counted, no more
+        """
+        with self._pool.connection() as connection:
+            connection.execute("BEGIN")
+            try:
+                yield StoreSnapshot(connection)
+            finally:
+                _rollback(connection)  # the transaction only read, so this just ends it
+
+    def close(self) -> None:
+        """Close every connection. Calling it again does nothing."""
+        self._pool.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def diagnostics(self) -> dict[str, Any]:
         """Return facts about the database file: the journal mode, the IDs, and the size."""

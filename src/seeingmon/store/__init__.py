@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         StoreError,
         StoreFormatError,
         StoreReader,
+        StoreSnapshot,
         UnknownRecordTypeError,
         record_from_row,
     )
@@ -61,6 +62,7 @@ _EXPORTS: dict[str, str] = {
     "StoreError": "db",
     "StoreFormatError": "db",
     "StoreReader": "db",
+    "StoreSnapshot": "db",
     "UnknownRecordTypeError": "db",
     "record_from_row": "db",
     "EventEmitter": "events",
@@ -102,6 +104,7 @@ __all__ = [
     "StoreError",
     "StoreFormatError",
     "StoreReader",
+    "StoreSnapshot",
     "UnknownRecordTypeError",
     "iter_segments",
     "read_segment",

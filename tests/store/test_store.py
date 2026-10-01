@@ -318,6 +318,50 @@ class TestReads:
             assert latest is not None
             assert latest.row_id == 2
 
+    def test_separate_reads_can_disagree_while_a_writer_commits(self, store: Store) -> None:
+        """Why `snapshot` exists: each plain read sees the commits made since the one before."""
+        count = store.count("health")  # 0
+        store.write(make_health(T0))  # the writer commits between the two reads
+        latest = store.latest("health")
+        assert (count, latest is None) == (0, False)  # a count of 0 and a latest row
+        with store.snapshot() as snap:
+            assert (snap.count("health") == 0) == (snap.latest("health") is None)
+
+    def test_a_snapshot_shows_one_state_while_the_writer_commits(self, store: Store) -> None:
+        store.write(make_health(T0))
+        with store.snapshot() as snap:
+            assert snap.count("health") == 1
+            store.write(make_health(T0 + 1))  # a commit in the middle of the snapshot
+            assert snap.count("health") == 1
+            assert snap.last_row_id("health") == 1
+            assert [row.row_id for row in snap.after("health", 0)] == [1]
+            latest = snap.latest("health")
+            assert latest is not None
+            assert latest.row_id == 1
+            assert store.count("health") == 2  # a read outside the snapshot sees the commit
+        with store.snapshot() as snap:
+            assert snap.count("health") == 2
+
+    def test_a_snapshot_that_fails_gives_its_connection_back(self, db_path: Path) -> None:
+        def fail_inside(store: Store) -> None:
+            with store.snapshot() as snap:
+                snap.count("health")
+                raise RuntimeError("boom")
+
+        with Store.open(db_path, max_readers=1) as store:
+            with pytest.raises(RuntimeError, match="boom"):
+                fail_inside(store)
+            assert store.count("health") == 0  # the only pooled connection is free again
+
+    def test_a_snapshot_reads_the_cursors_too(self, store: Store) -> None:
+        store.advance_cursor("influx", "health", 3)
+        with store.snapshot() as snap:
+            assert snap.cursor("influx", "health") == 3  # the first read fixes the state
+            store.advance_cursor("influx", "health", 9)
+            assert snap.cursor("influx", "health") == 3
+            assert [c.last_row_id for c in snap.cursors()] == [3]
+        assert store.cursor("influx", "health") == 9
+
     def test_a_reader_cannot_write(self, store: Store, db_path: Path) -> None:
         store.write(make_health(T0))
         with StoreReader.open(db_path) as reader:
