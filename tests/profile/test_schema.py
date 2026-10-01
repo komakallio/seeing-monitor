@@ -324,6 +324,18 @@ def test_a_dark_current_table_must_increase_in_temperature(data: dict[str, Any])
     assert "strictly increasing temperature order" in message
 
 
+def test_a_dark_current_table_that_cannot_extrapolate_is_reported(data: dict[str, Any]) -> None:
+    """Two points one degree apart that differ by a factor of 1e8 overflow far from the table."""
+    steep = [
+        {"temperature_c": 0.0, "e_per_s_per_px": 1e-4},
+        {"temperature_c": 1.0, "e_per_s_per_px": 1e4},
+    ]
+    profile = parse_profile(set_path(data, "photometry.dark_current", steep))
+    with pytest.raises(ProfileError, match=r"does not extrapolate to 100\.0 C"):
+        profile.dark_current_e_per_s_per_px(100.0)
+    assert profile.dark_current_e_per_s_per_px(0.5) == pytest.approx(1.0)  # inside: fine
+
+
 # --- Lookups ---------------------------------------------------------------------------------
 
 

@@ -12,8 +12,7 @@ pixel and a bin2 pixel differ by a factor of two.
 points, electrons per ADU interpolates log-linearly in gain and the read noise interpolates
 linearly in gain. A point with `step` set starts a new segment, so values never interpolate
 across it, and a gain below the step takes the values of the point before it. Above the last
-point, electrons per ADU continues along the last segment (an estimate that assumes the same
-step in decibels per gain unit) and the read noise stays at the last value.
+point, the values stay at the last point, because the table ends where the vendor's chart ends.
 
 **Saturation.** A pixel saturates at the smaller of two limits: the full well and the ADC
 full scale. The full well in electrons is the smaller of the gain-0 full well and electrons
@@ -244,13 +243,9 @@ def _gain_values(mode: ReadoutMode, gain: float) -> tuple[float, float]:
         *((p.gain, p.e_per_adu, p.read_noise_e, p.step) for p in mode.gain_points),
     ]
     index = max(i for i, row in enumerate(rows) if row[0] <= gain)
-    row_gain, e_per_adu, read_noise, is_step = rows[index]
-    if index == len(rows) - 1:
-        if index == 0 or is_step:  # no segment to continue
-            return e_per_adu, read_noise
-        previous_gain, previous_e_per_adu, _, _ = rows[index - 1]
-        log_slope = math.log(e_per_adu / previous_e_per_adu) / (row_gain - previous_gain)
-        return e_per_adu * math.exp(log_slope * (gain - row_gain)), read_noise
+    row_gain, e_per_adu, read_noise, _ = rows[index]
+    if index == len(rows) - 1:  # at or above the last row
+        return e_per_adu, read_noise
     next_gain, next_e_per_adu, next_read_noise, next_is_step = rows[index + 1]
     if next_is_step:  # the values jump at the next point, so this segment ends here
         return e_per_adu, read_noise
@@ -397,4 +392,10 @@ def dark_current_e_per_s_per_px(photometry: Photometry | None, temperature_c: fl
     log_slope = math.log(high.e_per_s_per_px / low.e_per_s_per_px) / (
         high.temperature_c - low.temperature_c
     )
-    return low.e_per_s_per_px * math.exp(log_slope * (temperature_c - low.temperature_c))
+    try:
+        return low.e_per_s_per_px * math.exp(log_slope * (temperature_c - low.temperature_c))
+    except OverflowError:
+        raise ProfileError(
+            f"the dark-current table does not extrapolate to {temperature_c} C: "
+            "check its end points"
+        ) from None

@@ -340,14 +340,13 @@ def test_a_step_is_never_interpolated(reference: Profile) -> None:
     assert reference.e_per_adu("bin2", 60) == pytest.approx(4.05 * (1.03 / 4.05) ** (60 / 119))
 
 
-def test_electrons_per_adu_continues_along_the_last_segment_above_the_table(
-    reference: Profile,
-) -> None:
-    """Above gain 270 in bin1, the last segment (gain 108 to 270) continues, and the noise holds."""
-    expected = 0.17 * (0.17 / 1.0) ** ((400 - 270) / (270 - 108))
-    assert reference.e_per_adu("bin1", 400) == pytest.approx(expected)
+def test_the_values_hold_above_the_last_row_of_the_table(reference: Profile) -> None:
+    """The table ends where the vendor's chart ends: gain 270 in bin1 and gain 300 in bin2."""
+    assert reference.e_per_adu("bin1", 400) == 0.17
     assert reference.read_noise_e("bin1", 400) == 1.38
+    assert reference.e_per_adu("bin2", 570) == 0.11
     assert reference.read_noise_e("bin2", 570) == 1.3
+    assert reference.saturation("bin1", 570).native_dn == 4095
 
 
 def test_a_negative_gain_is_an_error(reference: Profile) -> None:
