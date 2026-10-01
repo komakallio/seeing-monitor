@@ -93,6 +93,16 @@ scheduler = config.section("scheduler", SchedulerConfig)
 
 `section` validates the merged table and applies the model's defaults. Later layers override earlier ones: `config/default.toml`, then `config/default.d/*.toml` in file-name order (so use zero-padded prefixes if the order matters), then `local/config.toml`, then `SEEINGMON_<SECTION>__<KEY>` environment variables. For example, `SEEINGMON_SCHEDULER__WINDOW_S=60` sets `window_s` in `[scheduler]`. In a test, call `load_config(local_file=<a path that does not exist>, env={})`, so your own local file and environment stay out. Read hardware values from `config.profile` and the functions in `seeingmon.profile.derived`, and never hard-code a pixel size, a focal length, or a bit depth.
 
+## Records
+
+Declare each record type once, in the module of the lane that owns it (`records/seeing.py`, `survey.py`, `reference.py`, or `system.py`). To add a field, append it to your class with `quantity(...)`, and make it optional or give it a default, so an existing database migrates by adding a column. Then regenerate the quantity reference and commit it with your change:
+
+```bash
+<py> -m seeingmon records reference --output <clone>/docs/quantities.md
+```
+
+A test fails when `docs/quantities.md` is stale. After a rebase conflict in that file, regenerate it instead of merging it by hand. A new unit needs a line in `UNIT_SUFFIXES` in `tests/records/test_declarations.py`. Two events can share a timestamp, so the store moves a colliding event by one nanosecond. Producers do not handle that themselves.
+
 ## Dependencies and the lock
 
 The core install needs only `pydantic`. Add each new dependency to your lane's extra in `pyproject.toml` (`fast`, `survey`, `web`, or a new extra), with a lower bound and no upper bound unless a release is known to break. Do not edit or commit `uv.lock`. The lead regenerates it after merges (`uv lock`), and the lock job in CI reports when it is stale. Until then, install a new dependency into your environment with `uv pip install --python <py> <package>`.
