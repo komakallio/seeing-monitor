@@ -27,20 +27,31 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from seeingmon.services.core.settings import (
         AlignmentSettings,
+        CommissioningSettings,
         CoreSettings,
         EscalationSettings,
+        ReplaySettings,
         SurveyWorkerSettings,
     )
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
     "AlignmentSettings": "settings",
+    "CommissioningSettings": "settings",
     "CoreSettings": "settings",
     "EscalationSettings": "settings",
+    "ReplaySettings": "settings",
     "SurveyWorkerSettings": "settings",
 }
 
-__all__ = ["AlignmentSettings", "CoreSettings", "EscalationSettings", "SurveyWorkerSettings"]
+__all__ = [
+    "AlignmentSettings",
+    "CommissioningSettings",
+    "CoreSettings",
+    "EscalationSettings",
+    "ReplaySettings",
+    "SurveyWorkerSettings",
+]
 
 
 def __getattr__(name: str) -> Any:

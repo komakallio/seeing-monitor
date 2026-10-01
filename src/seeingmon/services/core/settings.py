@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from seeingmon.config import SectionModel
 
@@ -48,6 +48,28 @@ class EscalationSettings(SectionModel):
     command_timeout_s: float = Field(30.0, gt=0)
 
 
+class CommissioningSettings(SectionModel):
+    """The limits of the burst and replay handlers.
+
+    A burst records raw frames to the `bursts` folder, so its length has a limit. A replay writes
+    its results to a separate store in `replays_dir`, a folder under the data directory.
+    """
+
+    burst_max_duration_s: float = Field(600.0, gt=0)
+    replays_dir: str = Field("replays", min_length=1, pattern=r"^[A-Za-z0-9._-]+$")
+
+
+class ReplaySettings(SectionModel):
+    """The `[replay]` section: where the recordings that a replay may read live.
+
+    The section also holds keys that other parts read, so this model ignores them.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    recordings_dir: str = ""
+
+
 class CoreSettings(SectionModel):
     """The `[services.core]` table."""
 
@@ -68,6 +90,7 @@ class CoreSettings(SectionModel):
 
     survey_worker: SurveyWorkerSettings = Field(default_factory=SurveyWorkerSettings)
     escalation: EscalationSettings = Field(default_factory=EscalationSettings)
+    commissioning: CommissioningSettings = Field(default_factory=CommissioningSettings)
 
 
 class AlignmentSettings(SectionModel):

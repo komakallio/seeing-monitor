@@ -134,6 +134,14 @@ restart_acquire_wait_s = 15.0
 reboot_command = []
 command_timeout_s = 30.0
 
+[services.core.commissioning]
+# The longest burst that the burst handler records, in seconds.
+burst_max_duration_s = 600.0
+
+# The folder under the data directory where a replay writes its separate store. Retention does not
+# manage it: delete an old replay by hand.
+replays_dir = "replays"
+
 [alignment]
 # The alignment helper of core: a live view and a quick solve while the scheduler is in `align`.
 #
