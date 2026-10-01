@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -28,8 +29,9 @@ MB = 1024 * 1024
 
 @pytest.fixture(scope="module")
 def repo_path(repo_root: Path) -> dict[str, str]:
-    """The environment that lets a child import this test package."""
-    return {"PYTHONPATH": str(repo_root)}
+    """The environment that lets a child import this test package, and keeps the path it has."""
+    parts = [str(repo_root), os.environ.get("PYTHONPATH", "")]
+    return {"PYTHONPATH": os.pathsep.join(part for part in parts if part)}
 
 
 def child(

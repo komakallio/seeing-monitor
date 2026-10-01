@@ -70,6 +70,7 @@ def fixture_report(
     bin1_push: float = 1.0,
     bin2_push: float = 2.0,
     acquire_share: float = 0.5,
+    rx_share: float = 0.4,
     label: str = "dev",
     machine: str = "x86-64",
     calibration: bool = True,
@@ -88,6 +89,8 @@ def fixture_report(
             "ipc",
             figure("acquire.share", acquire_share, "percent", "interpreter"),
             figure("acquire.peak_rss", 60 * MB, "bytes", "memory"),
+            figure("core_rx.share", rx_share, "percent", "interpreter"),
+            figure("bin2.core_rx.share", 2 * rx_share, "percent", "interpreter"),
         ),
         case(
             "fastpath",

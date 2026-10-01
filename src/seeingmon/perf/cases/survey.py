@@ -15,7 +15,7 @@ case does not measure a solve by a solver (the architecture's solver table estim
 **The figures.** The case reports the wall time of a frame from `submit` to the result, the CPU time
 of the worker for it, the time of each stage (the pipeline reports them, and the analyzer does not
 pass them on, so the case submits the same worker function itself for them), the cost of the
-process boundary (the total minus the stages), the start of the worker, and the peak memory of the
+process boundary (the job minus its stages), the start of the worker, and the peak memory of the
 worker, which is the figure to compare with the 550 MB of the budget. The peak of this process
 includes the simulator, so the case reports it in the case summary only.
 """
@@ -225,8 +225,10 @@ def survey(ctx: CaseContext) -> list[Measurement]:
             previous = analyzer.tracker.solution
             frame_bytes = encode_frame(scene.frame)
             stages: dict[str, list[float]] = {stage: [] for stage in _STAGES}
+            boundaries: list[float] = []
             last: dict[str, Any] = {}
             for index in range(stage_repeats):
+                begin = time.perf_counter()
                 last = executor.submit(
                     run_job,
                     frame_bytes,
@@ -234,8 +236,11 @@ def survey(ctx: CaseContext) -> list[Measurement]:
                     None,
                     index,
                 ).result(timeout=_RESULT_TIMEOUT_S)
+                job_s = time.perf_counter() - begin
                 for stage in _STAGES:
                     stages[stage].append(float(last["timings"].get(stage, 0.0)))
+                # What the job took beyond its stages: the frame crosses the boundary twice.
+                boundaries.append(job_s - sum(float(v) for v in last["timings"].values()))
             worker_peak = executor.submit(peak_rss_bytes).result(timeout=_RESULT_TIMEOUT_S)
         finally:
             analyzer.close()
@@ -263,7 +268,7 @@ def survey(ctx: CaseContext) -> list[Measurement]:
         "repeats": repeats,
         "route": "tracker, with a prior solution",
     }
-    boundary = max(total.median - sum(stage_medians.values()), 1e-6)
+    boundary = max(statistics.median(boundaries), 1e-6)
     measurements = [
         Measurement("frame.total", "s", total.median, total, "numpy", detail),
         Measurement(

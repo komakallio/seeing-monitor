@@ -12,6 +12,11 @@ a Pi 4 run to a dev-machine run on them is a measured scaling factor. `seeingmon
 | `numpy_matmul` | A BLAS call on one thread: a 384 x 384 float64 matrix product. | `numpy` |
 | `numpy_fft` | A NumPy FFT: a real transform of 131,072 samples. | `numpy` |
 | `sqlite_insert` | SQLite: 20,000 rows in one transaction, in memory. | `interpreter` |
+| `thread_handoff` | Two threads pass a token 2,000 times: a thread wake-up. | `interpreter` |
+
+The last workload explains the `ipc` case. The processes of the system spend most of their time per
+frame in thread wake-ups, whose cost depends on the operating system and, in a virtual machine,
+on the hypervisor.
 """
 
 from __future__ import annotations
@@ -33,6 +38,27 @@ def python_loop(iterations: int) -> int:
     return acc
 
 
+def thread_handoff(round_trips: int) -> None:
+    """Two threads pass a token back and forth, so every round trip wakes each thread once."""
+    import threading
+
+    ping, pong = threading.Event(), threading.Event()
+
+    def echo() -> None:
+        for _ in range(round_trips):
+            ping.wait()
+            ping.clear()
+            pong.set()
+
+    thread = threading.Thread(target=echo, name="handoff-echo")
+    thread.start()
+    for _ in range(round_trips):
+        ping.set()
+        pong.wait()
+        pong.clear()
+    thread.join()
+
+
 def _measurement(
     name: str, stats: TimingStats, scale: str, detail: dict[str, float | int | str]
 ) -> Measurement:
@@ -51,6 +77,7 @@ def calibration(ctx: CaseContext) -> list[Measurement]:
     matrix = ctx.pick(384, 32)
     samples = ctx.pick(131_072, 1_024)
     rows = ctx.pick(20_000, 500)
+    round_trips = ctx.pick(2_000, 50)
 
     rng = np.random.default_rng(1)
     left = rng.standard_normal((matrix, matrix))
@@ -93,6 +120,12 @@ def calibration(ctx: CaseContext) -> list[Measurement]:
             ctx.timer(11, warmup=1).measure(insert_rows),
             "interpreter",
             {"rows": rows},
+        ),
+        _measurement(
+            "thread_handoff",
+            ctx.timer(11, warmup=1).measure(lambda: thread_handoff(round_trips)),
+            "interpreter",
+            {"round_trips": round_trips},
         ),
     ]
     ctx.note(

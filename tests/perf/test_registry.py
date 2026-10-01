@@ -159,6 +159,31 @@ HOME_PATH = "cannot open '/home/someone/data/frames.ser'"  # repo-check: allow
 USERS_PATH = "under /Users/someone/Library"  # repo-check: allow
 
 
+class TestQuietWait:
+    def test_a_case_that_never_finds_a_quiet_machine_says_so_in_its_notes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("seeingmon.perf.runner.wait_for_quiet", lambda *a, **k: (80.0, 3.0))
+        result = execute_case(probe_cases.REGISTRY.get("probe-small"), smoke=True, quiet_wait_s=3.0)
+        assert result.status == "ok"
+        assert result.system_busy_percent == 80.0
+        assert any("stayed more than 15% busy for 3 s" in note for note in result.notes)
+
+    def test_a_quiet_machine_adds_no_note(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("seeingmon.perf.runner.wait_for_quiet", lambda *a, **k: (4.0, 0.5))
+        result = execute_case(probe_cases.REGISTRY.get("probe-small"), smoke=True, quiet_wait_s=3.0)
+        assert result.system_busy_percent == 4.0
+        assert result.notes == ()
+
+    def test_without_a_wait_a_busy_machine_adds_no_note(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("seeingmon.perf.runner.wait_for_quiet", lambda *a, **k: (90.0, 0.05))
+        result = execute_case(probe_cases.REGISTRY.get("probe-small"), smoke=True)
+        assert result.notes == ()
+        assert result.system_busy_percent == 90.0
+
+
 class TestScrubPaths:
     @pytest.mark.parametrize(
         ("text", "expected"),

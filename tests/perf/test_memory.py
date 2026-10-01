@@ -5,10 +5,17 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 
 import pytest
 
-from seeingmon.perf.load import busy_percent_between, parse_proc_stat, system_busy_percent
+from seeingmon.perf.load import (
+    QUIET_BUSY_PERCENT,
+    busy_percent_between,
+    parse_proc_stat,
+    system_busy_percent,
+    wait_for_quiet,
+)
 from seeingmon.perf.memory import (
     current_rss_bytes,
     parse_proc_status,
@@ -125,3 +132,50 @@ class TestLoadSampler:
         value = system_busy_percent(0.01, sleep=naps.append)
         assert naps == [0.01]
         assert value is None or 0.0 <= value <= 100.0
+
+
+class TestWaitForQuiet:
+    """The wait takes samples of the load, and the tests script the samples."""
+
+    @staticmethod
+    def sampler(values: list[float | None]) -> tuple[Callable[[float], float | None], list[float]]:
+        taken: list[float] = []
+        remaining = list(values)
+
+        def sample(seconds: float) -> float | None:
+            taken.append(seconds)
+            return remaining.pop(0)
+
+        return sample, taken
+
+    def test_a_quiet_machine_ends_the_wait_at_the_first_sample(self) -> None:
+        sample, taken = self.sampler([3.0])
+        assert wait_for_quiet(60.0, sample=sample) == (3.0, 0.25)
+        assert taken == [0.25]
+
+    def test_it_waits_until_the_load_falls_to_the_threshold(self) -> None:
+        sample, taken = self.sampler([80.0, 40.0, 15.0, 2.0])
+        busy, waited = wait_for_quiet(60.0, threshold_percent=15.0, sample=sample)
+        assert busy == 15.0  # the threshold itself counts as quiet
+        assert waited == pytest.approx(0.75)
+        assert len(taken) == 3
+
+    def test_it_gives_up_at_the_end_of_the_wait_and_returns_the_last_load(self) -> None:
+        sample, taken = self.sampler([90.0] * 10)
+        busy, waited = wait_for_quiet(1.0, sample_s=0.5, sample=sample)
+        assert busy == 90.0
+        assert waited == pytest.approx(1.0)
+        assert len(taken) == 2
+
+    def test_a_wait_of_zero_takes_one_sample(self) -> None:
+        sample, taken = self.sampler([70.0])
+        assert wait_for_quiet(0.0, sample=sample) == (70.0, 0.25)
+        assert len(taken) == 1
+
+    def test_a_system_that_gives_no_load_ends_the_wait(self) -> None:
+        sample, taken = self.sampler([None])
+        assert wait_for_quiet(60.0, sample=sample) == (None, 0.25)
+        assert len(taken) == 1
+
+    def test_the_threshold_is_the_one_that_the_report_states(self) -> None:
+        assert QUIET_BUSY_PERCENT == 15.0

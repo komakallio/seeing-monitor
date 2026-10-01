@@ -28,7 +28,7 @@ from pathlib import Path
 
 from seeingmon.clock import Clock, SystemClock, utc_ns_to_iso
 from seeingmon.perf.environment import collect_environment
-from seeingmon.perf.load import system_busy_percent
+from seeingmon.perf.load import QUIET_BUSY_PERCENT, wait_for_quiet
 from seeingmon.perf.memory import current_rss_bytes, peak_rss_bytes, process_cpu_ns
 from seeingmon.perf.registry import Case, CaseContext, Registry, SkipCase, load_registry
 from seeingmon.perf.report import CaseResult, Measurement, Report, Status
@@ -88,15 +88,28 @@ def _failure_reason(error: BaseException) -> tuple[str, tuple[str, ...]]:
     return reason, lines
 
 
-def execute_case(case: Case, *, smoke: bool, busy_sample_s: float | None = None) -> CaseResult:
+def execute_case(
+    case: Case,
+    *,
+    smoke: bool,
+    busy_sample_s: float | None = None,
+    quiet_wait_s: float = 0.0,
+) -> CaseResult:
     """Run one case in this process and describe the outcome. It never raises.
 
     The result carries the peak memory of this process, so call it in a fresh process (see
-    `run_case_in_child`) when the peak must belong to this case alone.
+    `run_case_in_child`) when the peak must belong to this case alone. With `quiet_wait_s`, the
+    function first waits up to that many seconds for the machine to be quiet (at most 15% busy),
+    and a note says when it never was.
     """
     context = CaseContext(smoke)
     sample_s = busy_sample_s if busy_sample_s is not None else (0.05 if smoke else 0.25)
-    busy = system_busy_percent(sample_s)
+    busy, waited = wait_for_quiet(quiet_wait_s, sample_s=sample_s)
+    if quiet_wait_s > 0 and busy is not None and busy > QUIET_BUSY_PERCENT:
+        context.note(
+            f"The machine stayed more than {QUIET_BUSY_PERCENT:g}% busy for {waited:.0f} s "
+            f"({busy:.0f}% at the end), so the figures may be slower than a quiet machine gives."
+        )
     start_rss = current_rss_bytes()
     wall_start = time.perf_counter()
     cpu_start = process_cpu_ns()
@@ -145,6 +158,7 @@ def run_case_in_child(
     timeout_s: float | None = None,
     registry_module: str | None = None,
     extra_env: Mapping[str, str] | None = None,
+    quiet_wait_s: float = 0.0,
     log: Progress | None = None,
 ) -> CaseResult:
     """Run the case `name` in a fresh child process and return its result.
@@ -157,9 +171,12 @@ def run_case_in_child(
     limit = (
         timeout_s if timeout_s is not None else (SMOKE_TIMEOUT_S if smoke else DEFAULT_TIMEOUT_S)
     )
+    limit += quiet_wait_s
     command = [sys.executable, "-m", "seeingmon.perf._child", name]
     if smoke:
         command.append("--smoke")
+    if quiet_wait_s > 0:
+        command.extend(["--quiet-wait", str(quiet_wait_s)])
     if registry_module is not None:
         command.extend(["--registry", registry_module])
     try:
@@ -196,6 +213,7 @@ def run_cases(
     registry: Registry | None = None,
     registry_module: str | None = None,
     extra_env: Mapping[str, str] | None = None,
+    quiet_wait_s: float = 0.0,
     timeout_s: float | None = None,
     progress: Progress | None = None,
     clock: Clock | None = None,
@@ -222,10 +240,11 @@ def run_cases(
                 timeout_s=timeout_s,
                 registry_module=registry_module,
                 extra_env=extra_env,
+                quiet_wait_s=quiet_wait_s,
                 log=say,
             )
         else:
-            result = execute_case(case, smoke=smoke)
+            result = execute_case(case, smoke=smoke, quiet_wait_s=quiet_wait_s)
         suffix = f" ({result.reason})" if result.reason else ""
         say(f"{case.name}: {result.status} in {result.duration_s:.1f} s{suffix}")
         results.append(result)

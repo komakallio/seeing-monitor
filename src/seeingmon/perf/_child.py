@@ -1,6 +1,6 @@
 """The child process of the harness: run one case and print its result.
 
-    python -m seeingmon.perf._child <case> [--smoke] [--registry MODULE]
+    python -m seeingmon.perf._child <case> [--smoke] [--registry MODULE] [--quiet-wait SECONDS]
 
 The runner starts this module once for each case, so that the peak memory of the process belongs
 to that case alone. The process prints one line, the marker and the JSON of the `CaseResult`, and
@@ -29,13 +29,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--registry", metavar="MODULE", help="take the cases from the REGISTRY of this module"
     )
+    parser.add_argument(
+        "--quiet-wait",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="wait up to this long for the machine to be quiet before the case starts",
+    )
     args = parser.parse_args(argv)
     try:
         case = load_registry(args.registry).get(args.case)
     except UnknownCaseError as error:
         print(f"error: {error.args[0]}", file=sys.stderr)
         return 2
-    result = execute_case(case, smoke=args.smoke)
+    result = execute_case(case, smoke=args.smoke, quiet_wait_s=args.quiet_wait)
     sys.stdout.write(f"\n{RESULT_MARKER}{json.dumps(result.to_dict(), allow_nan=False)}\n")
     sys.stdout.flush()
     return 0

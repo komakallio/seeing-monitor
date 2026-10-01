@@ -44,6 +44,11 @@ class TestRegistration:
         assert args.label == "pi4"
         assert args.smoke is False
 
+    def test_run_takes_a_wait_for_a_quiet_machine(self) -> None:
+        parser = build_parser()
+        assert parser.parse_args(["perf", "run", "--quiet-wait", "90"]).quiet_wait == 90.0
+        assert parser.parse_args(["perf", "run"]).quiet_wait == 0.0
+
     def test_perf_without_a_subcommand_is_an_error(self) -> None:
         with pytest.raises(SystemExit) as raised:
             build_parser().parse_args(["perf"])

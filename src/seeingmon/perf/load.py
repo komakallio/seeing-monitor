@@ -112,3 +112,29 @@ def system_busy_percent(sample_s: float = 0.2, *, sleep: Sleep = time.sleep) -> 
     if second is None:
         return None
     return busy_percent_between(first, second)
+
+
+QUIET_BUSY_PERCENT = 15.0
+
+
+def wait_for_quiet(
+    max_wait_s: float,
+    *,
+    threshold_percent: float = QUIET_BUSY_PERCENT,
+    sample_s: float = 0.25,
+    sample: Callable[[float], float | None] = system_busy_percent,
+) -> tuple[float | None, float]:
+    """Wait until the machine is quiet, for at most `max_wait_s` seconds.
+
+    The function samples the load for `sample_s` seconds at a time, and it returns at the first
+    sample that is at most `threshold_percent`, or at the end of the wait. It returns the last
+    load that it saw (`None` when the system gives none, which also ends the wait) and the seconds
+    that it waited. With `max_wait_s` of 0, it takes one sample.
+    """
+    waited = 0.0
+    busy = sample(sample_s)
+    waited += sample_s
+    while busy is not None and busy > threshold_percent and waited < max_wait_s:
+        busy = sample(sample_s)
+        waited += sample_s
+    return busy, waited

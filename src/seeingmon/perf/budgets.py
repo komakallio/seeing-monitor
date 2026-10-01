@@ -82,19 +82,28 @@ class BudgetVerdict:
     missing: tuple[str, ...] = ()
 
 
-def fast_path_budget(mode: str, rate_hz: float, title: str, key: str) -> Budget:
-    """The 25% budget of the fast path for a mode at a frame rate (per frame: 25% of the period)."""
+def fast_path_budget(
+    mode: str, rate_hz: float, title: str, key: str, *, receive: str | None = None
+) -> Budget:
+    """The 25% budget of the fast path for a mode at a frame rate (per frame: 25% of the period).
+
+    With `receive`, the budget also counts the cost of receiving the frames from `acquire`, which
+    is the name of that figure in the `ipc` case. The fast-path consumer of `core` pays it.
+    """
     per_frame_ms = 0.25 / rate_hz * 1e3
+    terms = [
+        Term("push", "fastpath", f"{mode}.push_share"),
+        Term("window close", "fastpath", f"{mode}.close_share"),
+        Term("segment append", "fastpath", f"{mode}.append_share"),
+    ]
+    if receive is not None:
+        terms.append(Term("receive from acquire", "ipc", receive))
     return Budget(
         key=key,
         title=f"{title}, {rate_hz:g} fps ({per_frame_ms:.2f} ms per frame)",
         limit=25.0,
         unit="% of one core",
-        terms=(
-            Term("push", "fastpath", f"{mode}.push_share"),
-            Term("window close", "fastpath", f"{mode}.close_share"),
-            Term("segment append", "fastpath", f"{mode}.append_share"),
-        ),
+        terms=tuple(terms),
     )
 
 
@@ -129,7 +138,21 @@ def build_budgets(report: Report) -> list[Budget]:
             "bin1_128x128_u16", FAST_RATE_BIN1_HZ, "Fast path, bin1 128 x 128", "fast-bin1"
         ),
         fast_path_budget(
+            "bin1_128x128_u16",
+            FAST_RATE_BIN1_HZ,
+            "Fast path and receive, bin1 128 x 128",
+            "core-bin1",
+            receive="core_rx.share",
+        ),
+        fast_path_budget(
             "bin2_64x64_u16", FAST_RATE_BIN2_HZ, "Fast path, bin2 64 x 64", "fast-bin2"
+        ),
+        fast_path_budget(
+            "bin2_64x64_u16",
+            FAST_RATE_BIN2_HZ,
+            "Fast path and receive, bin2 64 x 64",
+            "core-bin2",
+            receive="bin2.core_rx.share",
         ),
         Budget(
             "survey-time",

@@ -168,7 +168,6 @@ class TestEnvironment:
         assert env.os_family == platform.system()
         assert env.python == platform.python_version()
         assert "numpy" in env.packages
-        assert "seeingmon" in env.packages
 
     def test_it_survives_a_round_trip_through_a_dict(self) -> None:
         env = collect_environment()

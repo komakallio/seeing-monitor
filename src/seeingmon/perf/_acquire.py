@@ -1,17 +1,23 @@
 """The `acquire` side of the `ipc` case, in a process of its own.
 
-    python -m seeingmon.perf._acquire --address ADDRESS --pool FILE --rate HZ [--rows N]
+    python -m seeingmon.perf._acquire --address ADDRESS --pool FILE
 
 The process runs an `AcquireService` with a fake camera that replays the frames of a pool (a NumPy
-file that the case wrote), so the CPU time that it uses is the cost of `acquire` itself: the
-capture thread, the time stamper, the queue, and the sender. It reads commands from its standard
-input, one per line, and answers on its standard output:
+`.npz` file that the case wrote, with one array of frames for each ROI size, such as `f128x128`).
+The fake costs almost nothing, so the CPU time that the process uses is the cost of `acquire`
+itself: the capture thread, the time stamper, the queue, and the sender. The fake has no readout
+time, so the exposure of a stream is its frame period, and the frame rate is the inverse of the
+exposure.
+
+The process reads commands from its standard input, one per line, and answers on its standard
+output:
 
 - the first line of the input is the connection key, which never appears on a command line;
 - `ready <endpoint>` is the first answer, after the service listens;
-- `mark` records the CPU time of the process and the frame counters, and answers `marked`;
-- `report` answers one line of JSON with the CPU time and the counters since the mark, and the
-  peak memory of the process;
+- `mark` records the CPU time of the process and of each thread, and the frame counters, and
+  answers `marked`;
+- `report` answers one line of JSON with the CPU time of the process and of each thread and the
+  counters since the mark, and the peak memory of the process;
 - `quit` stops the service and ends the process.
 
 The process imports no SciPy and no simulator, so its memory is that of a real `acquire`.
@@ -27,6 +33,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from seeingmon.perf.memory import peak_rss_bytes, process_cpu_ns
+from seeingmon.perf.threadcpu import threads_cpu_ns
 
 
 def _counters(service: Any) -> dict[str, int]:
@@ -50,7 +57,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run acquire with a fake camera for a benchmark.")
     parser.add_argument("--address", required=True, help="the socket path or pipe of the service")
     parser.add_argument("--pool", required=True, help="the NumPy file with the frames to replay")
-    parser.add_argument("--rate", type=float, required=True, help="the frame rate, in hertz")
     args = parser.parse_args(argv)
 
     import numpy as np
@@ -63,16 +69,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     from seeingmon.testing import FakeCameraDriver
 
     key = ConnectionKey.from_text(sys.stdin.readline())
-    pool = np.load(args.pool)
+    with np.load(args.pool) as archive:
+        pools = {name: archive[name] for name in archive.files}
 
     def next_frame(config: Any, roi: Any, seq: int) -> Any:
+        pool = pools[f"f{roi.height}x{roi.width}"]
         return pool[seq % len(pool)]
 
     clock = SystemClock()
-    # The fake paces itself: every frame takes `overhead_s` on the clock, and a row costs nothing.
-    driver = FakeCameraDriver(
-        clock, overhead_s=1.0 / args.rate, row_time_s=0.0, frame_factory=next_frame
-    )
+    # The fake has no readout time, so the exposure of a stream is its frame period.
+    driver = FakeCameraDriver(clock, overhead_s=0.0, row_time_s=0.0, frame_factory=next_frame)
     settings = ServicesConfig(
         acquire=AcquireSettings(
             time_source="stamp",  # fit the arrival times, as the real driver's frames need
@@ -94,7 +100,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     for line in sys.stdin:
         command = line.strip()
         if command == "mark":
-            marked = {"cpu_ns": process_cpu_ns(), "wall_ns": time.perf_counter_ns()}
+            marked = {
+                "cpu_ns": process_cpu_ns(),
+                "wall_ns": time.perf_counter_ns(),
+                "threads": threads_cpu_ns(),
+            }
             marked.update(_counters(service))
             _say("marked")
         elif command == "report":
@@ -106,6 +116,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             report.update({name: value - marked.get(name, 0) for name, value in now.items()})
             report["queue_peak_frames"] = now["queue_peak_frames"]
+            before: dict[str, int] = marked.get("threads", {})
+            report["threads_cpu_ns"] = {
+                name: used - before.get(name, 0) for name, used in threads_cpu_ns().items()
+            }
             _say(json.dumps(report))
         elif command == "quit":
             break

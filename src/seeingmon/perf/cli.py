@@ -60,6 +60,14 @@ def register(subparsers: Subparsers) -> None:
         help="name the machine class of the run: use pi4 on a Raspberry Pi 4, so that the report "
         "compares its figures with the budgets without scaling",
     )
+    run.add_argument(
+        "--quiet-wait",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="before each case, wait up to this long for the machine to be at most 15%% busy. "
+        "Other work disturbs a measurement, and a report records how busy the machine was.",
+    )
     run.add_argument("--list", action="store_true", help="list the cases and exit")
 
     report = add_command(
@@ -109,7 +117,12 @@ def _run(args: argparse.Namespace) -> int:
     names = [name.strip() for name in args.cases.split(",") if name.strip()] if args.cases else None
     try:
         report = run_cases(
-            names, smoke=args.smoke, label=args.label, registry=registry, progress=_progress
+            names,
+            smoke=args.smoke,
+            label=args.label,
+            registry=registry,
+            quiet_wait_s=args.quiet_wait,
+            progress=_progress,
         )
     except UnknownCaseError as error:
         raise CliError(str(error.args[0]), exit_code=2) from None
