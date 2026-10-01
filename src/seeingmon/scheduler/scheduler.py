@@ -1549,6 +1549,7 @@ class Scheduler:
             finished = True
         finally:
             if not finished:  # a camera error ended the cell, so drop its half-built window
+                self._counters.discarded_frames += n_frames
                 self._fast.flush("sweep_cell_failed")
                 self._drain_metrics(active.stream_id)
             self._end_stream("sweep_cell_end")

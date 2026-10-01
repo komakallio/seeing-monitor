@@ -53,6 +53,7 @@ class Counters:
     commands_accepted: int = 0
     commands_rejected: int = 0
     tasks_run: int = 0
+    discarded_frames: int = 0  # frames of a sweep cell that a camera error cut short
     transitions: int = 0
 
 
