@@ -33,8 +33,7 @@ import os
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import IO
 
@@ -53,13 +52,35 @@ class HangReport:
     elapsed_s: float
 
 
-@dataclass(slots=True)
 class _Guard:
-    name: str
-    timeout_s: float
-    started_ns: int
-    deadline_ns: int
-    reported: bool = False
+    """One armed call. A plain slotted class, because the driver arms a guard for every SDK call."""
+
+    __slots__ = ("deadline_ns", "name", "reported", "started_ns", "timeout_s")
+
+    def __init__(self, name: str, timeout_s: float, started_ns: int, deadline_ns: int) -> None:
+        self.name = name
+        self.timeout_s = timeout_s
+        self.started_ns = started_ns
+        self.deadline_ns = deadline_ns
+        self.reported = False
+
+
+class _GuardContext:
+    """The context manager that `CallWatchdog.guard` returns."""
+
+    __slots__ = ("_name", "_timeout_s", "_token", "_watchdog")
+
+    def __init__(self, watchdog: CallWatchdog, name: str, timeout_s: float) -> None:
+        self._watchdog = watchdog
+        self._name = name
+        self._timeout_s = timeout_s
+        self._token = 0
+
+    def __enter__(self) -> None:
+        self._token = self._watchdog.arm(self._name, self._timeout_s)
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._watchdog.disarm(self._token)
 
 
 class CallWatchdog:
@@ -115,20 +136,21 @@ class CallWatchdog:
 
     def disarm(self, token: int) -> None:
         """End the deadline of a call. A call that overran and has not been reported reports now."""
-        report = self._take_overdue(token)
+        now = self._clock.monotonic_ns()
         with self._lock:
-            self._guards.pop(token, None)
-        if report is not None:
-            self._deliver(report)
+            guard = self._guards.pop(token, None)
+            if guard is None or guard.reported or now <= guard.deadline_ns:
+                return
+            guard.reported = True
+            self._hang_count += 1
+            report = HangReport(guard.name, guard.timeout_s, (now - guard.started_ns) / NS_PER_S)
+        self._deliver(report)
 
-    @contextmanager
-    def guard(self, name: str, timeout_s: float) -> Iterator[None]:
+    def guard(self, name: str, timeout_s: float) -> _GuardContext:
         """Run a block under a deadline of `timeout_s` seconds."""
-        token = self.arm(name, timeout_s)
-        try:
-            yield
-        finally:
-            self.disarm(token)
+        if timeout_s < 0:
+            raise ValueError("timeout_s must not be negative")
+        return _GuardContext(self, name, timeout_s)
 
     def check(self) -> list[HangReport]:
         """Report each armed call that is past its deadline and not yet reported.
@@ -148,16 +170,6 @@ class CallWatchdog:
         for report in reports:
             self._deliver(report)
         return reports
-
-    def _take_overdue(self, token: int) -> HangReport | None:
-        now = self._clock.monotonic_ns()
-        with self._lock:
-            guard = self._guards.get(token)
-            if guard is None or guard.reported or now <= guard.deadline_ns:
-                return None
-            guard.reported = True
-            self._hang_count += 1
-            return HangReport(guard.name, guard.timeout_s, (now - guard.started_ns) / NS_PER_S)
 
     def _deliver(self, report: HangReport) -> None:
         try:

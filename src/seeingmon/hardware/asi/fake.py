@@ -262,6 +262,11 @@ class FakeAsiSdk:
     # --- Inspection ---
 
     @property
+    def clock(self) -> Clock:
+        """The clock that the fake waits on."""
+        return self._clock
+
+    @property
     def video_active(self) -> bool:
         """Whether video capture runs."""
         return self._video
@@ -616,9 +621,9 @@ class FakeAsiSdk:
             self._dropped = 0
 
     def get_video_data(self, camera_id: int, buffer: bytearray, wait_ms: int) -> None:
-        self._enter("get_video_data", camera_id, len(buffer), wait_ms)
-        deadline_ns = self._clock.monotonic_ns() + wait_ms * NS_PER_MS
         try:
+            self._enter("get_video_data", camera_id, len(buffer), wait_ms)
+            deadline_ns = self._clock.monotonic_ns() + wait_ms * NS_PER_MS
             while True:
                 with self._lock:
                     now = self._clock.monotonic_ns()
