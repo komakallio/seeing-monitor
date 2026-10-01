@@ -20,7 +20,7 @@ On the estimate, the per-frame analysis fits its budget with a wide margin, and 
 The table shows the Linux run. The Windows run gives the same verdicts, except that the bin2 fast path alone becomes marginal (17.6 to 38.4%). The Pi 4 column is an estimate: read [How the estimate works](#how-the-estimate-works) before you rely on it.
 
 - **The fast path has room.** One bin1 frame takes 25 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 18 µs of that. The Pi 4 estimate for the kernel (0.09 to 0.20 ms) agrees with the architecture's 0.2 to 0.4 ms, or lies below it.
-- **The stream between the processes is the risk.** `acquire` spends 0.87 ms of CPU on a frame, and `core` spends 0.48 ms on receiving it. Both costs come from Python threads that move each frame, with no array computation. The work alone puts `acquire` at 19 to 29% of a Pi 4 core, over its 10% budget, even if wake-ups cost nothing. At 360 frames per second, the receive alone costs an estimated 140 to 220% of a Pi 4 core.
+- **The stream between the processes is the risk.** `acquire` spends 0.87 ms of CPU on a frame, and `core` spends 0.48 ms on receiving it. Both costs come from Python threads that move each frame, with no array computation. The work alone puts `acquire` at 19 to 29% of a Pi 4 core, over its 10% budget, even if wake-ups cost nothing. At 360 frames per second, the receive alone costs an estimated 140 to 220% of a Pi 4 core. The costs belong to each message and each frame, not to the bytes (see [Where the stream spends its CPU time](#where-the-stream-spends-its-cpu-time)).
 - **The survey path has room in time and little in memory.** A bin2 frame takes 2.0 s on the dev machine, including 0.5 s for the sky quality step, and the worker peaks at 452 MB.
 - **Two gigabytes of memory is enough on this evidence.** The estimated peak of all processes stays under the 1.4 GB budget and the 1.6 GB gate (see [Memory](#memory)).
 - **Rust for the per-frame metrics is not indicated** (see [The Rust decision](#the-rust-decision)).
@@ -108,6 +108,16 @@ The push is one call of `FastPathAnalyzer.push`: the kernel, the metrics row, an
 The case splits the work from the wake-ups with two runs: a paced stream costs the work plus a wake-up for each frame, and a stream in bursts of 10 frames costs the work plus a tenth of the wake-ups. The Linux virtual machine makes wake-ups expensive, so the split is one of the least reliable figures on this page.
 
 On Linux, `acquire` spends 421 µs per frame in the capture thread, 411 µs in the sender thread, and 36 µs elsewhere, and it peaks at 55 MB. A bin2 stream at 360 fps costs `core` 555 µs per frame to receive (20.0% of a core on Linux, 21.8% on Windows).
+
+### Where the stream spends its CPU time
+
+A one-off profile of the Linux run, made with `yappi` (which is not part of the harness), shows where the time of a frame goes. A profiler adds overhead, so read the shares and not the microseconds.
+
+- **Polling.** `Connection.poll` builds a new selector on every call. It takes about 30% of the sender thread of `acquire`, which polls three times per frame for the acknowledgements of `core`, and about 45% of the stream reader of `core`, which polls once per frame.
+- **Frame bookkeeping.** The capture thread of `acquire` spends about half of its time in `_on_frame`: the time stamper, `dataclasses.replace` with the validation of the new `Frame`, flag arithmetic with `enum.Flag`, and the notification of the queue.
+- **Decoding.** `decode_frame` takes about a third of the time of the consumer in `core`.
+
+These are costs per message and per frame, not per byte. Batching several frames in one message and acknowledging the flow-control window less often would cut them, so they are the first things to try. On the estimate, the 10% budget of `acquire` needs about 2 to 5 times less CPU per frame than it takes now. The fast path with the receive needs 1.2 to 2 times less in bin1 and 6 to 9 times less in bin2 at 360 fps.
 
 ### Survey frame
 
