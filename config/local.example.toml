@@ -12,11 +12,21 @@ station_id = "my-station"
 profile = "asi294mm-gs250"
 
 # The observing site. The values below are placeholders (0.0 is not your site). Enter your own
-# here, in the untracked file only. Latitude is north-positive, longitude is east-positive.
+# here, in the untracked file only. Latitude is north-positive, longitude is east-positive. The
+# scheduler reads the site to compute the Sun's elevation for the daylight gate and the twilight
+# flag. Without a [site] table, it relies on the measured sky brightness alone.
 [site]
 latitude_deg = 0.0
 longitude_deg = 0.0
 elevation_m = 0.0
+
+# Scheduler overrides. The defaults live in config/default.d/scheduler.toml, and every one of them
+# is provisional until commissioning. Override a key only on this station, for example:
+# [scheduler.fast]
+# window_s = 120.0
+# [scheduler.survey]
+# cadence_s = 180.0
+# An environment variable works too: SEEINGMON_SCHEDULER__FAST__WINDOW_S=120
 
 [paths]
 # The folder for the store and the segment files. Use a partition with room to spare.
