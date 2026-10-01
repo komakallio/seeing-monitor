@@ -175,7 +175,7 @@ def test_read_table_refuses_a_file_without_a_table(tmp_path: Path) -> None:
 
 def test_image_bytes_equal_the_file_that_write_image_makes(tmp_path: Path) -> None:
     image = np.arange(24, dtype=np.uint16).reshape(4, 6) * 1000
-    header = {"EXPTIME": 30.0, "MODE": "bin2", "NFRAMES": 9}
+    header: fitsio.Header = {"EXPTIME": 30.0, "MODE": "bin2", "NFRAMES": 9}
     path = tmp_path / "image.fits"
     fitsio.write_image(path, image, header=header)
     assert path.read_bytes() == fitsio.image_bytes(image, header=header)
