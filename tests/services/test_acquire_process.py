@@ -25,7 +25,7 @@ from seeingmon.drivers.base import (
     CameraDisconnectedError,
     CameraStateError,
 )
-from seeingmon.frames import Frame, TimeQuality
+from seeingmon.frames import Frame, FrameFlag, TimeQuality
 from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.remote import RemoteCameraDriver
 
@@ -303,3 +303,21 @@ def test_no_pickle_crosses_the_boundary_in_either_process(start_process: StartPr
     finally:
         restore()
     assert no_pickle.CALLS == []
+
+
+@pytest.mark.slow
+def test_the_simulated_camera_streams_through_a_real_process(start_process: StartProcess) -> None:
+    """The simulator needs a few seconds to import and to build its turbulence, so this is slow."""
+    process = start_process(env={"ACQUIRE__DRIVER": "sim"})
+    driver = process.driver()
+    info = driver.open()
+    assert (info.driver, info.model) == ("sim", "Simulated ZWO ASI294MM")
+    active = driver.configure(FAST)
+    driver.start()
+    frames = read_frames(driver, 60)
+    assert all(f.stream_id == active.stream_id for f in frames)
+    assert all(f.t_quality is TimeQuality.EXACT for f in frames)  # the simulator knows the truth
+    assert all(f.flags & FrameFlag.SIMULATED for f in frames)
+    assert frames[0].data.shape == (128, 128)
+    assert frames[-1].t_utc_ns > frames[0].t_utc_ns
+    assert driver.health()["driver"] == "sim"
