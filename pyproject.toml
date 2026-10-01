@@ -24,12 +24,13 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Astronomy",
   "Typing :: Typed",
 ]
-# The core install stays small: the profile, the records, and the interfaces need only pydantic.
-dependencies = ["pydantic>=2.7,<3"]
+# The core install stays small: the profile, the records, and the interfaces need pydantic, and
+# frames carry NumPy arrays.
+dependencies = ["pydantic>=2.7,<3", "numpy>=2.0"]
 
 # Each lane adds dependencies to its own extra only. The lead regenerates `uv.lock` after merges.
 [project.optional-dependencies]
-fast = ["numpy>=2.0", "scipy>=1.13"]
+fast = ["scipy>=1.13"]
 survey = ["seeingmon[fast]", "astropy>=6.1", "pyerfa>=2.0.1"]
 web = ["fastapi>=0.115", "uvicorn>=0.30", "pillow>=10.4"]
 

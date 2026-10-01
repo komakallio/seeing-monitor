@@ -50,7 +50,8 @@ Each lane edits only its own package, its own tests, and its own sections of `do
 |---|---|---|
 | `src/seeingmon/cli.py` | Entry point. It discovers commands by convention. | Foundation |
 | `src/seeingmon/profile/`, `profiles/`, `config/` | Profile schema, derived values, configuration layers | Foundation (step 1) |
-| `src/seeingmon/clock.py`, `frames.py`, `records/`, `drivers/base.py`, `sinks/base.py`, `solvers/base.py` | The contracts: `Clock`, frame types, records, and the driver, sink, and solver interfaces | Foundation (step 2) |
+| `src/seeingmon/clock.py`, `frames.py`, `records/`, `drivers/base.py`, `sinks/base.py`, `solvers/base.py` | The contracts: `Clock`, frame types and wire format, records, and the driver, sink, and solver interfaces | Foundation (step 2) |
+| `src/seeingmon/testing/` | Scripted fakes of the interfaces (`FakeCameraDriver`, `FakeSink`, `FakeSolver`) for tests | Foundation (step 2) |
 | `src/seeingmon/drivers/sim/` and `fastpath/` | Simulator and fast path | Simulation and fast path (steps 3 and 4) |
 | `src/seeingmon/store/` and `sinks/` | SQLite store, retention, sink forwarder, adapters | Storage and sinks (step 5) |
 | `src/seeingmon/scheduler/` | Scheduler | Scheduler (step 6) |
@@ -59,7 +60,9 @@ Each lane edits only its own package, its own tests, and its own sections of `do
 | `src/seeingmon/services/` | `acquire`, `core`, `web`, REST API, UI | Services (step 9) |
 | `src/seeingmon/hardware/`, `perf/`, `deploy/` | ASI binding, GPIO, power cycle, SQM-LE, benchmarks, install scripts | Hardware-facing (steps 10 to 12) |
 
-The contracts are stable after step 2. Do not change them from a lane. If a contract blocks you, record the problem in your report, work around it in your own package, and let the lead decide.
+The contracts are stable after step 2. You may make an additive change to a contract that your lane owns, such as a new optional field with a default, and you must say so in the commit message and in your report. Any change that could break another lane goes to the lead: describe the problem in your report, work around it inside your own package, and let the lead decide.
+
+Use the fakes in `seeingmon.testing` for code that depends on a driver, a sink, or a solver. They run on a `Clock`, so with a `VirtualClock` a test reads frames without waiting.
 
 ## Conventions
 
