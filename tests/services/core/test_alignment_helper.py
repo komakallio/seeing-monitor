@@ -30,6 +30,7 @@ from seeingmon.services.web.contract import unpack_frame
 from tests.scheduler.helpers import make_frame
 
 from ..conftest import wait_until
+from .rig import sky_frame
 
 PIL = pytest.importorskip("PIL.Image", reason="the preview needs Pillow")
 
@@ -42,25 +43,6 @@ SETTINGS = AlignmentSettings(
 @pytest.fixture(scope="module")
 def profile() -> Profile:
     return load_profile("asi294mm-gs250")
-
-
-def sky_frame(seq: int = 1, *, t_utc_ns: int = T0, saturate: float = 0.0, seed: int = 1) -> Frame:
-    """A 16-bit bin2 frame of 480 by 640 pixels: sky, one star, and a saturated patch."""
-    rng = np.random.default_rng(seed)
-    data = rng.normal(2000.0, 20.0, (480, 640))
-    yy, xx = np.mgrid[0:480, 0:640]
-    data += 20000.0 * np.exp(-((xx - 300) ** 2 + (yy - 200) ** 2) / (2 * 1.8**2))
-    if saturate:
-        data[: int(480 * saturate), :] = 65532.0
-    return make_frame(
-        np.clip(data, 0, 65535).astype(np.uint16),
-        mode="bin2",
-        gain=120,
-        exposure_us=500_000,
-        adc_bits=14,
-        t_utc_ns=t_utc_ns,
-        seq=seq,
-    )
 
 
 def solution(**changes: Any) -> QuickSolution:
