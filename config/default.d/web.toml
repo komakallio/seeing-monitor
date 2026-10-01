@@ -2,15 +2,32 @@
 # sits under [web], and seeingmon.services.web.config declares the same defaults. Override a key
 # in local/config.toml, or with an environment variable such as SEEINGMON_WEB__PORT=8081.
 #
-# The address of one installation and the hash of its API token belong to the untracked local
-# file (see config/local.example.toml), and never to this file. The hash lives in [auth].
+# The addresses and host names of one installation and the hash of its API token belong to the
+# untracked local file (see config/local.example.toml), and never to this file. The hash lives in
+# [auth].
 
 [web]
 # The one interface that the process binds. Set the LAN address of this device in the local file.
 # The default is the loopback interface, so a fresh install is reachable from this device only. A
 # wildcard address (0.0.0.0 or ::) is an error.
 bind_address = "127.0.0.1"
+
+# More interfaces that the process binds, such as the address of a VPN interface of this device. It
+# listens on each address (and on bind_address) on the same port, from one event loop. Each entry
+# is one interface address, and a wildcard is an error. If an address cannot be bound, the process
+# exits and names it. The default is no extra address. Set the addresses in the local file.
+extra_bind_addresses = []
 port = 8080
+
+# The names and addresses that a client may use to reach the server. A request carries the host in
+# its Host header, and a browser sends the host of the page in the Origin header of a WebSocket.
+# The server answers a request only when its host is in this list, or is one of localhost,
+# 127.0.0.1, ::1, bind_address, and the entries of extra_bind_addresses, which are always allowed.
+# Any other host gets an error, so a page from another site cannot reach the server through the
+# browser of a visitor. An entry is an IPv4 address, an IPv6 address, or a DNS name, compared
+# without case and without a trailing dot, and a wildcard is an error. This rule does not change
+# who may read or send commands. Set the names of one installation in the local file.
+allowed_hosts = []
 
 # Reads are open on the LAN by default. Set this to true to ask for the API token on every read
 # too. Every POST needs the token in any case.

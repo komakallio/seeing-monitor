@@ -9,14 +9,20 @@ models below. Read the sections through the configuration:
     token_hash = auth.load_token_hash()
 
 Override a key in `local/config.toml` under `[web]`, or with an environment variable such as
-`SEEINGMON_WEB__BIND_ADDRESS`. The address of one installation, and the hash of its API token,
-belong to the untracked local file, to the environment, or to a systemd credential. They never
-belong to a tracked file.
+`SEEINGMON_WEB__BIND_ADDRESS`. The addresses and host names of one installation, and the hash of
+its API token, belong to the untracked local file, to the environment, or to a systemd credential.
+They never belong to a tracked file.
 
 **Access rule.** Reads are open on the LAN by default. Set `require_token_for_reads` to ask for
 the token on every read too. Every `POST` always needs the token. The `[auth]` section holds the
 hash of the token (see `seeingmon.services.web.auth` for the format), and
 `seeingmon web hash-token` creates one.
+
+**Addresses and hosts.** `bind_address` and `extra_bind_addresses` name the interfaces to listen
+on. `allowed_hosts` names the hosts that a request may carry in its `Host` header, in addition to
+the loopback names and the bind addresses (see `seeingmon.services.web.hosts`). The two rules are
+separate: an address that the process listens on is always an allowed host, and a host can be
+allowed without a socket, for a name that reaches the same interface through a VPN.
 """
 
 from __future__ import annotations
@@ -30,8 +36,10 @@ from pathlib import Path
 from pydantic import Field, SecretStr, field_validator, model_validator
 
 from seeingmon.config import ConfigError, SectionModel
+from seeingmon.services.web.hosts import allowed_set, normalize_entries
 
 MIB = 1024 * 1024
+LOOPBACK_V4 = "127.0.0.1"
 _MAX_TOKEN_HASH_FILE_BYTES = 4096
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9_]{0,62}")
 
@@ -105,17 +113,47 @@ class CoreLinkSettings(SectionModel):
     retry_interval_s: float = Field(1.0, ge=0, le=60)
 
 
-class WebSettings(SectionModel):
-    """The `[web]` section: the address, the access rule, and the limits of the API.
+def _interface_address(value: str, setting: str) -> str:
+    """The canonical form of an address that names one interface of this device."""
+    text = value.strip()
+    if text.lower() == "localhost":
+        return "localhost"
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        raise ValueError(
+            f"set {setting} to the IP address of one interface of this device"
+        ) from None
+    if address.is_unspecified:
+        raise ValueError(
+            f"set {setting} to the address of one interface of this device, not to 0.0.0.0 or ::"
+        )
+    return str(address)
 
-    `bind_address` names one interface of this device. The process never binds every interface,
-    so a wildcard address is an error. `withhold_fields` lists record fields that the API
-    serves as `null` with a `quality` note, because they narrow down the site (the zenith angle
-    of Polaris equals about 90 degrees minus the site latitude).
+
+class WebSettings(SectionModel):
+    """The `[web]` section: the addresses, the access rule, and the limits of the API.
+
+    `bind_address` names one interface of this device, and `extra_bind_addresses` names more, such
+    as the address of a VPN interface. The process listens on each of them on the same `port`, and
+    never on every interface, so a wildcard address is an error. `localhost` means the IPv4
+    loopback address, and `::1` is the IPv6 one.
+
+    `allowed_hosts` lists the names and addresses that a client may put in the `Host` header (and a
+    browser in the `Origin` header of a WebSocket) in addition to the loopback names and the bind
+    addresses, which are always allowed. A request with another host gets an error. This rule does
+    not change who may read or send commands. It keeps a page from another site, or a name that
+    the owner did not list, from reaching the server through the browser of a visitor.
+
+    `withhold_fields` lists record fields that the API serves as `null` with a `quality` note,
+    because they narrow down the site (the zenith angle of Polaris equals about 90 degrees minus
+    the site latitude).
     """
 
     bind_address: str = "127.0.0.1"
+    extra_bind_addresses: tuple[str, ...] = ()
     port: int = Field(8080, ge=0, le=65535)
+    allowed_hosts: tuple[str, ...] = ()
 
     require_token_for_reads: bool = False
 
@@ -136,20 +174,19 @@ class WebSettings(SectionModel):
     @field_validator("bind_address")
     @classmethod
     def _one_interface(cls, value: str) -> str:
-        text = value.strip()
-        if text.lower() == "localhost":
-            return "localhost"
-        try:
-            address = ipaddress.ip_address(text)
-        except ValueError:
-            raise ValueError(
-                "set bind_address to the IP address of one interface of this device"
-            ) from None
-        if address.is_unspecified:
-            raise ValueError(
-                "set bind_address to the LAN address of this device, not to 0.0.0.0 or ::"
-            )
-        return str(address)
+        return _interface_address(value, "bind_address")
+
+    @field_validator("extra_bind_addresses")
+    @classmethod
+    def _more_interfaces(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(_interface_address(item, "extra_bind_addresses") for item in value)
+        )
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _host_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return normalize_entries(value)
 
     @field_validator("withhold_fields")
     @classmethod
@@ -158,6 +195,18 @@ class WebSettings(SectionModel):
             if not _FIELD_NAME.fullmatch(name):
                 raise ValueError("withhold_fields holds record field names in lowercase snake case")
         return value
+
+    def listen_addresses(self) -> tuple[str, ...]:
+        """The distinct addresses to listen on: `bind_address` first, then the extra addresses.
+
+        `localhost` becomes the IPv4 loopback address, so that each entry names one socket.
+        """
+        names = (self.bind_address, *self.extra_bind_addresses)
+        return tuple(dict.fromkeys(LOOPBACK_V4 if name == "localhost" else name for name in names))
+
+    def allowed_host_set(self) -> frozenset[str]:
+        """The hosts that a request may name. See `seeingmon.services.web.hosts.allowed_set`."""
+        return allowed_set(self.bind_address, self.extra_bind_addresses, self.allowed_hosts)
 
 
 class AuthSettings(SectionModel):

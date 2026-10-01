@@ -59,6 +59,92 @@ def test_a_wildcard_or_unparsable_bind_address_is_an_error(address: str) -> None
         WebSettings(bind_address=address)
 
 
+def test_the_default_needs_no_host_list_and_listens_on_one_address() -> None:
+    settings = WebSettings()
+    assert settings.allowed_hosts == ()
+    assert settings.extra_bind_addresses == ()
+    assert settings.listen_addresses() == ("127.0.0.1",)
+    assert {"localhost", "127.0.0.1", "::1"} <= settings.allowed_host_set()
+
+
+def test_the_allowed_hosts_are_stored_in_their_canonical_form() -> None:
+    settings = WebSettings(
+        allowed_hosts=("Pi.Example.", "2001:DB8:0::5", "pi.example", "192.0.2.5")
+    )
+    assert settings.allowed_hosts == ("pi.example", "2001:db8::5", "192.0.2.5")
+
+
+@pytest.mark.parametrize("entry", ["*.example", "*", "pi.example:8080", "0.0.0.0", "::", "", "a b"])
+def test_a_bad_allowed_host_is_an_error(entry: str) -> None:
+    with pytest.raises(ValueError, match="allowed_hosts"):
+        WebSettings(allowed_hosts=(entry,))
+
+
+def test_an_allowed_host_error_in_the_layers_names_the_key_and_not_the_value(
+    tmp_path: Path,
+) -> None:
+    local = tmp_path / "local.toml"
+    local.write_text('[web]\nallowed_hosts = ["*.private-name.example"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError) as raised:
+        load_config(local_file=local, env={}).section("web", WebSettings)
+    assert "allowed_hosts" in str(raised.value)
+    assert "private-name" not in str(raised.value)
+
+
+def test_the_allowed_host_set_adds_the_list_and_every_bind_address() -> None:
+    settings = WebSettings(
+        bind_address="192.0.2.5",
+        extra_bind_addresses=("2001:db8::5",),
+        allowed_hosts=("pi.example",),
+    )
+    assert settings.allowed_host_set() == frozenset(
+        {"localhost", "127.0.0.1", "::1", "192.0.2.5", "2001:db8::5", "pi.example"}
+    )
+
+
+@pytest.mark.parametrize("address", ["192.0.2.7", "::1", "2001:db8::5", "localhost", " 192.0.2.7 "])
+def test_an_extra_bind_address_names_one_interface_like_the_bind_address(address: str) -> None:
+    settings = WebSettings(extra_bind_addresses=(address,))
+    assert settings.extra_bind_addresses in {
+        ("192.0.2.7",),
+        ("::1",),
+        ("2001:db8::5",),
+        ("localhost",),
+    }
+
+
+@pytest.mark.parametrize(
+    "address", ["0.0.0.0", "::", "", "not-an-address", "192.0.2", "host.example"]
+)
+def test_a_wildcard_or_unparsable_extra_bind_address_is_an_error(address: str) -> None:
+    with pytest.raises(ValueError, match="extra_bind_addresses"):
+        WebSettings(extra_bind_addresses=("192.0.2.7", address))
+
+
+def test_the_listen_addresses_are_distinct_and_keep_their_order() -> None:
+    settings = WebSettings(
+        bind_address="192.0.2.5",
+        extra_bind_addresses=("2001:db8::5", "192.0.2.5", "localhost", "127.0.0.1", "::1"),
+    )
+    assert settings.listen_addresses() == ("192.0.2.5", "2001:db8::5", "127.0.0.1", "::1")
+
+
+def test_localhost_listens_on_the_ipv4_loopback_address() -> None:
+    assert WebSettings(bind_address="localhost").listen_addresses() == ("127.0.0.1",)
+
+
+def test_the_new_keys_read_from_the_layers(tmp_path: Path) -> None:
+    local = tmp_path / "local.toml"
+    local.write_text(
+        '[web]\nbind_address = "192.0.2.9"\nextra_bind_addresses = ["2001:db8::9"]\n'
+        'allowed_hosts = ["pi.example", "192.0.2.9"]\n',
+        encoding="utf-8",
+    )
+    web = load_config(local_file=local, env={}).section("web", WebSettings)
+    assert web.listen_addresses() == ("192.0.2.9", "2001:db8::9")
+    assert web.allowed_hosts == ("pi.example", "192.0.2.9")
+
+
 def test_an_unknown_key_is_an_error() -> None:
     with pytest.raises(ValueError, match="bind_adress"):
         WebSettings.model_validate({"bind_adress": "127.0.0.1"})

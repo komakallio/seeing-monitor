@@ -49,8 +49,15 @@ token_hash = "<hash of the API token>"
 # that interface only (a wildcard address such as 0.0.0.0 is an error). The default address is the
 # loopback interface. Reads are open on the LAN unless you set require_token_for_reads, and every
 # POST needs the token. The lines below only show the shape.
+#
+# To reach the UI through a VPN, such as a tailnet, bind the address of the VPN interface too
+# (extra_bind_addresses), and list the names that clients type (allowed_hosts). The server answers
+# a request only when its Host header names the loopback interface, a bind address, or an entry of
+# allowed_hosts. The entries below are documentation addresses and example names.
 # [web]
 # bind_address = "<LAN address of this device>"
+# extra_bind_addresses = ["192.0.2.10", "2001:db8::10"]
+# allowed_hosts = ["seeing-pi", "seeing-pi.tailnet.example", "192.0.2.10", "2001:db8::10"]
 # port = 8080
 # require_token_for_reads = false
 # [web.rate_limit]
