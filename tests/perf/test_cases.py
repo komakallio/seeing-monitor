@@ -10,12 +10,14 @@ from __future__ import annotations
 import math
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
 from seeingmon.perf.budgets import BASELINE, PEAK, build_budgets
 from seeingmon.perf.cases import core_sim
 from seeingmon.perf.cases.fastmodes import FAST_MODES
+from seeingmon.perf.cases.survey import check_sky_step
 from seeingmon.perf.registry import REGISTRY, CaseContext, SkipCase, load_registry
 from seeingmon.perf.report import SCALES, Measurement, Report
 from seeingmon.perf.runner import execute_case
@@ -121,6 +123,9 @@ def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) 
         check_measurement(item)
     if result.peak_rss_bytes is not None:
         assert result.peak_rss_bytes > 0
+    if name == "survey":
+        # The sky quality step is part of every frame, so its stage must not go missing.
+        assert "stage.quality" in names
     # The budgets read figures by name. A renamed figure must break this test and not the verdict.
     wanted = {
         term.measurement
@@ -129,6 +134,39 @@ def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) 
         if term.case == name and term.measurement not in (PEAK, BASELINE) and term.constant is None
     }
     assert wanted <= set(names), f"{name} lacks {sorted(wanted - set(names))}"
+
+
+class TestSurveyCase:
+    @staticmethod
+    def job(
+        stages: tuple[str, ...], rate: float | None, reasons: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        row = {"sky_rate_e_per_s_arcsec2": rate, "quality": reasons, "n_stars_used": 20}
+        return {
+            "timings": dict.fromkeys(stages, 0.1),
+            "records": [
+                {"record_type": "survey_frame", "row": {}},
+                {"record_type": "sky_quality", "row": row},
+            ],
+        }
+
+    def test_a_job_with_the_sky_step_gives_the_sky_row(self) -> None:
+        row = check_sky_step(self.job(("detect", "quality"), 3.5))
+        assert row["n_stars_used"] == 20
+
+    def test_a_job_without_the_sky_step_fails(self) -> None:
+        with pytest.raises(RuntimeError, match="skipped the sky quality step"):
+            check_sky_step(self.job(("detect", "records"), 3.5))
+
+    def test_a_step_that_measures_no_sky_fails_and_gives_the_reason(self) -> None:
+        job = self.job(("quality",), None, {"sky_mag_arcsec2": "no dark model"})
+        with pytest.raises(RuntimeError, match="no dark model"):
+            check_sky_step(job)
+
+    def test_a_job_without_a_sky_record_fails(self) -> None:
+        job = {"timings": {"quality": 0.1}, "records": []}
+        with pytest.raises(RuntimeError, match="measured no sky"):
+            check_sky_step(job)
 
 
 class TestCoreSim:

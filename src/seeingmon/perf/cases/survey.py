@@ -8,9 +8,18 @@ pipeline finds the geometry that it expects, and the frame solves.
 
 **The path.** `create_survey_analyzer` builds the analyzer, and `make_process_executor` gives it
 a worker process, as `core` does. The tracker holds a solution of the pointing, so each frame takes
-the steady-state route (detect, track, match, and records). The first frame after a cold start
-needs a plate solver, which runs outside Python and which the dev machine does not have, so the
-case does not measure a solve by a solver (the architecture's solver table estimates it).
+the steady-state route (detect, track, match, sky quality, and records). The first frame after a
+cold start needs a plate solver, which runs outside Python and which the dev machine does not have,
+so the case does not measure a solve by a solver (the architecture's solver table estimates it).
+
+**The sky quality.** A 30 s frame gets the sky quality step (photometry, the zero point, the sky
+level, and the limiting magnitude). The sky level needs a dark model, which a station gets from
+`seeingmon dark`, so the case writes one dark set to the dark library of its temporary folder: the
+bias and the dark current that the simulator adds at the temperature of the frame, and a few hundred
+hot pixels. The history of zero points is empty, as it is on a new station, so the transparency has
+no reference. The case fails when the step skips the sky, because a figure without the sky would
+understate the frame. It uses no flat, so the worker holds no flat image (a measured flat adds one
+float32 image of the sensor).
 
 **The figures.** The case reports the wall time of a frame from `submit` to the result, the CPU time
 of the worker for it, the time of each stage (the pipeline reports them, and the analyzer does not
@@ -45,16 +54,19 @@ REFERENCE_PROFILE = "asi294mm-gs250"
 EXPOSURE_S = 30.0
 GAIN = 120
 _RESULT_TIMEOUT_S = 900.0
-_STAGES = ("detect", "solve", "match", "records")
+_STAGES = ("detect", "solve", "match", "quality", "records")
+_HOT_PIXELS = 300  # in the master dark
+_HOT_EXCESS_DN = 300  # how far a hot pixel stands above the dark level
 
 
 @dataclass(slots=True)
 class Scene:
-    """What the case needs: the profile, the frame, the catalog file, and a prior solution."""
+    """What the case needs: the profile, the frame, the catalog and the dark library, a solution."""
 
     profile: Profile
     frame: Frame
     catalog_path: str
+    calibration_dir: str
     solution: PointingSolution
     stars: int
 
@@ -74,8 +86,53 @@ def cropped_profile(profile: Profile, width: int, height: int) -> Profile:
     return ProfileModel.model_validate(data)
 
 
+def write_dark_library(folder: Path, profile: Profile, frame: Frame) -> str:
+    """Record one dark set for the readout setting of the frame, and return the calibration folder.
+
+    The master dark holds the bias level and the dark current that the simulator adds at the sensor
+    temperature of the frame, so the sky level that the pipeline measures is the sky of the frame.
+    A few hundred hot pixels stand out of it, as they do in a real master dark.
+    """
+    import numpy as np
+
+    from seeingmon.clock import NS_PER_S
+    from seeingmon.drivers.sim.detector import Detector
+    from seeingmon.drivers.sim.params import SimParams
+    from seeingmon.survey.dark import CALIBRATION_DIRNAME, DARKS_DIRNAME, DarkLibrary
+
+    temperature = frame.temperature_c
+    if temperature is None:
+        raise RuntimeError("the simulator reports no sensor temperature")
+    params = SimParams.from_profile(profile, frame.mode)
+    sensor = params.sensor_at(frame.gain)
+    bias_dn = Detector(params).black_level_adu(None)
+    dark_dn = bias_dn + params.dark_rate_e_per_s(temperature) * EXPOSURE_S / sensor.e_per_adu
+    height, width = frame.data.shape
+    master = np.full((height, width), round(dark_dn), dtype=np.uint16)
+    flat_view = master.reshape(-1)
+    hot = np.random.default_rng(11).integers(0, flat_view.size, size=_HOT_PIXELS)
+    flat_view[hot] = flat_view[hot] + np.uint16(_HOT_EXCESS_DN)
+    calibration = folder / CALIBRATION_DIRNAME
+    DarkLibrary(calibration / DARKS_DIRNAME).add_set(
+        master,
+        mode=frame.mode,
+        gain=frame.gain,
+        exposure_s=EXPOSURE_S,
+        temperature_c=temperature,
+        temperature_spread_c=0.1,
+        t_utc_ns=frame.t_utc_ns - 3600 * NS_PER_S,
+        n_frames=9,
+        n_bias_frames=9,
+        bias_dn=bias_dn,
+        read_noise_dn=sensor.read_noise_e / sensor.e_per_adu,
+        adc_bits=params.adc_bits,
+        dark_dn=dark_dn,
+    )
+    return str(calibration)
+
+
 def build_scene(folder: Path, *, smoke: bool) -> Scene:
-    """Render the frame, write the catalog, and build the prior solution."""
+    """Render the frame, write the catalog and the dark library, and build the prior solution."""
     import numpy as np
 
     from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S, VirtualClock
@@ -164,7 +221,25 @@ def build_scene(folder: Path, *, smoke: bool) -> Scene:
         rms_arcsec=0.5,
         solver="synthetic",
     )
-    return Scene(profile, frame, catalog_path, solution, stars)
+    calibration_dir = write_dark_library(folder, profile, frame)
+    return Scene(profile, frame, catalog_path, calibration_dir, solution, stars)
+
+
+def check_sky_step(job: dict[str, Any]) -> dict[str, Any]:
+    """The `sky_quality` row of a job, after a check that the sky step ran and measured the sky.
+
+    A frame that skips the step, or one that the step leaves without a sky level, costs much less
+    than a frame with the whole step, so a figure from it would understate the cost of a frame.
+    """
+    if "quality" not in job["timings"]:
+        raise RuntimeError("the pipeline skipped the sky quality step")
+    row: dict[str, Any] = next(
+        (item["row"] for item in job["records"] if item["record_type"] == "sky_quality"), {}
+    )
+    if row.get("sky_rate_e_per_s_arcsec2") is None:
+        reason = (row.get("quality") or {}).get("sky_mag_arcsec2", "the record gives no reason")
+        raise RuntimeError(f"the sky quality step measured no sky: {reason}")
+    return row
 
 
 def analyze_once(analyzer: SurveyPipelineAnalyzer, frame: Frame) -> bool:
@@ -195,7 +270,9 @@ def survey(ctx: CaseContext) -> list[Measurement]:
     stage_repeats = ctx.pick(3, 1)
     with tempfile.TemporaryDirectory(prefix="smon-perf-", ignore_cleanup_errors=True) as name:
         scene = build_scene(Path(name), smoke=ctx.smoke)
-        config = SurveyConfig(catalog_path=scene.catalog_path, solvers=())
+        config = SurveyConfig(
+            catalog_path=scene.catalog_path, solvers=(), calibration_dir=scene.calibration_dir
+        )
         spec = analyzer_spec(profile=scene.profile, station_id="perf", config=config)
         executor = make_process_executor(spec)
         analyzer = create_survey_analyzer(
@@ -246,6 +323,7 @@ def survey(ctx: CaseContext) -> list[Measurement]:
             analyzer.close()
             executor.shutdown(wait=True)
 
+    sky = check_sky_step(last)
     total = TimingStats.from_samples(wall)
     stage_medians = {stage: statistics.median(values) for stage, values in stages.items()}
     detected = next(
@@ -265,9 +343,17 @@ def survey(ctx: CaseContext) -> list[Measurement]:
         "catalog_stars": scene.stars,
         "detections": detected,
         "matched": int(solution.get("n_matched", 0)),
+        "zero_point_stars": int(sky.get("n_stars_used") or 0),
         "repeats": repeats,
-        "route": "tracker, with a prior solution",
+        "route": "tracker, with a prior solution, and the sky quality with one dark set",
     }
+    for key, label in (
+        ("sky_mag_arcsec2", "sky_mag"),
+        ("zero_point_mag", "zero_point"),
+        ("limiting_mag", "limiting_mag"),
+    ):
+        if sky.get(key) is not None:
+            detail[label] = round(float(sky[key]), 2)
     boundary = max(statistics.median(boundaries), 1e-6)
     measurements = [
         Measurement("frame.total", "s", total.median, total, "numpy", detail),
@@ -298,6 +384,7 @@ def survey(ctx: CaseContext) -> list[Measurement]:
     ctx.note(
         "The frame is rendered by the simulator, and the catalog holds the same stars. The worker "
         "is a separate process, started with make_process_executor. The stage times come from "
-        "the worker function that the analyzer submits. No plate solver ran."
+        "the worker function that the analyzer submits. The sky quality step ran with one "
+        "synthetic dark set and no flat. No plate solver ran."
     )
     return measurements
