@@ -19,7 +19,7 @@ full scale. The full well in electrons is the smaller of the gain-0 full well an
 per ADU times the ADC full scale. The saturation level in native ADC counts follows from it.
 The vendor SDK places the ADC value in the high bits of a 16-bit container, so the level in
 container counts is the native level times 2^(16 - ADC bits). The levels ignore the black-level
-offset.
+offset, and they give no RAW8 level because the vendor does not document the RAW8 scaling rule.
 """
 
 from __future__ import annotations
