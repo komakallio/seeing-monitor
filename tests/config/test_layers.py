@@ -205,6 +205,10 @@ def test_other_keys_are_not_secret(key: str) -> None:
         "power_command",
         "SOCKET",
         "log-file",
+        "allowed_hosts",
+        "extra_bind_addresses",
+        "mirror_urls",
+        "data_directories",
     ],
 )
 def test_a_key_that_names_a_deployment_value_is_redacted(key: str) -> None:
@@ -213,7 +217,16 @@ def test_a_key_that_names_a_deployment_value_is_redacted(key: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "key", ["wind_direction_deg", "hostile", "profile", "pipeline_depth", "mode"]
+    "key",
+    [
+        "wind_direction_deg",
+        "hostile",
+        "profile",
+        "pipeline_depth",
+        "mode",
+        "commands_per_window",
+        "hostage_count",
+    ],
 )
 def test_a_name_that_only_contains_a_deployment_word_is_not_redacted(key: str) -> None:
     assert not is_deployment_key(key)

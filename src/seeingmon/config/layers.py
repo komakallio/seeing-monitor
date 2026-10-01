@@ -30,24 +30,36 @@ REDACTED = "<redacted>"
 SECRET_WORDS = ("token", "password", "secret", "credential", "key")
 # Deployment values (hosts, URLs, addresses, commands, and paths) say where a station runs,
 # not how it computes, so they stay out of the effective configuration too. The match is on whole
-# name parts, so `wind_direction_deg` is not a folder.
+# name parts, so `wind_direction_deg` is not a folder. A list of values has a plural name
+# (`allowed_hosts`), so the plurals are listed too. `commands` is not, because
+# `commands_per_window` is a rate limit.
 DEPLOYMENT_WORDS = frozenset(
     {
         "host",
+        "hosts",
         "hostname",
+        "hostnames",
         "url",
+        "urls",
         "uri",
+        "uris",
         "endpoint",
+        "endpoints",
         "address",
+        "addresses",
         "dsn",
+        "dsns",
         "command",
         "path",
         "paths",
         "dir",
         "dirs",
         "directory",
+        "directories",
         "socket",
+        "sockets",
         "pipe",
+        "pipes",
         "file",
         "files",
     }
