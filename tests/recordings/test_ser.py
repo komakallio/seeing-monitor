@@ -503,7 +503,7 @@ class TestWriter:
         with pytest.raises(SerFormatError, match="at most 40"):
             SerWriter(tmp_path / "a.ser", width=2, height=2, observer="x" * 41)
         with pytest.raises(SerFormatError, match="Latin-1"):
-            SerWriter(tmp_path / "b.ser", width=2, height=2, instrument="☃")
+            SerWriter(tmp_path / "b.ser", width=2, height=2, instrument="\N{SNOWMAN}")
         assert not (tmp_path / "a.ser").exists()
 
     def test_it_validates_the_geometry(self, tmp_path: Path) -> None:
