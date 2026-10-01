@@ -98,7 +98,8 @@ def drain(driver: ReplayDriver) -> list[Frame]:
 class TestProtocol:
     def test_it_satisfies_the_camera_driver_protocol(self, tmp_path: Path) -> None:
         driver = make_driver(make_ser(tmp_path / "a.ser").path)
-        assert isinstance(driver, CameraDriver)
+        typed: CameraDriver = driver  # a static check for mypy
+        assert isinstance(typed, CameraDriver)
         assert driver.name == "replay"
 
     def test_the_lifecycle_errors(self, tmp_path: Path) -> None:

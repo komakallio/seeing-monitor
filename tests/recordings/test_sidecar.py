@@ -109,6 +109,12 @@ class TestTolerance:
         assert (info.exposure_us, info.gain, info.fps) == (10_000, 100, 97.8567)
         assert info.start_utc_ns == START_NS
 
+    def test_quoted_values_lose_their_quotes(self) -> None:
+        text = 'Gain="100"\nExposure=\'2,5ms\'\nOther="unbalanced\n'
+        info = parse_sharpcap_sidecar(text)
+        assert (info.gain, info.exposure_us) == (100, 2500)
+        assert info.values["Other"] == '"unbalanced'
+
     def test_the_equals_sign_wins_when_it_comes_first(self) -> None:
         info = parse_sharpcap_sidecar("StartCapture=2026-01-01T12:00:00.1234567Z\nNote2=a: b\n")
         assert info.values["StartCapture"] == "2026-01-01T12:00:00.1234567Z"

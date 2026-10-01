@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -141,6 +143,15 @@ def test_the_command_needs_a_subcommand_and_a_path(capsys: pytest.CaptureFixture
             main(argv)
         assert raised.value.code == 2
         assert "required" in capsys.readouterr().err
+
+
+def test_loading_the_command_imports_no_heavy_libraries() -> None:
+    """`seeingmon --help` stays fast: the command module imports NumPy only when it runs."""
+    code = "import sys, seeingmon.recordings.cli; print('numpy' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "False"
 
 
 def test_the_command_is_listed_in_the_help(capsys: pytest.CaptureFixture[str]) -> None:
