@@ -1,10 +1,10 @@
 """The `core-sim` case: the `core` process against `acquire` with the simulator, a placeholder.
 
-The `core` process is not on `main` yet. The package `seeingmon.services.core` and its `CoreApp`
-exist, but the entry function that starts the process, `run_core` in
-`seeingmon.services.core.app` (the entry of `seeingmon core`), does not. Until it does, the case
-skips with the reason "the core process is not on main". Once `run_core` exists, the lead enables
-the case by writing one function, `measure_core`, in this file:
+The entry function of the `core` process, `run_core` in `seeingmon.services.core.main` (the entry
+of `seeingmon core`), is on `main`, and the case skips with the reason "the core process is on
+main, and measure_core is not written yet". Before the entry function existed, the case skipped
+with "the core process is not on main". The lead enables the case by writing one function,
+`measure_core`, in this file:
 
 1. Start `acquire` with the simulator (`seeingmon.perf.cases.ipc.AcquireProcess` shows how to run
    a process and read its output), and start `core` against it with a temporary data folder
@@ -35,7 +35,7 @@ import importlib.util
 from seeingmon.perf.registry import REGISTRY, CaseContext, SkipCase
 from seeingmon.perf.report import Measurement
 
-CORE_MODULE = "seeingmon.services.core.app"
+CORE_MODULE = "seeingmon.services.core.main"
 CORE_ENTRY = "run_core"
 
 
@@ -55,7 +55,7 @@ def core_process_exists() -> bool:
 
 
 def measure_core(ctx: CaseContext) -> list[Measurement]:
-    """Measure the `core` process. Replace this body when `run_core` lands."""
+    """Measure the `core` process. Replace this body with the measurement (see the module text)."""
     raise SkipCase("the core process is on main, and measure_core is not written yet")
 
 
