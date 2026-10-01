@@ -1,8 +1,11 @@
 """A test rig: an `AcquireService` with a fake driver, and the remote drivers that talk to it.
 
-The service runs in this process, on real sockets and real threads, with a `ScaledClock` so that
-frames come at a steady pace. The rig records what the guard reports (hangs), what the
-watchdog thread decides (fatal errors), and what the notifier would send to systemd.
+The service runs in this process, on real sockets and real threads. By default it runs on a
+`StatusClock`, so that frames come at a steady pace in real time. A test that counts frames passes
+a `VirtualClock` instead: the fake advances virtual time by exactly one period per frame, so the
+arrival times, the gaps, and the counts are exact, and no timer of the operating system matters.
+The rig records what the guard reports (hangs), what the watchdog thread decides (fatal errors),
+and what the notifier would send to systemd.
 """
 
 from __future__ import annotations
@@ -14,8 +17,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from seeingmon.clock import DEFAULT_START_UTC_NS, ClockStatus, ScaledClock
-from seeingmon.drivers.base import CameraInfo, RecoveryLevel
+from seeingmon.clock import DEFAULT_START_UTC_NS, Clock, ClockStatus, ScaledClock
+from seeingmon.drivers.base import CameraInfo, CameraStateError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, Roi, StreamConfig
 from seeingmon.hardware.asi.watchdog import CallWatchdog, HangReport
 from seeingmon.services.acquire.notify import SystemdNotifier
@@ -86,19 +89,43 @@ class ZeroArrivalFake(TracingFake):
         return replace(super().read_frame(timeout_s), t_arrival_ns=0)
 
 
-class StallingFake(TracingFake):
-    """A fake that can stall before a frame, so that the arrival times show a gap."""
+class ParkingFake(TracingFake):
+    """A fake with a script: stall before one frame, and park after a number of frames.
 
-    def __init__(self, clock: Any, **options: Any) -> None:
+    `stall_at` is the number of the frame that comes late, `stall_periods` is how many frame
+    periods it is late, and `park_after` is the number of frames after which `read_frame` waits
+    until `release` is set. On a `VirtualClock`, a parked fake keeps the capture thread idle, so
+    the test sees a fixed number of frames and no more.
+    """
+
+    def __init__(
+        self,
+        clock: Any,
+        *,
+        stall_at: int | None = None,
+        stall_periods: int = 0,
+        park_after: int | None = None,
+        **options: Any,
+    ) -> None:
         super().__init__(clock, **options)
-        self.stall_periods = 0
+        self.stall_at = stall_at
+        self.stall_periods = stall_periods
+        self.park_after = park_after
+        self.frames_read = 0
+        self.parked = threading.Event()
+        self.release = threading.Event()
 
     def read_frame(self, timeout_s: float) -> Frame:
-        if self.stall_periods and self._active is not None:
+        if self.park_after is not None and self.frames_read >= self.park_after:
+            self.parked.set()
+            self.release.wait(120.0)
+            raise CameraStateError("the fake is parked")
+        if self._active is not None and self.frames_read == self.stall_at:
             period_s = self._active.frame_period_s or 0.01
             self._clock.sleep(self.stall_periods * period_s)
-            self.stall_periods = 0
-        return super().read_frame(timeout_s)
+        frame = super().read_frame(timeout_s)
+        self.frames_read += 1
+        return frame
 
 
 class OpenCountingFake(TracingFake):
@@ -150,7 +177,7 @@ class Rig:
 
     service: AcquireService
     fake: TracingFake
-    clock: StatusClock
+    clock: Clock
     key: ConnectionKey
     endpoint: Endpoint
     hangs: list[HangReport] = field(default_factory=list)
@@ -167,6 +194,9 @@ class Rig:
         return driver
 
     def close(self) -> None:
+        release = getattr(self.fake, "release", None)
+        if release is not None:
+            release.set()  # let a parked fake go, so that the service can stop
         for driver in self.drivers:
             driver.close()
         self.service.stop()
@@ -185,9 +215,10 @@ def make_rig(
     on_fatal: Callable[[str], None] | None = None,
     status: ClockStatus | None = None,
     priority_hook: Callable[[], str] | None = None,
+    clock: Clock | None = None,
 ) -> Rig:
     """Start a service on `endpoint` with a fake driver. `acquire` overrides its settings."""
-    clock = StatusClock(
+    clock = clock or StatusClock(
         status, start_utc_ns=DEFAULT_START_UTC_NS, origin_real_ns=time.time_ns(), speed=speed
     )
     fake = fake_class(clock, **(fake_options or {}))

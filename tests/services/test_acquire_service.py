@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from seeingmon.clock import ClockStatus
+from seeingmon.clock import DEFAULT_START_UTC_NS, ClockStatus, VirtualClock
 from seeingmon.drivers.base import (
     CameraCaps,
     CameraConfigError,
@@ -41,9 +41,9 @@ from .rig import (
     FAST,
     SMALL,
     OpenCountingFake,
+    ParkingFake,
     PassiveRecoverFake,
     Rig,
-    StallingFake,
     TracingFake,
     ZeroArrivalFake,
     make_rig,
@@ -64,6 +64,27 @@ def build(native: Endpoint, key: ConnectionKey) -> Iterator[RigFactory]:
     yield factory
     for rig in rigs:
         rig.close()
+
+
+def virtual_rig(build: RigFactory, parked_at: int, **options: Any) -> Rig:
+    """A rig on a virtual clock whose fake parks after `parked_at` frames. The counts are exact."""
+    clock = VirtualClock(start_utc_ns=DEFAULT_START_UTC_NS)
+    fake_options = {**options.pop("fake_options", {}), "park_after": parked_at}
+    return build(clock=clock, fake_class=ParkingFake, fake_options=fake_options, **options)
+
+
+def pending(driver: RemoteCameraDriver) -> int:
+    """The frames that have reached the receiver of the driver and that nobody has read."""
+    link = driver._link
+    return 0 if link is None else link.frames.pending
+
+
+def read_until_seq(driver: RemoteCameraDriver, last_seq: int) -> list[Frame]:
+    """Read frames until the one with sequence number `last_seq`, the newest, which never drops."""
+    frames = [driver.read_frame(10.0)]
+    while frames[-1].seq < last_seq:
+        frames.append(driver.read_frame(10.0))
+    return frames
 
 
 def read_frames(driver: RemoteCameraDriver, count: int, timeout_s: float = 10.0) -> list[Frame]:
@@ -126,18 +147,21 @@ class TestStreaming:
         assert driver.ping() == rig.service.instance
 
     def test_stamped_frames_get_a_fitted_time_and_an_honest_error(self, build: RigFactory) -> None:
-        rig = build(acquire={"time_source": "stamp", "outlier_floor_s": 0.03})
+        rig = virtual_rig(build, 60, acquire={"time_source": "stamp"})
+        assert isinstance(rig.fake, ParkingFake)
         driver = streaming(rig)
+        assert rig.fake.parked.wait(30.0)  # the fake made its 60 frames, and the queue holds them
         frames = read_frames(driver, 60)
-        assert all(f.t_quality is TimeQuality.ESTIMATED for f in frames[:19])
-        fitted = [f for f in frames[19:] if f.t_quality is TimeQuality.FITTED]
-        assert len(fitted) >= 0.9 * len(frames[19:])  # a stall on a busy machine may cost a few
-        offsets = sorted(
-            abs(f.t_utc_ns - (f.t_arrival_ns - round(0.0113128 * 1e9 - 1_000_000))) for f in fitted
-        )
-        assert offsets[len(offsets) // 2] < 10_000_000  # the median differs from raw by the jitter
-        assert all(f.t_err_ns >= 5_000_000 for f in frames)  # at least the latency sigma
-        assert all(f.t_err_ns < 50_000_000 for f in fitted)
+        period_ns = 11_312_800  # 6.5 ms of overhead and 128 rows of 37.6 us
+        offset_ns = period_ns - 1_000_000  # the period minus half the 2 ms exposure
+        # Virtual arrivals are exact, so the line fits them exactly: the first 19 frames fill the
+        # window, and every frame after that is fitted.
+        assert [f.t_quality for f in frames[:19]] == [TimeQuality.ESTIMATED] * 19
+        assert [f.t_quality for f in frames[19:]] == [TimeQuality.FITTED] * 41
+        assert all(f.t_utc_ns == f.t_arrival_ns - offset_ns for f in frames)
+        # The error is the clock bound (0), the latency sigma (5 ms), and the jitter or the fit.
+        assert all(f.t_err_ns == 7_000_000 for f in frames[:19])  # 5 ms and a 2 ms jitter
+        assert all(f.t_err_ns == 5_000_000 for f in frames[19:])  # a perfect line has no error
 
     def test_a_clock_that_is_not_synchronized_marks_the_time_invalid(
         self, build: RigFactory
@@ -151,13 +175,23 @@ class TestStreaming:
     def test_the_capture_thread_stamps_a_frame_that_the_driver_left_unstamped(
         self, build: RigFactory
     ) -> None:
+        class ZeroArrivalParking(ZeroArrivalFake, ParkingFake):
+            pass
+
         rig = build(
-            fake_class=ZeroArrivalFake,
-            acquire={"time_source": "stamp", "outlier_floor_s": 0.03},
+            clock=VirtualClock(start_utc_ns=DEFAULT_START_UTC_NS),
+            fake_class=ZeroArrivalParking,
+            fake_options={"park_after": 30},
+            acquire={"time_source": "stamp"},
         )
-        frames = read_frames(streaming(rig), 30)
-        now_ns = rig.clock.utc_ns()
-        assert all(abs(f.t_arrival_ns - now_ns) < 5_000_000_000 for f in frames)
+        assert isinstance(rig.fake, ParkingFake)
+        driver = streaming(rig)
+        assert rig.fake.parked.wait(30.0)
+        frames = read_frames(driver, 30)
+        # The driver sent no arrival time, so the capture thread read the clock after each read.
+        arrivals = [f.t_arrival_ns for f in frames]
+        assert all(arrival > DEFAULT_START_UTC_NS for arrival in arrivals)
+        assert arrivals == sorted(set(arrivals))
         assert frames[-1].t_quality is TimeQuality.FITTED
 
     def test_a_snapshot_stream_delivers_one_frame_per_start(self, build: RigFactory) -> None:
@@ -224,46 +258,62 @@ class TestDrops:
         assert health["dropped_gap"] == 0
 
     def test_a_slow_consumer_makes_the_queue_drop_and_count(self, build: RigFactory) -> None:
-        rig = build(acquire={"queue_depth": 4}, services={"stream_window_messages": 2})
+        rig = virtual_rig(
+            build, 200, acquire={"queue_depth": 4}, services={"stream_window_messages": 2}
+        )
+        assert isinstance(rig.fake, ParkingFake)
         driver = streaming(rig)
-        assert wait_until(lambda: driver.health()["queue_frames"] >= 3, 10.0)
-        time.sleep(1.0)  # the consumer sleeps while about 90 frames come
-        frames = read_frames(driver, 40)
-        assert sum(f.dropped_before for f in frames) > 10
+        assert rig.fake.parked.wait(30.0)  # the camera made 200 frames while nobody read
+        # Nobody reads, so the sender fills the window of two and then waits for credit.
+        assert wait_until(lambda: driver.health()["flow_stalls"] > 0, 10.0)
+        frames = read_until_seq(driver, 199)
         assert_every_frame_is_accounted_for(frames)
+        reported = sum(f.dropped_before for f in frames)
+        assert len(frames) + reported == 200  # every frame arrived, or was counted as dropped
         health = driver.health()
-        assert health["dropped_queue"] > 10
+        assert health["dropped_queue"] == reported
+        assert health["dropped_queue"] >= 190  # the window and the queue hold ten frames at most
         assert health["queue_peak_frames"] <= 4
-        assert health["flow_stalls"] > 0
 
     def test_the_byte_bound_protects_the_memory_of_large_frames(self, build: RigFactory) -> None:
         frame_bytes = 64 * 64 * 2
-        rig = build(
+        rig = virtual_rig(
+            build,
+            100,
             acquire={"queue_depth": 1000, "queue_max_bytes": 3 * (frame_bytes + 96)},
             services={"stream_window_messages": 1},
         )
+        assert isinstance(rig.fake, ParkingFake)
         driver = rig.driver()
         driver.open()
         driver.configure(StreamConfig(mode="bin1", exposure_us=2000, gain=1, roi=Roi(0, 0, 64, 64)))
         driver.start()
-        time.sleep(0.4)
-        frames = read_frames(driver, 20)
+        assert rig.fake.parked.wait(30.0)
+        frames = read_until_seq(driver, 99)
         assert_every_frame_is_accounted_for(frames)
+        assert len(frames) + sum(f.dropped_before for f in frames) == 100
         assert driver.health()["queue_peak_frames"] <= 3
 
     def test_a_gap_that_no_counter_explains_is_counted(self, build: RigFactory) -> None:
-        rig = build(fake_class=StallingFake, acquire={"gap_factor": 1.5})
-        driver = rig.driver()
-        driver.open()
-        driver.configure(FAST)
-        driver.start()
-        read_frames(driver, 30)  # the period is known by now
-        assert isinstance(rig.fake, StallingFake)
-        rig.fake.stall_periods = 5  # the camera delivers nothing for five periods
-        frames = read_frames(driver, 15)
-        assert max(f.dropped_before for f in frames) >= 5
-        assert driver.health()["dropped_gap"] >= 5
-        assert driver.health()["dropped_driver"] == 0
+        rig = virtual_rig(
+            build,
+            60,
+            fake_options={"stall_at": 30, "stall_periods": 5},  # frame 30 comes five periods late
+            acquire={"gap_factor": 1.5},
+        )
+        assert isinstance(rig.fake, ParkingFake)
+        driver = streaming(rig)
+        assert rig.fake.parked.wait(30.0)
+        frames = read_frames(driver, 60)
+        # The interval before frame 30 is six periods, so five frames are missing. Every other
+        # frame follows its predecessor by one period.
+        assert [f.dropped_before for f in frames] == [0] * 30 + [5] + [0] * 29
+        health = driver.health()
+        assert (health["dropped_gap"], health["dropped_driver"], health["dropped_queue"]) == (
+            5,
+            0,
+            0,
+        )
 
 
 class TestStaleFrames:
@@ -273,7 +323,7 @@ class TestStaleFrames:
         rig = build()
         driver = streaming(rig, SMALL)
         first = driver.read_frame(10.0)
-        time.sleep(0.4)  # frames of the first stream pile up in the receiver
+        assert wait_until(lambda: pending(driver) >= 3, 10.0)  # old frames wait in the receiver
         second = driver.configure(
             StreamConfig(mode="bin1", exposure_us=2000, gain=1, roi=Roi(0, 0, 32, 32))
         )
@@ -288,7 +338,7 @@ class TestStaleFrames:
         rig = build()
         driver = streaming(rig, SMALL)
         read_frames(driver, 3)
-        time.sleep(0.3)
+        assert wait_until(lambda: pending(driver) >= 3, 10.0)  # frames wait in the receiver
         driver.stop()
         driver.start()  # the same stream, a new epoch
         frames = read_frames(driver, 10)
