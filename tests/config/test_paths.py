@@ -108,3 +108,4 @@ def test_the_running_package_is_the_checkout_in_a_development_environment(
     """An editable install runs from `src/`, so the checkout layout applies."""
     assert paths.package_dir() == repo_root / "src" / "seeingmon"
     assert paths.source_root() == repo_root
+    assert paths.profiles_dir() == repo_root / "profiles"

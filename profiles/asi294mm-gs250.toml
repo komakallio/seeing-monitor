@@ -1,0 +1,135 @@
+# Reference profile: the uncooled ZWO ASI294MM (Sony IMX492) behind a ToupTek GS-250 guide scope.
+#
+# This file holds hardware values only. Each group below names the table in
+# docs/research-notes.md that it comes from. The id must equal the file name without ".toml".
+# A profile for other hardware is another file in this folder. Nothing in the software
+# depends on these numbers.
+
+id = "asi294mm-gs250"
+description = "ZWO ASI294MM (uncooled, Sony IMX492) behind a ToupTek GS-250 guide scope (50 mm, f/5)"
+
+# Research notes, "Reference camera: the non-Pro ASI294MM": no cooler, and the owner's SharpCap
+# settings show a sensor temperature, so the camera reports one.
+[sensor]
+name = "ZWO ASI294MM"
+cooled = false
+has_temperature_sensor = true
+
+# Research notes, "Optics" (aperture, focal length) and "Derived numbers".
+# The usable image circle is the full sensor (23.2 mm diagonal), so image_circle_diameter_mm is
+# absent. ToupTek designs the GS-250 for a 16 mm circle, but the owner tested the scope on the
+# sensor and found good quality to the edges. The effective wavelength is 600 nm, the value that
+# the research notes use for the Airy FWHM and the sampling ratio of the unfiltered camera.
+[optics]
+focal_length_mm = 250.0
+aperture_mm = 50.0
+wavelength_nm = 600.0
+
+# Research notes, "Frame rates and row timing" (ROI rules and exposure range) and "Gain, full
+# well, and read noise" (gain range). The SDK counts the ROI in binned pixels.
+# offset_range is absent: ZWO does not publish it for this camera. Read it from the SDK at start-up.
+[limits]
+roi_width_multiple = 8
+roi_height_multiple = 2
+gain_range = [0, 570]
+exposure_us_range = [32, 2_000_000_000]  # 32 us to 2000 s
+
+# Fast mode reads bin1 (no defocus needed). Survey mode reads bin2 (the frames fit a Pi 4).
+# Both carry the ADC value in the high bits of 16 bits.
+[fast_mode]
+mode = "bin1"
+pixel_format = "RAW16"
+
+[survey_mode]
+mode = "bin2"
+pixel_format = "RAW16"
+
+# Research notes, "Read modes of the IMX492 cameras": bin1 is the native readout.
+# Gain 0 values: "Gain, full well, and read noise". Timing: "Frame rates and row timing" (the
+# row time and the frame overhead come from a straight-line fit of ZWO's USB 3.0 frame rates).
+# The high-speed values are the 10-bit row of that timing table.
+[[readout_modes]]
+name = "bin1"
+sdk_bin = 1
+width_px = 8288
+height_px = 5644
+pixel_size_um = 2.315
+adc_bits = 12
+adc_bits_high_speed = 10
+full_well_gain0_e = 14417
+read_noise_gain0_e = 2.65
+e_per_adu_gain0 = 3.5
+row_time_us = 37.6
+frame_overhead_ms = 6.5
+row_time_us_high_speed = 30.1
+frame_overhead_ms_high_speed = 5.0
+
+# Gain rows from "Gain, full well, and read noise": gain 108 is unity gain, and gain 270 is the
+# maximum analog gain. The charts are for the Pro, and commissioning checks them on this camera.
+[[readout_modes.gain_points]]
+gain = 108
+e_per_adu = 1.0
+read_noise_e = 1.8
+
+[[readout_modes.gain_points]]
+gain = 270
+e_per_adu = 0.17
+read_noise_e = 1.38
+
+# Research notes, "Read modes of the IMX492 cameras": bin2 sums 2 x 2 pixels on the sensor.
+# The 12-bit values are the high-speed row of the timing table.
+[[readout_modes]]
+name = "bin2"
+sdk_bin = 2
+width_px = 4144
+height_px = 2822
+pixel_size_um = 4.63
+adc_bits = 14
+adc_bits_high_speed = 12
+full_well_gain0_e = 66387
+read_noise_gain0_e = 8.0
+e_per_adu_gain0 = 4.05
+row_time_us = 21.3
+frame_overhead_ms = 1.4
+row_time_us_high_speed = 18.2
+frame_overhead_ms_high_speed = 1.2
+
+# Gain rows: gain 119 is the last gain below the high-conversion-gain (HCG) step, and gain 120
+# is the first gain with HCG on. The values jump there, so the second row sets step = true.
+# Gain 300 is the end of the chart.
+[[readout_modes.gain_points]]
+gain = 119
+e_per_adu = 1.03
+read_noise_e = 6.2
+
+[[readout_modes.gain_points]]
+gain = 120
+e_per_adu = 0.88
+read_noise_e = 1.85
+step = true
+
+[[readout_modes.gain_points]]
+gain = 300
+e_per_adu = 0.11
+read_noise_e = 1.3
+
+[photometry]
+# An estimate, good to +-30%: research notes, "Long-term science estimates" (row "Photometric
+# precision") and "Calculations" (row "Polaris photon count"). It is the rate for a magnitude-0
+# star in the unfiltered camera behind the 50 mm aperture. It ignores the optics transmission.
+# Replace it with a measurement when calibrated frames exist.
+mag0_electron_rate_e_per_s = 4.6e7
+mag0_electron_rate_rel_uncertainty = 0.3
+
+# Prior for the dark current: ZWO's chart, read off the image to about 5%
+# (research notes, "Reference camera: the non-Pro ASI294MM"). The chart does not state the
+# camera, the mode, or the gain. The survey path fits its own dark model from dark frames.
+dark_current = [
+  { temperature_c = -20.0, e_per_s_per_px = 0.0022 },
+  { temperature_c = -10.0, e_per_s_per_px = 0.0066 },
+  { temperature_c = 0.0, e_per_s_per_px = 0.019 },
+  { temperature_c = 10.0, e_per_s_per_px = 0.065 },
+  { temperature_c = 20.0, e_per_s_per_px = 0.20 },
+  { temperature_c = 25.0, e_per_s_per_px = 0.36 },
+  { temperature_c = 30.0, e_per_s_per_px = 0.70 },
+]
