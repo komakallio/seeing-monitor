@@ -1,0 +1,171 @@
+"""The cases: every case runs in smoke mode and returns figures or a skip marker.
+
+This is the CI smoke test. It checks that each case runs, that its figures are finite and
+positive, that its statistics are in order, and that the budgets find the figures that they read.
+It checks nothing about how large a figure is, because the speed of a runner says nothing.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import math
+import subprocess
+import sys
+
+import pytest
+
+from seeingmon.perf.budgets import BASELINE, PEAK, build_budgets
+from seeingmon.perf.cases import core_sim
+from seeingmon.perf.cases.fastmodes import FAST_MODES
+from seeingmon.perf.registry import REGISTRY, CaseContext, SkipCase, load_registry
+from seeingmon.perf.report import SCALES, Measurement, Report
+from seeingmon.perf.runner import execute_case
+
+from .helpers import environment
+
+CASE_NAMES = load_registry().names()
+
+
+def core_is_on_main() -> bool:
+    try:
+        return importlib.util.find_spec(core_sim.CORE_MODULE) is not None
+    except ModuleNotFoundError:  # a parent package is missing
+        return False
+
+
+CORE_IS_ON_MAIN = core_is_on_main()
+
+
+def empty_report() -> Report:
+    return Report("dev", True, "2026-10-01T12:00:00Z", environment(), ())
+
+
+def check_measurement(item: Measurement) -> None:
+    assert item.name
+    assert item.unit
+    assert item.scale in SCALES
+    assert math.isfinite(item.value)
+    assert item.value > 0, f"{item.name} is not positive"
+    if item.stats is not None:
+        stats = item.stats
+        assert stats.samples >= 1
+        assert stats.ordered(), f"the statistics of {item.name} are out of order"
+        assert stats.min > 0
+        # The value is the median, or the mean for a figure where a rare slow call is the point.
+        assert any(
+            math.isclose(item.value, kept, rel_tol=1e-9) for kept in (stats.median, stats.mean)
+        )
+    for key, value in item.detail.items():
+        assert key
+        if isinstance(value, float):
+            assert math.isfinite(value)
+
+
+class TestRegistryOfCases:
+    def test_the_cases_come_in_the_order_of_the_budgets(self) -> None:
+        assert CASE_NAMES == [
+            "calibration",
+            "kernel",
+            "fastpath",
+            "ipc",
+            "survey",
+            "store",
+            "memory",
+            "core-sim",
+        ]
+
+    def test_importing_the_cases_loads_no_code_under_test(self) -> None:
+        script = (
+            "import sys\n"
+            "import seeingmon.perf.cases\n"
+            "heavy = {'numpy', 'scipy', 'sep', 'astropy', 'erfa', 'pydantic', 'fastapi', 'PIL'}\n"
+            "loaded = sorted(heavy & set(sys.modules))\n"
+            "assert not loaded, loaded\n"
+            "assert not any(name.startswith('seeingmon.fastpath') for name in sys.modules)\n"
+            "assert not any(name.startswith('seeingmon.survey') for name in sys.modules)\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=False
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    def test_every_case_has_a_summary(self) -> None:
+        for case in REGISTRY.cases():
+            assert case.summary
+
+
+class TestFastModes:
+    def test_the_modes_are_the_three_of_the_brief(self) -> None:
+        assert [mode.key for mode in FAST_MODES] == [
+            "bin1_128x128_u16",
+            "bin2_64x64_u16",
+            "bin2_320x240_u8",
+        ]
+        rates = {mode.key: mode.rate_hz for mode in FAST_MODES}
+        assert rates["bin1_128x128_u16"] == 98.0  # the budget of 2.55 ms per frame
+        assert rates["bin2_64x64_u16"] == 360.0  # the budget of 0.69 ms per frame
+        assert [mode.container_bits for mode in FAST_MODES] == [16, 16, 8]
+
+    def test_the_period_follows_the_rate_and_never_falls_short(self) -> None:
+        for mode in FAST_MODES:
+            assert mode.period_ns * mode.rate_hz >= 1e9
+
+
+@pytest.mark.parametrize("name", CASE_NAMES)
+def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) -> None:
+    result = execute_case(REGISTRY.get(name), smoke=True)
+    assert result.status in ("ok", "skipped"), f"{name} {result.status}: {result.reason}"
+    assert result.name == name
+    assert result.duration_s >= 0
+    if result.status == "skipped":
+        assert result.reason, "a skipped case says why"
+        assert result.measurements == ()
+        return
+    assert result.reason is None
+    assert result.measurements, f"{name} returned no figure"
+    names = [item.name for item in result.measurements]
+    assert len(names) == len(set(names)), f"{name} repeats a figure"
+    for item in result.measurements:
+        check_measurement(item)
+    if result.peak_rss_bytes is not None:
+        assert result.peak_rss_bytes > 0
+    # The budgets read figures by name. A renamed figure must break this test and not the verdict.
+    wanted = {
+        term.measurement
+        for budget in build_budgets(empty_report())
+        for term in budget.terms
+        if term.case == name and term.measurement not in (PEAK, BASELINE) and term.constant is None
+    }
+    assert wanted <= set(names), f"{name} lacks {sorted(wanted - set(names))}"
+
+
+class TestCoreSim:
+    @pytest.mark.skipif(CORE_IS_ON_MAIN, reason="the core process is on main now")
+    def test_it_skips_with_the_reason_until_the_core_process_exists(self) -> None:
+        result = execute_case(REGISTRY.get("core-sim"), smoke=True)
+        assert (result.status, result.reason) == ("skipped", "the core process is not on main")
+
+    def test_one_function_enables_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The lead writes `measure_core`, and the module of the core process appears. Stand in for
+        # both, and the case reports the figures that the function returns.
+        monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
+        monkeypatch.setattr(
+            core_sim,
+            "measure_core",
+            lambda ctx: [Measurement("cpu_share", "percent", 12.5, scale="interpreter")],
+        )
+        result = execute_case(REGISTRY.get("core-sim"), smoke=True)
+        assert result.status == "ok"
+        assert [(item.name, item.value) for item in result.measurements] == [("cpu_share", 12.5)]
+
+    def test_before_the_function_is_written_the_case_skips_and_says_so(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
+        result = execute_case(REGISTRY.get("core-sim"), smoke=True)
+        assert result.status == "skipped"
+        assert "measure_core is not written yet" in (result.reason or "")
+
+    def test_the_default_function_skips(self) -> None:
+        with pytest.raises(SkipCase, match="measure_core is not written yet"):
+            core_sim.measure_core(CaseContext(smoke=True))
