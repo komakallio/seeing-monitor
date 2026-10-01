@@ -115,6 +115,7 @@ class SimTruth:
         sensor_rise_c: float,
         ambient_drift_c_per_hour: float,
         keep_frames: int | None,
+        pupil_spacing_m: float | None = None,
     ) -> None:
         self._model = model
         self._modes = dict(modes)
@@ -130,7 +131,8 @@ class SimTruth:
         self._rise_c = sensor_rise_c
         self._drift = ambient_drift_c_per_hour
         self._keep = keep_frames
-        self._pupil = PupilGrid.circular(model.aperture_m, model.aperture_m / 48.0)
+        spacing = pupil_spacing_m if pupil_spacing_m is not None else model.aperture_m / 48.0
+        self._pupil = PupilGrid.circular(model.aperture_m, spacing)
         self._frames: list[FrameTruth] = []
         self._first_seq_kept = 0
         self.frames_recorded = 0
@@ -192,6 +194,11 @@ class SimTruth:
         """The same for an infinite outer scale: `sqrt(0.170 lambda^2 D^(-1/3) r0^(-5/3))`."""
         return g_tilt_rms_arcsec(self.aperture_m, self.r0_observed_m(t_utc_ns))
 
+    @property
+    def pupil(self) -> PupilGrid:
+        """The pupil grid that defines the truth tilt."""
+        return self._pupil
+
     def substeps(self, exposure_s: float) -> int:
         """The number of instants that the simulator samples inside a short exposure.
 
@@ -240,14 +247,14 @@ class SimTruth:
         """The airmass of the celestial pole, where Polaris sits."""
         return airmass(90.0 - self._site.latitude_deg)
 
-    def transparency(self, t_utc_ns: int | FloatArray) -> float | FloatArray:
+    def transparency(self, t_utc_ns: npt.ArrayLike) -> float | FloatArray:
         """The cloud transparency, from 0 to 1."""
         return self._clouds.transparency(t_utc_ns)
 
-    def sun_altitude_deg(self, t_utc_ns: int | FloatArray) -> float | FloatArray:
+    def sun_altitude_deg(self, t_utc_ns: npt.ArrayLike) -> float | FloatArray:
         return sun_altitude_deg(self._site, t_utc_ns)
 
-    def sky_mag_arcsec2(self, t_utc_ns: int | FloatArray) -> float | FloatArray:
+    def sky_mag_arcsec2(self, t_utc_ns: npt.ArrayLike) -> float | FloatArray:
         """The sky surface brightness in mag/arcsec^2, with twilight when it is on."""
         return sky_brightness_mag_arcsec2(
             self._dark_sky, sun_altitude_deg(self._site, t_utc_ns), twilight=self._twilight

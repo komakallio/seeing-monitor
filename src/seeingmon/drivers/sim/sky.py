@@ -36,12 +36,12 @@ class Site:
 SYNTHETIC_SITE = Site()
 
 
-def julian_day(t_utc_ns: int | FloatArray) -> float | FloatArray:
+def julian_day(t_utc_ns: npt.ArrayLike) -> float | FloatArray:
     """The Julian date of a time in nanoseconds since the Unix epoch."""
     return _UNIX_EPOCH_JD + np.asarray(t_utc_ns, dtype=np.float64) / (NS_PER_S * 86400.0)
 
 
-def sun_altitude_deg(site: Site, t_utc_ns: int | FloatArray) -> float | FloatArray:
+def sun_altitude_deg(site: Site, t_utc_ns: npt.ArrayLike) -> float | FloatArray:
     """The altitude of the sun above the horizon, in degrees.
 
     The formula is the low-precision solar position of the Astronomical Almanac, good to about
@@ -134,7 +134,7 @@ class Clouds:
         if not 0.0 < self.baseline <= 1.0:
             raise ValueError("baseline must be between 0 (exclusive) and 1")
 
-    def transparency(self, t_utc_ns: int | FloatArray) -> float | FloatArray:
+    def transparency(self, t_utc_ns: npt.ArrayLike) -> float | FloatArray:
         """The transparency, from 0 to 1, at a time or an array of times."""
         times = np.asarray(t_utc_ns, dtype=np.float64)
         result = np.full(times.shape, self.baseline, dtype=np.float64)
@@ -204,7 +204,7 @@ class ScintillationProcess:
         self._phase = rng.random(components) * 2.0 * math.pi
         self._norm = math.sqrt(2.0 / components)
 
-    def values(self, t_s: FloatArray) -> FloatArray:
+    def values(self, t_s: npt.ArrayLike) -> FloatArray:
         """The process at times in seconds."""
         arg = 2.0 * math.pi * np.outer(np.asarray(t_s, dtype=np.float64), self._rate) + self._phase
         return np.asarray(self._norm * np.cos(arg).sum(axis=1), dtype=np.float64)

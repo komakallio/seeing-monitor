@@ -39,7 +39,7 @@ from seeingmon.drivers.base import (
     RecoveryLevel,
 )
 from seeingmon.drivers.sim.faults import FaultRuntime, GeometryChange
-from seeingmon.drivers.sim.optics import PsfConfig
+from seeingmon.drivers.sim.optics import PsfConfig, psf_pupil_spacing_m
 from seeingmon.drivers.sim.options import SimOptions
 from seeingmon.drivers.sim.params import SimParams
 from seeingmon.drivers.sim.render import FrameRenderer
@@ -116,6 +116,7 @@ class SimDriver:
             sensor_rise_c=opts.sensor_rise_c,
             ambient_drift_c_per_hour=opts.ambient_drift_c_per_hour,
             keep_frames=opts.keep_truth_frames,
+            pupil_spacing_m=psf_pupil_spacing_m(first, opts.psf),
         )
         self._renderer = FrameRenderer(
             truth=self._truth,

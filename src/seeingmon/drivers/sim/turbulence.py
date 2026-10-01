@@ -233,7 +233,7 @@ class TurbulenceConfig:
     outer_scale_m: float = 20.0
     zenith_angle_deg: float = 0.0
     seed: int = 1
-    screen_points: int = 512
+    screen_points: int = 256
     r0_schedule: tuple[tuple[float, float], ...] = ()
     boiling: bool = True
 

@@ -247,16 +247,22 @@ class FrameRenderer:
             int(candidates[int(np.argmax(inside))]) if inside.any() else int(candidates[0])
         )
         reference_start = start_of(reference_star)
-        reference_tilt = truth.tilt_arcsec(reference_start, exposure_s)
         wave_mode = self._psf.mode == "wave"
         r0 = truth.r0_observed_m(t_mid_ns)
-        queued: list[tuple[float, float, float]] = []
-        reference: Reference | None = None
+        weights, sigmas = mixture.components(r0)
+        rms = self._scintillation.index(exposure_s, self._airmass)
+        wave_psf = self._wave_psf(params) if wave_mode else None
+        same_grid = (
+            wave_psf is not None
+            and abs(wave_psf.pupil_spacing_m - truth.pupil.spec.dx) < 1e-12 * truth.pupil.spec.dx
+        )
+
+        # Pass 1: the flux of each candidate and whether it needs the wave optics.
+        stars_info = []
         for position, star_value in enumerate(candidates):
             star = int(star_value)
             star_start = start_of(star)
             star_mid = star_start + half_exposure_ns
-            rms = self._scintillation.index(exposure_s, self._airmass)
             if rms <= 0.0:
                 factor = 1.0
             elif position < _MAX_CORRELATED_STARS:
@@ -267,21 +273,43 @@ class FrameRenderer:
             use_wave = (
                 wave_mode and electrons >= _WAVE_FLUX_THRESHOLD_E and position < _MAX_WAVE_STARS
             )
+            stars_info.append((star, star_start, star_mid, factor, electrons, use_wave))
+
+        def render_wave(star: int, start: int, electrons: float) -> tuple[float, float]:
+            """Render a star with wave optics and return its truth tilt in arcseconds."""
+            assert wave_psf is not None
+            x, y = float(x_all[star]), float(y_all[star])
+            cx, cy = round(x), round(y)
+            result = wave_psf.render(self._turbulence_time(start), exposure_s, (x - cx, y - cy))
+            self._add_stamp(signal, roi, result.stamp, cx, cy, electrons)
+            if same_grid:  # the wave optics used the truth pupil, so its tilt is the truth tilt
+                return (result.tilt_x_rad * ARCSEC_PER_RAD, result.tilt_y_rad * ARCSEC_PER_RAD)
+            return truth.tilt_arcsec(start, exposure_s)
+
+        tilts: dict[int, tuple[float, float]] = {}
+        reference_info = next(item for item in stars_info if item[0] == reference_star)
+        if reference_info[5]:
+            tilts[reference_star] = render_wave(reference_star, reference_start, reference_info[4])
+        else:
+            tilts[reference_star] = truth.tilt_arcsec(reference_start, exposure_s)
+        reference_tilt = tilts[reference_star]
+
+        # Pass 2: the other stars. The faint ones share the reference tilt.
+        queued: list[tuple[float, float, float]] = []
+        reference: Reference | None = None
+        for star, star_start, star_mid, factor, electrons, use_wave in stars_info:
             if star == reference_star:
                 tilt = reference_tilt
+                rendered = use_wave
             elif use_wave:
-                tilt = truth.tilt_arcsec(star_start, exposure_s)
+                tilt = render_wave(star, star_start, electrons)
+                rendered = True
             else:
                 tilt = reference_tilt
+                rendered = False
             tilt_x_px, tilt_y_px = self._to_pixels(tilt, params)
             x, y = float(x_all[star]), float(y_all[star])
-            if use_wave:
-                cx, cy = round(x), round(y)
-                result = self._wave_psf(params).render(
-                    self._turbulence_time(star_start), exposure_s, (x - cx, y - cy)
-                )
-                self._add_stamp(signal, roi, result.stamp, cx, cy, electrons)
-            else:
+            if not rendered:
                 queued.append((x + tilt_x_px, y + tilt_y_px, electrons))
             if star == reference_star:
                 reference = Reference(
@@ -297,8 +325,7 @@ class FrameRenderer:
                     scintillation_factor=factor,
                     transparency=transparency,
                 )
-        for x, y, electrons in queued:
-            self._add_mixture_star(signal, roi, mixture, x, y, electrons, r0, half_fov)
+        self._add_mixture_stars(signal, roi, mixture, queued, weights, sigmas, half_fov)
         assert reference is not None
         return reference
 
@@ -420,26 +447,44 @@ class FrameRenderer:
         view = signal[y_lo + sy0 : y_lo + sy1, x_lo + sx0 : x_lo + sx1]
         view += np.float32(electrons) * stamp[sy0:sy1, sx0:sx1]
 
-    def _add_mixture_star(
+    def _add_mixture_stars(
         self,
         signal: SingleArray,
         roi: Roi,
         mixture: MixturePsf,
-        x: float,
-        y: float,
-        electrons: float,
-        r0: float,
+        queued: list[tuple[float, float, float]],
+        weights: FloatArray,
+        sigmas: FloatArray,
         half_cap: int,
     ) -> None:
-        """Add one star with the Gaussian mixture at a continuous position."""
-        weights, sigmas = mixture.components(r0)
-        reach = self._reach(np.asarray([electrons]), weights, sigmas)[0]
-        half = min(_size_class(int(reach)), half_cap)
-        cx, cy = round(x), round(y)
-        stamp = mixture.stamps(
-            np.asarray([x - cx]), np.asarray([y - cy]), weights, sigmas, size_px=2 * half + 1
-        )[0]
-        self._add_stamp(signal, roi, stamp, cx, cy, electrons)
+        """Add stars with the Gaussian mixture. Each tuple holds `x`, `y`, and the electrons."""
+        if not queued:
+            return
+        xs = np.asarray([item[0] for item in queued])
+        ys = np.asarray([item[1] for item in queued])
+        electrons = np.asarray([item[2] for item in queued])
+        reach = self._reach(electrons, weights, sigmas)
+        halves = np.asarray([min(_size_class(int(value)), half_cap) for value in reach])
+        cxs = np.rint(xs).astype(np.int64)
+        cys = np.rint(ys).astype(np.int64)
+        for half in np.unique(halves):
+            selected = np.nonzero(halves == half)[0]
+            stamps = mixture.stamps(
+                xs[selected] - cxs[selected],
+                ys[selected] - cys[selected],
+                weights,
+                sigmas,
+                size_px=2 * int(half) + 1,
+            )
+            for row, index in enumerate(selected):
+                self._add_stamp(
+                    signal,
+                    roi,
+                    stamps[row],
+                    int(cxs[index]),
+                    int(cys[index]),
+                    float(electrons[index]),
+                )
 
     def _add_trail(
         self,

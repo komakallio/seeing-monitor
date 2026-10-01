@@ -84,6 +84,16 @@ def wavelengths_of(params: SimParams, config: PsfConfig) -> tuple[FloatArray, Fl
     return waves, np.asarray([0.25, 0.5, 0.25])
 
 
+def psf_pupil_spacing_m(params: SimParams, config: PsfConfig) -> float:
+    """The pupil sample spacing of the wave optics at the central wavelength, in meters.
+
+    The focal-plane samples are a fraction of a pixel wide and the stamp is `fov` pixels wide, so
+    the spacing is the wavelength over the angular width of the stamp. Both readout modes of the
+    reference hardware give the same value, because their stamps cover the same angle.
+    """
+    return params.wavelength_m / (stamp_size_px(params, config) * params.pixel_rad)
+
+
 def stamp_size_px(params: SimParams, config: PsfConfig) -> int:
     """The stamp width in pixels: even, with at least 32 pupil points at the longest wavelength."""
     waves, _ = wavelengths_of(params, config)
@@ -149,6 +159,11 @@ class WavePsf:
         return self._fov_px
 
     @property
+    def pupil_spacing_m(self) -> float:
+        """The pupil sample spacing at the central wavelength, in meters."""
+        return self._grids[len(self._grids) // 2].spec.dx
+
+    @property
     def pupil_points(self) -> int:
         """The number of pupil samples across the aperture at the central wavelength."""
         centre = len(self._grids) // 2
@@ -209,7 +224,7 @@ class WavePsf:
 
 # Sigmas of the Gaussians, in units of lambda / D. A flux-weighted non-negative least-squares fit
 # to the Airy pattern chooses their weights.
-_MIXTURE_SIGMAS = (0.25, 0.4, 0.65, 1.0, 1.7, 3.0, 6.0, 15.0)
+_MIXTURE_SIGMAS = (0.25, 0.4, 0.65, 1.0, 1.7, 3.0, 6.0, 15.0, 40.0, 100.0)
 
 
 def _airy_unit(r: FloatArray) -> FloatArray:
@@ -223,7 +238,13 @@ def _airy_unit(r: FloatArray) -> FloatArray:
 @lru_cache(maxsize=1)
 def _airy_mixture() -> tuple[FloatArray, FloatArray]:
     """The sigmas (in lambda / D) and weights of the Gaussians that approximate an Airy pattern."""
-    r = np.concatenate([np.linspace(0.0, 6.0, 600, endpoint=False), np.linspace(6.0, 60.0, 900)])
+    r = np.concatenate(
+        [
+            np.linspace(0.0, 6.0, 600, endpoint=False),
+            np.linspace(6.0, 60.0, 600, endpoint=False),
+            np.geomspace(60.0, 600.0, 600),
+        ]
+    )
     dr = np.gradient(r)
     sigmas = np.asarray(_MIXTURE_SIGMAS, dtype=np.float64)
     design = np.exp(-(r[:, None] ** 2) / (2 * sigmas[None, :] ** 2)) / (
@@ -231,7 +252,11 @@ def _airy_mixture() -> tuple[FloatArray, FloatArray]:
     )
     weight = np.sqrt(2 * math.pi * r * dr + 0.02 * dr)
     matrix = np.vstack([design * weight[:, None], 100.0 * np.ones((1, len(sigmas)))])
-    target = np.concatenate([_airy_unit(r) * weight, [100.0]])
+    # Beyond the first rings the pattern oscillates. Fit its mean over one ring.
+    offsets = np.linspace(-0.5, 0.5, 11)
+    smooth = np.mean([_airy_unit(np.maximum(r + shift, 0.0)) for shift in offsets], axis=0)
+    airy = np.where(r > 6.0, smooth, _airy_unit(r))
+    target = np.concatenate([airy * weight, [100.0]])
     weights = sp.nnls(matrix, target)
     return sigmas, weights / weights.sum()
 
@@ -312,7 +337,9 @@ class MixturePsf:
         cdf_y = sp.erf((edges[None, None, :] - offsets_y_px[:, None, None]) * scale[None, :, None])
         mass_x = 0.5 * np.diff(cdf_x, axis=2)  # (stars, components, size)
         mass_y = 0.5 * np.diff(cdf_y, axis=2)
-        stamps = np.einsum("c,kci,kcj->kji", weights, mass_x, mass_y, optimize=True)
+        # Each stamp is the sum over components of the outer product of the row and column masses.
+        weighted_y = mass_y * weights[None, :, None]
+        stamps = np.matmul(weighted_y.transpose(0, 2, 1), mass_x)
         return np.asarray(stamps, dtype=np.float32)
 
     def stamp(

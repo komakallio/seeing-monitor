@@ -189,13 +189,17 @@ class Pointing:
     `ra_deg` and `dec_deg` give the optical axis at `t_ref_utc_ns`. The sky turns away from
     that position afterward, because the camera stays fixed to the ground. `roll_deg` is the
     position angle of north in the image, counter-clockwise from the up direction. The default
-    centres Polaris at the reference time with the pole straight above it.
+    centres Polaris at the reference time with the pole straight above it. `offset_arcsec` moves
+    the optical axis away from the centre of the full frame by `(x, y)` arcseconds, with `y`
+    down the rows. A mount never centres a star exactly, and the default places Polaris between
+    four pixels of bin1. Set an offset of half a pixel, 0.955 arcsec, to centre it on one.
     """
 
     ra_deg: float = POLARIS_RA_DEG
     dec_deg: float = POLARIS_DEC_DEG
     roll_deg: float = 0.0
     t_ref_utc_ns: int = DEFAULT_START_UTC_NS
+    offset_arcsec: tuple[float, float] = (0.0, 0.0)
 
     def __post_init__(self) -> None:
         if not -90.0 < self.dec_deg < 90.0:
@@ -272,15 +276,23 @@ class SkyProjector:
         with np.errstate(divide="ignore", invalid="ignore"):
             return components[:, 0] / depth, components[:, 1] / depth
 
+    def _to_pixels(
+        self, right: FloatArray, up: FloatArray, pixel_rad: float, width: int, height: int
+    ) -> tuple[FloatArray, FloatArray]:
+        """Tangent coordinates in radians to pixels, with the optical axis offset applied."""
+        offset_x, offset_y = self._pointing.offset_arcsec
+        scale = 1.0 / ARCSEC_PER_RAD / pixel_rad
+        return (
+            (width - 1) / 2.0 + offset_x * scale + right / pixel_rad,
+            (height - 1) / 2.0 + offset_y * scale - up / pixel_rad,
+        )
+
     def project(
         self, t_utc_ns: int, pixel_rad: float, width: int, height: int
     ) -> tuple[FloatArray, FloatArray]:
         """Pixel coordinates `(x, y)` of the kept stars at a time, in the full frame of a mode."""
         right, up = self._tangent(self._vectors, t_utc_ns)
-        return (
-            (width - 1) / 2.0 + right / pixel_rad,
-            (height - 1) / 2.0 - up / pixel_rad,
-        )
+        return self._to_pixels(right, up, pixel_rad, width, height)
 
     def project_stars(
         self,
@@ -292,20 +304,15 @@ class SkyProjector:
     ) -> tuple[FloatArray, FloatArray]:
         """Pixel coordinates of some of the kept stars (given by position in `stars`)."""
         right, up = self._tangent(self._vectors[indices], t_utc_ns)
-        return (
-            (width - 1) / 2.0 + right / pixel_rad,
-            (height - 1) / 2.0 - up / pixel_rad,
-        )
+        return self._to_pixels(right, up, pixel_rad, width, height)
 
     def pole_pixel(
         self, t_utc_ns: int, pixel_rad: float, width: int, height: int
     ) -> tuple[float, float]:
         """Pixel coordinates of the celestial pole. They do not depend on the time."""
         right, up = self._tangent(self._pole[None, :], t_utc_ns)
-        return (
-            (width - 1) / 2.0 + float(right[0]) / pixel_rad,
-            (height - 1) / 2.0 - float(up[0]) / pixel_rad,
-        )
+        x, y = self._to_pixels(right, up, pixel_rad, width, height)
+        return float(x[0]), float(y[0])
 
     def roll_deg(self) -> float:
         """The position angle of the direction to the pole, as the architecture defines `roll`."""
