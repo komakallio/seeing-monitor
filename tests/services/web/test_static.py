@@ -67,13 +67,15 @@ def scripts() -> list[Path]:
 def test_every_file_is_served_with_its_type(client: TestClient, name: str) -> None:
     response = client.get(f"/{name}")
     assert response.status_code == 200
+    # The app sets these types itself: the registry of the operating system must not decide them
+    # (`.js` is `application/javascript` on some Windows machines and on Python 3.11).
     expected = {
-        ".html": "text/html",
-        ".css": "text/css",
-        ".js": "text/javascript",
+        ".html": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
         ".svg": "image/svg+xml",
     }[Path(name).suffix]
-    assert response.headers["content-type"].startswith(expected)
+    assert response.headers["content-type"] == expected
 
 
 def test_the_root_serves_the_now_page(client: TestClient) -> None:

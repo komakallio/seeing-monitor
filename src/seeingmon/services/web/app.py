@@ -19,6 +19,7 @@ and FITS files. Neither can write.
 from __future__ import annotations
 
 import contextlib
+import mimetypes
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,20 @@ from seeingmon.services.web.privacy import public_config, scrub_json
 from seeingmon.services.web.schemas import record_components
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# The type of a static file must not depend on the type registry of the operating system. On
+# Windows, the registry can map `.js` to `application/javascript` or even to `text/plain`, and
+# Python 3.11 and 3.13 disagree on `.js` too. With `X-Content-Type-Options: nosniff`, a browser
+# refuses to run a script that arrives as `text/plain`, so the app sets the types that it serves.
+STATIC_TYPES = {
+    ".html": "text/html",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".svg": "image/svg+xml",
+    ".json": "application/json",
+}
+for _suffix, _type in STATIC_TYPES.items():
+    mimetypes.add_type(_type, _suffix)
 OPENAPI_URL = f"{PREFIX}/openapi.json"
 
 DESCRIPTION = """\
