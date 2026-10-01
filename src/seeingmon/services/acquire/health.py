@@ -39,6 +39,7 @@ class AcquireHealth:
     read_timeouts: int
     read_errors: int
     internal_errors: int
+    events_recorded: int
     last_error: str | None
     time_resets: int
     time_outliers: int

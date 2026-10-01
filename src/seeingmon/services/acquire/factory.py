@@ -8,19 +8,24 @@ needs nothing. The options of the fake are `adc_bits`, `overhead_s`, `row_time_s
 `temperature_c`. The option `hang_in` (`open`, `configure`, `start`, or `read_frame`) makes that
 call block for good, so that a test can show that a hung driver call ends the process.
 
-This module imports the fakes, so import it only when you create a driver.
+A driver whose `create` takes an `on_event` argument (the `asi` driver does) gets the callback, so
+that its hardware events reach the log of `acquire`. This module imports the fakes, so import it
+only when you create a driver.
 """
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from seeingmon.clock import Clock
 from seeingmon.drivers import CameraConfigError, CameraDriver
 from seeingmon.drivers.base import CameraInfo
 from seeingmon.frames import ActiveStream, Frame, StreamConfig
+from seeingmon.hardware.events import HardwareEvent
 from seeingmon.testing import FakeCameraDriver
 
 FAKE_OPTIONS = {"adc_bits": int, "overhead_s": float, "row_time_s": float, "temperature_c": float}
@@ -55,12 +60,34 @@ class HangingFakeDriver(FakeCameraDriver):
         return super().read_frame(timeout_s)
 
 
+def accepts_events(name: str) -> bool:
+    """Whether the `create` of driver `name` takes an `on_event` argument."""
+    if not name.isidentifier() or name.startswith("_") or name == "base":
+        return False
+    try:
+        module = importlib.import_module(f"seeingmon.drivers.{name}")
+    except ModuleNotFoundError:
+        return False
+    return "on_event" in inspect.signature(module.create).parameters
+
+
 def create_camera_driver(
-    name: str, *, profile: Any, clock: Clock, options: Mapping[str, Any]
+    name: str,
+    *,
+    profile: Any,
+    clock: Clock,
+    options: Mapping[str, Any],
+    on_event: Callable[[HardwareEvent], None] | None = None,
 ) -> CameraDriver:
     """Build the driver `name`. Raises `CameraConfigError` for an option it does not know."""
     if name == "fake":
         return _create_fake(clock, options)
+    if on_event is not None and accepts_events(name):
+        module = importlib.import_module(f"seeingmon.drivers.{name}")
+        driver: CameraDriver = module.create(
+            profile=profile, clock=clock, options=dict(options), on_event=on_event
+        )
+        return driver
     from seeingmon.drivers import create_driver
 
     return create_driver(name, profile=profile, clock=clock, options=dict(options))

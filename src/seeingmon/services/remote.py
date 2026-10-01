@@ -55,6 +55,7 @@ from seeingmon.frames import (
     StreamKind,
     decode_frame,
 )
+from seeingmon.services.acquire.events import EventBatch, decode_batch
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.ipc.codec import (
     CodecError,
@@ -490,6 +491,17 @@ class RemoteCameraDriver:
     def health(self) -> dict[str, Any]:
         """The health summary of `acquire` (see `AcquireHealth`). `core` folds it into its own."""
         return dict(as_mapping(self._call("health"), "health"))
+
+    def events(self, after: int = 0) -> EventBatch:
+        """The hardware events that the driver in `acquire` reported after number `after`.
+
+        Pass the `last` of the previous batch to get only new events. `lost` counts the events
+        that the log dropped before you asked. The call works with or without a running stream.
+        """
+        try:
+            return decode_batch(self._call("events", {"after": after}))
+        except CodecError as error:
+            raise CameraError(f"acquire sent unreadable events: {error}") from None
 
     def ping(self) -> str:
         """The identity of the `acquire` process. Answers even while a slow call runs."""

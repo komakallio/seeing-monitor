@@ -29,6 +29,7 @@ from seeingmon.frames import (
     StreamKind,
     TimeQuality,
 )
+from seeingmon.services.acquire.events import HardwareEventLog
 from seeingmon.services.acquire.service import AcquireService
 from seeingmon.services.config import AcquireSettings, CallTimeouts, ServicesConfig
 from seeingmon.services.ipc.endpoint import Endpoint
@@ -719,6 +720,7 @@ class TestWithTheAsiDriver:
         )
         sdk = FakeAsiSdk(clock)
         hangs: list[Any] = []
+        log = HardwareEventLog()
         driver = AsiDriver(
             api=sdk,
             profile=load_profile("asi294mm-gs250"),
@@ -726,6 +728,7 @@ class TestWithTheAsiDriver:
             options=AsiOptions(),
             usb_resetter=FakeUsbResetter(sdk, reappear_after_s=2.0),
             watchdog=CallWatchdog(clock, hangs.append),
+            on_event=log.record,
         )
         service = AcquireService(
             driver,
@@ -734,6 +737,7 @@ class TestWithTheAsiDriver:
             key,
             ServicesConfig(acquire=AcquireSettings(raise_priority=False, outlier_floor_s=0.03)),
             guard=CallWatchdog(clock, hangs.append),
+            events=log,
             priority_hook=lambda: "test",
             on_fatal=lambda reason: None,
         )
@@ -754,6 +758,14 @@ class TestWithTheAsiDriver:
             after = read_frames(remote, 60)
             assert any(f.flags & FrameFlag.RECOVERED for f in after)
             assert hangs == []
+            # The driver reported the recovery step, and core can collect the event.
+            batch = remote.events()
+            recoveries = [
+                item.event for item in batch.events if item.event.kind == "camera.recovery"
+            ]
+            assert len(recoveries) == 1
+            assert recoveries[0].detail == {"step": int(RecoveryLevel.RESTART_CAPTURE)}
+            assert remote.events(after=batch.last).events == ()
         finally:
             remote.close()
             service.stop()

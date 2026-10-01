@@ -129,7 +129,7 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 
 | Process | Threads |
 |---|---|
-| `acquire` | Capture thread at raised priority (blocking SDK calls release the GIL), control thread, sender thread, and watchdog thread. No analysis. The capture thread reads, stamps, and queues frames. The sender streams them to `core` as far as the receiver's window allows. The watchdog thread puts a deadline on each driver call, and it sends a heartbeat and a health summary to systemd. A driver call that exceeds its deadline makes the process exit, and systemd restarts it. |
+| `acquire` | Capture thread at raised priority (blocking SDK calls release the GIL), control thread, sender thread, and watchdog thread. No analysis. The capture thread reads, stamps, and queues frames. The sender streams them to `core` as far as the receiver's window allows. The watchdog thread puts a deadline on each driver call, and it sends a heartbeat and a health summary to systemd. A driver call that exceeds its deadline makes the process exit, and systemd restarts it. `acquire` also keeps the events that the driver reports (recovery steps, a changed geometry, a profile mismatch) in a bounded log, and `core` collects them with the `events` call, even while no stream runs. |
 | `core` | Scheduler, fast-path consumer, preview encoder, sink forwarder, retention and health, and one low-priority survey worker process |
 | `web` | uvicorn event loop with a read-only SQLite connection, read-only image access, and commands to `core` |
 

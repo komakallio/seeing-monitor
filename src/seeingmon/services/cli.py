@@ -89,6 +89,7 @@ def _acquire(args: argparse.Namespace) -> int:
 
     from seeingmon.config import ConfigError, load_config
     from seeingmon.profile import ProfileError
+    from seeingmon.services.acquire.events import HardwareEventLog
     from seeingmon.services.acquire.factory import create_camera_driver
     from seeingmon.services.acquire.service import AcquireService
     from seeingmon.services.config import ServicesConfig
@@ -110,6 +111,7 @@ def _acquire(args: argparse.Namespace) -> int:
     except (ConfigError, ProfileError, IpcError) as error:
         raise CliError(str(error)) from None
     clock = services.clock.build()
+    events = HardwareEventLog()
     name = args.driver or services.acquire.driver
     try:
         driver = create_camera_driver(
@@ -117,13 +119,14 @@ def _acquire(args: argparse.Namespace) -> int:
             profile=profile,
             clock=clock,
             options={**services.acquire.driver_options, **options},
+            on_event=events.record,
         )
     except Exception as error:  # a driver can fail in its own ways, such as a missing library
         logging.getLogger(__name__).debug("the driver failed", exc_info=True)
         raise CliError(
             f"cannot create the driver {name!r}: {type(error).__name__}: {error}"
         ) from None
-    service = AcquireService(driver, clock, endpoint, key, services)
+    service = AcquireService(driver, clock, endpoint, key, services, events=events)
 
     def request_stop(signum: int, frame: object) -> None:
         service.request_stop(f"signal {signum}")

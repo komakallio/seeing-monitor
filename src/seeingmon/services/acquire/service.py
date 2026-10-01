@@ -67,6 +67,7 @@ from seeingmon.frames import (
     encode_frame,
 )
 from seeingmon.services.acquire.drops import DropAccountant
+from seeingmon.services.acquire.events import HardwareEventLog, after_of, encode_batch
 from seeingmon.services.acquire.gate import DriverGate
 from seeingmon.services.acquire.health import AcquireHealth
 from seeingmon.services.acquire.notify import SystemdNotifier
@@ -187,6 +188,7 @@ class AcquireService:
         *,
         guard: CallGuard | None = None,
         notifier: SystemdNotifier | None = None,
+        events: HardwareEventLog | None = None,
         priority_hook: Callable[[], str] | None = None,
         on_fatal: Callable[[str], None] | None = None,
     ) -> None:
@@ -203,6 +205,7 @@ class AcquireService:
         else:
             self._priority_hook = lambda: "disabled"
         self._on_fatal = on_fatal or exit_on_fatal
+        self.events = events if events is not None else HardwareEventLog()
         self.instance = secrets.token_hex(INSTANCE_BYTES)
         self._started_ns = clock.monotonic_ns()
 
@@ -238,7 +241,7 @@ class AcquireService:
             self._handlers(),
             workers=1,
             worker_name="acquire-control",
-            inline={"ping", "health"},
+            inline={"ping", "health", "events"},
             max_connections=1,
             max_message_bytes=settings.max_rpc_bytes,
             on_connect=self._on_connect,
@@ -439,6 +442,7 @@ class AcquireService:
             "recover": self._h_recover,
             "ping": self._h_ping,
             "health": self._h_health,
+            "events": self._h_events,
         }
 
     def _h_ping(self, params: Mapping[str, Any]) -> Any:
@@ -446,6 +450,9 @@ class AcquireService:
 
     def _h_health(self, params: Mapping[str, Any]) -> Any:
         return self.health().to_json()
+
+    def _h_events(self, params: Mapping[str, Any]) -> Any:
+        return encode_batch(self.events.since(after_of(params)))
 
     def _h_open(self, params: Mapping[str, Any]) -> Any:
         with self._exclusive():
@@ -897,6 +904,7 @@ class AcquireService:
             read_timeouts=counters.read_timeouts,
             read_errors=counters.read_errors,
             internal_errors=counters.internal_errors,
+            events_recorded=self.events.last,
             last_error=counters.last_error,
             time_resets=self._stamper.resets,
             time_outliers=self._stamper.outliers,
