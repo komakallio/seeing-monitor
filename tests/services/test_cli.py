@@ -24,7 +24,7 @@ def test_the_commands_are_listed(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         main(["--help"])
     output = capsys.readouterr().out
-    for name in ("acquire", "core", "web", "burst", "sweep", "replay", "heater-off"):
+    for name in ("acquire", "core", "web", "burst", "sweep", "replay", "dev", "heater-off"):
         assert name in output
 
 

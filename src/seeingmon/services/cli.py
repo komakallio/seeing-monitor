@@ -2,7 +2,8 @@
 
 `seeingmon acquire` runs the process that owns the camera driver (see
 `seeingmon.services.acquire`). Under systemd, its unit runs this command with `Type=notify`.
-`seeingmon core` and the commissioning commands are in `seeingmon.services.commands`.
+`seeingmon core`, the commissioning commands, and `seeingmon dev` are in
+`seeingmon.services.commands`.
 `seeingmon web` lives in `seeingmon.services.web.cli`, which this module registers.
 
 `acquire` reads the `[services]` section of the configuration (see

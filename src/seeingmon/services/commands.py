@@ -1,4 +1,4 @@
-"""The commands of the services lane beyond `acquire`: `core` and the commissioning tools.
+"""The commands of the services lane beyond `acquire`: `core`, the commissioning tools, and `dev`.
 
 - `seeingmon core` runs the core process (`seeingmon.services.core.main`).
 - `seeingmon heater-off` switches the heater outputs off. The unit of `core` runs it after the
@@ -7,6 +7,7 @@
   through the RPC. They wait for the result and print it. With `--standalone`, they run the task
   in a private scheduler against the configured driver, for bench work (see
   `seeingmon.services.core.commissioning.standalone`).
+- `seeingmon dev` starts the whole system on a simulated sky (see `seeingmon.services.dev`).
 
 Exit codes of the commissioning commands: 0 when the task finished with the status `ok`, 1 when it
 failed, was aborted, or did not finish in time, and 2 when `core` rejected the command.
@@ -134,6 +135,38 @@ def register(subparsers: Subparsers) -> None:
     )
     _common(replay)
 
+    dev = add_command(
+        subparsers,
+        "dev",
+        help="Run the whole system on a simulated sky, with one command (acquire, core, and web).",
+        handler=_dev,
+    )
+    dev.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="simulated seconds per real second (default 1). The simulator renders about 40 "
+        "frames a second on one core, so 2 is the most that a quiet machine sustains; faster "
+        "clocks drop frames, and the windows say so",
+    )
+    dev.add_argument(
+        "--port", type=int, help="the port of the web UI (default: your [web] port, else 8080)"
+    )
+    dev.add_argument(
+        "--sensor",
+        choices=("small", "full"),
+        default="small",
+        help="small keeps the simulation fast, and full is the reference sensor (default small)",
+    )
+    dev.add_argument("--seed", type=int, default=1, help="the seed of the simulated sky")
+    dev.add_argument(
+        "--start", help="the UTC start of the simulation, such as 2026-01-01T17:00:00Z"
+    )
+    dev.add_argument(
+        "--keep-data", action="store_true", help="keep the temporary data folder when you stop"
+    )
+    dev.add_argument("--log-level", choices=LOG_LEVELS, default="warning")
+
 
 def _core(args: argparse.Namespace) -> int:
     from seeingmon.services.core.main import run_core
@@ -145,6 +178,12 @@ def _heater_off(args: argparse.Namespace) -> int:
     from seeingmon.services.core.main import heater_off
 
     return heater_off(args)
+
+
+def _dev(args: argparse.Namespace) -> int:
+    from seeingmon.services.dev import run_dev
+
+    return run_dev(args)
 
 
 # --- The commissioning commands ----------------------------------------------------------------
