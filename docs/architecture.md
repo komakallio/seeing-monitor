@@ -146,7 +146,7 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 | Star list rows | 24 bytes a star, about 8 KB for each survey step | 1 per 3 minutes while the sky is dark | About 0.45 GB per year |
 | Results | 0.15 to 0.4 KB | About 4 rows per minute | Under 0.5 GB per year |
 
-The rates are derived estimates, and USB 3 carries every stream with wide margin. The Pi 4 budget is 10% of a core for `acquire`, 25% for the fast path, one core in bursts for the survey worker, and about 1.4 GB of memory at peak (the survey worker takes 550 MB). A 2 GB model fits if the out-of-memory killer takes the survey worker first, calibration frames stay memory-mapped, and native frames are processed off the Pi. More than 1.6 GB at peak in the gate means 4 GB. A NumPy centroid on a 128 × 128 frame takes an estimated 0.2 to 0.4 ms on a Pi 4. The performance gate measures all of this.
+The rates are derived estimates, and USB 3 carries every stream with wide margin. The Pi 4 budget is 10% of a core for `acquire`, 25% for the fast path, one core in bursts for the survey worker, and about 1.4 GB of memory at peak (the survey worker takes 550 MB). A 2 GB model fits if the out-of-memory killer takes the survey worker first, calibration frames stay memory-mapped, and native frames are processed off the Pi. More than 1.6 GB at peak in the gate means 4 GB. A NumPy centroid on a 128 × 128 frame takes an estimated 0.2 to 0.4 ms on a Pi 4. The performance gate measures all of this. [performance.md](performance.md) describes the harness (`seeingmon perf`) and its first results on a development machine, which agree with the kernel estimate and put the cost of moving frames between `acquire` and `core` above the budgets.
 
 | Tier | Content | Retention |
 |---|---|---|
@@ -366,7 +366,7 @@ astrometry.net is primary with SEP star lists (`apt` installs it on arm64), and 
 | Unit and simulation (every push) | Estimators against simulated truth (phase-screen turbulence with injected clouds, saturation, vibration, and drops must return r0 within tolerance), scheduler transitions, retention, sink cursors |
 | Component and end to end (short on push, long nightly) | `acquire`, `core`, and `web` with the simulator. Kill and restart each process. Simulate a sink outage of days, a full disk, and a clock jump. A simulated night in virtual time matches the injected truth. |
 | Replay (local) | Recorded 10 ms video through production code. The repository holds only small synthetic fixtures. Recordings stay outside it, and tests skip when absent. |
-| Gate and hardware | A performance gate on a Pi 4 before phase 2 exits. Timing, USB recovery, and a multi-day soak at commissioning. |
+| Gate and hardware | A performance gate on a Pi 4 before phase 2 exits. Timing, USB recovery, and a multi-day soak at commissioning. `seeingmon perf` measures the gate, and [performance.md](performance.md) lists the commands that run it on a Pi 4. |
 
 GitHub Actions runs Windows, Linux x64, and Linux arm64 on Python 3.11 and 3.13: linter, type checker, tests, a secret scan, and a repository check that fails on absolute paths, IP addresses, and hostnames.
 
