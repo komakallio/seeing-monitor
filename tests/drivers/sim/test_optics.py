@@ -128,13 +128,14 @@ def test_the_image_is_the_mean_over_the_exposure() -> None:
     """With a fast wind, a long exposure smears the image and lowers the peak.
 
     One short exposure can fall on a poor instant, so the test compares the mean peak of 12
-    seeds. The means are 0.31 for 0.5 ms and 0.25 for 20 ms, about 4 standard errors apart.
+    seeds, in strong turbulence (`r0` of 2 cm). The means are 0.20 for 0.5 ms and 0.12 for 20 ms,
+    a ratio of 0.57 with a standard error of about 0.07.
     """
     short_peaks: list[float] = []
     long_peaks: list[float] = []
     for seed in range(12):
         config = TurbulenceConfig(
-            r0_m=0.05,
+            r0_m=0.02,
             layers=(Layer(1.0, 25.0, 0.0),),
             outer_scale_m=20.0,
             screen_points=128,
@@ -146,7 +147,7 @@ def test_the_image_is_the_mean_over_the_exposure() -> None:
         assert float(long.sum()) == pytest.approx(1.0, abs=1e-5)
         short_peaks.append(float(short.max()))
         long_peaks.append(float(long.max()))
-    assert np.mean(long_peaks) < 0.9 * np.mean(short_peaks)
+    assert np.mean(long_peaks) < 0.8 * np.mean(short_peaks)
 
 
 def test_a_bandwidth_adds_two_wavelengths() -> None:

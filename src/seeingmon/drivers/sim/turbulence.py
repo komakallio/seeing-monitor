@@ -636,7 +636,9 @@ class TurbulenceModel:
         wind, and the angular wavenumbers `kx` and `ky` of each sinusoid. It also stores the
         layer's screen offset in `offsets`.
         """
-        rng = np.random.default_rng(np.random.SeedSequence([self._config.seed, index, 0]))
+        # Stream 3 draws the sinusoids of the fine-grid plan, stream 1 the screens, and stream 2
+        # the gusts. Stream 0 drew the sparser plan of the first version.
+        rng = np.random.default_rng(np.random.SeedSequence([self._config.seed, index, 3]))
         plan = self._plan
         jitter = (rng.random((len(plan.widths), 2)) - 0.5) * plan.widths[:, None]
         freq = plan.centers + jitter
