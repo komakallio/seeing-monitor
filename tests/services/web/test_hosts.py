@@ -171,7 +171,7 @@ def test_an_origin_gives_its_host(origin: str, expected: str) -> None:
         "file://",
         "file:///home/x",
         "ftp://localhost",
-        "chrome-extension://abcdef",
+        "chrome-extension://abcdef",  # repo-check: allow
         "http://",
         "http:localhost",
         "//localhost",
@@ -180,12 +180,12 @@ def test_an_origin_gives_its_host(origin: str, expected: str) -> None:
         "http://localhost/path",
         "http://localhost?x=1",
         "http://localhost#x",
-        "http://local\nhost",
-        "http://local\thost",
-        "http://local host",
+        "http://local\nhost",  # repo-check: allow
+        "http://local\thost",  # repo-check: allow
+        "http://local host",  # repo-check: allow
         "http://[::1",
         "http://localhost:port",
-        "http://bücher.example",
+        "http://bücher.example",  # repo-check: allow
     ],
 )
 def test_an_origin_without_a_usable_host_gives_nothing(origin: str) -> None:

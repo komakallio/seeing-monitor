@@ -310,7 +310,7 @@ def test_a_websocket_with_a_foreign_origin_is_refused(client: TestClient) -> Non
         "http://localhost@evil.example",
         "https://[2001:db8::99]",
         "file://",
-        "chrome-extension://abcdef",
+        "chrome-extension://abcdef",  # repo-check: allow
         "localhost",
         "http://",
     ],
