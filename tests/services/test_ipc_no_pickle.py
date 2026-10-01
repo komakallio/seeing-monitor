@@ -173,7 +173,9 @@ def test_a_pickle_on_the_stream_channel_is_never_loaded(
 
 
 FORBIDDEN_MODULES = {"pickle", "_pickle", "cPickle", "cloudpickle", "dill", "marshal", "shelve"}
-ALLOWED_MULTIPROCESSING = {"Client", "Listener"}
+# `Connection` is the class of a connection on POSIX. `Wire` tests that class with `isinstance`
+# to choose how it moves the bytes, and the guard above makes `send` and `recv` fail.
+ALLOWED_MULTIPROCESSING = {"Client", "Listener", "Connection"}
 
 # The survey worker is a process pool, and the pool pickles what it sends. Only plain data crosses
 # that boundary (the pipeline specification, the encoded frame, and the dictionaries of the result,
