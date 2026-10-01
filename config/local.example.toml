@@ -56,10 +56,13 @@ token_hash = "<hash of the API token>"
 # [web.rate_limit]
 # commands_per_window = 30
 
-# Survey path. `seeingmon catalog build` writes the cap catalog and the solver index files.
+# Survey path. `seeingmon catalog build` writes the cap catalog and the solver index files, and
+# `seeingmon dark` adds dark sets to the library in darks/ of the calibration folder.
 # [survey]
 # catalog_path = "<path to the cap catalog file>"
 # index_dir = "<path to the astrometry.net index folder>"
+# calibration_dir = "<path to the calibration folder>"
+# night_split_utc_hour = 12.0  # the UTC hour that ends a night: pick one when the Sun is up
 
 # Local connections between the acquire, core, and web processes. The processes prove that they
 # hold the same key before they talk, so every installation needs one. Generate it with
