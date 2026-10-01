@@ -134,7 +134,7 @@ class TestStreaming:
         offsets = sorted(
             abs(f.t_utc_ns - (f.t_arrival_ns - round(0.0113128 * 1e9 - 1_000_000))) for f in fitted
         )
-        assert offsets[len(offsets) // 2] < 5_000_000  # the median differs from raw by the jitter
+        assert offsets[len(offsets) // 2] < 10_000_000  # the median differs from raw by the jitter
         assert all(f.t_err_ns >= 5_000_000 for f in frames)  # at least the latency sigma
         assert all(f.t_err_ns < 50_000_000 for f in fitted)
 

@@ -104,7 +104,9 @@ def test_streams_frames_in_order_with_their_metadata(camera: Camera) -> None:
     assert all(f.flags & FrameFlag.SIMULATED for f in frames)
     assert frames[0].data.shape == (128, 128)
     assert frames[0].t_utc_ns < frames[0].t_arrival_ns
-    assert frames[1].t_arrival_ns > frames[0].t_arrival_ns
+    assert (
+        frames[1].t_arrival_ns >= frames[0].t_arrival_ns
+    )  # Windows before Python 3.13 ticks at 15.6 ms
 
 
 def test_frames_survive_the_wire_format(camera: Camera) -> None:
