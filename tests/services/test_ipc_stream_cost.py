@@ -161,6 +161,41 @@ class TestTheSenderReadsAcknowledgementsLazily:
             link.sender.send(b"b")
 
 
+class TestRoom:
+    def test_an_empty_window_has_all_its_messages_and_no_byte_limit(
+        self, open_link: Callable[..., Link]
+    ) -> None:
+        link = open_link(StreamWindow(5, 1000))
+        messages, room_bytes = link.sender.room()
+        assert messages == 5
+        assert room_bytes >= 2**40  # a message larger than the window goes out alone
+
+    def test_what_is_in_flight_takes_messages_and_bytes(
+        self, open_link: Callable[..., Link]
+    ) -> None:
+        link = open_link(StreamWindow(5, 1000))
+        link.sender.send(b"x" * 300)
+        link.sender.send(b"y" * 200)
+        assert link.sender.room() == (3, 500)
+
+    def test_the_bytes_never_go_below_zero(self, open_link: Callable[..., Link]) -> None:
+        link = open_link(StreamWindow(5, 1000))
+        link.sender.send(b"x" * 3000)  # alone, so it goes out although it exceeds the window
+        assert link.sender.room() == (4, 0)
+
+    def test_the_room_grows_with_the_acknowledgements_and_reads_nothing_itself(
+        self, open_link: Callable[..., Link]
+    ) -> None:
+        link = open_link(StreamWindow(5, 1000))
+        link.sender.send(b"x" * 300)
+        reads = count_reads(link.sender)
+        assert link.sender.room() == (4, 700)
+        assert reads == []
+        assert link.receiver.recv(5.0) is not None
+        assert wait_until(lambda: (link.sender.pump(0.0), link.sender.room())[1][0] == 5, 10.0)
+        assert link.sender.room()[0] == 5
+
+
 class TestTheReceiverAcknowledgesInBatches:
     def test_it_acknowledges_after_the_batch_and_not_before(
         self, open_link: Callable[..., Link]

@@ -44,6 +44,7 @@ reader thread, and one thread at a time calls `recv`.
 from __future__ import annotations
 
 import contextlib
+import queue
 import struct
 import threading
 from collections import deque
@@ -73,6 +74,7 @@ MAX_ACK_BYTES = 64
 MAX_ACKS_PER_PUMP = 1000
 PUMP_EVERY_SENDS = 16
 DEFAULT_ACK_IDLE_S = 0.1
+NO_BYTE_LIMIT = 2**62
 DEFAULT_STREAM_BYTES = 128 * 1024 * 1024
 MAX_TAG = 2**32 - 1
 
@@ -230,6 +232,18 @@ class StreamSender:
         self.pump(0.0)
         return self._fits(nbytes)
 
+    def room(self) -> tuple[int, int]:
+        """The room in the window as the sender knows it: messages, and bytes of payload.
+
+        A message that is larger than the bytes still goes out when nothing is in flight, so the
+        bytes are `NO_BYTE_LIMIT` then. The numbers come from the acknowledgements that the
+        sender has read. The call reads no more. Use it to choose how much to put in one message.
+        """
+        count = len(self._in_flight)
+        if count == 0:
+            return self._window.messages, NO_BYTE_LIMIT
+        return self._window.messages - count, max(self._window.bytes - self._in_flight_bytes, 0)
+
     def _fits(self, nbytes: int) -> bool:
         count = len(self._in_flight)
         if count >= self._window.messages:
@@ -337,10 +351,13 @@ class StreamReceiver:
         self._window = window
         self.name = name
         self._clock = _REAL_CLOCK if clock is None else clock
-        self._cond = threading.Condition()
-        self._items: deque[StreamMessage] = deque()
+        # The reader puts messages in a queue, and `None` after the last one. A `SimpleQueue` is
+        # cheaper than a condition: the reader pays one call per message and the consumer one.
+        self._queue: queue.SimpleQueue[StreamMessage | None] = queue.SimpleQueue()
+        self._state_lock = threading.Lock()
         self._expected = 1
-        self._closed = False
+        self._finished = False  # the end marker is in the queue
+        self._ended = False  # `recv` took the end marker
         self._reason = "the stream is closed"
         self._ack_every = ack_every
         self._ack_idle_s = ack_idle_s
@@ -362,13 +379,13 @@ class StreamReceiver:
     @property
     def closed(self) -> bool:
         """Whether the connection closed. Messages that arrived before may still be queued."""
-        return self._closed
+        return self._finished
 
     @property
     def pending(self) -> int:
         """Messages that arrived and that `recv` has not returned."""
-        with self._cond:
-            return len(self._items)
+        marker = 1 if self._finished and not self._ended else 0
+        return max(self._queue.qsize() - marker, 0)
 
     def recv(self, timeout_s: float | None = None) -> StreamMessage | None:
         """Take the next message, or return `None` when `timeout_s` passes without one.
@@ -382,27 +399,28 @@ class StreamReceiver:
             None if timeout_s is None else self._clock.monotonic_ns() + round(timeout_s * NS_PER_S)
         )
         while True:
-            acknowledge = timed_out = False
-            with self._cond:
-                if self._items:
-                    message = self._items.popleft()
-                    break
-                if self._closed:
-                    raise IpcClosedError(self._reason)
+            if self._ended:
+                raise IpcClosedError(self._reason)
+            try:
+                message = self._queue.get_nowait()
+            except queue.Empty:
                 wait_s: float | None = None
                 if deadline_ns is not None:
                     wait_s = (deadline_ns - self._clock.monotonic_ns()) / NS_PER_S
-                    timed_out = wait_s <= 0
-                if not timed_out:
-                    idle_wait = bool(self._unacked) and (
-                        wait_s is None or wait_s > self._ack_idle_s
-                    )
-                    self._cond.wait(self._ack_idle_s if idle_wait else wait_s)
-                    acknowledge = idle_wait and not self._items and not self._closed
-            if acknowledge or timed_out:
-                self.flush_acks()  # a quiet stream must not leave the sender without credit
-            if timed_out:
-                return None
+                    if wait_s <= 0:
+                        self.flush_acks()  # a quiet stream must not leave the sender without credit
+                        return None
+                idle_wait = bool(self._unacked) and (wait_s is None or wait_s > self._ack_idle_s)
+                try:
+                    message = self._queue.get(timeout=self._ack_idle_s if idle_wait else wait_s)
+                except queue.Empty:
+                    if idle_wait:
+                        self.flush_acks()
+                    continue
+            if message is None:  # the end marker: the connection closed after the last message
+                self._ended = True
+                raise IpcClosedError(self._reason)
+            break
         self._unacked += 1
         self._unacked_bytes += len(message.payload) + HEADER_SIZE
         self._last_taken = message.seq
@@ -429,11 +447,12 @@ class StreamReceiver:
             self._reader.join(2.0)
 
     def _finish(self, reason: str) -> None:
-        with self._cond:
-            if not self._closed:
-                self._closed = True
-                self._reason = reason
-            self._cond.notify_all()
+        with self._state_lock:
+            if self._finished:
+                return
+            self._finished = True
+            self._reason = reason
+            self._queue.put(None)  # wakes a thread that waits in `recv`
 
     def _read_loop(self) -> None:
         reason = "the sender closed the stream"
@@ -447,14 +466,12 @@ class StreamReceiver:
                     raise IpcProtocolError("the sender sent an acknowledgement")
                 if message.seq != self._expected:
                     raise IpcProtocolError("the sender skipped or repeated a sequence number")
-                with self._cond:
-                    if len(self._items) >= self._window.messages:
-                        raise IpcProtocolError("the sender exceeded the window")
-                    self._items.append(message)
-                    self._expected += 1
-                    self.messages_received += 1
-                    self.bytes_received += len(message.payload)
-                    self._cond.notify_all()
+                if self._queue.qsize() >= self._window.messages:
+                    raise IpcProtocolError("the sender exceeded the window")
+                self._queue.put(message)
+                self._expected += 1
+                self.messages_received += 1
+                self.bytes_received += len(message.payload)
         except IpcClosedError:
             reason = self._wire.reason
         except IpcError as error:
