@@ -27,9 +27,11 @@ you call it, so the rest of the package needs no PostgreSQL driver (install the 
 driver import. A `ProgrammingError`, an `IntegrityError`, a `DataError`, or a `NotSupportedError`
 means that retrying cannot help: the sink raises `SinkError(retryable=False)`. Every other error is
 an operational problem (a lost connection, a restart, a lock timeout, a full disk), and the sink
-raises `SinkError(retryable=True)`. A message never holds a query, a row value, a password, or an
-address: the driver's message can hold all of them. The sink reports the class of the error, the
-SQLSTATE, and the primary message of the server.
+raises `SinkError(retryable=True)`. A message never holds a query, a row value, a password, an
+address, or a user name: the driver's message and the server's message can hold all of them, and
+the message reaches the `event` table and every other sink. The sink reports the class of the
+error and its SQLSTATE (for example `28P01` for a wrong password and `42501` for a missing
+privilege), and it writes the primary message of the server to the debug log only.
 """
 
 from __future__ import annotations
@@ -164,16 +166,18 @@ def _breaks_connection(error: BaseException) -> bool:
 
 
 def _describe(error: BaseException) -> str:
-    """Name the class, the SQLSTATE, and the server's primary message. Never the query or values."""
+    """Name the class of the error and its SQLSTATE. Never the query, a value, or a name."""
     parts = [type(error).__name__]
     state = getattr(error, "sqlstate", None)
     if isinstance(state, str) and state:
         parts.append(f"SQLSTATE {state}")
-    diagnostics = getattr(error, "diag", None)
-    primary = getattr(diagnostics, "message_primary", None)
-    if isinstance(primary, str) and primary:
-        parts.append(" ".join(primary.split())[:_MESSAGE_CHARS])
     return ", ".join(parts)
+
+
+def _server_message(error: BaseException) -> str:
+    """The primary message of the server, for the debug log only. It can name a user or a host."""
+    primary = getattr(getattr(error, "diag", None), "message_primary", None)
+    return " ".join(primary.split())[:_MESSAGE_CHARS] if isinstance(primary, str) else ""
 
 
 # --- the sink -----------------------------------------------------------------------------------
@@ -326,6 +330,9 @@ class TimescaleSink:
         logger.warning(
             "sink %s: a batch of %s rows failed: %s", self._name, record_type, _describe(error)
         )
+        message = _server_message(error)
+        if message:
+            logger.debug("sink %s: the server said: %s", self._name, message)
         connection = self._connection
         if connection is not None and not _breaks_connection(error):
             try:

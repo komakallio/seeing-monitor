@@ -421,22 +421,27 @@ class TestFailures:
         assert caught.value.retryable is False
         assert database.log == []
 
-    def test_a_message_names_the_error_class_the_state_and_the_server_message_only(self) -> None:
+    def test_a_message_names_the_error_class_and_the_state_and_nothing_the_server_said(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         database = FakeDatabase()
         error = fake_db.UndefinedTable(
             'relation "event" does not exist; the query was INSERT INTO event ... '
             "Failing row contains (PRIVATE-DETAIL)",
-            "relation does not exist",
+            'role "private-user" has no table',
         )
         database.batch_failures.append(error)
-        with pytest.raises(SinkError) as caught:
+        with caplog.at_level("DEBUG"), pytest.raises(SinkError) as caught:
             make_sink(database).send("event", rows_of(make_event(T0)))
         text = str(caught.value)
         assert "UndefinedTable" in text
         assert "SQLSTATE 42P01" in text
-        assert "relation does not exist" in text
-        assert "PRIVATE-DETAIL" not in text
-        assert "INSERT" not in text
+        for private in ("PRIVATE-DETAIL", "private-user", "INSERT", "has no table"):
+            assert private not in text
+        # The server's message goes to the debug log, and the query and the row values never do.
+        assert "private-user" in caplog.text
+        assert "PRIVATE-DETAIL" not in caplog.text
+        assert "INSERT" not in caplog.text
 
     def test_a_connection_error_message_holds_no_address_or_credential(self) -> None:
         database = FakeDatabase()

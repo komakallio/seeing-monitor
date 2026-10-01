@@ -460,6 +460,8 @@ class StoreSnapshot(_ReadView):
     that happened since the one before, so a count and a list that you read one after the other
     can disagree while a writer commits. Read them from one snapshot when they must agree. Use a
     snapshot in one thread, and finish it soon, because it holds one of the pooled connections.
+    Read through the snapshot inside the block. A read through the store itself needs a second
+    pooled connection, and it waits for ever when `max_readers` is 1.
     """
 
     def __init__(self, connection: sqlite3.Connection) -> None:
