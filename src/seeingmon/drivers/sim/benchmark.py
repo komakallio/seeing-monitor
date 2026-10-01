@@ -3,8 +3,11 @@
 Run `python -m seeingmon.drivers.sim.benchmark` to print the table, or call `run_benchmarks`.
 The benchmark reads frames from a `VirtualClock`, so it measures the cost of rendering only. A
 real run on a `SystemClock` also waits for each frame to be due, and the simulator keeps up in real
-time when it renders faster than the camera would: 88 fps for bin1 with a 128-row ROI, and 360 fps
-for bin2 with a 64-row ROI at a short exposure.
+time when it renders faster than the camera would deliver: 88 fps for bin1 with a 128-row ROI, and
+360 fps for bin2 with a 64-row ROI at a short exposure. On a development machine (one core of a
+desktop processor), bin1 keeps up with about 100 fps for the wave optics and 170 fps for the
+Gaussian mixture. Bin2 does not: it renders 160 and 270 fps, so a real-time run delivers fewer
+frames than the camera would.
 
 Each case reads frames of Polaris with the default atmosphere (three layers, an outer scale of
 20 m) and a synthetic star field. `wall` times use the clock on the wall, and `cpu` times use the
