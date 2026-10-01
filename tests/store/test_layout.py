@@ -109,8 +109,8 @@ class TestReferences:
             "../outside.txt",
             "survey/../../outside.txt",
             "/etc/passwd",
-            "C:/Windows/system.ini",
-            "C:\\Windows\\system.ini",
+            "C:/frame.fits",  # a drive letter
+            "C:\\frame.fits",
             "survey\\x.fits",
         ],
     )
