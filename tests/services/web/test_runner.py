@@ -161,7 +161,7 @@ def start(make_app: Callable[..., FastAPI], settings: WebSettings) -> Callable[.
     ) -> Running:
         runner_options = {
             name: values.pop(name)
-            for name in ("notifier", "probe_timeout_s", "watchdog_interval_s")
+            for name in ("notifier", "probe_timeout_s", "watchdog_interval_s", "on_started")
             if name in values
         }
         chosen = WebSettings.model_validate(
@@ -347,6 +347,29 @@ def test_the_url_needs_the_bound_port() -> None:
     runner = WebRunner(FastAPI(), WebSettings(port=0))
     with pytest.raises(RuntimeError, match="not bound"):
         _ = runner.url
+
+
+def test_the_started_hook_runs_once_when_the_server_accepts_connections(
+    start: Callable[..., Running],
+) -> None:
+    calls: list[float] = []
+    with start(on_started=lambda: calls.append(time.monotonic())) as server:
+        assert len(calls) == 1
+        assert fetch(LOOPBACK, server.port, f"{API}/status")[0] == 200
+        time.sleep(0.2)
+        assert len(calls) == 1  # it never runs again
+
+
+def test_a_failing_started_hook_is_logged_and_the_server_goes_on(
+    start: Callable[..., Running], caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken() -> None:
+        raise RuntimeError("the hook broke")
+
+    with caplog.at_level("ERROR"), start(on_started=broken) as server:
+        assert fetch(LOOPBACK, server.port, f"{API}/status")[0] == 200
+    assert any("on_started hook failed" in record.getMessage() for record in caplog.records)
+    assert server.exit_code == 0
 
 
 # --- Systemd ---------------------------------------------------------------------------------

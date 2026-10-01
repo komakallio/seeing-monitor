@@ -1,6 +1,7 @@
 """The `seeingmon web` commands: serve the API and the UI, print the OpenAPI document, hash a token.
 
     seeingmon web                      serve on the addresses of the [web] section
+    seeingmon web --demo               serve synthetic data and a fake core, and print the URL
     seeingmon web openapi              print the OpenAPI document (--output FILE writes it,
                                        --check FILE compares it)
     seeingmon web hash-token           hash an API token for the [auth] section
@@ -10,6 +11,11 @@ read-only, so it can start before `core` has made the database. It talks to `cor
 connection layer of `[services]`, and it sends `READY=1` and the watchdog heartbeat to systemd when
 the unit runs with `Type=notify` (see `seeingmon.services.web.runner`). Stop it with SIGTERM or
 Ctrl+C.
+
+`seeingmon web --demo` needs no camera, store, `core`, or token hash. It serves 24 hours of
+synthetic data and a fake `core` that streams a synthetic star field (see
+`seeingmon.services.web.demo`), on the addresses of the same layered `[web]` section, and it prints
+the URL as the only line on the standard output. The commands of the demo take the token `demo`.
 
 `hash-token` never takes the token on the command line, where `ps` would show it. It reads the
 token from the standard input, or from a hidden prompt on a terminal, and an empty answer (or
@@ -54,13 +60,23 @@ def register(subparsers: Subparsers) -> None:
         help="Run the web process (the REST API and the UI), or use one of its tools.",
         handler=_serve,
     )
+    web.add_argument(
+        "--demo",
+        action="store_true",
+        help="serve synthetic data and a fake core, and print the URL. It needs no camera, "
+        "store, or token hash. The commands take the token 'demo'.",
+    )
     web.add_argument("--port", type=_port, help="listen on this port (default: [web] port)")
     web.add_argument(
         "--local-config",
         type=Path,
         help="read this file instead of local/config.toml (an absent file is ignored)",
     )
-    web.add_argument("--log-level", choices=LOG_LEVELS, help="the log level (default: info)")
+    web.add_argument(
+        "--log-level",
+        choices=LOG_LEVELS,
+        help="the log level (default: info, and warning for --demo)",
+    )
     commands = web.add_subparsers(dest="web_command", metavar="<subcommand>")
     openapi = commands.add_parser(
         "openapi",
@@ -195,7 +211,46 @@ def _stop_on_signals(request_stop: Callable[[str], None]) -> None:
             signal.signal(number, handler)
 
 
+def _serve_demo(args: argparse.Namespace) -> int:
+    """Serve the demo: synthetic data, a fake core, and the layered `[web]` settings."""
+    _configure_logging(args.log_level or "warning")
+    try:
+        from seeingmon.config import ConfigError, load_config
+        from seeingmon.profile import ProfileError
+        from seeingmon.profile.summary import profile_summary
+        from seeingmon.services.web.config import WebSettings
+        from seeingmon.services.web.demo import build_demo
+        from seeingmon.services.web.runner import BindError, WebRunner
+
+        try:
+            config = load_config(local_file=args.local_config)
+            web = config.section("web", WebSettings)
+            profile = profile_summary(config.profile)
+            view = config.effective(redact=True, omit_site=True)
+        except (ConfigError, ProfileError) as error:
+            raise CliError(str(error)) from None
+        demo = build_demo(web, profile=profile, config=view)
+        runners: list[WebRunner] = []
+
+        def print_url() -> None:
+            print(runners[0].url, flush=True)
+
+        runner = WebRunner(demo.app, web, port=args.port, on_started=print_url)
+        runners.append(runner)
+        _stop_on_signals(runner.request_stop)
+        try:
+            return runner.run()
+        except BindError as error:
+            raise CliError(str(error)) from None
+        finally:
+            demo.close()
+    except ModuleNotFoundError as error:
+        raise _explain(error) from None
+
+
 def _serve(args: argparse.Namespace) -> int:
+    if args.demo:
+        return _serve_demo(args)
     _configure_logging(args.log_level or "info")
     try:
         from seeingmon.config import ConfigError

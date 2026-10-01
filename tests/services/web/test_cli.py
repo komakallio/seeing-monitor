@@ -520,6 +520,93 @@ def test_a_malformed_token_hash_is_reported(
     assert "hash-token" in err
 
 
+# --- demo ------------------------------------------------------------------------------------
+
+
+def test_the_demo_prints_only_the_url_and_serves_synthetic_data(
+    tmp_path: Path, recorded_runners: list[WebRunner], capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["web", "--demo", "--port", "0", "--local-config", str(tmp_path / "none.toml")]
+    capsys.readouterr()
+    with Serving(recorded_runners, argv) as running:
+        port = running.port
+        status, _headers, body = fetch(LOOPBACK, port, f"{API}/status")
+        document = json.loads(body)
+        assert status == 200
+        assert document["demo"] is True
+        assert document["station_id"] == "demo-station"
+        assert document["health"]["status"] == "healthy"
+        assert fetch(LOOPBACK, port, "/")[0] == 200
+        assert fetch(LOOPBACK, port, f"{API}/seeing/latest")[0] == 200
+        captured = capsys.readouterr()
+        assert captured.out == f"http://{LOOPBACK}:{port}/\n"
+        assert captured.err == ""
+    assert running.code == 0
+
+
+def test_the_demo_commands_take_the_demo_token(
+    tmp_path: Path, recorded_runners: list[WebRunner]
+) -> None:
+    argv = ["web", "--demo", "--port", "0", "--local-config", str(tmp_path / "none.toml")]
+    start = f"{API}/alignment/start"
+    with Serving(recorded_runners, argv) as running:
+        json_type = {"Content-Type": "application/json"}
+        wrong = {**json_type, "Authorization": "Bearer nope"}
+        assert (
+            fetch(LOOPBACK, running.port, start, method="POST", headers=wrong, body=b"")[0] == 401
+        )
+        right = {**json_type, "Authorization": "Bearer demo"}
+        accepted = fetch(LOOPBACK, running.port, start, method="POST", headers=right, body=b"")
+        assert accepted[0] == 200
+        assert json.loads(accepted[2])["accepted"] is True
+
+
+def test_the_demo_reads_the_host_settings_from_the_configuration(
+    tmp_path: Path, recorded_runners: list[WebRunner]
+) -> None:
+    config = tmp_path / "local.toml"
+    config.write_text(
+        '[web]\nport = 0\nallowed_hosts = ["pi.example"]\nextra_bind_addresses = ["127.0.0.1"]\n',
+        encoding="utf-8",
+    )
+    with Serving(recorded_runners, ["web", "--demo", "--local-config", str(config)]) as running:
+        assert running.runners[0].addresses == (LOOPBACK,)
+        assert fetch(LOOPBACK, running.port, f"{API}/status", host="pi.example")[0] == 200
+        assert fetch(LOOPBACK, running.port, f"{API}/status", host="other.example")[0] == 400
+
+
+def test_the_demo_removes_its_temporary_folder_when_it_stops(
+    tmp_path: Path, recorded_runners: list[WebRunner], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    made: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def tracked(**options: Any) -> str:
+        path = str(real(**options))
+        made.append(Path(path))
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracked)
+    argv = ["web", "--demo", "--port", "0", "--local-config", str(tmp_path / "none.toml")]
+    with Serving(recorded_runners, argv):
+        assert len(made) == 1
+        assert made[0].exists()
+    assert not made[0].exists()
+
+
+def test_a_bad_web_section_stops_the_demo_with_a_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "local.toml"
+    config.write_text('[web]\nbind_address = "0.0.0.0"\n', encoding="utf-8")
+    code, out, err = run_cli(capsys, "web", "--demo", "--local-config", str(config))
+    assert code == 1
+    assert out == ""
+    assert "bind_address" in err
+
+
 def test_the_module_imports_no_web_library_at_the_top() -> None:
     """`seeingmon --help` must stay fast and work without the `web` extra."""
     import subprocess

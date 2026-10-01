@@ -34,7 +34,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import uvicorn
 from starlette.types import ASGIApp
@@ -160,6 +160,7 @@ class WebRunner:
         probe_path: str = PROBE_PATH,
         probe_timeout_s: float = PROBE_TIMEOUT_S,
         watchdog_interval_s: float | None = None,
+        on_started: Callable[[], None] | None = None,
     ) -> None:
         self._app = app
         self._settings = settings
@@ -169,6 +170,7 @@ class WebRunner:
         self._probe_path = probe_path
         self._probe_timeout_s = probe_timeout_s
         self._watchdog_interval_s = watchdog_interval_s or self._notifier.watchdog_interval_s
+        self._on_started = on_started
         self._server: uvicorn.Server | None = None
         self._stop_requested = False
         self.port: int | None = None
@@ -245,6 +247,15 @@ class WebRunner:
                 await watching
         return 0 if server.started else EXIT_STARTUP_FAILURE
 
+    def _announce(self) -> None:
+        """Call the `on_started` hook. A failure in the hook never stops the server."""
+        if self._on_started is None:
+            return
+        try:
+            self._on_started()
+        except Exception:
+            _log.exception("the on_started hook failed")
+
     async def _watch(self, server: uvicorn.Server) -> None:
         """Tell systemd about the start, the heartbeat, and the stop, and set `started`."""
         assert self.port is not None
@@ -259,6 +270,7 @@ class WebRunner:
                 started = True
                 self.started.set()
                 notifier.ready(f"serving {len(self._addresses)} address(es)")
+                self._announce()
                 next_beat = time.monotonic()
             if server.should_exit and not stopping:
                 stopping = True

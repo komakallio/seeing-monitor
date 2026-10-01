@@ -13,15 +13,21 @@ modules that need them. The modules are:
   codecs, and the alignment frame format). It needs no FastAPI, so `core` can import it.
 - `core_client`: the `CoreClient` protocol, `RpcCoreClient`, and `FakeCoreClient`.
 - `data`: read-only access to the records, with the aggregation of the history.
+- `reader`: a store reader that opens the database on demand, so `web` can start before `core`.
 - `images`: read-only access to the preview and FITS files.
 - `health`: the health verdict.
 - `privacy`: the scrubbing of text and of the configuration.
 - `live`: the alignment hub, which shares one frame stream between many viewers.
+- `hosts`: the rule for the `Host` and `Origin` of a request (`allowed_hosts`).
 - `models`, `schemas`, `errors`, `middleware`, `context`, and `api`: the request and response
-  models, the OpenAPI components of the records, the error shape, the middleware, the access
-  rule, and the routes.
+  models, the OpenAPI components of the records, the error shape, the middleware (the host
+  check, the headers, the body limit, and compression), the access rule, and the routes.
 - `app`: `create_app`, which builds the FastAPI application and serves the static UI.
 - `openapi`: the OpenAPI description that `docs/openapi.json` holds.
+- `runner`: `WebRunner`, which binds one socket for each address, serves them with uvicorn, and
+  talks to systemd.
+- `cli`: the `seeingmon web`, `web openapi`, and `web hash-token` commands.
+- `demo`: the synthetic data, the fake `core`, and the app of `seeingmon web --demo`.
 """
 
 from __future__ import annotations
