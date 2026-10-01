@@ -186,6 +186,19 @@ class TestAReplay:
         )
         assert result.data["frames"] == 200
 
+    def test_each_frame_tells_the_watchdog_that_the_scheduler_thread_works(
+        self, build: Build
+    ) -> None:
+        clock = VirtualClock(START)
+        beats: list[int] = []
+        result = run(
+            build(clock, beat=lambda: beats.append(1)),
+            clock,
+            QueueReplay(source="night.ser", speed=0, options={"max_frames": 200}),
+        )
+        assert result.data["frames"] == 200
+        assert len(beats) == 200
+
     def test_a_preempting_command_ends_the_replay_at_once(self, build: Build) -> None:
         clock = VirtualClock(START)
         # The fake context stops when its camera has read `stop_after` frames. A replay reads none.

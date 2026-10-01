@@ -85,8 +85,20 @@ class CoreSettings(SectionModel):
     # How long the shutdown may take before `core` gives up on a thread.
     shutdown_timeout_s: float = Field(30.0, gt=0)
 
+    # The watchdog of systemd. `core` stops sending `WATCHDOG=1` when the scheduler thread makes no
+    # progress for `scheduler_stall_s`, outside a call of the camera driver. A driver call has its
+    # own limit, `driver_call_limit_s`, which exceeds the longest timeout of the remote driver. A
+    # call that outlasts the limit counts as a hang.
+    scheduler_stall_s: float = Field(60.0, gt=0)
+    driver_call_limit_s: float = Field(240.0, gt=0)
+
     # The most RPC clients at once: `web`, and the commands `burst`, `sweep`, and `replay`.
     max_rpc_connections: int = Field(8, ge=1, le=64)
+
+    # A JSON file with a pointing solution (see `seeingmon.services.simsky.write_seed`) that
+    # starts the pointing tracker. A real installation gets its first solution from a plate
+    # solver, and a development run on a simulated sky needs no solver with this file.
+    seed_solution_file: str = ""
 
     survey_worker: SurveyWorkerSettings = Field(default_factory=SurveyWorkerSettings)
     escalation: EscalationSettings = Field(default_factory=EscalationSettings)

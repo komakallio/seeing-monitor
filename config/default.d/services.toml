@@ -118,8 +118,19 @@ run_record_wait_s = 30.0
 # How long the shutdown may take before core gives up on a thread.
 shutdown_timeout_s = 30.0
 
+# The watchdog of systemd. Core stops sending WATCHDOG=1 when the scheduler thread makes no
+# progress for scheduler_stall_s, outside a call of the camera driver. A driver call has its own
+# limit, driver_call_limit_s, which exceeds the longest timeout of the remote driver.
+scheduler_stall_s = 60.0
+driver_call_limit_s = 240.0
+
 # The most RPC clients at once: web, and the commands burst, sweep, and replay.
 max_rpc_connections = 8
+
+# A JSON file with a pointing solution that starts the pointing tracker. It stays empty: a real
+# installation gets its first solution from a plate solver. The dev launcher sets it for a
+# simulated sky.
+seed_solution_file = ""
 
 [services.core.survey_worker]
 # `process` runs the survey analysis in a worker process at a lower priority. On Linux the worker

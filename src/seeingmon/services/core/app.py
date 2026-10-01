@@ -40,6 +40,7 @@ records, and the SQM-LE readings become `reference` records.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -66,7 +67,6 @@ from seeingmon.scheduler import (
     build_scheduler,
     load_site,
 )
-from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.alignment.helper import AlignmentHelper, Solver
 from seeingmon.services.core.alignment.solve import QuickSolver
@@ -81,6 +81,7 @@ from seeingmon.services.core.driver_proxy import InfoDriver
 from seeingmon.services.core.escalation import Escalator
 from seeingmon.services.core.events import EventPump, EventSource, EventWriter
 from seeingmon.services.core.health import HealthReporter, build_run_record
+from seeingmon.services.core.liveness import BeatClock, Liveness
 from seeingmon.services.core.periodic import PeriodicTasks
 from seeingmon.services.core.rpc import CoreRpc
 from seeingmon.services.core.settings import AlignmentSettings, ReplaySettings
@@ -89,6 +90,7 @@ from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.ipc.server import IpcServer
 from seeingmon.services.ipc.stream import StreamWindow
+from seeingmon.services.notify import SystemdNotifier
 from seeingmon.services.remote import RemoteCameraDriver
 from seeingmon.services.web.contract import ALIGNMENT_CHANNEL, RPC_CHANNEL
 from seeingmon.sinks.base import Sink
@@ -101,6 +103,7 @@ EXIT_THREAD_DIED = 71
 INSTANCE_BYTES = 8
 SUPERVISOR_SLICE_S = 1.0
 JOIN_SLICE_S = 5.0
+STATUS_INTERVAL_S = 1.0
 
 
 class Hardware(EventSource, Protocol):
@@ -222,6 +225,11 @@ class CoreApp:
             source="acquire",
         )
 
+        # The scheduler thread proves that it lives through the clock it reads and the camera calls
+        # it makes. The heartbeat to systemd depends on that proof.
+        self.liveness = Liveness(clock, self.settings.scheduler_stall_s)
+        self.beat_clock = BeatClock(clock, self.liveness)
+
         # The camera, as the scheduler sees it, and as the escalation and the health see it.
         self.remote: Hardware | None
         raw: CameraDriver
@@ -230,7 +238,12 @@ class CoreApp:
         else:
             remote = RemoteCameraDriver.from_config(services, clock=clock)
             raw, self.remote = remote, remote
-        self.driver = InfoDriver(raw, self._on_camera_opened)
+        self.driver = InfoDriver(
+            raw,
+            self._on_camera_opened,
+            liveness=self.liveness,
+            call_limit_s=self.settings.driver_call_limit_s,
+        )
 
         self.fast = parts.fast or create_fast_analyzer(self.profile, fast_config, self.station_id)
         self._build_survey()
@@ -238,7 +251,7 @@ class CoreApp:
         self._build_alignment()
         self.escalator = Escalator(
             writer=self.events,
-            clock=clock,
+            clock=self.beat_clock,
             settings=self.settings.escalation,
             restart_acquire=None if self.remote is None else self.remote.request_restart,
             acquire_connected=None if self.remote is None else self._acquire_connected,
@@ -253,7 +266,7 @@ class CoreApp:
             pointing=self.pointing,
             records=storage.store.as_record_writer(),
             metrics=storage.segments,
-            clock=clock,
+            clock=self.beat_clock,
             escalate=self.escalator,
             context_provider=ContextProvider(
                 clock=clock,
@@ -302,9 +315,26 @@ class CoreApp:
             )
             self.survey = analyzer
             self.tracker = analyzer.tracker
+            self._load_seed(self.tracker)
         self.pointing: PointingProvider = parts.pointing or (
             self.tracker if self.tracker is not None else _NoPointing()
         )
+
+    def _load_seed(self, tracker: Any) -> None:
+        """Start the tracker with the solution of `seed_solution_file`, when one is configured."""
+        name = self.settings.seed_solution_file
+        if not name:
+            return
+        from seeingmon.survey.pointing import PointingSolution
+
+        try:
+            data = json.loads(Path(name).read_text(encoding="utf-8"))
+            tracker.update(PointingSolution.from_dict(data))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ConfigError(
+                f"cannot read the seed solution: {type(error).__name__}: {error}"
+            ) from None
+        _log.info("the pointing tracker starts with the seed solution")
 
     def _build_hardware(self) -> None:
         parts, config, clock = self.parts, self.config, self.clock
@@ -375,7 +405,7 @@ class CoreApp:
             BurstHandler(
                 layout=self.storage.layout,
                 profile=self.profile,
-                clock=self.clock,
+                clock=self.beat_clock,
                 capture_allowed=self.storage.capture_allowed,
                 max_duration_s=commissioning.burst_max_duration_s,
             ),
@@ -391,6 +421,7 @@ class CoreApp:
                 store_config=self.config.section("store", StoreConfig),
                 recordings_dir=self.recordings_dir,
                 replays_dir=commissioning.replays_dir,
+                beat=self.liveness.beat,
             ),
         )
 
@@ -431,8 +462,9 @@ class CoreApp:
         if self.pump is not None:
             self.tasks.add("events", self.settings.events_interval_s, self._poll_events)
         self.tasks.add("run_record", 1.0, self._run_record_fallback)
-        heartbeat_s = (self.notifier.watchdog_interval_s or 30.0) / 2
-        self.tasks.add("heartbeat", heartbeat_s, self._heartbeat)
+        self.tasks.add("status", STATUS_INTERVAL_S, self._update_status)
+        if self.notifier.watchdog_interval_s is not None:  # systemd asked for a heartbeat
+            self.tasks.add("heartbeat", self.notifier.watchdog_interval_s, self._heartbeat)
 
     def _build_server(self) -> None:
         services = self.services
@@ -497,15 +529,42 @@ class CoreApp:
         assert self.storage is not None
         record = self.health.build()
         self.storage.store.write(record)
-        self.notifier.status(f"{record.state}, {record.dropped_total or 0} frames dropped")
 
     def _poll_events(self) -> None:
         if self.pump is not None:
             self.pump.poll()
 
+    def status_text(self) -> str:
+        """The one line that `systemctl status` shows: the state, and what is wrong."""
+        status = self.scheduler.status()
+        parts = [status.state]
+        if status.degraded:
+            parts.append("the camera has failed")
+        elif status.fault.failures:
+            parts.append("the camera recovers")
+        if self.remote is not None and not self.remote.connected:
+            parts.append("acquire is not connected")
+        if self.clock.status().synchronized is False:
+            parts.append("the clock is not synchronized")
+        return ", ".join(parts)
+
+    def _update_status(self) -> None:
+        """Send the status to systemd when it changes. The text has no counters."""
+        self.notifier.status_changed(self.status_text())
+
+    def scheduler_alive(self) -> bool:
+        """Whether the scheduler makes progress. The watchdog of systemd depends on it."""
+        thread = self._threads.get("core-scheduler")
+        if thread is not None and not thread.is_alive():
+            return False
+        return self.liveness.alive()
+
     def _heartbeat(self) -> None:
-        if not self._fatal:
-            self.notifier.watchdog()
+        """Send `WATCHDOG=1`, but only while the scheduler lives. A stuck scheduler gets no
+        heartbeat, and systemd restarts `core` when the interval passes."""
+        if self._fatal or not self.scheduler_alive():
+            return
+        self.notifier.watchdog()
 
     # --- Running ---------------------------------------------------------------------------
 
@@ -572,7 +631,8 @@ class CoreApp:
 
     def tick(self) -> int:
         """Do the periodic work that the supervisor thread does. Returns how many tasks ran."""
-        return self.tasks.run_due()
+        with self.liveness.quiet():  # the supervisor proves nothing about the scheduler
+            return self.tasks.run_due()
 
     def _spawn(self, name: str, target: Callable[[], None], *, fatal: bool = False) -> None:
         def main() -> None:
@@ -599,6 +659,7 @@ class CoreApp:
         thread.start()
 
     def _run_scheduler(self) -> None:
+        self.liveness.bind_thread()  # the watchdog counts the progress of this thread
         self.scheduler.run(self._stop_event)
 
     def _run_housekeeping(self) -> None:
@@ -626,8 +687,8 @@ class CoreApp:
 
     def run(self) -> int:
         """Start, wait for a stop request or a dead thread, and stop. Returns the exit code."""
-        self.start()
         try:
+            self.start()
             while not self._stop_event.wait(0.5):
                 pass
         finally:

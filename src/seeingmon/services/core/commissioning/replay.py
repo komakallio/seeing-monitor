@@ -31,7 +31,7 @@ import itertools
 import logging
 import math
 import statistics
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +115,10 @@ def median_of(windows: list[SeeingWindowRecord], name: str) -> float | None:
     return statistics.median(values) if values else None
 
 
+def _no_beat() -> None:
+    """The default for `beat`: tell nobody."""
+
+
 class ReplayHandler:
     """Runs `replay` tasks. Register it with `Scheduler.register_handler("replay", handler)`."""
 
@@ -129,6 +133,7 @@ class ReplayHandler:
         store_config: StoreConfig,
         recordings_dir: Path | None,
         replays_dir: str = "replays",
+        beat: Callable[[], None] | None = None,
     ) -> None:
         self._layout = layout
         self._profile = profile
@@ -138,6 +143,7 @@ class ReplayHandler:
         self._store_config = store_config
         self._recordings_dir = recordings_dir
         self._replays_dir = replays_dir
+        self._beat = beat or _no_beat
 
     def _failed(self, task: CommissionTask, started_ns: int, summary: str) -> CommissionResult:
         return CommissionResult(
@@ -224,6 +230,7 @@ class ReplayHandler:
                         frame = driver.read_frame(30.0)
                     except ReplayFinishedError:
                         break
+                    self._beat()  # the watchdog sees that the scheduler thread works
                     update = analyzer.push(frame)
                     windows += update.windows
                     frames += 1

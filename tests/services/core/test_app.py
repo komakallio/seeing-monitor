@@ -16,10 +16,10 @@ from seeingmon.drivers.base import CameraTimeoutError
 from seeingmon.hardware.events import HardwareEvent
 from seeingmon.records import HealthRecord, RunRecord
 from seeingmon.scheduler.levels import EscalationLevel
-from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.app import EXIT_THREAD_DIED, CoreApp, CoreParts
 from seeingmon.services.ipc.keys import ConnectionKey
+from seeingmon.services.notify import SystemdNotifier
 from seeingmon.store.db import Store
 from seeingmon.testing import FakeCameraDriver
 

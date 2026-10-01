@@ -22,10 +22,10 @@ from seeingmon.hardware.events import HardwareEvent
 from seeingmon.records import Record
 from seeingmon.scheduler.levels import EscalationLevel
 from seeingmon.services.acquire.events import EventBatch, LoggedEvent
-from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.app import CoreApp, CoreParts
 from seeingmon.services.ipc.keys import ConnectionKey
+from seeingmon.services.notify import SystemdNotifier
 from seeingmon.store.db import StoreReader, record_from_row
 from seeingmon.testing import (
     FakeCameraDriver,
@@ -34,6 +34,7 @@ from seeingmon.testing import (
     FakeSurveyAnalyzer,
 )
 from tests.scheduler.helpers import make_frame
+from tests.services.addresses import unique_address
 
 # A clear autumn evening at a synthetic site (55 degrees north on the prime meridian).
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
@@ -213,7 +214,12 @@ def build_rig(
     virtual = VirtualClock(start_utc_ns)
     use_clock: Clock = clock or virtual
     config = make_config(tmp_path, extra=config_extra, analysis_window_s=analysis_window_s)
-    services = config.section("services", ServicesConfig)
+    services = config.section("services", ServicesConfig).model_copy(
+        update={
+            "acquire_address": unique_address("acquire"),
+            "core_address": unique_address("core"),
+        }
+    )
     camera = FakeCameraDriver(use_clock, full_frames={"bin1": (8288, 5644), "bin2": SMALL_BIN2})
     fast = FakeFastAnalyzer(station_id="test", profile_id=config.profile.id, window_s=10.0)
     survey = FakeSurveyAnalyzer(station_id="test", profile_id=config.profile.id)
@@ -239,7 +245,7 @@ def build_rig(
         use_clock,
         key or ConnectionKey.from_text("a-test-key-of-more-than-32-characters"),
         parts=core_parts,
-        endpoint=endpoint,
+        endpoint=endpoint or services.endpoint("core"),
         threads=threads,
     )
     return CoreRig(app, virtual, camera, fast, survey, pointing, remote, tmp_path)
