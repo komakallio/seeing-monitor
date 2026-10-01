@@ -17,7 +17,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, BinaryIO, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -355,6 +355,25 @@ def _read_image(header: Header, payload: bytes) -> npt.NDArray[Any]:
     return raw.astype(raw.dtype.newbyteorder("="))
 
 
+def _data_size(header: Header) -> int:
+    """The size of the data of an HDU in bytes, before the padding."""
+    naxis = _int_card(header, "NAXIS", 0)
+    size = 0
+    if naxis > 0:
+        size = abs(_int_card(header, "BITPIX")) // 8
+        for axis in range(1, naxis + 1):
+            size *= _int_card(header, f"NAXIS{axis}")
+    return size + _int_card(header, "PCOUNT", 0)
+
+
+def _hdu_data(header: Header, payload: bytes) -> dict[str, npt.NDArray[Any]]:
+    if header.get("XTENSION") == "BINTABLE":
+        return _read_table(header, payload)
+    if _int_card(header, "NAXIS", 0) == 2:
+        return {"image": _read_image(header, payload)}
+    return {}
+
+
 def read_fits(path: str | os.PathLike[str]) -> list[Hdu]:
     """Read every HDU of a FITS file."""
     buffer = Path(path).read_bytes()
@@ -364,24 +383,30 @@ def read_fits(path: str | os.PathLike[str]) -> list[Hdu]:
     offset = 0
     while offset < len(buffer):
         header, offset = _read_header(buffer, offset)
-        naxis = _int_card(header, "NAXIS", 0)
-        size = 0
-        if naxis > 0:
-            size = abs(_int_card(header, "BITPIX")) // 8
-            for axis in range(1, naxis + 1):
-                size *= _int_card(header, f"NAXIS{axis}")
-        size += _int_card(header, "PCOUNT", 0)
+        size = _data_size(header)
         payload = buffer[offset : offset + size]
         if len(payload) < size:
             raise FitsError("the file ends inside the data")
         offset += size + (-size % BLOCK)
-        data: dict[str, npt.NDArray[Any]] = {}
-        if header.get("XTENSION") == "BINTABLE":
-            data = _read_table(header, payload)
-        elif naxis == 2:
-            data = {"image": _read_image(header, payload)}
-        units.append(Hdu(header, data))
+        units.append(Hdu(header, _hdu_data(header, payload)))
     return units
+
+
+def _read_header_at(handle: BinaryIO, offset: int) -> tuple[Header, int]:
+    """Read the header that starts at `offset`. Returns it and the offset after its last block."""
+    handle.seek(offset)
+    buffer = bytearray()
+    while True:
+        block = handle.read(BLOCK)
+        if len(block) < BLOCK:
+            raise FitsError("the file ends inside a header")
+        buffer += block
+        if offset == 0 and len(buffer) == BLOCK and not buffer.startswith(b"SIMPLE"):
+            raise FitsError("the file is not FITS (it does not start with SIMPLE)")
+        if any(block[i : i + CARD][:8].strip() == b"END" for i in range(0, BLOCK, CARD)):
+            break
+    header, _ = _read_header(bytes(buffer), 0)
+    return header, offset + len(buffer)
 
 
 def read_header(path: str | os.PathLike[str]) -> Header:
@@ -389,32 +414,49 @@ def read_header(path: str | os.PathLike[str]) -> Header:
 
     The function reads only the header blocks, so it is cheap for a file that holds a large image.
     """
-    buffer = bytearray()
     with Path(path).open("rb") as handle:
-        while True:
-            block = handle.read(BLOCK)
-            if len(block) < BLOCK:
-                raise FitsError("the file ends inside a header")
-            buffer += block
-            if not buffer.startswith(b"SIMPLE"):
-                raise FitsError("the file is not FITS (it does not start with SIMPLE)")
-            if any(block[i : i + CARD][:8].strip() == b"END" for i in range(0, BLOCK, CARD)):
-                break
-    header, _ = _read_header(bytes(buffer), 0)
+        header, _ = _read_header_at(handle, 0)
     return header
+
+
+def read_hdu(path: str | os.PathLike[str], index: int = 0) -> Hdu:
+    """Read one HDU. The function skips the data of the HDUs before it without reading them."""
+    with Path(path).open("rb") as handle:
+        size_of_file = os.fstat(handle.fileno()).st_size
+        offset = 0
+        for position in range(index + 1):
+            if offset >= size_of_file:
+                raise FitsError(f"the file has no HDU {index}")
+            header, data_offset = _read_header_at(handle, offset)
+            size = _data_size(header)
+            if position == index:
+                payload = handle.read(size)
+                if len(payload) < size:
+                    raise FitsError("the file ends inside the data")
+                return Hdu(header, _hdu_data(header, payload))
+            offset = data_offset + size + (-size % BLOCK)
+    raise FitsError(f"the file has no HDU {index}")  # unreachable: the loop returns
 
 
 def read_image(path: str | os.PathLike[str]) -> tuple[Header, npt.NDArray[Any]]:
     """The header and the 2-D image of the primary HDU. Raises `FitsError` when it has none."""
-    unit = read_fits(path)[0]
+    unit = read_hdu(path, 0)
     if "image" not in unit.data:
         raise FitsError("the primary HDU holds no image")
     return unit.header, unit.data["image"]
 
 
 def read_table(path: str | os.PathLike[str], hdu: int = 1) -> dict[str, npt.NDArray[Any]]:
-    """The columns of the binary table in extension `hdu` (the first extension by default)."""
-    units = read_fits(path)
-    if hdu >= len(units) or not units[hdu].data:
+    """The columns of the binary table in extension `hdu` (the first extension by default).
+
+    The function reads only that extension, so a large image before it costs nothing.
+    """
+    try:
+        unit = read_hdu(path, hdu)
+    except FitsError as error:
+        if "has no HDU" in str(error):
+            raise FitsError(f"HDU {hdu} holds no table") from error
+        raise
+    if not unit.data:
         raise FitsError(f"HDU {hdu} holds no table")
-    return units[hdu].data
+    return unit.data

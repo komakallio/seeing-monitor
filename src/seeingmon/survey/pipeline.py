@@ -66,6 +66,7 @@ from seeingmon.survey.pointing import (
     ReferenceSolution,
     build_pointing_record,
 )
+from seeingmon.survey.rawdata import native_counts
 from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.trail import TrailModel
 from seeingmon.survey.wcs_fit import (
@@ -202,12 +203,6 @@ class _Solved:
 def frame_time_invalid(frame: Frame) -> bool:
     """Whether the clock was not synchronized when the frame was taken."""
     return bool(frame.flags & FrameFlag.TIME_INVALID) or frame.t_quality == TimeQuality.INVALID
-
-
-def native_counts(frame: Frame) -> npt.NDArray[np.float32]:
-    """The frame in ADC counts: the high bits of a 16-bit container, or an 8-bit value scaled up."""
-    scale = np.float32(2.0 ** (frame.adc_bits - frame.pixel_format.value))
-    return np.asarray(frame.data.astype(np.float32) * scale, dtype=np.float32)
 
 
 class SurveyPipeline:

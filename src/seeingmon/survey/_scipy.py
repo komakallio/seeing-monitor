@@ -30,6 +30,7 @@ def _load(name: str) -> ModuleType:
 
 _spatial = _load("scipy.spatial")
 _special = _load("scipy.special")
+_ndimage = _load("scipy.ndimage")
 
 
 def nearest(
@@ -61,3 +62,8 @@ def erf(x: FloatArray) -> FloatArray:
 def erf32(x: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
     """The error function in single precision."""
     return np.asarray(_special.erf(x), dtype=np.float32)
+
+
+def uniform_filter(image: npt.NDArray[np.float32], size: int) -> npt.NDArray[np.float32]:
+    """The mean of each pixel's `size` x `size` neighborhood. The edges reflect."""
+    return np.asarray(_ndimage.uniform_filter(image, size=size, mode="reflect"), dtype=np.float32)

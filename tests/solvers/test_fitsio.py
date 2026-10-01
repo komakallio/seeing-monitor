@@ -210,3 +210,39 @@ def test_read_header_does_not_need_the_data(tmp_path: Path) -> None:
     path.write_bytes(b"x" * fitsio.BLOCK)
     with pytest.raises(fitsio.FitsError, match="not FITS"):
         fitsio.read_header(path)
+
+
+def test_a_file_with_an_image_and_a_table_reads_each_unit_alone(tmp_path: Path) -> None:
+    image = (np.arange(60, dtype=np.uint16) * 7).reshape(6, 10)
+    columns = {
+        "X": np.arange(5, dtype=np.int32),
+        "EXCESS": np.linspace(1.0, 2.0, 5, dtype=np.float32),
+    }
+    path = tmp_path / "both.fits"
+    path.write_bytes(
+        fitsio.image_bytes(image, header={"NHOT": 5})
+        + fitsio.table_bytes(columns, {"NOTE": "x"}, extname="HOTPIX")
+    )
+    header, back = fitsio.read_image(path)
+    assert header["NHOT"] == 5
+    np.testing.assert_array_equal(back, image)
+    table = fitsio.read_table(path)
+    np.testing.assert_array_equal(table["X"], columns["X"])
+    np.testing.assert_array_equal(table["EXCESS"], columns["EXCESS"])
+    assert fitsio.read_hdu(path, 1).header["EXTNAME"] == "HOTPIX"
+    with fits.open(path) as hdus:  # astropy agrees on both units
+        np.testing.assert_array_equal(hdus[0].data, image)
+        np.testing.assert_array_equal(hdus[1].data["X"], columns["X"])
+    with pytest.raises(fitsio.FitsError, match="no HDU 2"):
+        fitsio.read_hdu(path, 2)
+    with pytest.raises(fitsio.FitsError, match="holds no table"):
+        fitsio.read_table(path, hdu=2)
+
+
+def test_a_table_with_no_rows_round_trips(tmp_path: Path) -> None:
+    columns = {"X": np.zeros(0, dtype=np.int32), "EXCESS": np.zeros(0, dtype=np.float32)}
+    path = tmp_path / "empty-table.fits"
+    path.write_bytes(fitsio.image_bytes(np.zeros((2, 2), np.uint16)) + fitsio.table_bytes(columns))
+    table = fitsio.read_table(path)
+    assert table["X"].shape == (0,)
+    assert table["EXCESS"].dtype == np.float32
