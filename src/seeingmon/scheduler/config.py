@@ -44,7 +44,11 @@ class FastConfig(SectionModel):
     """The length of one fast period, in seconds. Use a multiple of `analysis_window_s`."""
 
     analysis_window_s: Seconds = 60.0
-    """The window length that the fast analyzer uses, in seconds."""
+    """The window length that the fast analyzer uses, in seconds.
+
+    The analyzer owns its window length (`window_s` in `[fastpath]`), and the scheduler
+    never reads that section. Set this key to the same value, so that a fast period holds
+    whole windows."""
 
     exposure_us: PositiveInt = 2000
     gain: NonNegativeInt = 0

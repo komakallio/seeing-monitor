@@ -9,7 +9,7 @@
 # The fast stream. The readout mode is the profile's fast mode.
 [scheduler.fast]
 window_s = 120.0            # One fast period. Use a multiple of analysis_window_s.
-analysis_window_s = 60.0    # The window length of the fast analyzer.
+analysis_window_s = 60.0    # The window length of the fast analyzer. Match [fastpath] window_s.
 exposure_us = 2000          # 2 ms, because Polaris saturates a longer exposure in bin1.
 gain = 0
 roi_arcmin = 4.1            # The profile turns this angle into pixels.
