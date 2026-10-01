@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -37,6 +37,7 @@ from seeingmon.survey.catalog_build import propagate
 from seeingmon.survey.geometry import (
     ARCSEC_PER_RAD,
     FloatArray,
+    nearest_rotation,
     radec_to_vector,
     rot_z,
     tangent_basis,
@@ -81,13 +82,17 @@ def make_attitude(polar_distance_deg: float, azimuth_deg: float, roll_deg: float
     boresight = np.array([np.sin(theta) * np.cos(lam), np.sin(theta) * np.sin(lam), np.cos(theta)])
     pole = np.array([0.0, 0.0, 1.0])
     toward_pole = pole - boresight * (pole @ boresight)
-    toward_pole /= np.linalg.norm(toward_pole)
+    length = np.linalg.norm(toward_pole)
+    if length < 1e-12:  # on the pole itself, use the limit along the meridian at this azimuth
+        toward_pole = np.array([-np.cos(lam), -np.sin(lam), 0.0])
+    else:
+        toward_pole = toward_pole / length
     down = -toward_pole  # with no roll, the pole is up, so down points away from it
     right = np.cross(down, boresight)
     rho = np.radians(roll_deg)
     ex = np.cos(rho) * right + np.sin(rho) * down
     ey = -np.sin(rho) * right + np.cos(rho) * down
-    return np.stack([ex, ey, boresight])
+    return nearest_rotation(np.stack([ex, ey, boresight]))  # exact near the pole too
 
 
 def synthetic_catalog(
@@ -259,6 +264,98 @@ def _draw_stars(
             )
 
 
+def star_truth(
+    catalog: CapCatalog,
+    profile: Profile,
+    *,
+    rotation_tirs: FloatArray,
+    t_utc_ns: int = NIGHT_UTC_NS,
+    exposure_s: float = 30.0,
+    mode: str = "bin2",
+    scale_error: float = 0.0,
+    parity: int = 1,
+    transmission: float | TransmissionFunction = 1.0,
+    exclude_rows: tuple[int, ...] = (),
+    vectors_cirs: FloatArray | None = None,
+    n_sub: int = 64,
+    dut1_s: float = 0.0,
+) -> tuple[SynthTruth, FloatArray, FloatArray]:
+    """The geometry of a frame without its pixels: the truth, and the star tracks.
+
+    The tracks `xs` and `ys` have shape `(N, K)`: where each star sits at `K` moments during
+    the exposure. The Earth turns, and the camera with it, so the camera attitude changes by a
+    rotation about the pole, and far stars trail.
+    """
+    readout = profile.mode(mode)
+    width, height = readout.width_px, readout.height_px
+    center = ((width - 1) / 2.0, (height - 1) / 2.0)
+    scale = profile.plate_scale_arcsec_per_px(mode) * (1.0 + scale_error)
+    epoch = apparent.epoch_from_utc_ns(t_utc_ns, dut1_s)
+    if vectors_cirs is None:
+        vectors_cirs = apparent.apparent_vectors(
+            catalog.ra_deg,
+            catalog.dec_deg,
+            catalog.pm_ra_mas_yr,
+            catalog.pm_dec_mas_yr,
+            catalog.parallax_mas,
+            epoch,
+            catalog_epoch_jyear=catalog.epoch_jyear,
+        )
+    rotation_cirs = rotation_tirs @ rot_z(-epoch.era_rad)
+    offsets = (np.arange(n_sub) + 0.5) / n_sub - 0.5
+    mid_x, mid_y, front = project(rotation_cirs, vectors_cirs, scale, parity, center)
+    margin = 30.0
+    inside = front & (mid_x > -margin) & (mid_x < width + margin) & (mid_y > -margin)
+    inside &= mid_y < height + margin
+    inside[list(exclude_rows)] = False
+    rows = np.flatnonzero(inside)
+    xs = np.empty((rows.size, n_sub))
+    ys = np.empty((rows.size, n_sub))
+    for k, offset in enumerate(offsets):
+        rotation_k = rotation_cirs @ rot_z(
+            -apparent.EARTH_ROTATION_RATE_RAD_S * exposure_s * offset
+        )
+        x_k, y_k, _ = project(rotation_k, vectors_cirs[rows], scale, parity, center)
+        xs[:, k], ys[:, k] = x_k, y_k
+    trail = np.hypot(xs[:, -1] - xs[:, 0], ys[:, -1] - ys[:, 0]) * n_sub / (n_sub - 1)
+    gain_factor = (
+        np.full(rows.size, float(transmission))
+        if isinstance(transmission, int | float)
+        else np.asarray(transmission(xs.mean(axis=1), ys.mean(axis=1)), dtype=np.float64)
+    )
+    flux_e = (
+        np.array([profile.star_electron_rate_e_per_s(float(g)) for g in catalog.g_mag[rows]])
+        * exposure_s
+        * gain_factor
+    )
+    pole_x, pole_y, pole_front = project(
+        rotation_cirs, np.array([[0.0, 0.0, 1.0]]), scale, parity, center
+    )
+    assert pole_front[0]
+    truth = SynthTruth(
+        rotation_tirs=rotation_tirs,
+        rotation_cirs=rotation_cirs,
+        t_utc_ns=t_utc_ns,
+        exposure_s=exposure_s,
+        scale_arcsec_px=scale,
+        parity=parity,
+        center_px=center,
+        mode=mode,
+        width=width,
+        height=height,
+        rows=rows,
+        x=xs.mean(axis=1),
+        y=ys.mean(axis=1),
+        flux_e=flux_e,
+        trail_px=trail,
+        pole_px=(float(pole_x[0]), float(pole_y[0])),
+        vectors_cirs=vectors_cirs,
+        hot_pixels=np.zeros((height, width), dtype=np.bool_),
+        epoch=epoch,
+    )
+    return truth, xs, ys
+
+
 def render_frame(
     catalog: CapCatalog,
     profile: Profile,
@@ -294,59 +391,30 @@ def render_frame(
     clouds. `sky_gradient` varies the sky linearly across the columns, by that fraction of its
     level on each side of the middle. A star with more than 30 noise levels in the halo gets a
     halo of `halo_fraction` of its flux and width `halo_sigma_px`. `vectors_cirs` replaces the
-    apparent places (use
-    `astropy_apparent_vectors` for an independent truth).
+    apparent places (use `astropy_apparent_vectors` for an independent truth).
     """
     rng = np.random.default_rng(seed)
+    truth, xs, ys = star_truth(
+        catalog,
+        profile,
+        rotation_tirs=rotation_tirs,
+        t_utc_ns=t_utc_ns,
+        exposure_s=exposure_s,
+        mode=mode,
+        scale_error=scale_error,
+        parity=parity,
+        transmission=transmission,
+        exclude_rows=exclude_rows,
+        vectors_cirs=vectors_cirs,
+        n_sub=n_sub,
+        dut1_s=dut1_s,
+    )
     readout = profile.mode(mode)
-    width, height = readout.width_px, readout.height_px
-    center = ((width - 1) / 2.0, (height - 1) / 2.0)
-    scale = profile.plate_scale_arcsec_per_px(mode) * (1.0 + scale_error)
-    epoch = apparent.epoch_from_utc_ns(t_utc_ns, dut1_s)
-    if vectors_cirs is None:
-        vectors_cirs = apparent.apparent_vectors(
-            catalog.ra_deg,
-            catalog.dec_deg,
-            catalog.pm_ra_mas_yr,
-            catalog.pm_dec_mas_yr,
-            catalog.parallax_mas,
-            epoch,
-            catalog_epoch_jyear=catalog.epoch_jyear,
-        )
-    rotation_cirs = rotation_tirs @ rot_z(-epoch.era_rad)
-
-    # Where each star sits at K moments during the exposure. The Earth turns, and the camera
-    # with it, so the camera attitude changes by a rotation about the pole.
-    offsets = (np.arange(n_sub) + 0.5) / n_sub - 0.5
-    mid_x, mid_y, front = project(rotation_cirs, vectors_cirs, scale, parity, center)
-    margin = 30.0
-    inside = front & (mid_x > -margin) & (mid_x < width + margin) & (mid_y > -margin)
-    inside &= mid_y < height + margin
-    inside[list(exclude_rows)] = False
-    rows = np.flatnonzero(inside)
-    xs = np.empty((rows.size, n_sub))
-    ys = np.empty((rows.size, n_sub))
-    for k, offset in enumerate(offsets):
-        rotation_k = rotation_cirs @ rot_z(
-            -apparent.EARTH_ROTATION_RATE_RAD_S * exposure_s * offset
-        )
-        x_k, y_k, _ = project(rotation_k, vectors_cirs[rows], scale, parity, center)
-        xs[:, k], ys[:, k] = x_k, y_k
-    trail = np.hypot(xs[:, -1] - xs[:, 0], ys[:, -1] - ys[:, 0]) * n_sub / (n_sub - 1)
-
+    width, height = truth.width, truth.height
     e_per_adu = profile.e_per_adu(mode, gain)
     read_noise = profile.read_noise_e(mode, gain)
     saturation = profile.saturation(mode, gain)
-    gain_factor = (
-        np.full(rows.size, float(transmission))
-        if isinstance(transmission, int | float)
-        else np.asarray(transmission(xs.mean(axis=1), ys.mean(axis=1)), dtype=np.float64)
-    )
-    flux_e = (
-        np.array([profile.star_electron_rate_e_per_s(float(g)) for g in catalog.g_mag[rows]])
-        * exposure_s
-        * gain_factor
-    )
+    flux_e, trail = truth.flux_e, truth.trail_px
 
     electrons = np.zeros((height, width), dtype=np.float32)
     sigma = psf_sigma_px
@@ -402,32 +470,7 @@ def render_frame(
         temperature_c=15.0,
         flags=FrameFlag.SIMULATED,
     )
-    pole_x, pole_y, pole_front = project(
-        rotation_cirs, np.array([[0.0, 0.0, 1.0]]), scale, parity, center
-    )
-    truth = SynthTruth(
-        rotation_tirs=rotation_tirs,
-        rotation_cirs=rotation_cirs,
-        t_utc_ns=t_utc_ns,
-        exposure_s=exposure_s,
-        scale_arcsec_px=scale,
-        parity=parity,
-        center_px=center,
-        mode=mode,
-        width=width,
-        height=height,
-        rows=rows,
-        x=xs.mean(axis=1),
-        y=ys.mean(axis=1),
-        flux_e=flux_e,
-        trail_px=trail,
-        pole_px=(float(pole_x[0]), float(pole_y[0])),
-        vectors_cirs=vectors_cirs,
-        hot_pixels=hot_mask,
-        epoch=epoch,
-    )
-    assert pole_front[0]
-    return frame, truth
+    return frame, replace(truth, hot_pixels=hot_mask)
 
 
 def truth_solve_result(
