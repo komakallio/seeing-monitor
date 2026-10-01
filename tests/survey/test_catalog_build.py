@@ -332,6 +332,23 @@ def test_a_failed_job_reports_the_server_message() -> None:
         build.build_catalog(make_options(archive), VirtualClock())
 
 
+def test_a_failed_job_reports_the_message_of_a_uws_error_summary() -> None:
+    archive_script = script()
+    archive_script.final_phase = "ERROR"
+    archive_script.error_text = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<uws:errorSummary xmlns:uws="http://www.ivoa.net/xml/UWS/v1.0" type="fatal" '
+        'hasDetail="false"><uws:message>The query ran out of time on the server.</uws:message>'
+        "</uws:errorSummary>"
+    )
+    with (
+        FakeArchive(archive_script) as archive,
+        pytest.raises(build.CatalogBuildError) as raised,
+    ):
+        build.build_catalog(make_options(archive), VirtualClock())
+    assert str(raised.value).endswith("phase ERROR: The query ran out of time on the server.")
+
+
 def test_a_job_that_does_not_finish_stops_at_the_wait_limit() -> None:
     archive_script = script()
     archive_script.polls_before_completed = 10_000

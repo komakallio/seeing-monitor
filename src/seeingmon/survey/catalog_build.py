@@ -273,7 +273,19 @@ class TapClient:
             _, _, body = self._request(job_url + "/error")
         except CatalogBuildError:
             return "no error text"
+        return _error_text(body)
+
+
+def _error_text(body: bytes) -> str:
+    """The message of a UWS error summary, or the flattened body when it has no message."""
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
         return " ".join(body.decode("utf-8", errors="replace").split())[:500] or "no error text"
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] == "message" and (element.text or "").strip():
+            return " ".join((element.text or "").split())[:500]
+    return " ".join("".join(root.itertext()).split())[:500] or "no error text"
 
 
 def _job_id(body: bytes) -> str:
