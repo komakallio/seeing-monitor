@@ -8,13 +8,16 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from seeingmon.services.ipc.endpoint import FAMILY_PIPE, FAMILY_UNIX, PIPE_PREFIX, Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey
+from seeingmon.services.ipc.server import ChannelHandler, IpcServer
+from seeingmon.services.ipc.wire import Wire
 
 
 def native_endpoint(directory: Path) -> Endpoint:
@@ -68,3 +71,39 @@ def wait_until(
             return True
         time.sleep(interval_s)
     return condition()
+
+
+@pytest.fixture
+def servers() -> Iterator[list[IpcServer]]:
+    """The servers that a test started. They stop when the test ends."""
+    started: list[IpcServer] = []
+    yield started
+    for server in started:
+        server.stop()
+
+
+@pytest.fixture
+def start_server(
+    endpoint: Endpoint, key: ConnectionKey, servers: list[IpcServer]
+) -> Callable[..., IpcServer]:
+    """Start an `IpcServer` with the given channels at this test's endpoint."""
+
+    def start(channels: Mapping[str, ChannelHandler] | None = None, **options: Any) -> IpcServer:
+        server = IpcServer(
+            endpoint,
+            key,
+            channels or {},
+            handshake_timeout_s=options.pop("handshake_timeout_s", 2.0),
+            **options,
+        )
+        server.start()
+        servers.append(server)
+        return server
+
+    return start
+
+
+def drain(wire: Wire) -> None:
+    """Receive until the wire raises, which ends the test that expects it. Never returns."""
+    while True:
+        wire.recv(0.2)

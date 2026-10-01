@@ -28,17 +28,10 @@ from seeingmon.services.ipc.errors import (
 )
 from seeingmon.services.ipc.handshake import MAGIC
 from seeingmon.services.ipc.keys import ConnectionKey
-from seeingmon.services.ipc.server import Accepted, ChannelHandler, IpcServer
+from seeingmon.services.ipc.server import Accepted, IpcServer
 from seeingmon.services.ipc.wire import Wire
 
-from .conftest import wait_until
-
-
-def drain(wire: Wire) -> None:
-    """Receive until the wire raises. Fails the test by timeout if it never closes."""
-    while True:
-        wire.recv(0.2)
-
+from .conftest import drain, wait_until
 
 PICKLE_RAN: list[int] = []
 
@@ -57,9 +50,16 @@ class Evil:
 class EchoChannel:
     """A channel that sends every message back, and remembers the hello parameters."""
 
-    def __init__(self, reply: Mapping[str, Any] | None = None, *, reject: str | None = None):
+    def __init__(
+        self,
+        reply: Mapping[str, Any] | None = None,
+        *,
+        reject: str | None = None,
+        max_message_bytes: int = 1 << 20,
+    ):
         self.reply = dict(reply or {})
         self.reject = reject
+        self.max_message_bytes = max_message_bytes
         self.params: list[Mapping[str, Any]] = []
         self.wires: list[Wire] = []
         self.echoed = 0
@@ -67,6 +67,7 @@ class EchoChannel:
     def accept(self, wire: Wire, params: Mapping[str, Any]) -> Accepted:
         if self.reject is not None:
             raise IpcProtocolError(self.reject)
+        wire.max_message_bytes = self.max_message_bytes
         self.params.append(dict(params))
         self.wires.append(wire)
 
@@ -86,33 +87,6 @@ class EchoChannel:
             wire.close()
 
 
-@pytest.fixture
-def servers() -> Iterator[list[IpcServer]]:
-    started: list[IpcServer] = []
-    yield started
-    for server in started:
-        server.stop()
-
-
-@pytest.fixture
-def start_server(
-    endpoint: Endpoint, key: ConnectionKey, servers: list[IpcServer]
-) -> Callable[..., IpcServer]:
-    def start(channels: Mapping[str, ChannelHandler] | None = None, **options: Any) -> IpcServer:
-        server = IpcServer(
-            endpoint,
-            key,
-            channels if channels is not None else {"echo": EchoChannel()},
-            handshake_timeout_s=options.pop("handshake_timeout_s", 2.0),
-            **options,
-        )
-        server.start()
-        servers.append(server)
-        return server
-
-    return start
-
-
 class TestHandshakeAndHello:
     def test_a_client_with_the_key_reaches_the_channel(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
@@ -130,7 +104,7 @@ class TestHandshakeAndHello:
     def test_the_server_reports_the_real_address(
         self, start_server: Callable[..., IpcServer], endpoint: Endpoint
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         assert server.running
         if isinstance(endpoint.address, tuple):
             assert isinstance(server.endpoint.address, tuple)
@@ -141,7 +115,7 @@ class TestHandshakeAndHello:
     def test_a_wrong_key_is_refused_and_the_server_keeps_serving(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey, other_key: ConnectionKey
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         with pytest.raises(IpcAuthError):
             connect_channel(server.endpoint, other_key, "echo")
         assert wait_until(lambda: server.stats.auth_failures == 1)
@@ -162,7 +136,7 @@ class TestHandshakeAndHello:
     def test_an_unknown_channel_is_refused_with_a_message(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         with pytest.raises(IpcProtocolError, match="no channel named 'nope'"):
             connect_channel(server.endpoint, key, "nope")
 
@@ -206,7 +180,7 @@ class TestHostilePeers:
     def test_a_silent_peer_is_dropped_after_the_handshake_timeout(
         self, start_server: Callable[..., IpcServer]
     ) -> None:
-        server = start_server(handshake_timeout_s=0.3)
+        server = start_server({"echo": EchoChannel()}, handshake_timeout_s=0.3)
         peer = self.raw(server)
         try:
             assert peer.poll(5.0)  # the challenge
@@ -220,7 +194,7 @@ class TestHostilePeers:
     def test_a_peer_that_sends_a_pickle_is_rejected_and_nothing_runs(
         self, start_server: Callable[..., IpcServer]
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         peer = self.raw(server)
         try:
             peer.recv_bytes(256)
@@ -233,7 +207,7 @@ class TestHostilePeers:
     def test_an_oversized_first_message_closes_the_connection(
         self, start_server: Callable[..., IpcServer]
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         peer = self.raw(server)
         try:
             peer.recv_bytes(256)
@@ -245,7 +219,7 @@ class TestHostilePeers:
     def test_a_recorded_answer_does_not_work_on_a_new_connection(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         first = self.raw(server)
         try:
             challenge = first.recv_bytes(256)
@@ -269,7 +243,7 @@ class TestHostilePeers:
     def test_a_reflected_challenge_is_not_an_answer(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         peer = self.raw(server)
         try:
             challenge = peer.recv_bytes(256)
@@ -282,7 +256,7 @@ class TestHostilePeers:
             peer.close()
 
     def test_waiting_handshakes_are_capped(self, start_server: Callable[..., IpcServer]) -> None:
-        server = start_server(handshake_timeout_s=1.0, max_pending=2)
+        server = start_server({"echo": EchoChannel()}, handshake_timeout_s=1.0, max_pending=2)
         peers = [self.raw(server) for _ in range(5)]
         try:
             assert wait_until(lambda: server.stats.refused_busy >= 1)
@@ -293,7 +267,7 @@ class TestHostilePeers:
     def test_a_bad_hello_is_refused_and_counted(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         wire = self._authenticated(server, key)
         with wire:
             wire.send(b"not json")
@@ -302,7 +276,7 @@ class TestHostilePeers:
     def test_a_hello_with_the_wrong_version_is_refused(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> None:
-        server = start_server()
+        server = start_server({"echo": EchoChannel()})
         wire = self._authenticated(server, key)
         with wire:
             wire.send(encode_json({"v": 99, "channel": "echo", "params": {}}))
@@ -420,16 +394,14 @@ class TestWire:
     def pair(
         self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> Iterator[tuple[Wire, EchoChannel]]:
-        channel = EchoChannel()
+        channel = EchoChannel(max_message_bytes=32 << 20)
         server = start_server({"echo": channel})
         wire, _ = connect_channel(server.endpoint, key, "echo", max_message_bytes=32 << 20)
         yield wire, channel
         wire.close()
 
     def test_a_large_message_survives(self, pair: tuple[Wire, EchoChannel]) -> None:
-        wire, channel = pair
-        assert wait_until(lambda: len(channel.wires) == 1)
-        channel.wires[0].max_message_bytes = 32 << 20
+        wire, _ = pair
         payload = os.urandom(5 * 1024 * 1024)
         wire.send(payload)
         assert wire.recv(20.0) == payload
@@ -451,15 +423,16 @@ class TestWire:
         wire.send(b"x" * 100)
 
     def test_a_message_over_the_limit_closes_the_receiving_wire(
-        self, pair: tuple[Wire, EchoChannel]
+        self, start_server: Callable[..., IpcServer], key: ConnectionKey
     ) -> None:
-        wire, channel = pair
-        assert wait_until(lambda: len(channel.wires) == 1)
-        channel.wires[0].max_message_bytes = 1000
-        wire.send(b"y" * 5000)
-        assert wait_until(lambda: wire.closed or channel.wires[0].closed)
-        with pytest.raises((IpcClosedError, IpcProtocolError)):
-            drain(wire)
+        channel = EchoChannel(max_message_bytes=1000)
+        server = start_server({"echo": channel})
+        wire, _ = connect_channel(server.endpoint, key, "echo", max_message_bytes=32 << 20)
+        with wire:
+            wire.send(b"y" * 5000)
+            assert wait_until(lambda: len(channel.wires) == 1 and channel.wires[0].closed)
+            with pytest.raises((IpcClosedError, IpcProtocolError)):
+                drain(wire)
 
     def test_close_wakes_a_blocked_receive_quickly(self, pair: tuple[Wire, EchoChannel]) -> None:
         wire, _ = pair
