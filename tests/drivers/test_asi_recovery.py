@@ -283,9 +283,8 @@ class TestWatchdog:
         assert wait_until(lambda: rig.watchdog.armed == 1)
         rig.clock.advance(10.0)
         reports = rig.watchdog.check()
-        assert [(r.name, round(r.timeout_s, 3)) for r in reports] == [
-            ("get_video_data", 2.514)
-        ]  # 514 ms wait + 2 s margin
+        # One guard covers the SDK calls of a frame: the caller's 1 s timeout plus a 2 s margin.
+        assert [(r.name, round(r.timeout_s, 3)) for r in reports] == [("read_frame", 3.0)]
         release.set()
         reader.join(5.0)
         assert len(rig.hangs) == 1

@@ -16,8 +16,10 @@ access"):
 3. *Bounded waits.* A frame read waits at most twice the longer of the exposure and the expected
    frame period, plus 500 ms, and never longer than the caller's timeout. A blocked read cannot be
    cancelled, so `stop`, `configure`, `recover`, and `close` wait for the reader to return before
-   they call `StopVideoCapture`. A `CallWatchdog` guards every SDK call and reports one that
-   outlives its deadline. In production that ends the process.
+   they call `StopVideoCapture`. A `CallWatchdog` guards the SDK calls and reports one that
+   outlives its deadline. Each call outside the frame loop has its own guard, and one guard
+   covers the calls of a frame (the read, the geometry check, and the drop counter), which keeps
+   the cost of a frame low. In production a hang ends the process.
 4. *One mode-change function.* `configure` stops capture, sets the controls, sets the ROI and
    binning, sets the start position, reads the geometry back, and drops stale state. The SDK can
    change geometry silently, so the function compares the read-back with the request, corrects a
@@ -132,7 +134,11 @@ class _Plan:
 
 @dataclass(slots=True)
 class _Stream:
-    """The stream that the camera runs: what it confirmed, and what the reader needs."""
+    """The stream that the camera runs: what it confirmed, and what the reader needs.
+
+    The reader runs once per frame, so the stream carries the numbers that it would otherwise
+    compute each time.
+    """
 
     stream_id: int
     request: StreamConfig  # the request, which a recovery step applies again
@@ -143,11 +149,10 @@ class _Stream:
     adc_bits: int
     period_s: float
     buffer: bytearray
+    period_ns: int
+    half_exposure_ns: int
+    vendor_bound_s: float  # twice the longer of the exposure and the period, plus 500 ms
     seq: int = 0
-
-    @property
-    def frame_bytes(self) -> int:
-        return len(self.buffer)
 
 
 class AsiDriver:
@@ -203,8 +208,8 @@ class AsiDriver:
         self._intent_running = False  # the caller started the stream and has not stopped it
         self._stopping = False  # a stop is waiting for the reader
         self._reader_busy = False
-        self._reader_idle = threading.Event()
-        self._reader_idle.set()
+        self._reader_cond = threading.Condition(self._lock)  # signals that the reader returned
+        self._stop_waiters = 0  # threads that wait in `_stop_capture`, so the reader notifies
         self._read_bound_s = 0.0
         self._counter_base = 0
         self._last_counter = 0
@@ -217,6 +222,9 @@ class AsiDriver:
         self._time_checked_ns: int | None = None
         self._time_quality = TimeQuality.ESTIMATED
         self._time_error_ns = 0
+        self._has_temperature = False
+        self._status_interval_ns = round(self._opts.status_interval_s * NS_PER_S)
+        self._temperature_interval_ns = round(self._opts.temperature_interval_s * NS_PER_S)
 
     # --- Plumbing ---
 
@@ -286,6 +294,7 @@ class AsiDriver:
             self._init_ns = self._clock.monotonic_ns()
             self._camera_id = info.camera_id
             self._caps = self._load_caps(info.camera_id)
+            self._has_temperature = int(AsiControl.TEMPERATURE) in self._caps
             self._quiesce(info.camera_id)
         except CameraError:
             self._close_quietly(info.camera_id)
@@ -449,17 +458,20 @@ class AsiDriver:
         """
         with self._lock:
             self._stopping = True
-            wait_s = self._read_bound_s + self._opts.call_timeout_s
-        try:
-            # A real-time wait on another thread. It cannot run on the `Clock`.
-            if not self._reader_idle.wait(timeout=wait_s):
-                raise CameraTimeoutError(
-                    "the reader did not return from the SDK; the call may be hung"
+            self._stop_waiters += 1
+            try:
+                # A real-time wait on another thread. It cannot run on the `Clock`.
+                returned = self._reader_cond.wait_for(
+                    lambda: not self._reader_busy,
+                    timeout=self._read_bound_s + self._opts.call_timeout_s,
                 )
-            with self._lock:
+                if not returned:
+                    raise CameraTimeoutError(
+                        "the reader did not return from the SDK; the call may be hung"
+                    )
                 self._stop_sdk()
-        finally:
-            with self._lock:
+            finally:
+                self._stop_waiters -= 1
                 self._stopping = False
 
     def _stop_sdk(self) -> None:
@@ -557,6 +569,9 @@ class AsiDriver:
             adc_bits=plan.mode.adc_bits,
             period_s=period_s,
             buffer=bytearray(roi.width * roi.height * bytes_per_pixel),
+            period_ns=round(period_s * NS_PER_S),
+            half_exposure_ns=applied.exposure_us * 1000 // 2,
+            vendor_bound_s=2.0 * max(applied.exposure_us / 1e6, period_s) + VENDOR_WAIT_FLOOR_S,
         )
         self._stream = stream
         return stream
@@ -706,8 +721,7 @@ class AsiDriver:
             self._counter_base = self._read_counter()
 
     def _vendor_bound_s(self, stream: _Stream) -> float:
-        exposure_s = stream.config.exposure_us / 1e6
-        return 2.0 * max(exposure_s, stream.period_s) + VENDOR_WAIT_FLOOR_S
+        return stream.vendor_bound_s
 
     def _read_counter(self) -> int:
         with self._guard("get_dropped_frames"):
@@ -716,7 +730,8 @@ class AsiDriver:
         return counter
 
     def _read_raw(self, stream: _Stream, wait_s: float) -> int:
-        """One bounded SDK read into the stream's buffer. Returns the arrival time in UTC ns."""
+        """One bounded SDK read into the stream's buffer, under a guard. Returns the arrival
+        time in UTC ns. `start` uses it to drop the first frames."""
         wait_ms = max(0, math.ceil(wait_s * 1000 - 1e-9))
         with self._guard("get_video_data", wait_ms / 1000 + self._opts.read_margin_s):
             self._api.get_video_data(self._camera_id, stream.buffer, wait_ms)
@@ -730,8 +745,7 @@ class AsiDriver:
             if self._reader_busy:
                 raise CameraStateError("another read_frame is in progress")
             self._reader_busy = True
-            self._reader_idle.clear()
-            self._read_bound_s = min(max(timeout_s, 0.0), self._vendor_bound_s(stream))
+            self._read_bound_s = min(max(timeout_s, 0.0), stream.vendor_bound_s)
         try:
             if stream.config.kind is StreamKind.SNAPSHOT:
                 return self._read_snapshot(stream, timeout_s)
@@ -739,33 +753,51 @@ class AsiDriver:
         finally:
             with self._lock:
                 self._reader_busy = False
-                self._reader_idle.set()
+                if self._stop_waiters:
+                    self._reader_cond.notify_all()
 
     def _read_video(self, stream: _Stream, timeout_s: float) -> Frame:
-        vendor_bound_s = self._vendor_bound_s(stream)
-        started_ns = self._clock.monotonic_ns()
+        """Read one video frame. One guard covers the SDK calls of the frame: the read, the
+        geometry check, and the drop counter. A hang in any of them ends the process."""
+        with self._guard("read_frame", max(timeout_s, 0.0) + self._opts.read_margin_s):
+            t_arrival_ns, dropped, flags = self._read_video_sdk(stream, timeout_s)
+        return self._make_frame(
+            stream,
+            t_arrival_ns,
+            t_arrival_ns - stream.period_ns + stream.half_exposure_ns,
+            dropped,
+            flags,
+            fresh_temperature=False,
+        )
+
+    def _read_video_sdk(self, stream: _Stream, timeout_s: float) -> tuple[int, int, FrameFlag]:
+        """The SDK part of a video read: returns the arrival time, the drops, and the flags."""
+        api, clock, camera = self._api, self._clock, self._camera_id
+        started_ns = clock.monotonic_ns()
         while True:
-            remaining_s = timeout_s - (self._clock.monotonic_ns() - started_ns) / NS_PER_S
+            remaining_s = timeout_s - (clock.monotonic_ns() - started_ns) / NS_PER_S
+            wait_s = max(0.0, min(stream.vendor_bound_s, remaining_s))
             try:
-                t_arrival_ns = self._read_raw(stream, max(0.0, min(vendor_bound_s, remaining_s)))
+                api.get_video_data(camera, stream.buffer, math.ceil(wait_s * 1000 - 1e-9))
+                t_arrival_ns = clock.utc_ns()  # the statement right after the read returns
             except AsiConfigError:
                 self._geometry_fault("the frame size no longer fits the buffer")
-            with self._lock:
-                if self._discard_left > 0:
-                    self._discard_left -= 1
-                    continue
+            if self._discard_left > 0:
+                with self._lock:
+                    if self._discard_left > 0:
+                        self._discard_left -= 1
+                        continue
             break
         self._check_geometry(stream)
-        counter = self._read_counter()
+        counter = api.get_dropped_frames(camera)
         with self._lock:
+            self._last_counter = counter
             dropped = counter - self._counter_base if counter >= self._counter_base else counter
             self._counter_base = counter
-            flags, self._pending_flags = self._pending_flags, FrameFlag.NONE
-        exposure_ns = stream.config.exposure_us * 1000
-        t_utc_ns = t_arrival_ns - round(stream.period_s * NS_PER_S) + exposure_ns // 2
-        return self._make_frame(
-            stream, t_arrival_ns, t_utc_ns, dropped, flags, fresh_temperature=False
-        )
+            flags = self._pending_flags
+            if flags:
+                self._pending_flags = FrameFlag.NONE
+        return t_arrival_ns, dropped, flags
 
     def _read_snapshot(self, stream: _Stream, timeout_s: float) -> Frame:
         exposure_s = stream.config.exposure_us / 1e6
@@ -819,7 +851,8 @@ class AsiDriver:
             pixels = np.frombuffer(stream.buffer, dtype="<u2", count=count).astype(np.uint16)
         else:
             pixels = np.frombuffer(stream.buffer, dtype=np.uint8, count=count).copy()
-        quality, error_ns, time_flags = self._time_info()
+        now_ns = self._clock.monotonic_ns()
+        quality, error_ns, time_flags = self._time_info(now_ns)
         frame = Frame(
             data=pixels.reshape(roi.height, roi.width),
             stream_id=stream.stream_id,
@@ -834,37 +867,38 @@ class AsiDriver:
             mode=stream.config.mode,
             roi=roi,
             adc_bits=stream.adc_bits,
-            temperature_c=self._frame_temperature(fresh_temperature),
-            flags=flags | time_flags,
+            temperature_c=self._frame_temperature(fresh_temperature, now_ns),
+            flags=flags | time_flags if time_flags else flags,
         )
         stream.seq += 1
         return frame
 
-    def _time_info(self) -> tuple[TimeQuality, int, FrameFlag]:
+    def _time_info(self, now_ns: int) -> tuple[TimeQuality, int, FrameFlag]:
         """The time quality, the 1-sigma error, and the flags that the clock state implies.
 
         The clock status can cost a subprocess call, so the driver reads it every
         `status_interval_s` and not for each frame.
         """
-        now = self._clock.monotonic_ns()
-        interval_ns = round(self._opts.status_interval_s * NS_PER_S)
-        if self._time_checked_ns is None or now - self._time_checked_ns >= interval_ns:
+        if (
+            self._time_checked_ns is None
+            or now_ns - self._time_checked_ns >= self._status_interval_ns
+        ):
             status = self._clock.status()
-            self._time_checked_ns = now
+            self._time_checked_ns = now_ns
             self._time_quality = (
                 TimeQuality.INVALID if status.synchronized is False else TimeQuality.ESTIMATED
             )
             self._time_error_ns = (status.error_bound_ns or 0) + round(
                 self._opts.time_error_ms * 1e6
             )
-        flags = (
-            FrameFlag.TIME_INVALID if self._time_quality is TimeQuality.INVALID else FrameFlag.NONE
-        )
-        return self._time_quality, self._time_error_ns, flags
+        if self._time_quality is TimeQuality.INVALID:
+            return self._time_quality, self._time_error_ns, FrameFlag.TIME_INVALID
+        return self._time_quality, self._time_error_ns, FrameFlag.NONE
 
     # --- Geometry check ---
 
     def _check_geometry(self, stream: _Stream) -> None:
+        """Compare the camera's geometry with the stream. The caller holds the frame's guard."""
         interval = self._opts.geometry_check_interval
         if not interval:
             return
@@ -873,10 +907,8 @@ class AsiDriver:
             return
         self._since_check = 0
         with self._lock:  # `move_roi` holds the lock, so a move never looks like a change
-            with self._guard("get_roi_format"):
-                fmt = self._api.get_roi_format(self._camera_id)
-            with self._guard("get_start_position"):
-                position = self._api.get_start_position(self._camera_id)
+            fmt = self._api.get_roi_format(self._camera_id)
+            position = self._api.get_start_position(self._camera_id)
             roi = stream.roi
             changed = (fmt.width, fmt.height, fmt.binning, fmt.image_type) != (
                 roi.width,
@@ -948,12 +980,12 @@ class AsiDriver:
             self._clock.sleep(warmup_left_s)
         return self._temperature_c
 
-    def _frame_temperature(self, fresh: bool) -> float | None:
-        if int(AsiControl.TEMPERATURE) not in self._caps:
+    def _frame_temperature(self, fresh: bool, now_ns: int) -> float | None:
+        if not self._has_temperature:
             return None
-        now = self._clock.monotonic_ns()
-        stale = self._temperature_ns is None or (
-            now - self._temperature_ns >= round(self._opts.temperature_interval_s * NS_PER_S)
+        stale = (
+            self._temperature_ns is None
+            or now_ns - self._temperature_ns >= self._temperature_interval_ns
         )
         if fresh or stale:
             try:
