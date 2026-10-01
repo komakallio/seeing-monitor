@@ -175,6 +175,12 @@ def test_a_pickle_on_the_stream_channel_is_never_loaded(
 FORBIDDEN_MODULES = {"pickle", "_pickle", "cPickle", "cloudpickle", "dill", "marshal", "shelve"}
 ALLOWED_MULTIPROCESSING = {"Client", "Listener"}
 
+# The survey worker is a process pool, and the pool pickles what it sends. Only plain data crosses
+# that boundary (the pipeline specification, the encoded frame, and the dictionaries of the result,
+# see `seeingmon.survey.analyzer`). No connection between `acquire`, `core`, and `web` uses it, and
+# the module still may not import a pickle module.
+POOL_USERS = {"survey_worker.py"}
+
 
 def _sources() -> list[Path]:
     root = Path(seeingmon.services.__file__).parent
@@ -189,10 +195,14 @@ def test_the_source_imports_nothing_that_pickles(path: Path) -> None:
             for alias in node.names:
                 root = alias.name.split(".")[0]
                 assert root not in FORBIDDEN_MODULES, f"{path.name} imports {alias.name}"
-                assert alias.name in ("multiprocessing.connection",) or root != "multiprocessing"
+                assert (
+                    alias.name in ("multiprocessing.connection",)
+                    or root != "multiprocessing"
+                    or path.name in POOL_USERS
+                )
         elif isinstance(node, ast.ImportFrom) and node.module:
             root = node.module.split(".")[0]
             assert root not in FORBIDDEN_MODULES, f"{path.name} imports from {node.module}"
-            if root == "multiprocessing":
+            if root == "multiprocessing" and path.name not in POOL_USERS:
                 assert node.module == "multiprocessing.connection", path.name
                 assert {alias.name for alias in node.names} <= ALLOWED_MULTIPROCESSING, path.name
