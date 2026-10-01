@@ -47,7 +47,7 @@ MAX_TOKEN_CHARS = 256
 MAX_MEMORY_BYTES = 256 * MIB
 
 _BEARER = re.compile(r"(?i:bearer) +([A-Za-z0-9._~+/-]+=*)")
-_PARAMS = re.compile(r"ln=(\d{1,2}),r=(\d{1,2}),p=(\d{1,2})")
+_PARAMS = re.compile(r"ln=([0-9]{1,2}),r=([0-9]{1,2}),p=([0-9]{1,2})")
 _BASE64 = re.compile(r"[A-Za-z0-9+/]+")
 
 

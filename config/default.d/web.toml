@@ -32,6 +32,9 @@ access_log = false
 # How long a clean shutdown waits for open connections, in seconds.
 shutdown_timeout_s = 5.0
 
+# The largest body of a request, in bytes. A command body is a few hundred bytes.
+max_body_bytes = 16384
+
 # Limits per client (a remote address). Every POST counts against commands_per_window. A failed
 # token check also counts against auth_failures_per_window, and a client over that limit gets no
 # token check until its failures leave the window.
@@ -73,11 +76,3 @@ connect_timeout_s = 2.0
 rpc_timeout_s = 5.0
 submit_timeout_s = 10.0
 retry_interval_s = 1.0
-
-# The bounds on the body of a command.
-[web.requests]
-max_body_bytes = 16384
-max_burst_s = 600.0
-max_sweep_values = 16
-max_alignment_exposure_s = 10.0
-max_label_chars = 40

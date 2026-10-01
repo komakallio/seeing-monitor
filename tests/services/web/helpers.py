@@ -41,6 +41,13 @@ from seeingmon.services.web.contract import (
 )
 from seeingmon.services.web.core_client import FakeCoreClient
 
+TOKEN = "t0ken-for-the-tests-QRSTUVWXYZ-ghijklmn"
+
+
+def bearer(token: str = TOKEN) -> dict[str, str]:
+    """The headers of a request that carries the token."""
+    return {"Authorization": f"Bearer {token}"}
+
 
 def tiny_jpeg(shade: int = 0, size: tuple[int, int] = (16, 12)) -> bytes:
     """A real JPEG image of one gray level. Different shades give different bytes."""

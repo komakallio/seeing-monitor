@@ -105,16 +105,6 @@ class CoreLinkSettings(SectionModel):
     retry_interval_s: float = Field(1.0, ge=0, le=60)
 
 
-class RequestSettings(SectionModel):
-    """The bounds on the body of a command."""
-
-    max_body_bytes: int = Field(16 * 1024, ge=256, le=MIB)
-    max_burst_s: float = Field(600.0, gt=0, le=86_400)
-    max_sweep_values: int = Field(16, ge=1, le=256)
-    max_alignment_exposure_s: float = Field(10.0, gt=0, le=3600)
-    max_label_chars: int = Field(40, ge=1, le=200)
-
-
 class WebSettings(SectionModel):
     """The `[web]` section: the address, the access rule, and the limits of the API.
 
@@ -135,13 +125,13 @@ class WebSettings(SectionModel):
 
     access_log: bool = False
     shutdown_timeout_s: float = Field(5.0, gt=0, le=120)
+    max_body_bytes: int = Field(16 * 1024, ge=256, le=MIB)
 
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     paging: PagingSettings = Field(default_factory=PagingSettings)
     images: ImageSettings = Field(default_factory=ImageSettings)
     live: LiveSettings = Field(default_factory=LiveSettings)
     core: CoreLinkSettings = Field(default_factory=CoreLinkSettings)
-    requests: RequestSettings = Field(default_factory=RequestSettings)
 
     @field_validator("bind_address")
     @classmethod
