@@ -297,6 +297,10 @@ class FastPathAnalyzer:
             e_per_dn = e_per_adu * 2.0 ** (readout.adc_bits - container_bits)
             pixel_var = read_noise**2
             if readout.adc_bits > container_bits:  # a coarse container adds quantization noise
+                # This is the noise of a signal that the read and photon noise dither across the
+                # count edges. Where they don't, as in the halo of the star in the owner's 8-bit
+                # videos, the term over-subtracts: docs/recordings-validation.md puts the bias
+                # of r0 at 3.5% for those videos.
                 pixel_var += (e_per_dn**2 - e_per_adu**2) / 12.0
         except ProfileError:
             pass
