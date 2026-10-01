@@ -17,19 +17,19 @@ The camera paces itself on the real clock. The case runs
   share of one core, is the figure to compare with the 10% budget of `acquire`. The detail of the
   figure splits the CPU time of `acquire` among its threads;
 - **bin2**: 64 x 64 at 360 frames per second, for the receive cost of the second fast mode;
-- **saturated**: bin1 with a camera that never sleeps (a virtual clock), so that no thread waits
-  for a frame. The CPU time of each thread, per frame that it handled, is then the cost of the
-  work without wake-ups, and the processes work flat out, so the CPU clock (coarse on Windows)
-  reads them accurately.
+- **bursts**: bin1 at 98 frames per second, with a camera that delivers 10 frames at a time. The
+  capture thread sleeps for 10 frame periods and then reads 10 frames with no pause, so a wake-up
+  serves 10 frames. The rate and the time stamps of the frames stay the same.
 
-**Why two kinds of run.** The cost per frame of a paced stream is dominated by thread wake-ups: the
+**Why two kinds of run.** The cost per frame of a paced stream includes thread wake-ups: the
 capture thread sleeps until the next frame, the sender wakes for each frame, and the reader of
 `core` wakes for each message. The cost of a wake-up depends on the operating system and, in a
 virtual machine, on the hypervisor, so it transfers to a Pi 4 less well than the cost of the work.
-The saturated run measures the work. The nominal share minus the saturated share is the share that
-the wake-ups take, and the budgets scale the two parts apart: the work with the `interpreter`
-range, and the wake-ups with the `scheduler` range. The `calibration` case has a thread hand-off
-workload that measures the cost of a wake-up on each machine.
+A paced frame costs `work + wake-ups`, and a frame in a burst of 10 costs `work + wake-ups / 10`,
+so the two runs give both terms (`split_work_and_wakeups`). The budgets scale the two parts apart:
+the work with the `interpreter` range, and the wake-ups with the `scheduler` range. The
+`calibration` case has a thread hand-off workload that measures the cost of a wake-up on each
+machine.
 
 The CPU time of the `core` side is what receiving costs `core`: the stream reader thread and the
 decoder. It adds to the fast path in the 25% budget, so the budgets include it in a second row. The
@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from seeingmon.services.ipc.endpoint import Endpoint
 
 NOMINAL_HZ = 98.0
+BURST_FRAMES = 10
 BIN2_HZ = 360.0
 _COMMAND_TIMEOUT_S = 60.0
 _ERROR_LINES = 12
@@ -76,7 +77,7 @@ class AcquireProcess:
     """The `acquire` helper process: a line-based control channel on its standard streams."""
 
     def __init__(
-        self, endpoint: Endpoint, key_text: str, pool_path: Path, *, virtual_clock: bool = False
+        self, endpoint: Endpoint, key_text: str, pool_path: Path, *, burst: int = 1
     ) -> None:
         self._process = subprocess.Popen(
             [
@@ -87,7 +88,7 @@ class AcquireProcess:
                 str(endpoint),
                 "--pool",
                 str(pool_path),
-                *(["--virtual-clock"] if virtual_clock else []),
+                *(["--burst", str(burst)] if burst > 1 else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -207,15 +208,13 @@ def _per_frame_us(cpu_ns: float, frames: int) -> float:
 class Session:
     """The `acquire` process and the driver that reads from it, for several runs."""
 
-    def __init__(self, folder: Path, pool_path: Path, *, virtual_clock: bool = False) -> None:
+    def __init__(self, folder: Path, pool_path: Path, *, burst: int = 1) -> None:
         from seeingmon.services.ipc.keys import ConnectionKey
         from seeingmon.services.remote import RemoteCameraDriver
 
         self._endpoint = new_endpoint(folder)
         key_text = secrets.token_urlsafe(32)
-        self._helper = AcquireProcess(
-            self._endpoint, key_text, pool_path, virtual_clock=virtual_clock
-        )
+        self._helper = AcquireProcess(self._endpoint, key_text, pool_path, burst=burst)
         self._key = ConnectionKey.from_text(key_text)
         self._driver_class = RemoteCameraDriver
         self._driver: CameraDriver | None = None
@@ -346,74 +345,90 @@ def figures(
     return out
 
 
-def saturated_figures(
-    saturated: RunResult, nominal: list[RunResult], rate_hz: float
-) -> list[Measurement]:
-    """The cost of the work without wake-ups, and the share of a paced stream that wake-ups take.
+def split_work_and_wakeups(paced_us: float, burst_us: float, burst: int) -> tuple[float, float]:
+    """The cost per frame of the work and of the wake-ups, from a paced run and a burst run.
 
-    In the saturated run the camera never sleeps, so no thread waits for a frame. The CPU time of
-    each thread, per frame that it handled, is then the cost of the work itself: the capture
-    thread per captured frame, and the other threads per sent frame. The nominal figure is the
-    median of the paced runs. Its excess over the saturated cost is what the wake-ups and the cold
-    caches of a paced stream add.
+    A paced stream pays one set of wake-ups for every frame, and a stream that comes in bursts of
+    `burst` frames pays it once for the burst. So the cost per frame is `work + wakeups` when
+    paced and `work + wakeups / burst` in bursts, and the two runs give both terms. A burst run
+    that costs as much as the paced run, or more, shows no wake-up cost that the runs can resolve,
+    and the function then returns all of the paced cost as work.
     """
-    acquire = saturated.acquire
-    captured = max(int(acquire["frames_captured"]), 1)
-    sent = max(int(acquire["frames_sent"]), 1)
-    threads: dict[str, int] = acquire["threads_cpu_ns"]
-    capture_ns = sum(used for name, used in threads.items() if "capture" in name)
-    if capture_ns > 0:
-        rest_ns = sum(threads.values()) - capture_ns
-        acquire_us = capture_ns / captured / 1e3 + rest_ns / sent / 1e3
-        how = "capture thread per captured frame, other threads per sent frame"
-    else:  # a platform without thread clocks: the whole process per sent frame, an upper bound
-        acquire_us = float(acquire["cpu_ns"]) / sent / 1e3
-        how = "whole process per sent frame (no thread clocks on this platform)"
-    acquire_us = max(acquire_us, _FLOOR)
-    core_us = saturated.core_us
-    share = rate_hz / 1e4
+    if burst < 2 or burst_us >= paced_us:
+        return paced_us, 0.0
+    wakeups = min((paced_us - burst_us) * burst / (burst - 1), paced_us)  # the work is not negative
+    return paced_us - wakeups, wakeups
+
+
+def burst_figures(
+    bursts: list[RunResult], nominal: list[RunResult], rate_hz: float, burst: int
+) -> list[Measurement]:
+    """The work and the wake-ups of each side, as shares of one core at the rate.
+
+    `nominal` holds the paced runs and `bursts` the runs of a camera that delivers `burst` frames
+    at a time. Each side gets a `compute_share` (the work) and a `wakeup_share`, from
+    `split_work_and_wakeups`. The budgets scale the work with the `interpreter` range and the
+    wake-ups with the `scheduler` range.
+    """
+    share = rate_hz / 1e4  # percent of one core for a cost in microseconds at this rate
+    paced_acquire = statistics.median(run.acquire_us for run in nominal)
+    paced_core = statistics.median(run.core_us for run in nominal)
+    burst_acquire = statistics.median(run.acquire_us for run in bursts)
+    burst_core = statistics.median(run.core_us for run in bursts)
     detail: dict[str, float | int | str] = {
         "rate_hz": rate_hz,
-        "frames_captured": captured,
-        "frames_sent": sent,
-        "frames_received": saturated.received,
-        "received_fps": round(saturated.received / saturated.wall_s, 1),
-        "dropped_at_queue": int(acquire["dropped_queue"]),
-        "basis": how,
+        "burst_frames": burst,
+        "burst_runs": len(bursts),
+        "received_fps": round(statistics.median(run.received / run.wall_s for run in bursts), 1),
+        "dropped_at_queue": sum(int(run.acquire["dropped_queue"]) for run in bursts),
     }
     out = [
         Measurement(
-            "saturated.acquire.compute_us", "us/frame", acquire_us, None, "interpreter", detail
+            "burst.acquire.cpu_per_frame",
+            "us/frame",
+            burst_acquire,
+            _stats([run.acquire_us for run in bursts]),
+            "interpreter",
+            dict(detail),
         ),
         Measurement(
-            "saturated.core_rx.compute_us", "us/frame", core_us, None, "interpreter", dict(detail)
+            "burst.core_rx.cpu_per_frame",
+            "us/frame",
+            burst_core,
+            _stats([run.core_us for run in bursts]),
+            "interpreter",
+            dict(detail),
         ),
     ]
-    sides = (
-        ("acquire", acquire_us, statistics.median(run.acquire_us for run in nominal)),
-        ("core_rx", core_us, statistics.median(run.core_us for run in nominal)),
-    )
-    for side, compute_us, paced_us in sides:
-        compute_share = compute_us * share
-        wakeup_share = max((paced_us - compute_us) * share, _FLOOR * share)
+    for side, paced_us, burst_us in (
+        ("acquire", paced_acquire, burst_acquire),
+        ("core_rx", paced_core, burst_core),
+    ):
+        work_us, wakeup_us = split_work_and_wakeups(paced_us, burst_us, burst)
+        facts: dict[str, float | int | str] = {
+            "share_at_hz": rate_hz,
+            "paced_us": round(paced_us, 1),
+            "burst_us": round(burst_us, 1),
+            "burst_frames": burst,
+        }
         out.append(
             Measurement(
                 f"{side}.compute_share",
                 "percent",
-                compute_share,
+                max(work_us, _FLOOR) * share,
                 None,
                 "interpreter",
-                {"share_at_hz": rate_hz, "from": "saturated run"},
+                {**facts, "part": "the work"},
             )
         )
         out.append(
             Measurement(
                 f"{side}.wakeup_share",
                 "percent",
-                wakeup_share,
+                max(wakeup_us, _FLOOR) * share,
                 None,
                 "scheduler",
-                {"share_at_hz": rate_hz, "from": "paced run minus saturated run"},
+                {**facts, "part": "the wake-ups"},
             )
         )
     return out
@@ -458,17 +473,17 @@ def ipc(ctx: CaseContext) -> list[Measurement]:
             if not ctx.smoke:  # the second mode is for the page, and no budget reads it
                 second = [session.run(bin2, BIN2_HZ, 3.0)]
                 measurements.extend(figures("bin2.", BIN2_HZ, second, with_acquire=False))
-        with Session(folder, pool_path, virtual_clock=True) as session:
+        with Session(folder, pool_path, burst=BURST_FRAMES) as session:
             if not ctx.smoke:
                 session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
-            saturated = session.run(bin1, NOMINAL_HZ, seconds)
-            measurements.extend(saturated_figures(saturated, nominal, NOMINAL_HZ))
+            bursts = [session.run(bin1, NOMINAL_HZ, seconds) for _ in range(repeats)]
+            measurements.extend(burst_figures(bursts, nominal, NOMINAL_HZ, BURST_FRAMES))
     ctx.note(
         "acquire runs in its own process with a fake camera that replays 64 frames, and the CPU "
         "time of that process is the cost of acquire. This process reads the stream the way core "
         "does. A share is the CPU time of a frame times the nominal rate (98 fps for bin1, 360 fps "
-        "for the bin2 row). The nominal figure is the median of the runs. In the saturated run the "
-        "camera never sleeps, so the CPU time per frame is the cost of the work without wake-ups. "
-        "The nominal share minus the saturated share is the share of the wake-ups."
+        "for the bin2 row). The nominal figure is the median of the runs. In the burst runs the "
+        "camera delivers 10 frames at a time, so each wake-up serves 10 frames. The paced and "
+        "burst costs per frame give the work and the wake-ups of a frame."
     )
     return measurements

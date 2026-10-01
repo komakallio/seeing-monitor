@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 
 import pytest
 
+from seeingmon.perf import _acquire as acquire_helper
 from seeingmon.perf.cases.fastmodes import FAST_MODES
-from seeingmon.perf.cases.ipc import RunResult, figures, saturated_figures
+from seeingmon.perf.cases.ipc import (
+    RunResult,
+    burst_figures,
+    figures,
+    split_work_and_wakeups,
+)
 from seeingmon.perf.report import Measurement
 from seeingmon.perf.threadcpu import thread_cpu_ns, threads_cpu_ns
 
@@ -155,29 +162,47 @@ class TestFigures:
         assert FAST_MODES[0].shape == (128, 128)
 
 
-class TestSaturatedFigures:
-    """The saturated run gives the work without wake-ups, and the nominal run the rest."""
+class TestSplit:
+    """A paced frame costs work + wake-ups. A frame of a burst of n costs work + wake-ups / n."""
 
-    def figures(self, **saturated: float) -> dict[str, Measurement]:
-        nominal = [run_result(acquire_cpu_ms=400.0, core_cpu_ms=240.0)]  # 1,000 and 600 us
-        run = run_result(sent=1000, captured=3000, **saturated)
-        return {item.name: item for item in saturated_figures(run, nominal, 98.0)}
+    def test_two_runs_give_the_work_and_the_wake_ups(self) -> None:
+        # work 300, wake-ups 700: paced 1,000, and a burst of 10 costs 300 + 70 = 370.
+        work, wakeups = split_work_and_wakeups(1000.0, 370.0, 10)
+        assert work == pytest.approx(300.0)
+        assert wakeups == pytest.approx(700.0)
+        assert work + wakeups == pytest.approx(1000.0)
 
-    def test_the_work_is_the_thread_time_per_frame_that_each_thread_handled(self) -> None:
-        found = self.figures(capture_ms=300.0, sender_ms=150.0, acquire_cpu_ms=500.0)
-        # The capture thread took 300 ms for 3,000 captured frames (100 us each). The sender took
-        # 150 ms and the control and watchdog threads 10 ms for 1,000 sent frames (160 us each).
-        assert found["saturated.acquire.compute_us"].value == pytest.approx(260.0)
-        assert found["saturated.core_rx.compute_us"].value == pytest.approx(
-            120.0
-        )  # 120 ms over 1,000
-        assert found["saturated.acquire.compute_us"].detail["frames_captured"] == 3000
+    def test_a_burst_that_costs_as_much_as_the_paced_run_shows_no_wake_ups(self) -> None:
+        assert split_work_and_wakeups(500.0, 500.0, 10) == (500.0, 0.0)
+        assert split_work_and_wakeups(500.0, 650.0, 10) == (500.0, 0.0)
 
-    def test_the_wake_ups_are_what_the_paced_run_costs_beyond_the_work(self) -> None:
-        found = self.figures(capture_ms=300.0, sender_ms=150.0, acquire_cpu_ms=500.0)
-        assert found["acquire.compute_share"].value == pytest.approx(260.0 * 98 / 1e4)
-        assert found["acquire.wakeup_share"].value == pytest.approx((1000.0 - 260.0) * 98 / 1e4)
-        assert found["core_rx.wakeup_share"].value == pytest.approx((600.0 - 120.0) * 98 / 1e4)
+    def test_a_burst_of_one_frame_cannot_tell_the_parts_apart(self) -> None:
+        assert split_work_and_wakeups(500.0, 200.0, 1) == (500.0, 0.0)
+
+    def test_the_work_is_never_negative(self) -> None:
+        work, wakeups = split_work_and_wakeups(100.0, 1.0, 2)  # an extreme burst run
+        assert work == 0.0
+        assert wakeups == 100.0
+
+
+class TestBurstFigures:
+    """The burst runs and the paced runs give each side a work share and a wake-up share."""
+
+    def figures(self) -> dict[str, Measurement]:
+        paced = [run_result(acquire_cpu_ms=400.0, core_cpu_ms=240.0)]  # 1,000 and 600 us
+        bursts = [run_result(acquire_cpu_ms=148.0, core_cpu_ms=192.0)]  # 370 and 480 us
+        return {item.name: item for item in burst_figures(bursts, paced, 98.0, 10)}
+
+    def test_the_work_and_the_wake_ups_of_acquire_come_from_the_two_runs(self) -> None:
+        found = self.figures()
+        assert found["acquire.compute_share"].value == pytest.approx(300.0 * 98 / 1e4)
+        assert found["acquire.wakeup_share"].value == pytest.approx(700.0 * 98 / 1e4)
+
+    def test_the_same_holds_for_the_receive_side_of_core(self) -> None:
+        found = self.figures()
+        # paced 600, burst 480: wake-ups (600 - 480) * 10 / 9 = 133.3, work 466.7
+        assert found["core_rx.compute_share"].value == pytest.approx(466.667 * 98 / 1e4, rel=1e-4)
+        assert found["core_rx.wakeup_share"].value == pytest.approx(133.333 * 98 / 1e4, rel=1e-4)
 
     def test_each_part_is_in_its_own_scale_class(self) -> None:
         found = self.figures()
@@ -186,17 +211,68 @@ class TestSaturatedFigures:
         assert found["acquire.wakeup_share"].scale == "scheduler"
         assert found["core_rx.wakeup_share"].scale == "scheduler"
 
-    def test_a_paced_run_cheaper_than_the_saturated_one_leaves_a_tiny_positive_wake_up_share(
+    def test_the_burst_costs_are_reported_with_the_numbers_they_came_from(self) -> None:
+        found = self.figures()
+        assert found["burst.acquire.cpu_per_frame"].value == pytest.approx(370.0)
+        share = found["acquire.wakeup_share"]
+        assert share.detail["paced_us"] == 1000.0
+        assert share.detail["burst_us"] == 370.0
+        assert share.detail["burst_frames"] == 10
+
+    def test_a_burst_run_costlier_than_the_paced_run_leaves_a_tiny_positive_wake_up_share(
         self,
     ) -> None:
-        nominal = [run_result(acquire_cpu_ms=10.0, core_cpu_ms=10.0)]  # 25 us per frame
-        run = run_result(sent=1000, captured=1000, capture_ms=500.0, sender_ms=500.0)
-        found = {item.name: item for item in saturated_figures(run, nominal, 98.0)}
+        paced = [run_result(acquire_cpu_ms=100.0, core_cpu_ms=100.0)]
+        bursts = [run_result(acquire_cpu_ms=400.0, core_cpu_ms=400.0)]
+        found = {item.name: item for item in burst_figures(bursts, paced, 98.0, 10)}
         assert 0 < found["acquire.wakeup_share"].value < 1e-3
+        assert found["acquire.compute_share"].value == pytest.approx(250.0 * 98 / 1e4)
 
-    def test_without_thread_clocks_the_whole_process_is_the_upper_bound(self) -> None:
-        run = run_result(sent=1000, captured=1000, acquire_cpu_ms=300.0)
-        run.acquire["threads_cpu_ns"] = {}
-        found = {item.name: item for item in saturated_figures(run, [run_result()], 98.0)}
-        assert found["saturated.acquire.compute_us"].value == pytest.approx(300.0)
-        assert "no thread clocks" in str(found["saturated.acquire.compute_us"].detail["basis"])
+
+class TestBurstClock:
+    """The clock of the acquire helper wakes the capture thread once per burst."""
+
+    def sleeps(self, burst: int, calls: int, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        recorded: list[float] = []
+        monkeypatch.setattr("seeingmon.perf._acquire.time.sleep", recorded.append)
+        clock = acquire_helper.BurstClock(burst)
+        for _ in range(calls):
+            clock.sleep(0.01)
+        return recorded
+
+    def test_the_first_call_of_each_burst_sleeps_for_the_whole_burst(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self.sleeps(3, 7, monkeypatch) == pytest.approx([0.03, 0.03, 0.03])
+
+    def test_a_burst_of_one_sleeps_for_every_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self.sleeps(1, 4, monkeypatch) == pytest.approx([0.01] * 4)
+
+    def test_a_frame_of_a_burst_is_as_old_as_if_the_camera_had_delivered_it_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("seeingmon.perf._acquire.time.sleep", lambda seconds: None)
+        clock = acquire_helper.BurstClock(3)
+        shifts = []
+        for _ in range(6):
+            clock.sleep(0.01)
+            shifts.append(clock._shift_ns())
+        # The first frame of a burst is two periods old, the next one period, and the last none.
+        assert shifts == [20_000_000, 10_000_000, 0, 20_000_000, 10_000_000, 0]
+
+    def test_the_time_stamps_of_a_burst_follow_a_regular_line(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("seeingmon.perf._acquire.time.sleep", lambda seconds: None)
+        clock = acquire_helper.BurstClock(4)
+        stamps = []
+        for _ in range(4):
+            clock.sleep(0.010)
+            stamps.append(clock.monotonic_ns())
+        gaps = [later - earlier for earlier, later in itertools.pairwise(stamps)]
+        # Each gap is a period, plus the few microseconds that the loop takes.
+        assert all(9_000_000 < gap < 11_000_000 for gap in gaps)
+
+    def test_a_burst_has_at_least_one_frame(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            acquire_helper.BurstClock(0)
