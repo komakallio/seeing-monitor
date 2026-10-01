@@ -729,7 +729,7 @@ class TestThreadingOfTheDriver:
         [
             ("auto", False, "fake", True),
             ("auto", True, "fake", False),
-            ("auto", False, "asi", False),
+            ("auto", False, "asi", True),  # the name decides nothing: the declaration does
             ("serialize", True, "fake", True),
             ("concurrent", False, "fake", False),
         ],
@@ -808,7 +808,8 @@ class TestWithTheAsiDriver:
             assert remote.open().driver == "asi"
             remote.configure(FAST)
             remote.start()
-            assert service._gate is None  # the driver is thread-safe, so no gate stands in the way
+            assert AsiDriver.thread_safe  # the driver declares it, so no gate stands in the way
+            assert service._gate is None
             frames = read_frames(remote, 60)
             assert frames[0].t_quality is TimeQuality.ESTIMATED  # the driver's own estimate
             assert frames[-1].t_quality is TimeQuality.FITTED  # acquire fitted the arrival times

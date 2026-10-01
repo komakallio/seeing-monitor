@@ -268,7 +268,7 @@ class AcquireService:
         mode = self._cfg.driver_threads
         if mode != "auto":
             return mode == "concurrent"
-        return bool(getattr(self._driver, "thread_safe", False)) or self._driver.name == "asi"
+        return bool(getattr(self._driver, "thread_safe", False))
 
     @property
     def endpoint(self) -> Endpoint:

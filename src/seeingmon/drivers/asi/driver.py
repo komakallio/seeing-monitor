@@ -172,6 +172,9 @@ class AsiDriver:
         on_event: Receives notable occurrences, such as a corrected geometry.
     """
 
+    # Control calls and `read_frame` may run in different threads: `acquire` skips its own gate.
+    thread_safe = True
+
     def __init__(
         self,
         *,
