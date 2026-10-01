@@ -1,0 +1,12 @@
+# Defaults for the keys that belong to no lane.
+#
+# Each lane keeps its own defaults in its own file, config/default.d/<lane>.toml, and does not
+# edit this file. Later layers override earlier ones: this file, then config/default.d/*.toml in
+# file-name order, then local/config.toml, then SEEINGMON_<SECTION>__<KEY> environment variables.
+
+# The hardware profile: a file stem in profiles/, or a path to a profile file.
+profile = "asi294mm-gs250"
+
+# A short name that tags every record from this station. Set the real name in local/config.toml.
+# The value "unset" is a placeholder that lets development and tests run.
+station_id = "unset"

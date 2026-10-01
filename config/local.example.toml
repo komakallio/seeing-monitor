@@ -1,0 +1,43 @@
+# Template for local/config.toml, the file that holds the values of one installation.
+#
+# Copy this file to local/config.toml and replace every placeholder. Git ignores local/, and the
+# real values must stay there: never put a real site location, address, path, or secret in a
+# tracked file. An environment variable overrides a key in this file. Write
+# SEEINGMON_<SECTION>__<KEY>=value, for example SEEINGMON_SITE__ELEVATION_M=12.5.
+
+# A short name (letters, digits, '.', '_', '-') that tags every record from this station.
+station_id = "my-station"
+
+# The hardware profile: a file stem in profiles/, or a path to a profile file.
+profile = "asi294mm-gs250"
+
+# The observing site. The values below are placeholders (0.0 is not your site). Enter your own
+# here, in the untracked file only. Latitude is north-positive, longitude is east-positive.
+[site]
+latitude_deg = 0.0
+longitude_deg = 0.0
+elevation_m = 0.0
+
+[paths]
+# The folder for the store and the segment files. Use a partition with room to spare.
+data_dir = "<path to the data folder>"
+
+[replay]
+# The folder with recorded bursts for the replay driver and the recordings tests.
+recordings_dir = "<path to the recordings folder>"
+
+[auth]
+# The hash of the API token that authorizes commands. Store the hash, never the token.
+token_hash = "<hash of the API token>"
+
+# Result sinks. Each sink adapter documents its own keys; the lines below only show the shape.
+# [sinks.influx]
+# url = "https://influx.example.com:8086"
+# database = "<database name>"
+# token = "<access token>"
+#
+# [sinks.timescale]
+# host = "timescale.example.com"
+# database = "<database name>"
+# user = "<user name>"
+# password = "<password>"
