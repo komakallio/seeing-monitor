@@ -91,6 +91,8 @@ _INT_DTYPES: dict[str, tuple[int, int]] = {
     "i4": (-(2**31), 2**31 - 1),
     "i8": (-(2**63), 2**63 - 1),
 }
+# The largest finite value of the narrow floating-point dtypes. A float64 field needs no bound.
+_FLOAT_LIMITS: dict[str, float] = {"f2": 65_504.0, "f4": 3.4028234663852886e38}
 _FLOAT_DTYPES: frozenset[str] = frozenset({"f2", "f4", "f8"})
 SEGMENT_DTYPES: frozenset[str] = frozenset(_INT_DTYPES) | _FLOAT_DTYPES
 
@@ -425,6 +427,9 @@ class Record(BaseModel):
                 continue
             if spec.kind == "int" and not _SQLITE_INT_MIN <= value <= _SQLITE_INT_MAX:
                 raise ValueError(f"{spec.name} does not fit in 8 bytes")
+            limit = _FLOAT_LIMITS.get(spec.dtype or "")
+            if spec.kind == "float" and limit is not None and abs(value) > limit:
+                raise ValueError(f"{spec.name} does not fit in {spec.dtype}")
             if spec.kind == "json":
                 try:
                     json.dumps(value, allow_nan=False)

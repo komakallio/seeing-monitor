@@ -98,7 +98,7 @@ def _value(spec: FieldSpec) -> st.SearchStrategy[Any]:
     if spec.kind == "int":
         return _integers(constraints)
     if spec.kind == "float":
-        return _floats(constraints, width=32 if spec.dtype == "f4" else 64)
+        return _floats(constraints, width={"f2": 16, "f4": 32}.get(spec.dtype or "", 64))
     if spec.kind == "str":
         if "pattern" in constraints:
             return st.from_regex(constraints["pattern"], fullmatch=True)
