@@ -356,6 +356,145 @@ def test_the_layout_gives_a_phone_one_column_and_no_horizontal_scroll() -> None:
     assert re.search(narrow + r"minmax\(0, 1fr\)", css)
 
 
+# --- Contrast --------------------------------------------------------------------------------
+
+HEX_TOKEN = re.compile(r"(--[a-z0-9-]+):\s*(#[0-9a-fA-F]{6})")
+
+
+def token_block(css: str, marker: str) -> dict[str, str]:
+    """The color tokens of the first rule that follows `marker`."""
+    start = css.index(marker)
+    body = css[css.index("{", start) : css.index("}", start)]
+    return dict(HEX_TOKEN.findall(body))
+
+
+def palettes() -> dict[str, dict[str, str]]:
+    css = text_of("css/app.css")
+    light = token_block(css, "\n:root {")
+    return {
+        "light": light,
+        "dark": {**light, **token_block(css, ':root:not([data-theme="light"])')},
+        "night": {**light, **token_block(css, ':root[data-night="1"]')},
+    }
+
+
+def linear(channel: int) -> float:
+    value = channel / 255
+    return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+
+def luminance(color: str, *, red_only: bool) -> float:
+    """The relative luminance of a `#rrggbb` color (WCAG). The night filter keeps only the red
+    channel, so with `red_only` the green and the blue count as zero."""
+    red, green, blue = (int(color[index : index + 2], 16) for index in (1, 3, 5))
+    if red_only:
+        green = blue = 0
+    return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+
+
+def contrast(first: str, second: str, *, red_only: bool = False) -> float:
+    lighter, darker = sorted(
+        (luminance(first, red_only=red_only), luminance(second, red_only=red_only)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def seen(theme: str, foreground: str, background: str) -> float:
+    """The contrast of two tokens as a person sees them: after the red filter in the night mode."""
+    tokens = palettes()[theme]
+    return contrast(tokens[foreground], tokens[background], red_only=theme == "night")
+
+
+THEMES = ("light", "dark", "night")
+SURFACES = ("--bg", "--surface", "--surface-2")
+LEVELS = ("--good", "--warn", "--bad")
+TEXT_PAIRS = [
+    *((color, surface) for color in ("--text", "--muted") for surface in SURFACES),
+    ("--accent-text", "--accent"),
+    ("--accent", "--surface"),
+    ("--accent", "--bg"),
+    *((level, "--surface") for level in LEVELS),
+    *((level, f"{level}-bg") for level in LEVELS),
+    *(("--text", f"{level}-bg") for level in LEVELS),
+]
+# A red-only pair cannot pass 5.25 to 1, and the muted text of the night mode is secondary text,
+# so it gets the 3 to 1 that WCAG asks for large text and interface parts.
+NIGHT_MUTED_MINIMUM = 3.0
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_every_text_pair_of_a_theme_has_the_contrast_that_wcag_asks_for(theme: str) -> None:
+    for foreground, background in TEXT_PAIRS:
+        minimum = NIGHT_MUTED_MINIMUM if theme == "night" and foreground == "--muted" else 4.5
+        ratio = seen(theme, foreground, background)
+        assert ratio >= minimum, f"{theme}: {foreground} on {background} is {ratio:.2f} to 1"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_the_series_and_the_marks_have_the_contrast_of_a_graphic(theme: str) -> None:
+    for series in ("--series-1", "--series-2", "--series-3", "--series-4"):
+        assert seen(theme, series, "--surface") >= 3.0, (theme, series)
+    black = "#000000"  # the live view is a dark image in every theme
+    tokens = palettes()[theme]
+    for mark in ("--overlay-target", "--overlay-solved"):
+        ratio = contrast(tokens[mark], black, red_only=theme == "night")
+        assert ratio >= 3.0, f"{theme}: {mark} on the live view is {ratio:.2f} to 1"
+
+
+def test_the_night_palette_sets_every_color_that_the_dark_palette_sets() -> None:
+    """The night palette starts from the light tokens, so a token that it forgets stays light."""
+    css = text_of("css/app.css")
+    dark = set(token_block(css, ':root:not([data-theme="light"])'))
+    night = set(token_block(css, ':root[data-night="1"]'))
+    assert dark <= night, sorted(dark - night)
+    assert {"--overlay-target", "--overlay-solved"} <= night
+
+
+def test_the_contrast_helper_matches_known_values() -> None:
+    assert contrast("#000000", "#ffffff") == pytest.approx(21.0)
+    assert contrast("#ffffff", "#ffffff") == pytest.approx(1.0)
+    assert contrast("#777777", "#ffffff") == pytest.approx(4.48, abs=0.01)
+    assert contrast("#ffffff", "#000000", red_only=True) == pytest.approx(5.25, abs=0.01)
+    assert contrast("#ffffff", "#0000ff", red_only=True) == pytest.approx(5.25, abs=0.01)
+
+
+def rule_for(css: str, selector: str) -> str:
+    """The declarations of the rule whose selector list holds `selector`."""
+    position = css.index(selector)
+    return css[css.index("{", position) + 1 : css.index("}", position)]
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        'button[aria-pressed="true"]:hover:not(:disabled)',
+        'button[aria-current="true"]:hover:not(:disabled)',
+        'button[aria-pressed="true"]:focus-visible',
+        'button[aria-current="true"]:focus-visible',
+    ],
+)
+def test_a_pressed_button_keeps_its_colors_under_the_pointer_and_the_keyboard_focus(
+    selector: str,
+) -> None:
+    """The plain hover rule is more specific than the pressed rule. Without these rules, a pressed
+    button under the pointer gets the quiet background and keeps its dark text, so it cannot be
+    read (in every theme, and in the night mode as dark red on dark red)."""
+    css = text_of("css/app.css")
+    rule = rule_for(css, selector)
+    assert "background: var(--accent)" in rule
+    assert "color: var(--accent-text)" in rule
+    assert "border-color: var(--accent)" in rule
+
+
+def test_the_pressed_rules_come_after_the_quiet_hover_rule_that_they_override() -> None:
+    css = text_of("css/app.css")
+    hover = rule_for(css, "button:hover:not(:disabled)")
+    assert "background: var(--surface-2)" in hover
+    assert css.index('button[aria-pressed="true"]:hover:not(:disabled)') > css.index(
+        "button:hover:not(:disabled)"
+    )
+
+
 # --- JavaScript syntax -----------------------------------------------------------------------
 
 

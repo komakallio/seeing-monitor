@@ -27,8 +27,9 @@
   --series-3: #0f766e;
   --series-4: #7c3aed;
   --grid: #e1e6ee;
-  --overlay-target: #0a7a3d;
-  --overlay-solved: #b3261e;
+  /* The live view is a dark image in every theme, so its marks are bright in every theme. */
+  --overlay-target: #4be08f;
+  --overlay-solved: #ff6b5e;
   --radius: 10px;
   --gap: 16px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -56,37 +57,38 @@
     --series-3: #4fd1c5;
     --series-4: #b794f6;
     --grid: #263041;
-    --overlay-target: #55c98b;
-    --overlay-solved: #ff7468;
   }
 }
 
 /* The night mode uses the dark tokens, whatever the device prefers. */
 :root[data-night="1"] {
   color-scheme: dark;
-  --bg: #0b0f15;
-  --surface: #131a24;
-  --surface-2: #19212d;
-  --text: #f0f2f7;
-  --muted: #a3adc0;
-  --border: #2a3444;
-  /* The red filter keeps only the red channel of every color, so these colors have a strong red
-     component, and the levels also differ in their words (Healthy, Degraded, Failed). */
-  --accent: #a8c0ff;
-  --accent-text: #0b1220;
-  --good: #b6f0cd;
-  --warn: #ffd37a;
-  --bad: #ff8b82;
-  --good-bg: #14301f;
-  --warn-bg: #3a2c0c;
-  --bad-bg: #3d1713;
+  /* The night mode puts a filter over the page that keeps only the red channel of every color
+     (see .night-overlay). A pair of colors therefore has the contrast of its red channels, which
+     is at most 5.25 to 1. The grays below set the red channel on purpose, and a test checks the
+     contrast of every pair that the page uses, after the filter. The three levels (good, warn,
+     bad) look alike in red, so the page also names them in words. */
+  --bg: #050505;
+  --surface: #101010;
+  --surface-2: #1c1c1c;
+  --text: #ffffff;
+  --muted: #cfcfcf;
+  --border: #4d4d4d;
+  --accent: #ffffff;
+  --accent-text: #0a0a0a;
+  --good: #f0fff4;
+  --warn: #fff0c8;
+  --bad: #ffe0dc;
+  --good-bg: #141f18;
+  --warn-bg: #242014;
+  --bad-bg: #2a1614;
   --series-1: #ffffff;
-  --series-2: #ffa070;
-  --series-3: #7fe3d8;
-  --series-4: #c9a8ff;
-  --grid: #26324a;
+  --series-2: #ffb08a;
+  --series-3: #d2f5ee;
+  --series-4: #d8c8ff;
+  --grid: #484848;
   --overlay-target: #ffffff;
-  --overlay-solved: #b45a5a;
+  --overlay-solved: #cfcfcf;
 }
 
 *,
@@ -366,6 +368,19 @@ button[aria-current="true"] {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
+}
+
+/* The hover rule above is more specific than the pressed rule, so a pressed button under the
+   pointer would get the quiet background and keep the text color of the pressed state: dark text
+   on a dark background. These rules keep the pressed colors for hover and for keyboard focus. */
+button[aria-pressed="true"]:hover:not(:disabled),
+button[aria-current="true"]:hover:not(:disabled),
+button[aria-pressed="true"]:focus-visible,
+button[aria-current="true"]:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  filter: brightness(1.08);
 }
 
 select,
