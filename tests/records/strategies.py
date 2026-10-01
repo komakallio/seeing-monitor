@@ -40,8 +40,20 @@ JSON_VALUES: st.SearchStrategy[Any] = st.recursive(
     max_leaves=8,
 )
 
-# Fields with a format that the declared type does not show.
-_FORMATTED: dict[str, Any] = {"night": "2026-01-01", "kind": "scheduler.state_change"}
+# Fields with a format that the declared type does not show, such as a date or a relative path.
+# A field that has a validator of its own needs an entry here. The strategy and the minimal value
+# both come from this table.
+_FORMATTED: dict[str, tuple[st.SearchStrategy[str], str]] = {
+    "night": (st.dates().map(date.isoformat), "2026-01-01"),
+    "kind": (
+        st.from_regex(r"[a-z][a-z0-9_]{0,5}(\.[a-z][a-z0-9_]{0,5}){1,2}", fullmatch=True),
+        "scheduler.state_change",
+    ),
+    "image_ref": (
+        st.from_regex(r"[a-z0-9_]{1,6}(/[a-z0-9_]{1,6}){0,2}\.fits", fullmatch=True),
+        "survey/frame-0001.fits",
+    ),
+}
 
 
 def type_id(cls: type[Record]) -> str:
@@ -168,8 +180,9 @@ def record_values(draw: st.DrawFn, record: str | type[Record]) -> dict[str, Any]
             values["quality"] = draw(
                 st.none() | st.dictionaries(st.sampled_from(names), TEXT, max_size=3)
             )
-        elif spec.name == "night":
-            values["night"] = draw(st.dates().map(date.isoformat))
+        elif spec.name in _FORMATTED:
+            formatted = _FORMATTED[spec.name][0]
+            values[spec.name] = draw(st.none() | formatted if spec.nullable else formatted)
         else:
             values[spec.name] = draw(field_strategy(spec))
     repair = _REPAIRS.get(cls.record_type)
@@ -187,15 +200,14 @@ def records(record: str | type[Record]) -> st.SearchStrategy[Record]:
 def _minimal(spec: FieldSpec) -> Any:
     constraints = spec.constraints
     if spec.name in _FORMATTED:
-        return _FORMATTED[spec.name]
+        return _FORMATTED[spec.name][1]
     if spec.codes is not None:
         return sorted(spec.codes)[0] if spec.annotation is str else []
     if spec.kind == "bool":
         return False
     if spec.kind == "int":
-        if "ge" in constraints:
-            return int(constraints["ge"])
-        return int(constraints["gt"]) + 1 if "gt" in constraints else 0
+        low = int(constraints.get("ge", int(constraints["gt"]) + 1 if "gt" in constraints else 0))
+        return max(low, 0) if constraints.get("le", 0) >= 0 else low
     if spec.kind == "float":
         if "gt" in constraints:
             high = constraints.get("le", constraints.get("lt"))
