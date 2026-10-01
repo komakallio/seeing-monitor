@@ -699,12 +699,34 @@ class FakeAsiSdk:
             self._exposure_status = AsiExposureStatus.IDLE
 
 
+class FakeUsbResetter:
+    """A `UsbResetter` for tests. It makes a `FakeAsiSdk` disconnect and return after a delay.
+
+    Set `failure` to an exception to make the next resets raise it. `count` is the number of calls.
+    """
+
+    def __init__(self, sdk: FakeAsiSdk | None = None, *, reappear_after_s: float = 2.0) -> None:
+        self._sdk = sdk
+        self._reappear_after_s = reappear_after_s
+        self.failure: Exception | None = None
+        self.count = 0
+
+    def reset(self) -> None:
+        self.count += 1
+        if self.failure is not None:
+            raise self.failure
+        if self._sdk is not None:
+            self._sdk.disconnect()
+            self._sdk.reconnect(after_s=self._reappear_after_s)
+
+
 __all__ = [
     "DEFAULT_ADC_BITS",
     "DEFAULT_TIMING",
     "FakeAsiSdk",
     "FakeFrameInfo",
     "FakeTiming",
+    "FakeUsbResetter",
     "PixelFactory",
     "default_pixels",
     "pixel_bytes",
