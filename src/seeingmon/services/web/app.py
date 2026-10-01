@@ -6,7 +6,8 @@
   `/api/v1/openapi.json`,
 - the static UI at `/` (`seeingmon/services/web/static`, plain HTML, CSS, and JavaScript with no
   external asset),
-- the middleware for the security headers, the cache headers, the body limit, and compression.
+- the middleware for the host check (the outermost layer), the security headers, the cache headers,
+  the body limit, and compression.
 
 The app takes everything it needs as arguments, so a test builds it with a temporary store and a
 `FakeCoreClient`, and `seeingmon web --demo` builds it with synthetic data. Nothing here opens a
@@ -38,7 +39,12 @@ from seeingmon.services.web.data import StoreData, StoreSource
 from seeingmon.services.web.errors import register_error_handlers
 from seeingmon.services.web.images import ImageStore
 from seeingmon.services.web.live import AlignmentHub, Sleep
-from seeingmon.services.web.middleware import BodyLimit, SecurityHeaders, SelectiveGZip
+from seeingmon.services.web.middleware import (
+    AllowedHosts,
+    BodyLimit,
+    SecurityHeaders,
+    SelectiveGZip,
+)
 from seeingmon.services.web.privacy import public_config, scrub_json
 from seeingmon.services.web.schemas import record_components
 
@@ -56,6 +62,12 @@ endpoint. A breaking change creates `/api/v2`, and `v1` stays for at least one r
 too. Every `POST` needs the token as `Authorization: Bearer <token>`. The server refuses every
 command when no token is configured. A client that sends too many requests gets 429 with a
 `Retry-After` header.
+
+**Hosts.** The server answers a request only when its `Host` header names an allowed host: the
+loopback names, the addresses that the server listens on, and the entries of the `allowed_hosts`
+setting. Any other host gets `400 host_not_allowed`, and the message names the setting. A WebSocket
+handshake with an `Origin` header needs an allowed host there too. This rule does not change who
+may read or send commands.
 
 **Values.** Times are ISO 8601 UTC strings. A field name carries its unit, such as
 `seeing_fwhm_arcsec`. A missing value is `null`, and the `quality` object says why. Every error
@@ -228,5 +240,7 @@ def create_app(
     )
     app.add_middleware(BodyLimit, max_bytes=settings.max_body_bytes)
     app.add_middleware(SecurityHeaders)
+    # The last middleware added is the outermost. The host check runs before anything else.
+    app.add_middleware(AllowedHosts, allowed=lambda: app.state.ctx.allowed_hosts)
     _install_openapi(app)
     return app

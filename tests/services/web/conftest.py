@@ -152,11 +152,18 @@ def app(make_app: Callable[..., FastAPI]) -> FastAPI:
 
 @pytest.fixture
 def open_client() -> Iterator[Callable[..., TestClient]]:
-    """Open clients with the lifespan running. Every client closes when the test ends."""
+    """Open clients with the lifespan running. Every client closes when the test ends.
+
+    A client sends `Host: localhost`, one of the hosts that every server allows. The client puts
+    the header in its defaults, so a WebSocket connection (whose URL the test client builds from
+    its own default host) carries it too. A test passes `headers={"host": ...}` to name another
+    host.
+    """
     with ExitStack() as stack:
 
         def open_one(app: FastAPI, **options: Any) -> TestClient:
-            return stack.enter_context(TestClient(app, **options))
+            headers = {"host": "localhost", **options.pop("headers", {})}
+            return stack.enter_context(TestClient(app, headers=headers, **options))
 
         yield open_one
 

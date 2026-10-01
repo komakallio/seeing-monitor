@@ -59,6 +59,7 @@ class WebContext:
         demo: bool,
     ) -> None:
         self.settings = settings
+        self.allowed_hosts = settings.allowed_host_set()
         self.data = data
         self.images = images
         self.core = core
