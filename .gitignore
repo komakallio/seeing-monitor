@@ -1,0 +1,33 @@
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Local and deployment-specific configuration
+/local/
+*.local.*
+.claude/settings.local.json
+
+# Captured and generated data
+/data/
+/captures/
+*.fits
+*.fit
+*.fts
+*.ser
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Templates stay tracked. Commit them with placeholder values only.
+!*.example
