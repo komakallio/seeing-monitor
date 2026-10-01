@@ -18,9 +18,10 @@ Five rules shape the design. A profile describes the hardware, and everything el
 | Topic | Decision | Reason | Set by |
 |---|---|---|---|
 | Language | Python 3.11 or later with NumPy, SciPy, astropy, and `pyerfa`. If the Pi 4 benchmark gate fails, Rust (PyO3) replaces only the per-frame metrics. | One maintainer, the best astronomy ecosystem, and solving is not a bottleneck. | You |
-| License | MIT | | You |
+| License | MIT, copyright Lauri Kangas | | You |
 | Remote database | A sink interface with InfluxDB first and PostgreSQL with TimescaleDB second. Both can run at once. | Matches your migration plan. | You |
 | Hardware | Raspberry Pi 4 or 5, SD card only. The design targets the Pi 4. | The weakest case sets the budget. | You |
+| RAM | Start with 2 GB, and move to 4 GB only if the phase 2 memory gate fails. | Peak memory is about 1.4 GB, and the step to 4 GB nearly doubles the price (April 2026). A bench swap is cheap. | Lead |
 | Solver catalog | A cap around the north celestial pole (NCP). No all-sky blind solve. | The mount never points far from the pole. | You |
 | Fast mode | Bin1 readout and a 2 ms exposure. The brief suggests about 10 ms, which stays selectable. | Bin1 needs no defocus. At 10 ms, Polaris saturates and seeing reads 2 to 27% low. | Lead |
 | Local store | SQLite (WAL) for results. FITS, SER, and binary segment files for survey frames, bursts, and per-frame metrics. | No administration and few writes, which suits an SD card. | Lead |
@@ -101,7 +102,7 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 - **Frame rate.** Vendor figures imply about 6 ms of overhead per frame in bin1 and 1 ms in bin2 (derived), so small ROIs reach roughly 90 to 150 fps in bin1 and 300 fps or more in bin2.
 - **Rolling shutter.** A 128-row ROI spans 4.8 ms in bin1, so a star's row shifts its timestamp.
 - **Polaris is bright.** An estimated 87,000 photoelectrons (±30%) arrive in 10 ms. A sharp-focus bin1 peak pixel then holds about 33,000 against a 14,400 full well, and it reaches 70% of full well after 3 ms. Fast mode defaults to 2 ms.
-- **No cooler, no frame buffer, USB power only.** Dark current follows the ambient temperature (about 0.2 e⁻/s per pixel at 20 °C, doubling every 6 °C), so survey frames need a temperature-dependent dark model. The manual lists a DDR3 buffer only for the Pro, so a late read loses frames at once. The camera draws up to 0.37 A, so a Pi 5 needs its 5 A supply or a lifted USB current limit.
+- **No cooler, no frame buffer, USB power only.** Dark current follows the ambient temperature (about 0.2 e⁻/s per pixel at 20 °C, doubling every 6 °C), so survey frames need a temperature-dependent dark model. The manual lists a DDR3 buffer only for the Pro, so a late read loses frames at once. The camera draws up to 0.37 A, so a Pi 5 on a 3 A supply or a PoE splitter needs the USB current limit lifted (`usb_max_current_enable=1`).
 
 **Larger scopes.** The GS-300 (50 mm, f/6) and GS-350 (58 mm, f/6) share the GS-250's 16 mm design circle. The GS-300 changes no atmospheric number, and the GS-350 changes them by a few percent. Both shrink the field and add wind load. **Keep the GS-250.** The appendix has the comparison.
 
@@ -125,7 +126,7 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 | Per-frame metrics | About 40 bytes | 3.5 KB/s at 90 fps | 0.3 GB per 24 hours |
 | Results | 0.15 to 0.4 KB | About 4 rows per minute | Under 0.5 GB per year |
 
-The rates are derived estimates, and USB 3 carries every stream with wide margin. The Pi 4 budget is 10% of a core for `acquire`, 25% for the fast path, one core in bursts for the survey worker, and 1.2 GB of memory. A NumPy centroid on a 128 × 128 frame takes an estimated 0.2 to 0.4 ms on a Pi 4. The performance gate measures all of this.
+The rates are derived estimates, and USB 3 carries every stream with wide margin. The Pi 4 budget is 10% of a core for `acquire`, 25% for the fast path, one core in bursts for the survey worker, and about 1.4 GB of memory at peak (the survey worker takes 550 MB). A 2 GB model fits if the out-of-memory killer takes the survey worker first, calibration frames stay memory-mapped, and native frames are processed off the Pi. More than 1.6 GB at peak in the gate means 4 GB. A NumPy centroid on a 128 × 128 frame takes an estimated 0.2 to 0.4 ms on a Pi 4. The performance gate measures all of this.
 
 | Tier | Content | Retention |
 |---|---|---|
@@ -245,7 +246,7 @@ In `align`, the camera streams a bin2 view with 0.2 to 1 s exposures. `core` str
 
 The comparison uses the fast-mode case: a ROI of about 128 × 128 pixels, 90 or more frames per second, per-frame UTC timestamps, and counted drops. Only the ZWO SDK fits. INDI wraps the same SDK but forces the exposure to 95% of the frame period, ignores the drop counter, and stamps frames with one-second protocol resolution (Debian ships INDI 1.9.9 with a 2022 driver). ASCOM Alpaca has no video device and needs three or more HTTP calls per exposure. The SDK files carry an MIT notice, although Debian rates the binaries non-free.
 
-The SDK driver comes first, and INDI and Alpaca adapters wait for a non-ZWO camera. The driver follows four rules. One worker process owns the SDK, and its reader thread stamps frames right after `ASIGetVideoData` returns. Waits are bounded (twice the exposure plus 500 ms), and the reader stops before `ASIStopVideoCapture`, because a blocked read cannot be cancelled. Every mode change runs one function (stop, set ROI and binning, set the start position, read back, discard frames, restart), because the SDK can change geometry silently mid-stream. A recovery ladder escalates from restarting capture through reopening the camera, a sysfs USB reset, and cutting USB power, to restarting `acquire` and finally a reboot. Reports describe ZWO cameras on Pi boards that stall after hours or days until someone power-cycles them, and the Pi cannot switch a single USB port, so the design needs a switchable power path (question 4).
+The SDK driver comes first, and INDI and Alpaca adapters wait for a non-ZWO camera. The driver follows four rules. One worker process owns the SDK, and its reader thread stamps frames right after `ASIGetVideoData` returns. Waits are bounded (twice the exposure plus 500 ms), and the reader stops before `ASIStopVideoCapture`, because a blocked read cannot be cancelled. Every mode change runs one function (stop, set ROI and binning, set the start position, read back, discard frames, restart), because the SDK can change geometry silently mid-stream. A recovery ladder escalates from restarting capture through reopening the camera, a sysfs USB reset, restarting `acquire`, and a reboot, to a hard power cycle of the whole Pi through its PoE switch port or a smart plug on its injector (the camera loses its USB power with the Pi). Reports describe ZWO cameras on Pi boards that stall after hours or days until someone power-cycles them. The Pi cannot switch a single USB port, so a camera-only cycle would need a powered hub on its own switchable supply, which stays optional (question 2).
 
 ### Plate solvers
 
@@ -275,8 +276,8 @@ GitHub Actions runs Windows, Linux x64, and Linux arm64 on Python 3.11 and 3.13:
 The target is Raspberry Pi OS Lite, 64-bit (Debian 13 with Python 3.13). The Debian 12 image with Python 3.11 also works.
 
 - **Install.** A generic script takes host, user, and paths as parameters, with no defaults. It creates a service user, installs the wheel in a virtual environment and the systemd units, adds the camera udev rule and the USB buffer setting, configures journald and chrony, and copies your local configuration. It is safe to rerun.
-- **Recovery.** Services use `Restart=always`, `WatchdogSec`, and a start limit that escalates to `degraded` health. The camera ladder ends in a power cycle through a powered USB hub on a smart plug or a GPIO relay.
-- **SD card.** Data lives on its own partition. Journald logs stay in RAM, and warnings also go to the `event` table. Temporary files use tmpfs, files are written under a temporary name and renamed, and SQLite runs WAL with `synchronous=NORMAL`. The write budget is under 1 GB per day. Use a high-endurance card.
+- **Recovery.** Services use `Restart=always`, `WatchdogSec`, and a start limit that escalates to `degraded` health. The camera ladder ends in a hard power cycle of the whole Pi through its PoE switch port or a smart plug. An external watchdog on the LAN polls `/api/v1/health` and triggers the cycle when health stays failed for several minutes, and the Pi can request it as a last resort. A command or URL in local configuration defines the cycle, so no address or credential enters the repository.
+- **SD card.** Data lives on its own partition. Journald logs stay in RAM, and warnings also go to the `event` table. Temporary files use tmpfs, files are written under a temporary name and renamed, and SQLite runs WAL with `synchronous=NORMAL`. The write budget is under 1 GB per day. Use a high-endurance card. A 32 GB card holds the rolling tiers (about 7 GB) and five years of results.
 - **Time and updates.** The Pi 4 has no real-time clock, so records carry `time_invalid` until the first synchronization. Two versioned environments and a symlink flip give a rollback in seconds. The OS updates itself for security, and application and SDK updates are manual.
 - **Vendor SDK.** The repository never contains the SDK. The installer takes the archive from a path you give it, checks its checksum, and installs it privately. The INDI third-party repository carries an MIT license text for the SDK, but the terms in ZWO's own archive are unconfirmed, so redistribution waits on that check.
 
@@ -296,21 +297,19 @@ The device sits on a LAN, and the repository is public.
 | Exposure averaging | At 10 ms, seeing reads 2 to 27% low | A 2 ms default (0.3 to 7%) and a wind assumption stored with each result. At 90 fps the spectrum cannot give the wind. |
 | Polaris saturates, and bin2 biases the centroid | Clipped flux, and a centroid gain of 0.5 to 1.5 | Bin1, 2 ms, a defocus of about 3 pixels if bin2 is used, flags, a commissioning sweep |
 | No frame timestamp from the camera | Absolute time depends on the host clock and a latency estimate | Regression over frame number, GPIO light-pulse calibration, `t_err` on every frame |
-| The closed SDK hangs or stalls the camera | Lost frames, or no camera for days | Process isolation, watchdog, the recovery ladder with switched power, a soak test, a pinned SDK version |
+| The closed SDK hangs or stalls the camera | Lost frames, or no camera for days | Process isolation, watchdog, the recovery ladder ending in a remote power cycle, a soak test, a pinned SDK version |
 | Uncooled sensor and possible dew | Dark current and transparency drift | Dark-rate model with seasonal checks, a dew flag, an optional heater |
 | No standard sky scale for an unfiltered sensor | 0.2 to 0.3 mag uncertainty in V | Report the camera band first, and fit against an SQM or TESS-W |
 | SD card wear and corruption | Data loss or a failed boot | Write budget, tmpfs, WAL, atomic writes, a high-endurance card, remote sinks as a second copy |
 
 Questions for you:
 
-1. Which InfluxDB version do you run (1.x, 2.x, or 3.x)? Which measurement and field names must stay compatible, and do you want to import old history?
-2. What are the Pi's RAM size and the SD card's capacity and type? They set the retention defaults.
-3. Which copyright holder name goes in the MIT `LICENSE` file?
-4. Can the camera sit behind a powered USB hub on a switchable supply (a smart plug or a GPIO relay)? The Pi cannot switch a single USB port, and ZWO advises a direct connection when troubleshooting, so the soak test must include the hub.
-5. Does the scope have a dew heater or shield, and is a lens cap available for dark frames?
-6. Does the site have a reference instrument (SQM, TESS-W, or DIMM)?
-7. How far from the pole can the mount point when alignment starts? The default cap radius is 15 degrees.
-8. Is a LAN-only service with a command token acceptable?
+1. You deferred the InfluxDB version, the field names to keep, and any history import. The InfluxDB adapter waits for them.
+2. How will the Pi's power be cycled remotely: through its PoE switch port, through a smart plug on the injector, or not at all? A camera-only cycle needs a powered hub on a switchable supply, and ZWO advises a direct connection when troubleshooting, so the soak test must include any hub.
+3. Does the scope have a dew heater or shield, and is a lens cap available for dark frames?
+4. Does the site have a reference instrument (SQM, TESS-W, or DIMM)?
+5. How far from the pole can the mount point when alignment starts? The default cap radius is 15 degrees.
+6. Is a LAN-only service with a command token acceptable?
 
 ## Appendix: long-term science plan
 
