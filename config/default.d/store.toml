@@ -1,0 +1,62 @@
+# Defaults of the storage and sinks lane. Every key sits under [store], and seeingmon.store.config
+# declares the same defaults. Override a key in local/config.toml, or with an environment variable
+# such as SEEINGMON_STORE__RETENTION__MIN_FREE_GB=2. Sizes are in decimal gigabytes.
+#
+# The sink endpoints and credentials are not here. They belong to the local file, in
+# [sinks.<name>] tables (see config/local.example.toml).
+
+[store]
+# How long a writer waits for another process to release the database lock.
+busy_timeout_ms = 5000
+# The size of the pool of read-only connections.
+reader_connections = 4
+
+[store.segments]
+# The length of one segment file of per-frame metrics, in seconds of frame time.
+segment_s = 600
+# How often the writer forces the open segment to disk. A crash of the process loses nothing,
+# and this bounds the loss at a power cut.
+fsync_interval_s = 60.0
+# How long a segment may sit idle before the housekeeping tick closes it.
+idle_close_s = 120.0
+
+[store.retention]
+# How often the hourly retention task runs, in seconds.
+interval_s = 3600.0
+# The share of the data partition that the data directory may use.
+quota_fraction = 0.25
+# Below this free space, raw capture stops and retention frees space. Capture resumes when the
+# free space rises resume_margin_gb above it.
+min_free_gb = 1.0
+resume_margin_gb = 0.5
+# Retention never deletes a file that changed within this many seconds.
+protect_recent_s = 900.0
+# Per-frame metric segments: this many days, or this size, whichever is smaller.
+metrics_days = 7.0
+metrics_max_gb = 2.0
+# Preview images.
+previews_days = 7.0
+# Survey frames: all of them for the full days, then one for each night for the thinned days.
+survey_full_days = 7.0
+survey_thinned_days = 60.0
+# Raw bursts: a size quota. Pinned bursts do not count against it and stay.
+bursts_max_gb = 2.0
+# The UTC hour at which one observing night ends and the next begins. Use the hour of local noon.
+night_boundary_utc_hour = 12.0
+# A temporary file older than this is a leftover of a crash.
+temp_max_age_s = 3600.0
+
+[store.forwarder]
+# The most rows in one batch, and the most batches that one pass sends to one sink.
+batch_rows = 5000
+max_batches_per_pass = 20
+# How long the loop sleeps when no sink has work.
+poll_interval_s = 1.0
+# Backoff after a failed send: the first wait, the growth factor, the longest wait, and the random
+# variation of each wait (a fraction, up or down).
+backoff_initial_s = 5.0
+backoff_factor = 2.0
+backoff_max_s = 600.0
+jitter = 0.25
+# A sink with more unsent rows than this raises the sink_backlog health flag.
+backlog_flag_rows = 20000
