@@ -257,7 +257,7 @@ In `align`, the camera streams a bin2 view with 0.2 to 1 s exposures. `core` str
 
 The comparison uses the fast-mode case: a ROI of about 128 × 128 pixels, 90 or more frames per second, per-frame UTC timestamps, and counted drops. Only the ZWO SDK fits. INDI wraps the same SDK but forces the exposure to 95% of the frame period, ignores the drop counter, and stamps frames with one-second protocol resolution (Debian ships INDI 1.9.9 with a 2022 driver). ASCOM Alpaca has no video device and needs three or more HTTP calls per exposure. The SDK files carry an MIT notice, although Debian rates the binaries non-free.
 
-The SDK driver comes first, and INDI and Alpaca adapters wait for a non-ZWO camera. The driver follows four rules. One worker process owns the SDK, and its reader thread stamps frames right after `ASIGetVideoData` returns. Waits are bounded (twice the exposure plus 500 ms), and the reader stops before `ASIStopVideoCapture`, because a blocked read cannot be cancelled. Every mode change runs one function (stop, set ROI and binning, set the start position, read back, discard frames, restart), because the SDK can change geometry silently mid-stream. A recovery ladder escalates from restarting capture through reopening the camera, a sysfs USB reset, restarting `acquire`, and a reboot, to a hard power cycle of the whole Pi through its PoE switch port or a smart plug on its injector (the camera loses its USB power with the Pi). Reports describe ZWO cameras on Pi boards that stall after hours or days until someone power-cycles them. The Pi cannot switch a single USB port, so a camera-only cycle would need a powered hub on its own switchable supply, which stays optional (question 2).
+The SDK driver comes first, and INDI and Alpaca adapters wait for a non-ZWO camera. The driver follows four rules. One worker process owns the SDK, and its reader thread stamps frames right after `ASIGetVideoData` returns. Waits are bounded (twice the exposure plus 500 ms), and the reader stops before `ASIStopVideoCapture`, because a blocked read cannot be cancelled. Every mode change runs one function (stop, set ROI and binning, set the start position, read back, discard frames, restart), because the SDK can change geometry silently mid-stream. A recovery ladder escalates from restarting capture through reopening the camera, a sysfs USB reset, restarting `acquire`, and a reboot, to a hard power cycle of the whole Pi through its PoE switch port or a smart plug on its injector (the camera loses its USB power with the Pi). Reports describe ZWO cameras on Pi boards that stall after hours or days until someone power-cycles them. The Pi cannot switch a single USB port, so a camera-only cycle would need a powered hub on its own switchable supply, which stays optional (question 1).
 
 ### Plate solvers
 
@@ -297,7 +297,7 @@ The target is Raspberry Pi OS Lite, 64-bit (Debian 13 with Python 3.13). The Deb
 
 The device sits on a LAN, and the repository is public.
 
-- **Network.** `web` binds to the LAN interface only, and remote access goes through a VPN. Reads are open on the LAN by default, and a setting can require the token. Commands need a bearer token (only its hash is stored), are rate-limited, and validate input.
+- **Network.** `web` binds to the LAN interface only, and remote access goes through a VPN. Reads are open on the LAN by default (a deferred decision), and a setting can require the token. Commands need a bearer token (only its hash is stored), are rate-limited, and validate input.
 - **Isolation.** Each service runs unprivileged under a systemd sandbox (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`). `web` has no camera access and no write access to the data directory. Only `acquire` touches USB.
 - **Supply chain and secrets.** Dependencies are pinned with hashes. Secrets and site coordinates live in `local/`, environment variables, or systemd credentials, and never in the repository, the logs, or the API. SSH uses keys only.
 
@@ -314,12 +314,12 @@ The device sits on a LAN, and the repository is public.
 | No standard sky scale for an unfiltered sensor | 0.2 to 0.3 mag uncertainty in V | Report the camera band first, and fit against an SQM or TESS-W |
 | SD card wear and corruption | Data loss or a failed boot | Write budget, tmpfs, WAL, atomic writes, a high-endurance card, remote sinks as a second copy |
 
+Deferred by you: the InfluxDB version, field names, and history import (the InfluxDB adapter waits for them), and the web access rule (until you decide, the design keeps the default: anyone on the local network can view, a token is needed for actions that change something, and outside access goes through a VPN).
+
 Questions for you:
 
-1. You deferred the InfluxDB version, the field names to keep, and any history import. The InfluxDB adapter waits for them.
-2. How will the Pi's power be cycled remotely: through its PoE switch port, through a smart plug on the injector, or not at all? A camera-only cycle needs a powered hub on a switchable supply, and ZWO advises a direct connection when troubleshooting, so the soak test must include any hub.
-3. Which Pi and HAT will you use? When you decide, send the HAT's pin map, any temperature and humidity sensors, and any failsafe, so the heater adapter can match it.
-4. Who may use the web UI? The default is that anyone on your local network can view the pages, while an action that changes something (starting alignment, capturing a burst, pausing) needs a token, a long secret that your phone stores after you enter it once. Reaching the device from outside goes through a VPN, and the router never forwards a port to it. Do you want a different rule, such as a login to view, or access from the internet?
+1. How will the Pi's power be cycled remotely: through its PoE switch port, through a smart plug on the injector, or not at all? A camera-only cycle needs a powered hub on a switchable supply, and ZWO advises a direct connection when troubleshooting, so the soak test must include any hub.
+2. Which Pi and HAT will you use? When you decide, send the HAT's pin map, any temperature and humidity sensors, and any failsafe, so the heater adapter can match it.
 
 ## Appendix: long-term science plan
 
