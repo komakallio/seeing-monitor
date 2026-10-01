@@ -16,7 +16,7 @@ The deploy lane could not run anything on a Raspberry Pi (blocker B2), so every 
 | udev rule | Syntax (`udevadm verify` passed on a development machine) | A real camera: the group, the mode, and the autosuspend setting |
 | USB buffer, journald, chrony fragments | Syntax and rendering | Their effect on a Pi: the `usbfs_memory_mb` write, the volatile journal, time synchronization |
 | Polkit rule (`--supervisor-actions`) | Syntax and rendering | That `systemctl reboot` works for the service user |
-| `seeingmon heater-off` | The `core` unit calls it when it stops | The command comes from the hardware lane and is not on `main` yet. The minus sign in `ExecStopPost=-...` keeps a missing command from failing the unit. |
+| `seeingmon heater-off` | Unit tests on fake GPIO lines, including a call that hangs. The `core` unit runs it when it stops. The command exits with 0 when every heater output is off or no heater is configured, and with 1 when an output cannot be switched off, the configuration cannot be read, or the GPIO work passes its 1 s limit. | Real lines: the permission of the service user on `/dev/gpiochip*`, and what a line does after the release (see the heater paragraph of [architecture.md](architecture.md)). A failure writes its reason to the journal, one line for each failed output. Run by hand while `core` runs, the command exits with 1 and reports `the line is busy`. The minus sign in `ExecStopPost=-...` keeps a failure from failing the unit. |
 | Recovery ladder, power cycle | The scheduler and the power hook have their own tests | A real stall, a real reboot, and a real power cycle (blocker B4: the route is undecided) |
 
 A section that says "untested" describes the intended behavior, and you confirm it the first time you run it.

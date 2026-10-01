@@ -50,9 +50,19 @@ SEEINGMON_HARDWARE_SQM_DUMP=local/sqm-sample.txt python -m pytest tests/hardware
 
 The file lists each request and its response. A response can hold the unit's serial number, so keep the file in `local/`, which Git ignores, and remove the serial number before you share the file.
 
+## Check that the heater stays off after a stop (blocker B3)
+
+`seeingmon heater-off` drives the heater outputs off and releases the lines. The kernel then returns each line to its default, usually an input, so only the HAT decides whether the heater stays off from there. No automated check can see the HAT, so run this check by hand on a bench when you choose one. You need the heater supply on and a way to see the heater, such as a meter on the driver input or a lamp as a stand-in load.
+
+1. Enable the heater in `local/config.toml` with the pin map of the HAT, and start `seeingmon core` in a terminal under conditions that call for heat, such as a `fixed` ambient sensor with a high humidity. Wait until the heater switches on.
+2. Kill the process without a clean stop: `kill -9 <pid>`. The kernel releases the lines, and no software runs. Watch the heater for a minute.
+3. Run `seeingmon heater-off`. It requests the lines off, releases them again, and prints `seeingmon heater-off: the heater outputs are off` with the names of the outputs. Watch the heater for another minute.
+
+A pass is a heater that stays off in both steps. A heater that comes on or floats means that the HAT has no pull resistor that keeps it off, and no failsafe of its own. Add a pull-down at the driver input (a pull-up for an active-low driver), or choose a HAT with a failsafe.
+
 ## What the checks do not cover
 
-- **The dew heater on a real HAT.** The HAT is undecided. The loopback check confirms only the GPIO layer. When you choose a HAT, add its pin map and sensors to `[heater]`, and run the heater with the dew shield on a bench first.
+- **The dew heater on a real HAT.** The HAT is undecided. The loopback check confirms only the GPIO layer, and the previous check is manual. When you choose a HAT, add its pin map and sensors to `[heater]`, and run the heater with the dew shield on a bench first.
 - **A real power cycle.** The dry run proves that the route is configured. A real cycle cuts the power of the Pi, so run the route's own command or request by hand once, with the Pi attached, before you rely on it.
 - **Long-term behavior.** A soak test of days finds the stalls that the recovery ladder exists for. It belongs to commissioning.
 - **The time latency.** A light pulse from a GPIO pin measures the delay between the end of a frame and its arrival stamp. Commissioning records the value in `time_error_ms` and in the acquire timing settings.
