@@ -1,0 +1,95 @@
+# Defaults of the scheduler. Every key sits under [scheduler], and no other file defines one.
+#
+# ALL VALUES ARE PROVISIONAL. They follow the "Scheduler" section of docs/architecture.md, and
+# they stay unchanged until commissioning (phase 3) finds the final exposure, gain, ROI, and
+# cadence under a real sky. Hardware values (readout modes, saturation levels, ROI sizes) come
+# from the profile, so none of them appears here. Override a key in local/config.toml, or with
+# an environment variable such as SEEINGMON_SCHEDULER__FAST__WINDOW_S=60.
+
+# The fast stream. The readout mode is the profile's fast mode.
+[scheduler.fast]
+window_s = 120.0            # One fast period. Use a multiple of analysis_window_s.
+analysis_window_s = 60.0    # The window length of the fast analyzer.
+exposure_us = 2000          # 2 ms, because Polaris saturates a longer exposure in bin1.
+gain = 0
+roi_arcmin = 4.1            # The profile turns this angle into pixels.
+roi_edge_margin_px = 16.0   # A star nearer than this to the ROI edge ends the window.
+edge_cooldown_s = 5.0       # The shortest stream time between two edge recenters.
+missing_star_frames = 450   # Frames in a row without a star that trigger a survey solve.
+resolve_interval_s = 60.0   # The shortest time between two solves that a missing star triggers.
+
+# The survey step. The readout mode is the profile's survey mode.
+[scheduler.survey]
+cadence_s = 180.0           # Start of one cycle to the start of the next.
+short_exposure_s = 0.001    # Bright stars, and the brightness check of the sky.
+short_gain = 0
+long_exposure_s = 30.0      # Faint stars and the sky.
+long_gain = 120
+max_pending = 4             # Skip the step while this many frames wait for analysis.
+solve_wait_s = 120.0        # How long to wait for a pointing solution after a step.
+solve_retry_s = 60.0        # The pause between solve attempts.
+
+# The brightness watch in `safe`: one short frame per interval.
+[scheduler.watch]
+exposure_us = 1000
+gain = 0
+interval_s = 60.0
+roi_arcmin = 20.0           # A central ROI. Use 0 for the full frame.
+
+# The daylight gate: the Sun's elevation gates the attempt, and the measured sky overrides it.
+[scheduler.daylight]
+sun_elevation_limit_deg = -3.0   # Above this, stay in `safe`.
+sun_resume_margin_deg = 1.0      # Hysteresis before `auto` resumes.
+twilight_elevation_deg = -18.0   # Above this, results carry `twilight`.
+saturation_limit = 0.5           # A background above this share of saturation forces `safe`.
+resume_saturation = 0.35         # Hysteresis before `auto` resumes.
+
+# The response to clouds. The survey analysis reports the cloud fraction.
+[scheduler.cloud]
+threshold = 0.5             # At or above: shorten the fast period, survey more often.
+clear_threshold = 0.3       # At or below: back to normal.
+fast_window_s = 60.0
+survey_cadence_s = 90.0
+
+# The alignment helper.
+[scheduler.align]
+idle_timeout_s = 1800.0     # 30 minutes without activity ends `align`.
+exposure_s = 0.5
+gain = 120
+
+# Camera errors: back off, climb the ladder, then turn `degraded`.
+[scheduler.faults]
+backoff_initial_s = 2.0
+backoff_factor = 2.0
+backoff_max_s = 60.0
+degraded_after = 5          # Failures in a row.
+slow_retry_s = 600.0        # The pause between attempts while `degraded`.
+clear_after_frames = 10     # Good frames in a row that clear the failure count.
+
+# The recovery ladder: restart_capture, reopen, usb_reset, restart_acquire, reboot, power_cycle.
+# The first three steps run in the driver. The others go to the supervisor through `escalate`.
+[scheduler.ladder]
+attempts_per_level = 2
+max_level = "power_cycle"
+destructive_interval_s = 21600.0   # At most one reboot or power cycle in 6 hours.
+
+[scheduler.commission]
+max_queued = 8
+max_results = 50
+
+# The default sweep grid. The values explore a range and choose nothing.
+[scheduler.sweep]
+window_s = 10.0
+exposure_us = [500, 1000, 2000, 5000, 10000]
+gain = [0, 60, 120]
+roi_arcmin = [4.1]
+modes = []                  # An empty list means the profile's fast mode.
+max_cells = 200
+
+# The run loop.
+[scheduler.loop]
+max_sleep_s = 0.25
+poll_interval_s = 0.1
+read_timeout_factor = 2.0
+read_timeout_margin_s = 0.5
+context_refresh_s = 30.0
