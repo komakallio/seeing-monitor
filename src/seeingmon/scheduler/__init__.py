@@ -2,9 +2,73 @@
 
 See the "Scheduler" section of `docs/architecture.md`. The modules are:
 
+- `scheduler`: the `Scheduler` class and `build_scheduler`. Start here.
+- `commands`: `submit` takes these commands and returns a `CommandResult`.
+- `machine`: the states and the legal transitions.
 - `config`: the `[scheduler]` table and the observing site.
+- `commission`: the task queue, the handler protocol, and the sweep.
+- `faults` and `levels`: the response to camera errors and the recovery ladder.
+- `gates`: the daylight gate, the twilight flag, and the cloud tracker.
 - `ephemeris`: the Sun's elevation, for the daylight gate and the twilight flag.
-- `levels`: the steps of the recovery ladder.
+- `status`: the snapshot for `/status` and the `health` record.
 """
 
 from __future__ import annotations
+
+from seeingmon.scheduler.commands import (
+    Command,
+    CommandResult,
+    Pause,
+    QueueBurst,
+    QueueReplay,
+    QueueSweep,
+    RejectReason,
+    Resume,
+    StartAlignment,
+    StopAlignment,
+)
+from seeingmon.scheduler.commission import (
+    CommissionContext,
+    CommissionHandler,
+    CommissionResult,
+    CommissionTask,
+    FastWindowSample,
+    SweepHandler,
+    format_sweep_table,
+)
+from seeingmon.scheduler.config import SchedulerConfig, SiteConfig, load_site
+from seeingmon.scheduler.ephemeris import sun_elevation_deg
+from seeingmon.scheduler.levels import EscalationLevel
+from seeingmon.scheduler.machine import State
+from seeingmon.scheduler.scheduler import Scheduler, StepKind, build_scheduler
+from seeingmon.scheduler.status import SchedulerStatus
+
+__all__ = [
+    "Command",
+    "CommandResult",
+    "CommissionContext",
+    "CommissionHandler",
+    "CommissionResult",
+    "CommissionTask",
+    "EscalationLevel",
+    "FastWindowSample",
+    "Pause",
+    "QueueBurst",
+    "QueueReplay",
+    "QueueSweep",
+    "RejectReason",
+    "Resume",
+    "Scheduler",
+    "SchedulerConfig",
+    "SchedulerStatus",
+    "SiteConfig",
+    "StartAlignment",
+    "State",
+    "StepKind",
+    "StopAlignment",
+    "SweepHandler",
+    "build_scheduler",
+    "format_sweep_table",
+    "load_site",
+    "sun_elevation_deg",
+]
