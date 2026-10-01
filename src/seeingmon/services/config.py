@@ -20,6 +20,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 
 from seeingmon.clock import Clock, ScaledClock, SystemClock
 from seeingmon.config import SectionModel
+from seeingmon.services.clockprobe import make_probe
 from seeingmon.services.core.settings import CoreSettings
 from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey, load_connection_key
@@ -30,12 +31,15 @@ MIB = 1024 * 1024
 class ClockSettings(SectionModel):
     """The clock of a process.
 
-    `system` is the operating system clock, and a real installation uses it. `scaled` runs
+    `system` is the operating system clock, and a real installation uses it. Its `probe` tells the
+    clock whether it is synchronized: `adjtimex` reads the state of the kernel clock (Linux), `none`
+    leaves the state unknown, and `auto` picks `adjtimex` on Linux. `scaled` runs
     faster than real time for end-to-end tests: every process that must agree on the time gets
     the same `start_utc_ns`, `origin_real_ns`, and `speed` (see `seeingmon.clock.ScaledClock`).
     """
 
     kind: Literal["system", "scaled"] = "system"
+    probe: Literal["auto", "adjtimex", "none"] = "auto"
     speed: float = Field(1.0, gt=0)
     start_utc_ns: int | None = None
     origin_real_ns: int | None = None
@@ -49,7 +53,7 @@ class ClockSettings(SectionModel):
     def build(self) -> Clock:
         """Build the clock."""
         if self.kind == "system":
-            return SystemClock()
+            return SystemClock(status_probe=make_probe(self.probe))
         if self.start_utc_ns is None or self.origin_real_ns is None:  # the validator rules this out
             raise ValueError("a scaled clock needs start_utc_ns and origin_real_ns")
         return ScaledClock(

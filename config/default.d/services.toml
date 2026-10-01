@@ -35,6 +35,11 @@ max_frame_bytes = 134217728
 # `system` is the operating system clock. `scaled` (with start_utc_ns, origin_real_ns, and speed)
 # runs faster than real time and exists for end-to-end tests.
 kind = "system"
+
+# How the system clock learns whether it is synchronized: `adjtimex` reads the state of the kernel
+# clock that chrony steers (Linux only), `none` leaves it unknown, and `auto` picks `adjtimex` on
+# Linux. An unsynchronized clock marks frames, windows, and records `time_invalid`.
+probe = "auto"
 speed = 1.0
 
 [services.acquire]
