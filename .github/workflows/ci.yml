@@ -8,9 +8,10 @@ on:
 permissions:
   contents: read
 
-# On main, every push keeps its own run. Only superseded pull request runs cancel.
+# On main, every push keeps its own run, because the group is unique per run. Only superseded
+# pull request runs cancel.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

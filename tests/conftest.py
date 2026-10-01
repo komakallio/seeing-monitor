@@ -55,10 +55,14 @@ def repo_root() -> Path:
 def recordings_dir() -> Path:
     """The folder with the owner's recordings. Skips the test when it is not configured.
 
-    The location comes from `SEEINGMON_RECORDINGS_DIR`, or from `recordings_dir` in the
-    `[replay]` table of `local/config.toml`. Neither belongs in the repository.
+    The location comes from `SEEINGMON_REPLAY__RECORDINGS_DIR` (the configuration scheme for
+    `recordings_dir` in the `[replay]` table), from the older `SEEINGMON_RECORDINGS_DIR`, or
+    from `recordings_dir` in the `[replay]` table of `local/config.toml`. None of them belongs in
+    the repository.
     """
-    configured = os.environ.get("SEEINGMON_RECORDINGS_DIR", "")
+    configured = os.environ.get("SEEINGMON_REPLAY__RECORDINGS_DIR") or os.environ.get(
+        "SEEINGMON_RECORDINGS_DIR", ""
+    )
     config_file = REPO_ROOT / "local" / "config.toml"
     if not configured and config_file.is_file():
         with config_file.open("rb") as handle:
