@@ -131,6 +131,8 @@ def _run(args: argparse.Namespace) -> int:
     if args.json is not None:
         written = write_report(args.json, report)
         print(f"Wrote the report to {written}")
+        if not args.smoke:
+            print(f"Next: seeingmon perf report {written} --budgets")
     return 1 if any(result.status == "failed" for result in report.cases) else 0
 
 

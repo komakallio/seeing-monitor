@@ -93,6 +93,7 @@ class TestRunSmoke:
         assert "python_loop" in out
         data = json.loads(target.read_text(encoding="utf-8"))
         assert data["smoke"] is True
+        assert "Next:" not in out  # a smoke run has nothing to compare
         assert [item["name"] for item in data["cases"]] == ["calibration"]
 
 
@@ -114,6 +115,19 @@ class TestReport:
         for word in ("pass", "marginal"):
             assert word in out
         assert "Kernel on this machine" in out
+
+    def test_details_add_the_facts_behind_each_figure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        full = fixture_report()
+        item = full.case("kernel")
+        assert item is not None
+        item.measurements[0].detail["frames"] = 500
+        path = write_report(tmp_path / "details.json", full)
+        _, plain, _ = run(["perf", "report", str(path)], capsys)
+        _, detailed, _ = run(["perf", "report", str(path), "--details"], capsys)
+        assert "frames=500" not in plain
+        assert "bin1_128x128_u16.kernel: frames=500" in detailed
 
     def test_a_pi4_report_compares_directly_and_says_so(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

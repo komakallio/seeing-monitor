@@ -256,14 +256,15 @@ def kernel_check(report: Report, mode: str = "bin1_128x128_u16") -> list[str]:
     measured_ms = figure.value / 1e3
     low, high = implied_factor(measured_ms)
     table = scale_range("numpy")
+    time = f"{figure.value:.0f} us" if figure.value >= 10 else f"{figure.value:.1f} us"
     if report.label.strip().lower() == "pi4":
         return [
-            f"Kernel on this machine: {measured_ms:.2f} ms per 128 x 128 frame (measured, not "
-            "scaled). The architecture estimates 0.2 to 0.4 ms."
+            f"Kernel on this machine: {time} per 128 x 128 frame (measured, not scaled). "
+            "The architecture estimates 0.2 to 0.4 ms."
         ]
     verdict = "consistent with" if high >= table.low and low <= table.high else "outside"
     return [
-        f"Kernel on this machine: {measured_ms:.2f} ms per 128 x 128 frame (median).",
+        f"Kernel on this machine: {time} per 128 x 128 frame (median).",
         f"The architecture estimates 0.2 to 0.4 ms on a Pi 4, which implies a factor of "
         f"{low:.1f} to {high:.1f} from this machine.",
         f"The scaling table assumes {table.low:g} to {table.high:g} for NumPy code, so the "
@@ -280,7 +281,8 @@ def format_verdicts(verdicts: Iterable[BudgetVerdict]) -> str:
         budget = item.budget
         limit = f"{budget.limit:g} {budget.unit}"
         if item.value is None or item.low is None or item.high is None:
-            rows.append((budget.title, limit, "n/a", "n/a", f"n/a ({'; '.join(item.missing)})"))
+            cases = sorted({figure.split(":")[0] for figure in item.missing})
+            rows.append((budget.title, limit, "n/a", "n/a", f"n/a (needs {', '.join(cases)})"))
             continue
         here = f"{_number(item.value)}"
         if item.measured:

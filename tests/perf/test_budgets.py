@@ -227,6 +227,7 @@ class TestKernelCheck:
         assert "assumes 5 to 11" in text
         assert "outside the table" in text
         assert "0.50 to 1.10 ms" in text
+        assert "100 us per 128 x 128 frame" in text
 
     def test_a_slower_machine_makes_the_estimate_consistent(self) -> None:
         report = fixture_report()
@@ -301,4 +302,4 @@ class TestFormat:
         bare = Report(report.label, report.smoke, report.created_utc, report.environment, ())
         text = format_verdicts(evaluate(bare))
         assert "n/a" in text
-        assert "ipc: acquire.compute_share" in text
+        assert "n/a (needs ipc)" in text
