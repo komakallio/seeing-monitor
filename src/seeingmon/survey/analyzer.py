@@ -23,6 +23,16 @@ accepted solution. A result with too few stars or a large residual does not upda
 Each `submit` hands the worker the solution at that moment, so a frame that follows quickly
 uses the previous solution even if the earlier result has not come back.
 
+**Sky quality.** Each result carries a `sky_quality` record. The transparency needs a reference
+zero point from the clearest conditions of the recent past, and that history lives here, not in
+the worker: `submit` reads it (`seeingmon.survey.transparency.reference_zero_point`) and hands the
+worker one number. By default the history is a `MemoryHistory` that `poll` feeds with every
+`sky_quality` record, and you seed it from the store at start-up (`history.add_record`). Pass
+your own `ZeroPointHistory` (the store, later) and the analyzer reads it and leaves the writing
+to you. The nightly star summary (`star_epoch`) accumulates in `poll` too: a frame of a new night
+closes the last one, and its record joins that frame's output. `flush_night` closes the open
+night, for a shutdown.
+
 A job that fails with an unexpected error does not stop the analyzer. `poll` returns an
 unsolved result with a `survey_frame` and an unsolved `pointing` record, and the error goes to
 the log.
@@ -43,7 +53,11 @@ from seeingmon.clock import Clock
 from seeingmon.frames import Frame, decode_frame, encode_frame
 from seeingmon.profile import Profile
 from seeingmon.records import Record, get_record_type
+from seeingmon.records.survey import SkyQualityRecord
+from seeingmon.store.layout import DataLayout
+from seeingmon.survey.catalog import read_info
 from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.dark import CALIBRATION_DIRNAME
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import (
     FrameAnalysis,
@@ -60,7 +74,15 @@ from seeingmon.survey.pointing import (
     ReferenceSolution,
     load_reference,
 )
+from seeingmon.survey.quality import QualityOptions
+from seeingmon.survey.star_epoch import FrameStars, NightAccumulator
 from seeingmon.survey.tracker import PointingTracker
+from seeingmon.survey.transparency import (
+    MemoryHistory,
+    ZeroPointHistory,
+    ZeroPointReference,
+    reference_zero_point,
+)
 
 log = logging.getLogger("seeingmon.survey")
 
@@ -111,11 +133,12 @@ def run_job(
     previous: dict[str, Any] | None,
     reference_json: str | None,
     index: int,
+    zp_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one frame in a worker process (the function that the pool calls)."""
     if _WORKER_PIPELINE is None:
         raise RuntimeError("the worker has no pipeline: pass init_worker as the pool initializer")
-    return run_encoded(_WORKER_PIPELINE, frame_bytes, previous, reference_json, index)
+    return run_encoded(_WORKER_PIPELINE, frame_bytes, previous, reference_json, index, zp_reference)
 
 
 def run_encoded(
@@ -124,12 +147,16 @@ def run_encoded(
     previous: dict[str, Any] | None,
     reference_json: str | None,
     index: int,
+    zp_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Decode a job, run the pipeline, and encode the result as plain data."""
     frame = decode_frame(frame_bytes)
     solution = None if previous is None else PointingSolution.from_dict(previous)
     reference = None if reference_json is None else ReferenceSolution.from_json(reference_json)
-    analysis = pipeline.analyze(frame, previous=solution, reference=reference, index=index)
+    reference_zp = None if zp_reference is None else ZeroPointReference(**zp_reference)
+    analysis = pipeline.analyze(
+        frame, previous=solution, reference=reference, index=index, zp_reference=reference_zp
+    )
     return encode_analysis(analysis)
 
 
@@ -143,6 +170,7 @@ def encode_analysis(analysis: FrameAnalysis) -> dict[str, Any]:
         "solved": analysis.solved,
         "cloud_fraction": analysis.cloud_fraction,
         "solution": None if analysis.solution is None else analysis.solution.to_dict(),
+        "epoch_stars": b"" if analysis.epoch_stars is None else analysis.epoch_stars.to_bytes(),
         "timings": dict(analysis.timings),
         "notes": list(analysis.notes),
     }
@@ -189,6 +217,7 @@ class SurveyPipelineAnalyzer:
         executor: Executor | None = None,
         tracker: PointingTracker | None = None,
         reference: ReferenceSolution | None = None,
+        history: ZeroPointHistory | None = None,
         clock: Clock | None = None,
     ) -> None:
         if (spec is None) == (pipeline is None):
@@ -218,6 +247,14 @@ class SurveyPipelineAnalyzer:
             self._tracker.set_reference(load_reference(self._config.pointing.reference_file))
         self._jobs: deque[_Pending] = deque()
         self._submitted = 0
+        quality = QualityOptions.from_config(self._config)
+        self._transparency = quality.transparency
+        self._own_history: MemoryHistory | None = None
+        if history is None:
+            self._own_history = MemoryHistory()
+            history = self._own_history
+        self._history: ZeroPointHistory = history
+        self._night = self._make_accumulator(profile, station_id, spec, pipeline, quality)
 
     # --- The SurveyAnalyzer interface -----------------------------------------------------
 
@@ -225,11 +262,21 @@ class SurveyPipelineAnalyzer:
         """Queue a survey frame. Returns at once (the job runs on the executor)."""
         previous = self._tracker.solution
         reference = self._tracker.reference
+        zp_reference = reference_zero_point(self._history, frame.t_utc_ns, self._transparency)
         args = (
             encode_frame(frame),
             None if previous is None else previous.to_dict(),
             None if reference is None else reference.to_json(),
             self._submitted,
+            None
+            if zp_reference is None
+            else {
+                "zero_point_mag": zp_reference.zero_point_mag,
+                "n_samples": zp_reference.n_samples,
+                "n_nights": zp_reference.n_nights,
+                "window_days": zp_reference.window_days,
+                "quantile": zp_reference.quantile,
+            },
         )
         self._submitted += 1
         if self._use_worker_function:
@@ -263,6 +310,11 @@ class SurveyPipelineAnalyzer:
         """The pointing tracker, which is also the `PointingProvider` for the scheduler."""
         return self._tracker
 
+    @property
+    def history(self) -> ZeroPointHistory:
+        """The zero-point history that the reference comes from."""
+        return self._history
+
     def close(self, *, wait: bool = False) -> None:
         """Shut down the executor that the analyzer created. An executor you passed stays up."""
         if self._owned_executor is not None:
@@ -274,11 +326,14 @@ class SurveyPipelineAnalyzer:
         previous: dict[str, Any] | None,
         reference_json: str | None,
         index: int,
+        zp_reference: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._pipeline is None:
             assert self._spec is not None
             self._pipeline = build_pipeline(self._spec, self._clock)
-        return run_encoded(self._pipeline, frame_bytes, previous, reference_json, index)
+        return run_encoded(
+            self._pipeline, frame_bytes, previous, reference_json, index, zp_reference
+        )
 
     def _finish(self, job: _Pending) -> SurveyOutput:
         info = job.info
@@ -292,6 +347,7 @@ class SurveyPipelineAnalyzer:
                 if result["solution"] is None
                 else PointingSolution.from_dict(result["solution"])
             )
+            epoch_stars = FrameStars.from_bytes(result.get("epoch_stars", b""))
             for note in result["notes"]:
                 log.info("survey frame at %d: %s", info.t_utc_ns, note)
         except Exception as error:
@@ -299,12 +355,62 @@ class SurveyPipelineAnalyzer:
             return self._failure_output(job, f"analysis error: {type(error).__name__}")
         if solution is not None and self._trusted(solution):
             self._tracker.update(solution)
+        records = records + self._remember(records, info.t_utc_ns, epoch_stars)
         return SurveyOutput(
             t_utc_ns=info.t_utc_ns,
             records=records,
             solved=solved,
             cloud_fraction=None if cloud is None else float(cloud),
         )
+
+    @staticmethod
+    def _make_accumulator(
+        profile: Profile,
+        station_id: str,
+        spec: PipelineSpec | None,
+        pipeline: SurveyPipeline | None,
+        quality: QualityOptions,
+    ) -> NightAccumulator | None:
+        """The accumulator of the nightly summary, or `None` when the catalog cannot be read."""
+        try:
+            if pipeline is not None:
+                n_catalog, catalog_id = len(pipeline.catalog), pipeline.catalog.content_id
+            else:
+                assert spec is not None
+                info = read_info(spec.catalog_path)
+                n_catalog, catalog_id = info.n_stars, f"{info.crc32:08x}"
+        except Exception:
+            log.warning("no nightly star summary: the catalog cannot be read", exc_info=True)
+            return None
+        config = SurveyConfig.model_validate(spec.config) if spec is not None else SurveyConfig()
+        return NightAccumulator(
+            n_catalog,
+            station_id=station_id,
+            profile_id=profile.id,
+            provenance={"algo": "epoch-1", "catalog": catalog_id},
+            split_utc_hour=quality.transparency.night_split_utc_hour,
+            min_frames=config.star_epoch.min_frames,
+        )
+
+    def _remember(
+        self, records: tuple[Record, ...], t_utc_ns: int, stars: FrameStars
+    ) -> tuple[Record, ...]:
+        """Feed the history and the nightly summary. Returns a night that this frame closed."""
+        if self._own_history is not None:
+            for record in records:
+                if isinstance(record, SkyQualityRecord):
+                    self._own_history.add_record(record)
+        if self._night is None:
+            return ()
+        closed = self._night.add(t_utc_ns, stars)
+        return () if closed is None else (closed,)
+
+    def flush_night(self) -> tuple[Record, ...]:
+        """Close the open night and return its `star_epoch` record, for a shutdown."""
+        if self._night is None:
+            return ()
+        record = self._night.flush()
+        return () if record is None else (record,)
 
     def _trusted(self, solution: PointingSolution) -> bool:
         """Whether a solution may update the tracker: enough stars and a small residual."""
@@ -338,20 +444,31 @@ class SurveyPipelineAnalyzer:
         )
 
 
+def with_calibration(config: SurveyConfig, layout: DataLayout | None) -> SurveyConfig:
+    """The configuration with the calibration folder of a data layout, when it names none."""
+    if layout is None or config.calibration_dir:
+        return config
+    return config.model_copy(update={"calibration_dir": str(layout.root / CALIBRATION_DIRNAME)})
+
+
 def create_survey_analyzer(
     *,
     profile: Profile,
     station_id: str,
     config: SurveyConfig,
     executor: Executor | None = None,
+    layout: DataLayout | None = None,
+    history: ZeroPointHistory | None = None,
     clock: Clock | None = None,
 ) -> SurveyPipelineAnalyzer:
     """Build an analyzer from the configuration, which names the catalog and the solvers.
 
     Raises `ValueError` when `catalog_path` is empty. With no executor the analyzer uses a
     private thread. For a worker process, pass `make_process_executor(spec)` with the same spec
-    that this function builds: `analyzer_spec(...)`.
+    that this function builds: `analyzer_spec(...)`. When you pass the data layout and the
+    configuration names no `calibration_dir`, the dark library is the one in the layout.
     """
+    config = with_calibration(config, layout)
     spec = analyzer_spec(profile=profile, station_id=station_id, config=config)
     return SurveyPipelineAnalyzer(
         profile=profile,
@@ -359,12 +476,20 @@ def create_survey_analyzer(
         config=config,
         spec=spec,
         executor=executor,
+        history=history,
         clock=clock,
     )
 
 
-def analyzer_spec(*, profile: Profile, station_id: str, config: SurveyConfig) -> PipelineSpec:
+def analyzer_spec(
+    *,
+    profile: Profile,
+    station_id: str,
+    config: SurveyConfig,
+    layout: DataLayout | None = None,
+) -> PipelineSpec:
     """The pipeline specification that a configuration describes."""
+    config = with_calibration(config, layout)
     if not config.catalog_path:
         raise ValueError(
             "catalog_path is not set in the [survey] configuration: run `seeingmon catalog build`"

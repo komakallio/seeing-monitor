@@ -17,6 +17,12 @@ hot_pixel_file = ""
 # The folder with the calibration files. The dark library lives in its darks/ subfolder, where
 # `seeingmon dark` adds the sets. Empty means that the pipeline subtracts no dark level.
 calibration_dir = ""
+# A measured flat field of the survey mode (.npy or FITS). Empty means a unit flat: no correction.
+flat_file = ""
+# The UTC hour that ends one night and starts the next. Pick an hour when the Sun is up at your
+# site, so that no night splits in two. The star epochs and the transparency reference group by
+# night.
+night_split_utc_hour = 12.0
 # The solver programs. Each runs as a separate process, so its GPL or MPL code stays outside
 # this MIT code base.
 solve_field_command = "solve-field"
@@ -99,3 +105,52 @@ hot_min_excess_dn = 3.0        # and by at least this many counts.
 doubling_c = 6.0               # The prior doubling temperature of the dark current.
 temperature_tolerance_c = 3.0  # A set this close to the sensor temperature counts for `dark_due`.
 max_age_days = 183.0           # A set older than this (about six months) does not count.
+
+# Aperture photometry of the matched stars: a circle of aperture_px (stretched by the trail), and
+# a ring around it for the background.
+[survey.photometry]
+aperture_px = 5.0
+annulus_inner_px = 9.0
+annulus_outer_px = 14.0
+min_annulus_px = 150
+clip_sigma = 3.0
+isolation_flux_ratio = 0.02    # A neighbor with this share of the flux spoils a star.
+min_snr = 20.0                 # A star needs this signal-to-noise ratio for the zero point.
+# The aperture correction: the brightest isolated stars also get a wide aperture, and the median
+# ratio of the wide flux to the narrow flux corrects the narrow one for the wings of the profile.
+growth_aperture_px = 12.0
+growth_stars = 40              # 0 turns the correction off.
+
+# The zero-point fit against Gaia G, with a color term in BP-RP.
+[survey.zero_point]
+min_stars = 8
+clip_sigma = 3.0
+systematic_mag = 0.01          # Added to every star: flat field, scintillation, aperture loss.
+color_term_prior = 0.0         # The color term when the colors span too narrow a range.
+min_color_std = 0.25
+g_min = 0.0                    # The catalog magnitude range of the stars in the fit.
+g_max = 13.0
+
+# The sky brightness and its V equivalent.
+[survey.sky]
+clip_sigma = 3.0
+edge_px = 8
+mask_radius_scale = 3.0
+bp_rp = 1.0                    # The color that the V conversion assumes for the sky.
+sqm_offset_mag = 0.0           # The offset that seeingmon.survey.sqm_fit gives at commissioning.
+
+# The reference zero point, transparency, and the cloud flag.
+[survey.transparency]
+window_days = 60.0
+quantile = 0.9
+min_samples = 20
+min_stars = 12
+max_rms_mag = 0.15
+max_cloud_fraction = 0.2
+cloud_flag_fraction = 0.3
+transparency_flag = 0.6
+
+# The nightly star summary (the star_epoch record).
+[survey.star_epoch]
+min_frames = 3
+min_snr = 20.0

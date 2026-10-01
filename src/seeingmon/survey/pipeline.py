@@ -11,8 +11,12 @@
    it to the apparent frame with the catalog stars of the field (`attitude_from_solver_solution`),
    and then fits against the apparent places (`fit_attitude`).
 3. **Match.** With the final attitude, every detection is matched to the catalog, which gives
-   the star list, the cloud fraction, and the matched stars for photometry later.
-4. **Records.** The pipeline builds the `survey_frame`, `pointing`, and `star_list` records.
+   the star list, the cloud fraction, and the matched stars for photometry.
+4. **Sky quality.** `seeingmon.survey.quality` measures the stars (photometry and the zero
+   point), the sky (the dark level, the flat, and a clipped median), the transparency, and the
+   limiting magnitude.
+5. **Records.** The pipeline builds the `survey_frame`, `sky_quality`, `pointing`, and
+   `star_list` records.
 
 The pipeline holds no state between frames. The caller passes the previous solution and the
 reference, and receives the new solution, so a worker process can run it and the parent can keep
@@ -44,11 +48,17 @@ from seeingmon.frames import Frame, FrameFlag, TimeQuality
 from seeingmon.profile import Profile
 from seeingmon.profile.errors import ProfileError
 from seeingmon.records import Record
-from seeingmon.records.survey import StarListRecord, SurveyFrameRecord, pack_star_rows
+from seeingmon.records.survey import (
+    SkyQualityRecord,
+    StarListRecord,
+    SurveyFrameRecord,
+    pack_star_rows,
+)
 from seeingmon.solvers.base import PlateSolver, SolveRequest, SolverError, StarList
 from seeingmon.survey import apparent
 from seeingmon.survey.catalog import CapCatalog, load_catalog
 from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary, DarkModel, DarkStatus, dark_status
 from seeingmon.survey.detect import (
     UNRELIABLE,
     DetectionError,
@@ -66,9 +76,19 @@ from seeingmon.survey.pointing import (
     ReferenceSolution,
     build_pointing_record,
 )
+from seeingmon.survey.quality import (
+    FieldStars,
+    QualityOptions,
+    SkyQualityResult,
+    assess_frame,
+    field_stars,
+)
 from seeingmon.survey.rawdata import native_counts
+from seeingmon.survey.sky import FlatModel, UnitFlat, load_flat
+from seeingmon.survey.star_epoch import FrameStars
 from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.trail import TrailModel
+from seeingmon.survey.transparency import ZeroPointReference
 from seeingmon.survey.wcs_fit import (
     CameraAttitude,
     FitOptions,
@@ -151,6 +171,11 @@ def build_pipeline(spec: PipelineSpec, clock: Clock | None = None) -> SurveyPipe
     hot: npt.NDArray[np.bool_] | None = None
     if spec.hot_pixel_file:
         hot = np.asarray(np.load(spec.hot_pixel_file), dtype=np.bool_)
+    library = (
+        DarkLibrary(Path(config.calibration_dir) / DARKS_DIRNAME)
+        if config.calibration_dir
+        else None
+    )
     return SurveyPipeline(
         station_id=spec.station_id,
         profile=profile,
@@ -158,6 +183,8 @@ def build_pipeline(spec: PipelineSpec, clock: Clock | None = None) -> SurveyPipe
         solvers=build_solvers(spec.solvers, clock),
         config=config,
         hot_pixels=hot,
+        dark_library=library,
+        flat=load_flat(config.flat_file),
         clock=clock,
     )
 
@@ -171,8 +198,10 @@ class FrameAnalysis:
     pipeline, for the steps that build on the pointing (the sky quality uses them):
     `cat_row` holds the catalog row that each detection matched (-1 for none), `attitude` is
     the final camera model, `epoch` the time parameters, and `field_rows` and `field_vectors`
-    the catalog stars of the field with their apparent places. `timings` maps each step to
-    its time in seconds, and `notes` explain a failure or a disagreement.
+    the catalog stars of the field with their apparent places. `epoch_stars` holds what the frame
+    adds to the nightly star summary, and `quality` the intermediate results of the sky quality.
+    `timings` maps each step to its time in seconds, and `notes` explain a failure or a
+    disagreement.
     """
 
     records: tuple[Record, ...]
@@ -188,6 +217,8 @@ class FrameAnalysis:
     epoch: apparent.ObservationEpoch | None = None
     field_rows: npt.NDArray[np.intp] | None = None
     field_vectors: FloatArray | None = None
+    epoch_stars: FrameStars | None = None
+    quality: SkyQualityResult | None = None
 
 
 @dataclass(slots=True)
@@ -217,6 +248,8 @@ class SurveyPipeline:
         solvers: list[PlateSolver],
         config: SurveyConfig | None = None,
         hot_pixels: npt.NDArray[np.bool_] | None = None,
+        dark_library: DarkLibrary | None = None,
+        flat: FlatModel | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._station_id = station_id
@@ -225,8 +258,12 @@ class SurveyPipeline:
         self._solvers = list(solvers)
         self._config = config or SurveyConfig()
         self._hot = hot_pixels
+        self._library = dark_library
+        self._flat: FlatModel = flat or UnitFlat()
+        self._hot_cache: dict[str, npt.NDArray[np.bool_]] = {}
         self._clock = clock or SystemClock()
         cfg = self._config
+        self._quality = QualityOptions.from_config(cfg)
         self._detect_options = DetectOptions(
             threshold_sigma=cfg.detect.threshold_sigma,
             min_pixels=cfg.detect.min_pixels,
@@ -261,11 +298,13 @@ class SurveyPipeline:
         previous: PointingSolution | None = None,
         reference: ReferenceSolution | None = None,
         index: int = 0,
+        zp_reference: ZeroPointReference | None = None,
     ) -> FrameAnalysis:
         """Analyze a frame. `previous` is the latest solution, `reference` the saved one.
 
         `index` counts the frames that the caller has analyzed, and it picks the frames for the
-        second-solver check.
+        second-solver check. `zp_reference` is the reference zero point of the clearest
+        conditions (see `seeingmon.survey.transparency`), which gives the transparency.
         """
         timings: dict[str, float] = {}
         started = self._clock.monotonic_ns()
@@ -293,13 +332,15 @@ class SurveyPipeline:
             )
 
         saturation = self._profile.saturation(frame.mode, frame.gain)
+        native = native_counts(frame)
+        hot = self._hot_mask_for(frame)
         try:
             raw = detect_stars(
-                native_counts(frame),
+                native,
                 saturation_dn=saturation.native_dn,
                 options=self._detect_options,
                 e_per_adu=self._profile.e_per_adu(frame.mode, frame.gain),
-                hot_pixels=self._hot_mask_for(frame),
+                hot_pixels=hot,
                 trail=trail,
             )
         except DetectionError as error:
@@ -339,16 +380,21 @@ class SurveyPipeline:
             )
         lap("match")
 
-        cloud = self._cloud_fraction(
-            frame,
-            detections,
-            match_attitude,
-            field_rows,
-            field_vectors,
-            cat_row,
-            readout.width_px,
-            readout.height_px,
-        )
+        roi = frame.roi
+        coverage: FieldStars | None = None
+        if match_attitude is not None and field_rows.size:
+            coverage = field_stars(
+                self._catalog,
+                match_attitude,
+                field_rows,
+                field_vectors,
+                detections,
+                cat_row,
+                roi_bounds=(float(roi.x), float(roi.y), float(roi.x_end), float(roi.y_end)),
+                edge_px=self._config.cloud.edge_px,
+                match_radius_px=self._config.cloud.match_radius_px,
+            )
+        cloud = self._cloud_fraction(frame, detections, coverage, zp_reference)
         focus = self._focus(detections)
         solution: PointingSolution | None = None
         if attitude is not None and fit is not None:
@@ -362,8 +408,32 @@ class SurveyPipeline:
                 rms_arcsec=fit.rms_arcsec,
                 solver="" if solved is None else solved.solver,
             )
+        dark_model, status = self._dark_for(frame)
+        quality = assess_frame(
+            station_id=self._station_id,
+            profile=self._profile,
+            frame=frame,
+            data=native,
+            detections=detections,
+            cat_row=cat_row,
+            catalog=self._catalog,
+            attitude=attitude,
+            field_rows=field_rows,
+            field_vectors=field_vectors,
+            field=coverage,
+            cloud_fraction=cloud,
+            dark_model=dark_model,
+            dark_status=status,
+            flat=self._flat,
+            hot_pixels=hot,
+            zp_reference=zp_reference,
+            options=self._quality,
+            provenance=self._provenance(self._quality_provenance(dark_model)),
+            time_invalid=frame_time_invalid(frame),
+        )
+        lap("quality")
         records = self._records(
-            frame, detections, solved, solution, epoch, reference, cat_row, focus, notes
+            frame, detections, solved, solution, epoch, reference, cat_row, focus, quality.record
         )
         lap("records")
         return FrameAnalysis(
@@ -380,17 +450,68 @@ class SurveyPipeline:
             epoch=epoch,
             field_rows=field_rows,
             field_vectors=field_vectors,
+            epoch_stars=quality.stars,
+            quality=quality,
         )
 
-    def _hot_mask_for(self, frame: Frame) -> npt.NDArray[np.bool_] | None:
-        mask = self._hot
-        if mask is None:
-            return None
+    def _window(self, mask: npt.NDArray[np.bool_], frame: Frame) -> npt.NDArray[np.bool_] | None:
+        """The part of a full-sensor mask that a frame covers, or `None` if the sizes differ."""
         if mask.shape == frame.shape:
             return mask
         roi = frame.roi
         window = mask[roi.y : roi.y_end, roi.x : roi.x_end]
-        return window if window.shape == frame.shape else None
+        return np.ascontiguousarray(window) if window.shape == frame.shape else None
+
+    def _hot_mask_for(self, frame: Frame) -> npt.NDArray[np.bool_] | None:
+        """The hot pixels of a frame: the configured mask and the pixels of the dark library."""
+        masks = []
+        if self._hot is not None:
+            window = self._window(self._hot, frame)
+            if window is not None:
+                masks.append(window)
+        library = self._library_hot_mask(frame)
+        if library is not None:
+            masks.append(library)
+        if not masks:
+            return None
+        return masks[0] if len(masks) == 1 else masks[0] | masks[1]
+
+    def _library_hot_mask(self, frame: Frame) -> npt.NDArray[np.bool_] | None:
+        if self._library is None or frame.temperature_c is None:
+            return None
+        chosen = self._library.nearest(frame.mode, frame.gain, frame.temperature_c)
+        if chosen is None:
+            return None
+        mask = self._hot_cache.get(chosen.name)
+        if mask is None:
+            mask = np.zeros((chosen.height_px, chosen.width_px), dtype=np.bool_)
+            columns, rows, _ = self._library.hot_pixels(chosen)
+            mask[rows, columns] = True
+            self._hot_cache = {chosen.name: mask}  # one set at a time is enough
+        return self._window(mask, frame)
+
+    def _dark_for(self, frame: Frame) -> tuple[DarkModel | None, DarkStatus | None]:
+        """The dark model of the frame's readout setting, and whether the library is due."""
+        if self._library is None:
+            return None, None
+        cfg = self._config.dark
+        model = self._library.model(frame.mode, frame.gain, prior_doubling_c=cfg.doubling_c)
+        status = dark_status(
+            self._library,
+            frame.temperature_c,
+            frame.t_utc_ns,
+            mode=frame.mode,
+            gain=frame.gain,
+            tolerance_c=cfg.temperature_tolerance_c,
+            max_age_days=cfg.max_age_days,
+        )
+        return model, status
+
+    def _quality_provenance(self, dark_model: DarkModel | None) -> dict[str, str]:
+        return {
+            "dark": "none" if dark_model is None else dark_model.version,
+            "flat": self._flat.version,
+        }
 
     # --- Solving -------------------------------------------------------------------------
 
@@ -633,63 +754,38 @@ class SurveyPipeline:
         self,
         frame: Frame,
         detections: Detections,
-        attitude: CameraAttitude | None,
-        rows: npt.NDArray[np.intp],
-        vectors: FloatArray,
-        cat_row: npt.NDArray[np.intp],
-        width: int,
-        height: int,
+        coverage: FieldStars | None,
+        zp_reference: ZeroPointReference | None,
     ) -> float | None:
-        """The share of expected catalog stars that detection missed, or `None`."""
+        """The share of expected catalog stars that detection missed, or `None`.
+
+        The expected stars are those of the field that a clear sky would show at the signal-to-noise
+        ratio of `CloudConfig.expected_snr`. The expected signal comes from the reference zero
+        point when the history has one, and from the profile's photometric prior otherwise.
+        """
         cfg = self._config.cloud
-        photometry = self._profile.photometry
-        if attitude is None or photometry is None or rows.size == 0:
+        if coverage is None or coverage.rows.size == 0:
             return None
         exposure_s = frame.exposure_us / 1e6
-        x, y, front = attitude.project(vectors)
-        roi = frame.roi
-        edge = cfg.edge_px
-        inside = (
-            front
-            & (x > roi.x + edge)
-            & (x < roi.x_end - 1 - edge)
-            & (y > roi.y + edge)
-            & (y < roi.y_end - 1 - edge)
-        )
-        g_mag = self._catalog.g_mag[rows]
-        rate = np.array([self._profile.star_electron_rate_e_per_s(float(g)) for g in g_mag])
+        g_mag = coverage.g_mag
+        if zp_reference is not None:
+            rate = 10.0 ** (0.4 * (zp_reference.zero_point_mag - g_mag))
+        elif self._profile.photometry is not None:
+            rate = np.array([self._profile.star_electron_rate_e_per_s(float(g)) for g in g_mag])
+        else:
+            return None
         electrons = rate * exposure_s
         noise_e = detections.background_rms * self._profile.e_per_adu(frame.mode, frame.gain)
-        fwhm = (
-            float(np.median(detections.fwhm_px[detections.reliable()]))
-            if np.any(detections.reliable())
-            else 1.1
-        )
+        reliable = detections.reliable()
+        fwhm = float(np.median(detections.fwhm_px[reliable])) if np.any(reliable) else 1.1
         trail = float(np.median(detections.trail_length_px)) if len(detections) else 0.0
         aperture = np.pi * (1.5 * max(fwhm, 0.8)) ** 2 + 2.0 * trail * max(fwhm, 0.8)
         snr2 = cfg.expected_snr**2
         minimum = 0.5 * (snr2 + np.sqrt(snr2**2 + 4.0 * snr2 * aperture * noise_e**2))
-        expected = inside & (g_mag < cfg.mag_limit) & (electrons >= minimum)
-        # A saturated star hides the stars inside its blob.
-        saturated = detections.has(StarFlag.SATURATED)
-        if saturated.any():
-            reach = 2.0 * np.sqrt(np.maximum(detections.n_pixels[saturated], 1))
-            for sx, sy, r in zip(
-                detections.x[saturated], detections.y[saturated], reach, strict=True
-            ):
-                expected &= np.hypot(x - sx, y - sy) > r
+        expected = (g_mag < cfg.mag_limit) & (electrons >= minimum)
         if int(expected.sum()) < cfg.min_expected:
             return None
-        detected_rows = {int(row) for row in cat_row[cat_row >= 0]}
-        found = np.array([int(row) in detected_rows for row in rows[expected]])
-        # A catalog star near a detection that matched nothing else counts as seen, too.
-        if (~found).any() and len(detections):
-            distance = np.full(int((~found).sum()), np.inf)
-            px, py = x[expected][~found], y[expected][~found]
-            for i, (cx, cy) in enumerate(zip(px, py, strict=True)):
-                distance[i] = float(np.min(np.hypot(detections.x - cx, detections.y - cy)))
-            found[~found] = distance <= cfg.match_radius_px
-        return float(np.clip(1.0 - found.mean(), 0.0, 1.0))
+        return float(np.clip(1.0 - coverage.found[expected].mean(), 0.0, 1.0))
 
     # --- Records -------------------------------------------------------------------------
 
@@ -712,7 +808,7 @@ class SurveyPipeline:
         reference: ReferenceSolution | None,
         cat_row: npt.NDArray[np.intp],
         focus: float | None,
-        notes: list[str],
+        sky_quality: SkyQualityRecord,
     ) -> tuple[Record, ...]:
         base: dict[str, Any] = {
             "station_id": self._station_id,
@@ -756,7 +852,7 @@ class SurveyPipeline:
             time_invalid=time_invalid,
             limits=self._limits,
         )
-        records: list[Record] = [survey_frame, pointing]
+        records: list[Record] = [survey_frame, sky_quality, pointing]
         if solved is not None:
             records.append(self._star_list(frame, detections, cat_row, base))
         return tuple(records)
@@ -836,7 +932,7 @@ def failure_records(
     provenance: dict[str, str],
     reason: str,
 ) -> tuple[Record, ...]:
-    """The `survey_frame` and unsolved `pointing` records for a frame that failed entirely."""
+    """The survey_frame, empty sky_quality, and unsolved pointing records of a failed frame."""
     survey_frame = SurveyFrameRecord(
         station_id=station_id,
         t_utc_ns=t_utc_ns,
@@ -847,6 +943,15 @@ def failure_records(
         gain=gain,
         readout_mode=mode,
         sensor_temperature_c=temperature_c,
+    )
+    sky_quality = SkyQualityRecord(
+        station_id=station_id,
+        t_utc_ns=t_utc_ns,
+        profile_id=profile_id,
+        provenance=provenance,
+        quality={"sky_mag_arcsec2": reason, "zero_point_mag": reason},
+        n_stars_used=0,
+        flags=["time_invalid"] if time_invalid else [],
     )
     pointing = build_pointing_record(
         station_id=station_id,
@@ -861,7 +966,7 @@ def failure_records(
         reference=reference,
         time_invalid=time_invalid,
     )
-    return survey_frame, pointing
+    return survey_frame, sky_quality, pointing
 
 
 def field_disagreement_px(

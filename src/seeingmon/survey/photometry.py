@@ -18,14 +18,19 @@ The error of each star follows the photon noise of the star, the noise of the pi
 (which includes the sky, the dark current, and the read noise), and the error of the
 background that it subtracted.
 
-**Aperture loss.** A finite aperture misses the far wings of the profile, 1% to 2% for the
-reference optics. The zero point absorbs the loss, because stars and the sky are both measured
-in the same electrons, so the sky brightness stays within the stated 0.1 mag.
+**Aperture loss.** A finite aperture misses the wings of the profile (the Airy rings and the
+seeing halo), 2% to 3% of the light for the reference optics, which is 0.03 mag. The sky is
+measured pixel by pixel, so it has no such loss, and the two would disagree by that amount. The
+module therefore measures a growth curve: the brightest isolated stars get a second, wide
+aperture (`growth_aperture_px`, 12 pixels by default) with its own ring, and the median ratio of
+the wide flux to the narrow flux is the aperture correction. The rates that
+`measure_matched_stars` returns include it, so the zero point refers to the light within 12
+pixels (about 99% of the total), and the sky brightness and the zero point share one scale.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import numpy.typing as npt
@@ -54,12 +59,21 @@ class PhotometryOptions:
     clip_iterations: int = 3
     isolation_flux_ratio: float = 0.02
     isolation_margin_px: float = 3.0
+    growth_aperture_px: float = 12.0  # the wide aperture of the aperture correction
+    growth_stars: int = 40  # the brightest stars that measure it (0 turns the correction off)
+    growth_min_stars: int = 8
+    growth_min_snr: float = 50.0
+    max_aperture_correction: float = 1.25
 
     def __post_init__(self) -> None:
         if not 0 < self.aperture_px < self.annulus_inner_px < self.annulus_outer_px:
             raise ValueError("the radii must satisfy 0 < aperture < inner < outer")
         if self.min_annulus_px < 10 or self.clip_sigma <= 0 or self.clip_iterations < 0:
             raise ValueError("invalid clipping parameters")
+        if self.growth_stars < 0 or (
+            self.growth_stars > 0 and self.growth_aperture_px <= self.aperture_px
+        ):
+            raise ValueError("the growth aperture must be wider than the aperture")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -242,7 +256,8 @@ class StarPhotometry:
     """The photometry of the matched stars of one frame. Every array has one entry per star.
 
     `index` is the position of the star in the `Detections`, and `cat_row` its catalog row.
-    `rate_e_per_s` is the flux in electrons per second, corrected for the flat field. `mag_error`
+    `rate_e_per_s` is the flux in electrons per second, corrected for the flat field and the
+    aperture loss (`aperture_correction` is the factor, from `n_growth_stars` stars). `mag_error`
     is the photometric error in magnitudes, and `snr` the signal-to-noise ratio of the flux.
     """
 
@@ -253,6 +268,8 @@ class StarPhotometry:
     snr: FloatArray
     x: FloatArray
     y: FloatArray
+    aperture_correction: float = 1.0
+    n_growth_stars: int = 0
 
     def __len__(self) -> int:
         return int(self.index.size)
@@ -312,12 +329,95 @@ def measure_matched_stars(
     good = result.ok & (flux > 0.0) & (error > 0.0)
     snr = np.where(good, flux / np.where(good, error, 1.0), 0.0)
     good &= snr >= min_snr
+    correction, n_growth = 1.0, 0
+    if cfg.growth_stars > 0:
+        correction, n_growth = aperture_correction(
+            data,
+            picked,
+            detections,
+            flux,
+            np.where(good, snr, 0.0),
+            e_per_adu=e_per_adu,
+            saturation_dn=saturation_dn,
+            origin_px=origin_px,
+            options=cfg,
+            bad=bad,
+            flat_scale=scale,
+        )
     return StarPhotometry(
         index=candidates[good],
         cat_row=cat_row[candidates[good]],
-        rate_e_per_s=flux[good] / exposure_s,
+        rate_e_per_s=flux[good] * correction / exposure_s,
         mag_error=_MAG_PER_E / snr[good],
         snr=snr[good],
         x=picked.x[good],
         y=picked.y[good],
+        aperture_correction=correction,
+        n_growth_stars=n_growth,
     )
+
+
+def aperture_correction(
+    data: npt.NDArray[np.float32],
+    picked: Detections,
+    detections: Detections,
+    narrow_flux_e: FloatArray,
+    snr: FloatArray,
+    *,
+    e_per_adu: float,
+    saturation_dn: float,
+    origin_px: tuple[float, float],
+    options: PhotometryOptions,
+    bad: BoolArray | None,
+    flat_scale: FloatArray,
+) -> tuple[float, int]:
+    """The factor from the narrow aperture to the wide one, and the number of stars behind it.
+
+    The brightest `growth_stars` stars with a signal-to-noise ratio of at least
+    `growth_min_snr` get a second measurement in the wide aperture, and the median of the flux
+    ratios is the factor. Fewer than `growth_min_stars` usable stars give 1.0. The factor stays
+    between 1 (the wide aperture cannot hold less light) and `max_aperture_correction`.
+    """
+    pool = np.flatnonzero(snr >= options.growth_min_snr)
+    if pool.size < options.growth_min_stars:
+        return 1.0, 0
+    pool = pool[np.argsort(-snr[pool], kind="stable")][: options.growth_stars]
+    wide = replace(
+        options,
+        aperture_px=options.growth_aperture_px,
+        annulus_inner_px=options.growth_aperture_px + 4.0,
+        annulus_outer_px=options.growth_aperture_px + 10.0,
+        min_annulus_px=2 * options.min_annulus_px,
+        growth_stars=0,
+    )
+    stars = picked.select(pool)
+    isolated_wide = isolated(
+        stars.x,
+        stars.y,
+        stars.flux,
+        stars.trail_length_px,
+        detections.x,
+        detections.y,
+        detections.flux,
+        wide,
+    )
+    pool = pool[isolated_wide]
+    stars = picked.select(pool)
+    result = aperture_photometry(
+        data,
+        stars.x - origin_px[0],
+        stars.y - origin_px[1],
+        stars.trail_length_px,
+        stars.trail_angle_rad,
+        e_per_adu=e_per_adu,
+        saturation_dn=saturation_dn,
+        options=wide,
+        bad=bad,
+    )
+    wide_flux = result.flux_e / flat_scale[pool]
+    usable = result.ok & (wide_flux > 0.0) & (narrow_flux_e[pool] > 0.0)
+    if int(usable.sum()) < options.growth_min_stars:
+        return 1.0, 0
+    ratio = wide_flux[usable] / narrow_flux_e[pool][usable]
+    factor = float(np.median(ratio))
+    return min(max(factor, 1.0), options.max_aperture_correction), int(ratio.size)

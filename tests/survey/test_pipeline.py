@@ -10,7 +10,13 @@ import pytest
 
 from seeingmon.frames import Frame, FrameFlag, Roi, TimeQuality
 from seeingmon.profile import Profile
-from seeingmon.records.survey import PointingRecord, StarListRecord, SurveyFrameRecord, star_rows
+from seeingmon.records.survey import (
+    PointingRecord,
+    SkyQualityRecord,
+    StarListRecord,
+    SurveyFrameRecord,
+    star_rows,
+)
 from seeingmon.solvers.base import PlateSolver, SolverError, SolveResult
 from seeingmon.survey import pointing as pt
 from seeingmon.survey.catalog import CapCatalog
@@ -85,11 +91,24 @@ def pointing_error_px(analysis: FrameAnalysis, truth: synth.SynthTruth) -> tuple
 
 
 def records_of(analysis: FrameAnalysis) -> tuple[SurveyFrameRecord, PointingRecord, StarListRecord]:
-    survey, pointing, star_list = analysis.records
-    assert isinstance(survey, SurveyFrameRecord)
-    assert isinstance(pointing, PointingRecord)
-    assert isinstance(star_list, StarListRecord)
+    survey, pointing, star_list = (
+        survey_of(analysis),
+        pointing_of(analysis),
+        next(r for r in analysis.records if isinstance(r, StarListRecord)),
+    )
     return survey, pointing, star_list
+
+
+def survey_of(analysis: FrameAnalysis) -> SurveyFrameRecord:
+    return next(r for r in analysis.records if isinstance(r, SurveyFrameRecord))
+
+
+def pointing_of(analysis: FrameAnalysis) -> PointingRecord:
+    return next(r for r in analysis.records if isinstance(r, PointingRecord))
+
+
+def sky_of(analysis: FrameAnalysis) -> SkyQualityRecord:
+    return next(r for r in analysis.records if isinstance(r, SkyQualityRecord))
 
 
 def test_a_solved_frame_gives_three_records_and_recovers_the_pointing(
@@ -101,6 +120,7 @@ def test_a_solved_frame_gives_three_records_and_recovers_the_pointing(
     assert analysis.solved
     assert [record.record_type for record in analysis.records] == [
         "survey_frame",
+        "sky_quality",
         "pointing",
         "star_list",
     ]
@@ -270,8 +290,12 @@ def test_no_solution_gives_an_unsolved_record_and_no_star_list(
     analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(frame)
     assert not analysis.solved
     assert analysis.cloud_fraction is None  # no solution and no prediction: cannot tell
-    assert [record.record_type for record in analysis.records] == ["survey_frame", "pointing"]
-    survey, pointing = analysis.records[0], analysis.records[1]
+    assert [record.record_type for record in analysis.records] == [
+        "survey_frame",
+        "sky_quality",
+        "pointing",
+    ]
+    survey, pointing = survey_of(analysis), pointing_of(analysis)
     assert isinstance(pointing, PointingRecord)
     assert pointing.flags == ["unsolved"]
     assert pointing.center_ra_deg is None
@@ -307,7 +331,7 @@ def test_a_short_exposure_with_few_stars_still_solves_and_says_so(
     )
     analysis = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
     assert analysis.solved
-    _, pointing = analysis.records[0], analysis.records[1]
+    pointing = pointing_of(analysis)
     assert isinstance(pointing, PointingRecord)
     assert 4 <= pointing.n_matched < 40
     assert pointing_error_px(analysis, truth)[1] < 0.2
@@ -390,10 +414,10 @@ def test_a_frame_with_no_stars_is_reported_not_raised(
     )
     analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(frame)
     assert not analysis.solved
-    pointing = analysis.records[1]
+    pointing = pointing_of(analysis)
     assert isinstance(pointing, PointingRecord)
     assert pointing.flags == ["unsolved"]
-    survey = analysis.records[0]
+    survey = survey_of(analysis)
     assert isinstance(survey, SurveyFrameRecord)
     assert survey.n_detected is not None
     assert survey.n_detected <= 3
@@ -428,10 +452,17 @@ def test_an_unknown_readout_mode_gives_the_failure_records(
     analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(odd)
     assert not analysis.solved
     assert analysis.notes == ("unknown readout mode 'bin7'",)
-    survey, pointing = analysis.records
+    survey, sky, pointing = analysis.records
     assert isinstance(survey, SurveyFrameRecord)
     assert survey.readout_mode == "bin7"
     assert survey.quality == {"n_detected": "unknown readout mode 'bin7'"}
+    assert isinstance(sky, SkyQualityRecord)  # an empty record that says why
+    assert sky.n_stars_used == 0
+    assert sky.sky_mag_arcsec2 is None
+    assert sky.quality == {
+        "sky_mag_arcsec2": "unknown readout mode 'bin7'",
+        "zero_point_mag": "unknown readout mode 'bin7'",
+    }
     assert isinstance(pointing, PointingRecord)
     assert pointing.flags == ["unsolved"]
 
@@ -444,7 +475,7 @@ def test_an_invalid_time_is_flagged(
         frame, t_quality=TimeQuality.INVALID, flags=frame.flags | FrameFlag.TIME_INVALID
     )
     analysis = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(bad_clock)
-    pointing = analysis.records[1]
+    pointing = pointing_of(analysis)
     assert isinstance(pointing, PointingRecord)
     assert pointing.flags == ["time_invalid"]
 
@@ -510,7 +541,7 @@ def test_a_reference_turns_a_mount_move_into_an_offset_and_a_flag(
     same = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(
         frame, reference=reference
     )
-    pointing = same.records[1]
+    pointing = pointing_of(same)
     assert isinstance(pointing, PointingRecord)
     assert pointing.reference_id == "commissioning"
     assert pointing.offset_arcmin == pytest.approx(0.0, abs=0.02)
@@ -528,7 +559,7 @@ def test_a_reference_turns_a_mount_move_into_an_offset_and_a_flag(
     moved = pipeline_for(profile, catalog, [truth_solver(truth2, catalog)]).analyze(
         frame2, previous=first.solution, reference=reference
     )
-    pointing = moved.records[1]
+    pointing = pointing_of(moved)
     assert isinstance(pointing, PointingRecord)
     assert pointing.offset_arcmin == pytest.approx(12.0, rel=0.02)
     assert pointing.flags == ["moved"]
@@ -542,7 +573,7 @@ def test_the_second_solver_checks_a_sample_of_frames(
     both = [truth_solver(truth, catalog), truth_solver(truth, catalog, center_shift_px=0.0)]
     # Frame 0 is a check frame: both solvers run, and they agree.
     agreed = pipeline_for(profile, catalog, both, config).analyze(frame, index=0)
-    pointing = agreed.records[1]
+    pointing = pointing_of(agreed)
     assert isinstance(pointing, PointingRecord)
     assert pointing.provenance["cross_check"].startswith("synthetic ")
     assert float(pointing.provenance["cross_check"].split()[1]) < 0.2
@@ -550,7 +581,7 @@ def test_the_second_solver_checks_a_sample_of_frames(
     # Frame 1 is not a check frame: the second solver stays idle.
     other = [truth_solver(truth, catalog), truth_solver(truth, catalog)]
     skipped = pipeline_for(profile, catalog, other, config).analyze(frame, index=1)
-    assert "cross_check" not in skipped.records[1].provenance
+    assert "cross_check" not in pointing_of(skipped).provenance
     assert other[1].requests == []
     # A second solver that is 4 pixels off is reported.
     wrong = synth.QueueSolver([synth.truth_solve_result(truth, catalog, center_shift_px=4.0)])
@@ -558,7 +589,7 @@ def test_the_second_solver_checks_a_sample_of_frames(
         profile, catalog, [truth_solver(truth, catalog), wrong], config
     ).analyze(frame, index=0)
     assert any("disagrees with the fit" in note for note in disagreed.notes)
-    pointing = disagreed.records[1]
+    pointing = pointing_of(disagreed)
     assert float(pointing.provenance["cross_check"].split()[1]) > 2.0
     # A second solver that fails is noted, and the analysis still succeeds.
     failing = FakeSolver(error=SolverError("crashed"))
@@ -588,7 +619,7 @@ def test_a_failure_to_detect_is_a_normal_failure(profile: Profile, catalog: CapC
     analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(flat)
     assert not analysis.solved
     assert analysis.notes[0].startswith("detection failed")
-    assert isinstance(analysis.records[1], PointingRecord)
+    assert isinstance(pointing_of(analysis), PointingRecord)
 
 
 def test_the_timings_name_each_step(
@@ -596,7 +627,7 @@ def test_the_timings_name_each_step(
 ) -> None:
     frame, truth = scene
     analysis = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
-    assert set(analysis.timings) == {"detect", "solve", "match", "records"}
+    assert set(analysis.timings) == {"detect", "solve", "match", "quality", "records"}
     assert all(value >= 0.0 for value in analysis.timings.values())
 
 

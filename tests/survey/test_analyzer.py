@@ -13,7 +13,7 @@ import pytest
 from seeingmon.analysis import PointingProvider, SurveyAnalyzer, SurveyOutput
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile
-from seeingmon.records.survey import PointingRecord, SurveyFrameRecord
+from seeingmon.records.survey import PointingRecord, SkyQualityRecord, SurveyFrameRecord
 from seeingmon.survey import pointing as pt
 from seeingmon.survey.analyzer import (
     InlineExecutor,
@@ -26,8 +26,10 @@ from seeingmon.survey.analyzer import (
 )
 from seeingmon.survey.catalog import CapCatalog, write_catalog
 from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.dark import DarkLibrary
 from seeingmon.survey.geometry import ARCSEC_PER_RAD, exp_so3
 from seeingmon.survey.pipeline import FrameAnalysis, PipelineSpec, SurveyPipeline
+from seeingmon.survey.transparency import ZeroPointReference
 from seeingmon.survey.wcs_fit import CameraAttitude
 from tests.survey import synth
 
@@ -55,6 +57,7 @@ class ScriptedPipeline(SurveyPipeline):
         self.done = threading.Event()
         self.solution_for: dict[int, pt.PointingSolution | None] = {}
         self.fail_at: set[int] = set()
+        self.references: list[ZeroPointReference | None] = []  # the zp_reference of each call
 
     def analyze(
         self,
@@ -63,8 +66,10 @@ class ScriptedPipeline(SurveyPipeline):
         previous: pt.PointingSolution | None = None,
         reference: pt.ReferenceSolution | None = None,
         index: int = 0,
+        zp_reference: ZeroPointReference | None = None,
     ) -> FrameAnalysis:
         self.calls.append((frame.t_utc_ns, index))
+        self.references.append(zp_reference)
         gate = self.gates.get(index)
         if gate is not None:
             assert gate.wait(timeout=30.0)
@@ -245,7 +250,7 @@ def test_the_output_carries_the_records_the_solved_flag_and_the_cloud_fraction(
     outputs = analyzer.poll()
     assert [output.solved for output in outputs] == [False, False, True]
     assert [output.cloud_fraction for output in outputs] == pytest.approx([0.0, 0.1, 0.2])
-    record = outputs[1].records[0]
+    record = next(r for r in outputs[1].records if isinstance(r, SurveyFrameRecord))
     assert isinstance(record, SurveyFrameRecord)
     assert record.n_detected == 1
     assert record.t_utc_ns == outputs[1].t_utc_ns == 2 * NS
@@ -284,8 +289,12 @@ def test_a_failed_job_gives_an_unsolved_output_and_the_analyzer_goes_on(
         outputs = analyzer.poll()
     assert [output.solved for output in outputs] == [False, True]
     failed = outputs[0]
-    assert [record.record_type for record in failed.records] == ["survey_frame", "pointing"]
-    pointing = failed.records[1]
+    assert [record.record_type for record in failed.records] == [
+        "survey_frame",
+        "sky_quality",
+        "pointing",
+    ]
+    pointing = next(r for r in failed.records if isinstance(r, PointingRecord))
     assert isinstance(pointing, PointingRecord)
     assert pointing.flags == ["unsolved"]
     assert failed.cloud_fraction is None
@@ -383,13 +392,13 @@ def test_the_records_survive_the_encoding_that_crosses_a_process_boundary(
     analysis = pipeline.analyze(frame)
     encoded = encode_analysis(analysis)
 
-    # Only plain types cross: dictionaries, lists, strings, numbers, and None.
+    # Only plain types cross: dictionaries, lists, strings, bytes, numbers, and None.
     def is_plain(value: object) -> bool:
         if isinstance(value, dict):
             return all(isinstance(k, str) and is_plain(v) for k, v in value.items())
         if isinstance(value, list):
             return all(is_plain(v) for v in value)
-        return value is None or isinstance(value, str | int | float | bool)
+        return value is None or isinstance(value, str | bytes | int | float | bool)
 
     assert is_plain(encoded)
     again = decode_records(encoded["records"])
@@ -557,7 +566,27 @@ def test_a_worker_process_gives_the_same_records_as_this_process(
         seed=51,
     )
     write_catalog(tmp_path / "cap.smcat", catalog)
-    config = SurveyConfig(catalog_path=str(tmp_path / "cap.smcat"), solvers=())
+    library = DarkLibrary(tmp_path / "calibration" / "darks")
+    library.add_set(  # the renderer's bias (40 counts) and no dark current: the worker reads this
+        np.full((800, 1200), 40, dtype=np.uint16),
+        mode="bin2",
+        gain=120,
+        exposure_s=30.0,
+        temperature_c=15.0,
+        temperature_spread_c=0.1,
+        t_utc_ns=synth.NIGHT_UTC_NS - 3600 * NS,
+        n_frames=9,
+        n_bias_frames=9,
+        bias_dn=40.0,
+        read_noise_dn=2.1,
+        adc_bits=14,
+        dark_dn=40.0,
+    )
+    config = SurveyConfig(
+        catalog_path=str(tmp_path / "cap.smcat"),
+        calibration_dir=str(tmp_path / "calibration"),
+        solvers=(),
+    )
     spec = analyzer_spec(profile=profile, station_id="test", config=config)
     # The tracker already holds a solution, so the worker needs no plate solver.
     truth_model = CameraAttitude(
@@ -597,6 +626,16 @@ def test_a_worker_process_gives_the_same_records_as_this_process(
     assert got.attitude is not None
     assert want.attitude is not None
     np.testing.assert_allclose(got.attitude, want.attitude, atol=1e-12)
+    # The worker reads the dark library and makes the same sky quality.
+    got_sky = next(r for r in outputs[0].records if isinstance(r, SkyQualityRecord))
+    want_sky = next(r for r in expected[0].records if isinstance(r, SkyQualityRecord))
+    assert want_sky.sky_mag_arcsec2 is not None
+    assert want_sky.zero_point_mag is not None
+    assert got_sky.zero_point_mag == pytest.approx(want_sky.zero_point_mag, abs=1e-9)
+    assert got_sky.sky_mag_arcsec2 == pytest.approx(want_sky.sky_mag_arcsec2, abs=1e-9)
+    assert got_sky.n_stars_used == want_sky.n_stars_used
+    assert got_sky.dark_model_version == want_sky.dark_model_version
+    assert got_sky.dark_model_version is not None
 
 
 def test_create_survey_analyzer_builds_from_the_configuration(
@@ -616,7 +655,7 @@ def test_create_survey_analyzer_builds_from_the_configuration(
     outputs = analyzer.poll()
     assert len(outputs) == 1
     assert not outputs[0].solved  # no solver and no previous solution
-    pointing = outputs[0].records[1]
+    pointing = next(r for r in outputs[0].records if isinstance(r, PointingRecord))
     assert isinstance(pointing, PointingRecord)
     assert pointing.flags == ["unsolved"]
     analyzer.close()

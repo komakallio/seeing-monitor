@@ -330,3 +330,89 @@ def test_a_saturated_star_is_not_measured() -> None:
     )
     assert len(result) == 1
     assert result.x[0] == pytest.approx(250.0, abs=0.3)
+
+
+# --- The aperture correction ---------------------------------------------------------------
+
+
+def halo_field(
+    *, halo_fraction: float = 0.025, n_columns: int = 4, n_rows: int = 3
+) -> tuple[npt.NDArray[np.float32], FloatArray, FloatArray, FloatArray]:
+    """Bright stars with a Gaussian core and a wide halo, as optical wings would give them.
+
+    Returns the frame, the star positions, and the total flux of each star in electrons.
+    """
+    electrons = np.full((420, 560), 130.0)
+    columns = np.linspace(60.0, 500.0, n_columns)
+    rows = np.linspace(60.0, 360.0, n_rows)
+    x: FloatArray = np.array([c for r in rows for c in columns])
+    y: FloatArray = np.array([r for r in rows for _ in columns])
+    flux = np.asarray(400_000.0 * (1.0 + 0.1 * np.arange(x.size)), dtype=np.float64)
+    for xi, yi, total in zip(x, y, flux, strict=True):
+        add_star(electrons, xi, yi, total * (1.0 - halo_fraction), sigma=0.8)
+        add_star(electrons, xi, yi, total * halo_fraction, sigma=6.0)
+    return to_counts(electrons, seed=11), x, y, flux
+
+
+def halo_photometry(
+    data: npt.NDArray[np.float32], options: ph.PhotometryOptions
+) -> ph.StarPhotometry:
+    detections = detect_stars(data, saturation_dn=1e9, e_per_adu=E_PER_ADU)
+    return ph.measure_matched_stars(
+        data,
+        detections,
+        np.arange(len(detections), dtype=np.intp),
+        exposure_s=30.0,
+        e_per_adu=E_PER_ADU,
+        saturation_dn=1e9,
+        options=options,
+    )
+
+
+def test_the_aperture_correction_recovers_the_light_in_the_wings() -> None:
+    data, x, y, flux = halo_field()
+    narrow = halo_photometry(data, ph.PhotometryOptions(growth_stars=0))
+    wide = halo_photometry(data, ph.PhotometryOptions())
+    assert narrow.aperture_correction == 1.0
+    assert narrow.n_growth_stars == 0
+    # The halo holds 2.5% of the light with a sigma of 6 px. A 5 px aperture takes 29% of it, and
+    # a 12 px aperture 86%, so the wide aperture sees 1.45% more light than the narrow one.
+    expected = (0.975 + 0.025 * (1.0 - np.exp(-144.0 / 72.0))) / (
+        0.975 + 0.025 * (1.0 - np.exp(-25.0 / 72.0))
+    )
+    assert wide.aperture_correction == pytest.approx(expected, abs=0.003)
+    assert wide.n_growth_stars >= 8
+    np.testing.assert_allclose(wide.rate_e_per_s / narrow.rate_e_per_s, wide.aperture_correction)
+    # The corrected rate holds the light within 12 px, which is 99.6% of the total.
+    holding = 0.975 + 0.025 * (1.0 - np.exp(-144.0 / 72.0))
+    for px, py, rate in zip(wide.x, wide.y, wide.rate_e_per_s, strict=True):
+        total = flux[int(np.argmin(np.hypot(x - px, y - py)))]
+        assert rate * 30.0 == pytest.approx(total * holding, rel=0.01)
+
+
+def test_a_profile_without_wings_needs_no_correction() -> None:
+    data, _, _, _ = halo_field(halo_fraction=0.0)
+    wide = halo_photometry(data, ph.PhotometryOptions())
+    assert wide.aperture_correction == pytest.approx(1.0, abs=0.003)
+    assert wide.n_growth_stars >= 8
+
+
+def test_too_few_bright_stars_leave_the_rates_alone() -> None:
+    data, _, _, _ = halo_field(n_columns=2, n_rows=2)  # four stars: fewer than the minimum
+    result = halo_photometry(data, ph.PhotometryOptions())
+    assert result.aperture_correction == 1.0
+    assert result.n_growth_stars == 0
+
+
+def test_the_correction_stays_within_its_limit() -> None:
+    data, _, _, _ = halo_field(halo_fraction=0.05)  # a soft focus: 3% of the light in the wings
+    unlimited = halo_photometry(data, ph.PhotometryOptions())
+    limited = halo_photometry(data, ph.PhotometryOptions(max_aperture_correction=1.02))
+    assert unlimited.aperture_correction == pytest.approx(1.03, abs=0.005)
+    assert limited.aperture_correction == 1.02
+
+
+def test_the_growth_aperture_must_be_wider_than_the_aperture() -> None:
+    with pytest.raises(ValueError, match="wider than the aperture"):
+        ph.PhotometryOptions(growth_aperture_px=5.0)
+    ph.PhotometryOptions(growth_stars=0, growth_aperture_px=3.0)  # off: the width does not matter

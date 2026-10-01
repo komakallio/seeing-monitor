@@ -96,6 +96,62 @@ class DarkConfig(SectionModel):
     max_age_days: float = 183.0  # a set older than this does not count
 
 
+class PhotometryConfig(SectionModel):
+    """Aperture photometry of the matched stars (`seeingmon.survey.photometry`)."""
+
+    aperture_px: float = 5.0  # the radius of the aperture; a trail adds a line of its length
+    annulus_inner_px: float = 9.0  # the ring that gives the local background
+    annulus_outer_px: float = 14.0
+    min_annulus_px: int = 150  # a ring with fewer good pixels gives no measurement
+    clip_sigma: float = 3.0
+    isolation_flux_ratio: float = 0.02  # a neighbor with this share of the flux spoils a star
+    min_snr: float = 20.0  # a star needs this signal-to-noise ratio for the zero point
+    growth_aperture_px: float = 12.0  # the wide aperture of the aperture correction
+    growth_stars: int = 40  # the brightest stars that measure it; 0 turns the correction off
+
+
+class ZeroPointConfig(SectionModel):
+    """The zero-point fit against Gaia G (`seeingmon.survey.zero_point`)."""
+
+    min_stars: int = 8  # fewer stars give no zero point
+    clip_sigma: float = 3.0
+    systematic_mag: float = 0.01  # error added to every star: flat field, scintillation, aperture
+    color_term_prior: float = 0.0  # the color term when the colors do not span a range
+    min_color_std: float = 0.25
+    g_min: float = 0.0  # the catalog magnitude range of the stars in the fit
+    g_max: float = 13.0
+
+
+class SkyConfig(SectionModel):
+    """The sky brightness and its V equivalent (`seeingmon.survey.sky`)."""
+
+    clip_sigma: float = 3.0
+    edge_px: int = 8  # pixels at the frame edge stay out of the sky level
+    mask_radius_scale: float = 3.0  # each star hides a disk of this many PSF sigmas
+    bp_rp: float = 1.0  # the color that the V conversion assumes for the sky
+    sqm_offset_mag: float = 0.0  # the offset that `seeingmon.survey.sqm_fit` gives
+
+
+class TransparencyConfig(SectionModel):
+    """The reference zero point, transparency, and the cloud flag (`survey.transparency`)."""
+
+    window_days: float = 60.0
+    quantile: float = 0.9  # the reference is this quantile of the clear zero points
+    min_samples: int = 20  # a shorter history gives no reference
+    min_stars: int = 12
+    max_rms_mag: float = 0.15
+    max_cloud_fraction: float = 0.2  # a frame with more clouds does not set the reference
+    cloud_flag_fraction: float = 0.3  # the `cloud` flag
+    transparency_flag: float = 0.6
+
+
+class StarEpochConfig(SectionModel):
+    """The nightly star summary (`seeingmon.survey.star_epoch`)."""
+
+    min_frames: int = 3  # a star needs this many frames to appear in the summary
+    min_snr: float = 20.0
+
+
 class SurveyConfig(SectionModel):
     """Settings of the survey path. Every key has a default that suits the reference camera."""
 
@@ -104,6 +160,8 @@ class SurveyConfig(SectionModel):
     index_dir: str = ""  # the folder with the astrometry.net cap index files
     hot_pixel_file: str = ""  # a NumPy file with the boolean hot-pixel mask of the survey mode
     calibration_dir: str = ""  # the folder with the dark library (in `darks/`); empty: none
+    flat_file: str = ""  # a measured flat field of the survey mode (.npy or FITS); empty: unit flat
+    night_split_utc_hour: float = 12.0  # the UTC hour that ends a night; pick one in your daytime
     solve_field_command: str = "solve-field"
     astap_command: str = "astap"
     astap_database_dir: str = ""  # the folder with the ASTAP star database; empty uses its default
@@ -116,3 +174,8 @@ class SurveyConfig(SectionModel):
     solve: SolveConfig = SolveConfig()
     cloud: CloudConfig = CloudConfig()
     dark: DarkConfig = DarkConfig()
+    photometry: PhotometryConfig = PhotometryConfig()
+    zero_point: ZeroPointConfig = ZeroPointConfig()
+    sky: SkyConfig = SkyConfig()
+    transparency: TransparencyConfig = TransparencyConfig()
+    star_epoch: StarEpochConfig = StarEpochConfig()
