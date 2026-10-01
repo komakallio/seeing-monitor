@@ -218,6 +218,27 @@ The endpoint answers 200 for a healthy or degraded system and 503 otherwise. It 
 
 An external watchdog on your LAN can poll this endpoint (see [Remote power cycle](#remote-power-cycle)).
 
+## Reach the web UI through a VPN
+
+`web` listens on `bind_address` and on every address of `extra_bind_addresses`, and it never listens on all interfaces. It answers a request only when the `Host` header names an allowed host: the loopback names, every bind address, and the entries of `allowed_hosts`. A WebSocket handshake (the live view of the Align page) also needs an `Origin` header that names an allowed host, so a page from another site cannot open it. The server answers any other request with 400.
+
+To reach the UI through a VPN, such as a tailnet:
+
+1. Note the address of the VPN interface of the Pi (IPv4 and IPv6, if both exist), the short host name, and the full name that the VPN gives the Pi.
+2. Put them in the `[web]` table of the local configuration (`local/config.toml`, which stays out of the repository):
+
+   ```toml
+   [web]
+   bind_address = "<LAN address of the Pi>"
+   extra_bind_addresses = ["<VPN address, IPv4>", "<VPN address, IPv6>"]
+   allowed_hosts = ["<short host name>", "<full VPN name>"]
+   ```
+
+3. Run the installer again, so that it copies the file, or restart the unit: `systemctl restart seeingmon-web`. The log of `web` has one `listening on` line for each address.
+4. From a client on the VPN, open the full name in a browser or run `curl -s -o /dev/null -w "%{http_code}\n" http://<full VPN name>:8080/api/v1/health`. The answer is 200 or 503. A 400 means that the name is not in `allowed_hosts`, and the log of `web` names each rejected host once.
+
+The addresses and names are deployment values, so the `/api/v1/config` endpoint and the `run` record show them as `<redacted>`. The bind of a VPN address fails while the VPN interface does not exist, and then `web` exits and systemd restarts it. At boot, the VPN can come up later than `web`, and the start limit of the unit can stop the restarts. If that happens, order `seeingmon-web` after the VPN service with a drop-in (`systemctl edit seeingmon-web`), and test a reboot. This is untested on a Pi.
+
 ## Where the logs go
 
 The services write to the journal, and journald keeps the journal in RAM (`Storage=volatile`, at most 64 MB), so the logs never wear the SD card. The consequence is that a reboot erases the log of the previous boot. The `event` table of the store survives a reboot, and it holds the warnings and errors that matter, such as recovery steps and retention actions.
@@ -433,7 +454,7 @@ Run `seeingmon <command> --help` for the options of your release, because the se
 ## Security notes
 
 - Use ssh keys only. Set `PasswordAuthentication no` for sshd.
-- Reads of the API are open on the LAN by default, and commands need the bearer token. Reach the Pi from outside through a VPN.
+- Reads of the API are open on the LAN by default, and commands need the bearer token. Reach the Pi from outside through a VPN (see [Reach the web UI through a VPN](#reach-the-web-ui-through-a-vpn)).
 - The connection key, the token hash, the environment file, and the local configuration have the mode 0600 or live in a folder that only root and the service group enter. The installer checks the modes at every run. The units read the credentials through systemd. They hide `/home` from the services and mount the rest of the file system read-only, except the data directory for `core`.
 - The repository never holds a host name, an address, a user name, a key, a token, or the SDK.
 
