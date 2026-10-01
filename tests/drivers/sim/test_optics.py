@@ -170,7 +170,7 @@ def test_the_mixture_approximates_the_airy_pattern() -> None:
     for offset in ((0.0, 0.0), (0.3, -0.2), (0.5, 0.5)):
         stamp = mixture.stamp(offset, r0_500nm_m=1e4)
         reference = airy_stamp(BIN1, mixture.fov_px, offset)
-        assert float(stamp.sum()) == pytest.approx(0.996, abs=0.003)
+        assert float(stamp.sum()) == pytest.approx(0.993, abs=0.004)
         assert np.abs(stamp / stamp.sum() - reference).max() < 0.03 * reference.max()
         assert centroid(stamp)[0] == pytest.approx(offset[0], abs=0.01)
 

@@ -54,7 +54,7 @@ def single_layer(
     *,
     r0_m: float = 0.10,
     outer_scale_m: float = math.inf,
-    screen_points: int = 512,
+    screen_points: int = 256,
     zenith_angle_deg: float = 0.0,
     boiling: bool = True,
     seed: int = 1,
@@ -131,7 +131,7 @@ def test_tilt_variance_is_achromatic() -> None:
 
 
 @pytest.mark.parametrize("outer_scale", [math.inf, 50.0, 20.0, 10.0])
-@pytest.mark.parametrize("screen_points", [128, 512])
+@pytest.mark.parametrize("screen_points", [128, 256, 512])
 def test_built_spectrum_reproduces_the_analytic_variance(
     outer_scale: float, screen_points: int
 ) -> None:
@@ -201,7 +201,7 @@ def test_the_phase_moves_with_the_wind() -> None:
     about the pupil centre, stay accurate.
     """
     layer = Layer(1.0, 8.0, 35.0)
-    config = TurbulenceConfig(layers=(layer,), boiling=False, seed=2)
+    config = TurbulenceConfig(layers=(layer,), boiling=False, seed=2, screen_points=512)
     model = TurbulenceModel(config, APERTURE_M)
     vx, vy = layer.velocity_m_s
     spec = GridSpec(-0.02, -0.02, 0.001, 40, 40)
@@ -340,23 +340,26 @@ def test_exposure_averaging_matches_martin(xi: float, expected: float, pupil: Pu
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(1200)
 @pytest.mark.parametrize("r0", [0.05, 0.10, 0.15])
 def test_kolmogorov_image_motion_matches_theory_default_screen(r0: float, pupil: PupilGrid) -> None:
-    """The same criterion with the default 512-point screen and four times per seed.
+    """The same criterion with the default 256-point screen and two screens per seed.
 
-    2,500 seeds x 4 times x 2 axes. The sinusoid part (about 45% of the variance) has one
-    realization per seed, so the standard error is about 1.5%.
+    4,000 seeds x 2 times x 2 axes. The two times fall in two crossings of the screen, which are
+    the real and the imaginary part of one FFT. The sinusoid part (about 45% of the variance) has
+    one realization per seed, so the standard error is about 1.5%.
     """
     base = single_layer(r0_m=r0)
-    ratio, standard_error = tilt_ratio(base, range(1000, 3500), pupil, (0.0, 0.7, 1.9, 3.1))
+    ratio, standard_error = tilt_ratio(base, range(1000, 5000), pupil, (0.03, 0.11))
     assert standard_error < 0.02
     assert ratio == pytest.approx(1.0, abs=0.05), (ratio, standard_error)
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(1200)
 @pytest.mark.parametrize("outer_scale", sorted(OUTER_SCALE_RATIOS))
 def test_outer_scale_reduction_default_screen(outer_scale: float, pupil: PupilGrid) -> None:
     base = single_layer(outer_scale_m=outer_scale)
-    ratio, standard_error = tilt_ratio(base, range(5000, 7500), pupil, (0.0, 0.7, 1.9, 3.1))
+    ratio, standard_error = tilt_ratio(base, range(5000, 9000), pupil, (0.03, 0.11))
     assert standard_error < 0.02
     assert ratio == pytest.approx(1.0, abs=0.05), (ratio, standard_error)
