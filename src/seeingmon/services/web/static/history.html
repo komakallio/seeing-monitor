@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Seeing monitor: History</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/common.js" defer></script>
+<script src="js/plot.js" defer></script>
+<script src="js/history.js" defer></script>
+</head>
+<body>
+<main id="main">
+  <div class="page-title">
+    <h1>History</h1>
+    <p class="page-note" id="range-note" aria-live="polite">Loading.</p>
+  </div>
+  <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
+
+  <div class="toolbar">
+    <div class="segmented" id="ranges" role="group" aria-label="Time range"></div>
+    <label class="field" for="step">Step
+      <select id="step">
+        <option value="auto">Automatic</option>
+        <option value="raw">Every window</option>
+        <option value="1m">1 minute</option>
+        <option value="10m">10 minutes</option>
+        <option value="1h">1 hour</option>
+      </select>
+    </label>
+    <button type="button" id="reload">Reload</button>
+  </div>
+  <div id="history-error" class="banner" hidden role="alert"></div>
+
+  <div class="cards charts">
+    <article class="card chart-card" aria-labelledby="h-seeing">
+      <h2 id="h-seeing"><span>Seeing FWHM</span><span class="when" id="seeing-count"></span></h2>
+      <div id="plot-seeing"></div>
+      <div class="legend" id="legend-seeing"></div>
+    </article>
+    <article class="card chart-card" aria-labelledby="h-r0">
+      <h2 id="h-r0"><span>Fried parameter r0</span><span class="when" id="r0-count"></span></h2>
+      <div id="plot-r0"></div>
+    </article>
+    <article class="card chart-card" aria-labelledby="h-sky">
+      <h2 id="h-sky"><span>Sky brightness</span><span class="when" id="sky-count"></span></h2>
+      <div id="plot-sky"></div>
+      <p class="note">A larger number is a darker sky.</p>
+    </article>
+    <article class="card chart-card" aria-labelledby="h-cloud">
+      <h2 id="h-cloud"><span>Cloud cover and transparency</span><span class="when" id="cloud-count"></span></h2>
+      <div id="plot-cloud"></div>
+      <div class="legend" id="legend-cloud"></div>
+    </article>
+    <article class="card chart-card" aria-labelledby="h-pointing">
+      <h2 id="h-pointing"><span>Pointing offset</span><span class="when" id="pointing-count"></span></h2>
+      <div id="plot-pointing"></div>
+    </article>
+  </div>
+
+  <section class="panel" aria-labelledby="h-events">
+    <h2 id="h-events">Events</h2>
+    <div class="toolbar">
+      <label class="field" for="level">Show
+        <select id="level">
+          <option value="info">All events</option>
+          <option value="warning">Warnings and errors</option>
+          <option value="error">Errors only</option>
+        </select>
+      </label>
+      <span class="note" id="events-count"></span>
+    </div>
+    <ul class="events" id="events-list"></ul>
+    <p><button type="button" id="events-more" hidden>Show older events</button></p>
+  </section>
+</main>
+</body>
+</html>

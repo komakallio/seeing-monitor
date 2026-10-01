@@ -3,10 +3,68 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Seeing monitor</title>
+<meta name="color-scheme" content="light dark">
+<title>Seeing monitor: Now</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/common.js" defer></script>
+<script src="js/plot.js" defer></script>
+<script src="js/now.js" defer></script>
 </head>
 <body>
-<h1>Seeing monitor</h1>
-<p>The UI is under construction. The API description is at <a href="api/v1/openapi.json">api/v1/openapi.json</a>.</p>
+<main id="main">
+  <div class="page-title">
+    <h1>Now</h1>
+    <p class="page-note" id="updated" aria-live="polite">Loading the station.</p>
+  </div>
+  <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
+  <div id="banner" class="banner" hidden role="status"></div>
+
+  <div class="cards">
+    <article class="card" id="card-seeing" aria-labelledby="h-seeing">
+      <div class="card-head"><h2 id="h-seeing">Seeing</h2><span class="when" id="seeing-when"></span></div>
+      <div class="big missing" id="seeing-value">Loading</div>
+      <p class="note" id="seeing-note"></p>
+      <div class="chips" id="seeing-chips"></div>
+      <dl class="facts" id="seeing-facts"></dl>
+      <div id="seeing-plot"></div>
+    </article>
+
+    <article class="card" id="card-sky" aria-labelledby="h-sky">
+      <div class="card-head"><h2 id="h-sky">Sky brightness</h2><span class="when" id="sky-when"></span></div>
+      <div class="big missing" id="sky-value">Loading</div>
+      <p class="note" id="sky-note"></p>
+      <div class="chips" id="sky-chips"></div>
+      <dl class="facts" id="sky-facts"></dl>
+      <div id="sky-plot"></div>
+    </article>
+
+    <article class="card" id="card-pointing" aria-labelledby="h-pointing">
+      <div class="card-head"><h2 id="h-pointing">Pointing</h2><span class="when" id="pointing-when"></span></div>
+      <div class="big missing" id="pointing-value">Loading</div>
+      <p class="note" id="pointing-note"></p>
+      <div class="chips" id="pointing-chips"></div>
+      <dl class="facts" id="pointing-facts"></dl>
+      <div id="pointing-plot"></div>
+    </article>
+
+    <article class="card" id="card-system" aria-labelledby="h-system">
+      <div class="card-head"><h2 id="h-system">System</h2><span class="when" id="system-when"></span></div>
+      <div class="chips" id="system-chips"></div>
+      <dl class="facts" id="system-facts"></dl>
+      <p class="note" id="system-note"></p>
+    </article>
+
+    <article class="card" id="card-image" aria-labelledby="h-image">
+      <div class="card-head"><h2 id="h-image">Latest image</h2><span class="when" id="image-when"></span></div>
+      <div id="image-body"><p class="empty">Loading</p></div>
+    </article>
+
+    <article class="card wide" id="card-events" aria-labelledby="h-events">
+      <div class="card-head"><h2 id="h-events">Latest events</h2><span class="when" id="events-when"></span></div>
+      <ul class="events" id="events-list"></ul>
+    </article>
+  </div>
+</main>
 </body>
 </html>

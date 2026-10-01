@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Seeing monitor: Align</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/common.js" defer></script>
+<script src="js/live.js" defer></script>
+<script src="js/align.js" defer></script>
+</head>
+<body>
+<main id="main">
+  <div class="page-title">
+    <h1>Align</h1>
+    <p class="page-note" id="align-note" aria-live="polite">Loading.</p>
+  </div>
+  <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
+  <div id="align-error" class="banner" hidden role="alert"></div>
+  <div id="saturation-banner" class="banner" data-level="warn" hidden role="alert"></div>
+
+  <section class="panel" aria-label="Alignment controls">
+    <div class="row">
+      <button type="button" class="primary" id="start">Start alignment</button>
+      <button type="button" id="stop">Stop alignment</button>
+      <span class="pill" id="run-state">Alignment: unknown</span>
+      <span class="pill" id="link-state">Live view: connecting</span>
+    </div>
+    <p class="hint" id="command-note" aria-live="polite"></p>
+  </section>
+
+  <div class="align">
+    <div class="stack">
+      <div class="live" id="live">
+        <canvas id="view" width="640" height="436" role="img" aria-label="Live view of the star field"></canvas>
+        <div class="cover" id="cover">Connecting to the live view.</div>
+      </div>
+      <div class="row">
+        <label class="field" for="overlays"><input type="checkbox" id="overlays" checked> Show the overlays</label>
+        <span class="hint" id="frame-info"></span>
+      </div>
+      <section class="panel hist" aria-labelledby="h-hist">
+        <h2 id="h-hist">Histogram of the pixel values</h2>
+        <canvas id="hist" role="img" aria-label="Histogram of the pixel values"></canvas>
+        <div class="scale"><span id="hist-min">0</span><span>pixel value (DN), log scale of the counts</span><span id="hist-max"></span></div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="panel" aria-labelledby="h-offset">
+        <h2 id="h-offset">Offset from the target</h2>
+        <dl class="facts" id="offset-facts"></dl>
+        <h2>Roll</h2>
+        <div class="gauge" aria-hidden="true"><div class="zero"></div><div class="mark" id="roll-mark"></div></div>
+        <div class="scale"><span id="roll-min"></span><span>0</span><span id="roll-max"></span></div>
+        <p class="note" id="roll-note"></p>
+      </section>
+      <section class="panel" aria-labelledby="h-focus">
+        <h2 id="h-focus">Focus</h2>
+        <div class="gauge" aria-hidden="true"><div class="fill" id="focus-fill"></div></div>
+        <div class="scale"><span>poor</span><span>best of this session</span></div>
+        <p class="note" id="focus-note"></p>
+      </section>
+      <section class="panel" aria-labelledby="h-solution">
+        <h2 id="h-solution">Solution and frame</h2>
+        <dl class="facts" id="solution-facts"></dl>
+      </section>
+      <section class="panel" aria-labelledby="h-help">
+        <h2 id="h-help">How to align</h2>
+        <p class="note">Start the alignment with the token. The green cross is where Polaris belongs, and the red circle is where the solver finds it. Move the mount until the circle sits on the cross, and until the roll is near zero. Stop the alignment when you finish, so that the camera goes back to measuring.</p>
+      </section>
+    </div>
+  </div>
+</main>
+</body>
+</html>

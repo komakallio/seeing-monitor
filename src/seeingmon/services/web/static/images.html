@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Seeing monitor: Images</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/common.js" defer></script>
+<script src="js/images.js" defer></script>
+</head>
+<body>
+<main id="main">
+  <div class="page-title">
+    <h1>Images</h1>
+    <p class="page-note" id="images-note" aria-live="polite">Loading.</p>
+  </div>
+  <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
+  <div id="images-error" class="banner" hidden role="alert"></div>
+
+  <div class="grid" id="grid"></div>
+  <p class="empty" id="images-empty" hidden>No image yet.</p>
+  <p><button type="button" id="older" hidden>Show older images</button></p>
+</main>
+</body>
+</html>
