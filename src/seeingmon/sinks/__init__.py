@@ -6,6 +6,8 @@ loads each name on first use, so importing `seeingmon.sinks` stays fast.
 - `base`: the `Sink` protocol, `SinkError`, and `StoredRow` (the contract).
 - `forwarder`: `Forwarder`, which sends the rows of the store to every sink with cursors, retries,
   and backoff.
+- `config`: the `[sinks.<name>]` configuration models.
+- `influx`: `InfluxSink`, an InfluxDB line-protocol sink for versions 1 and 2.
 """
 
 from __future__ import annotations
@@ -20,20 +22,30 @@ if TYPE_CHECKING:
 
 # The module that defines each lazily loaded name.
 _EXPORTS: dict[str, str] = {
+    "InfluxSinkConfig": "config",
+    "SinksSection": "config",
+    "TimescaleSinkConfig": "config",
+    "resolve_credential": "config",
     "ForwardReport": "forwarder",
     "Forwarder": "forwarder",
     "SinkPass": "forwarder",
     "SinkStatus": "forwarder",
+    "InfluxSink": "influx",
 }
 
 __all__ = [
     "ForwardReport",
     "Forwarder",
+    "InfluxSink",
+    "InfluxSinkConfig",
     "Sink",
     "SinkError",
     "SinkPass",
     "SinkStatus",
+    "SinksSection",
     "StoredRow",
+    "TimescaleSinkConfig",
+    "resolve_credential",
 ]
 
 
