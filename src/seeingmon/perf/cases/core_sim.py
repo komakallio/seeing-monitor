@@ -122,6 +122,16 @@ def measurements_from(run: SystemRun) -> list[Measurement]:
             detail["threads_idle"] = _threads_text(idle.top_threads(role))
         add(f"{role}.fast_share", "percent", busy, "interpreter", detail)
         add(f"{role}.idle_share", "percent", quiet, "interpreter", dict(detail))
+        typical = fast.resident_median(role)
+        if typical is not None:
+            largest = fast.resident_max(role) or typical
+            add(
+                f"{role}.rss_fast",
+                "bytes",
+                float(typical),
+                "memory",
+                {"largest_in_fast_phase": f"{largest / 1e6:.0f} MB", **including},
+            )
 
     cost = cost_per_frame_us(fast, idle, "core")
     if cost is not None:

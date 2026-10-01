@@ -39,6 +39,7 @@ import contextlib
 import http.client
 import os
 import socket
+import statistics
 import tempfile
 import threading
 import time
@@ -104,6 +105,7 @@ class Snapshot:
 
     `t` is a monotonic time in seconds. `cpu_ns` holds the cumulative CPU time by role, and
     `threads` the cumulative CPU time by thread ID for the roles whose threads the system gives.
+    `rss` holds the resident size by role at that moment.
     """
 
     t: float
@@ -117,16 +119,21 @@ class Snapshot:
     survey_pending: int
     cpu_ns: Mapping[str, int]
     threads: Mapping[str, Mapping[int, int]] = field(default_factory=dict)
+    rss: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class Phase:
-    """The sum of the intervals of one phase: the time, the frames, and the CPU time by role."""
+    """The sum of the intervals of one phase: the time, the frames, and the CPU time by role.
+
+    It also keeps the resident size of each role at the end of each interval.
+    """
 
     seconds: float = 0.0
     frames: int = 0
     cpu_ns: dict[str, int] = field(default_factory=dict)
     thread_ns: dict[str, dict[int, int]] = field(default_factory=dict)
+    rss: dict[str, list[int]] = field(default_factory=dict)
 
     def add(self, first: Snapshot, second: Snapshot) -> None:
         """Add the interval between two samples."""
@@ -139,6 +146,8 @@ class Phase:
             into = self.thread_ns.setdefault(role, {})
             for tid, used in threads.items():
                 into[tid] = into.get(tid, 0) + max(used - before.get(tid, 0), 0)
+        for role, size in second.rss.items():
+            self.rss.setdefault(role, []).append(size)
 
     @property
     def fps(self) -> float:
@@ -150,6 +159,16 @@ class Phase:
         if self.seconds <= 0 or role not in self.cpu_ns:
             return None
         return 100.0 * self.cpu_ns[role] / 1e9 / self.seconds
+
+    def resident_median(self, role: str) -> int | None:
+        """The median resident size of a role over the phase, or `None` without a reading."""
+        sizes = self.rss.get(role)
+        return None if not sizes else int(statistics.median(sizes))
+
+    def resident_max(self, role: str) -> int | None:
+        """The largest resident size that a sample of the phase showed, or `None`."""
+        sizes = self.rss.get(role)
+        return None if not sizes else max(sizes)
 
     def top_threads(self, role: str, count: int = 4) -> list[tuple[int, float]]:
         """The busiest threads of a role as `(thread ID, percentage of one core)`."""
@@ -247,6 +266,7 @@ class Sampler:
         self._role_by_pid: dict[int, str] = {}
         self._decided: dict[int, str] = {}
         self._last_cpu: dict[int, int] = {}
+        self.resident: dict[str, int] = {}  # the resident size by role at the last read
 
     def _classify_child(self, pid: int) -> str | None:
         """The role of a child of `core`, or `None` while the system does not tell yet.
@@ -291,14 +311,20 @@ class Sampler:
         return found
 
     def read(self) -> tuple[dict[str, int], dict[str, dict[int, int]]]:
-        """The cumulative CPU time by role, and by thread for the roles that have threads."""
+        """The cumulative CPU time by role, and by thread for the roles that have threads.
+
+        The resident size of each role at this moment goes to `resident`.
+        """
         cpu: dict[str, int] = {}
         threads: dict[str, dict[int, int]] = {}
+        resident: dict[str, int] = {}
         for pid, role in self.processes().items():
             reading = procs.read_process(pid)
             if reading is None:
                 continue
             self._role_by_pid[pid] = role
+            if reading.rss_bytes is not None:
+                resident[role] = resident.get(role, 0) + reading.rss_bytes
             if reading.peak_rss_bytes is not None:
                 self._peak_by_pid[pid] = max(self._peak_by_pid.get(pid, 0), reading.peak_rss_bytes)
             if reading.cpu_ns is not None:
@@ -308,6 +334,7 @@ class Sampler:
                 by_thread = procs.thread_cpu_ns(pid)
                 if by_thread:
                     threads[role] = by_thread
+        self.resident = resident
         return cpu, threads
 
     def peaks(self) -> dict[str, int]:
@@ -472,6 +499,7 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                     survey_pending=scheduler.survey_pending,
                     cpu_ns=cpu,
                     threads=threads,
+                    rss=dict(sampler.resident),
                 )
 
             snapshots: list[Snapshot] = []

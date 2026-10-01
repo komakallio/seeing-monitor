@@ -193,6 +193,7 @@ class Timeline:
         acquire_ms: float = 0.0,
         web_ms: float = 0.0,
         core_threads_ms: dict[int, float] | None = None,
+        rss_mb: dict[str, float] | None = None,
         state: str = "auto",
         purpose: str | None = "fast",
         stream_id: int | None = 1,
@@ -222,6 +223,7 @@ class Timeline:
                 survey_pending=pending,
                 cpu_ns=dict(self._cpu),
                 threads={role: dict(found) for role, found in self._threads.items()},
+                rss={role: round(size * MB) for role, size in (rss_mb or {}).items()},
             )
         )
         return self
@@ -253,6 +255,7 @@ def fabricated_run(
         core_ms=50,
         acquire_ms=400,
         web_ms=2,
+        rss_mb={"core": 130, "acquire": 120, "web": 80},
     )
     clock.repeat(3, state="paused", purpose=None, stream_id=None, core_ms=10, acquire_ms=20)
     samples = clock.samples

@@ -155,6 +155,21 @@ class TestPhases:
         assert phase.frames == 0
         assert phase.cpu_ns["core"] == 0
 
+    def test_the_resident_size_of_a_phase_is_read_at_the_end_of_each_interval(self) -> None:
+        clock = Timeline()
+        for size in (100, 140, 120, 180):
+            clock.tick(frames=90, rss_mb={"core": size})
+        fast, _ = split_phases(clock.samples, warmup_windows=0)
+        assert fast.resident_median("core") == round(130 * MB)  # between 120 and 140
+        assert fast.resident_max("core") == round(180 * MB)
+
+    def test_a_role_without_a_resident_size_has_no_median_and_no_largest(self) -> None:
+        clock = Timeline().repeat(2, frames=90, rss_mb={"core": 100})
+        fast, _ = split_phases(clock.samples, warmup_windows=0)
+        assert fast.resident_median("web") is None
+        assert fast.resident_max("web") is None
+        assert Phase().resident_median("core") is None
+
     def test_the_busiest_threads_come_first_with_their_share(self) -> None:
         clock = Timeline()
         clock.tick(frames=90, core_threads_ms={11: 2.0, 12: 30.0, 13: 5.0})
@@ -243,6 +258,24 @@ class TestSampler:
         cpu, threads = Sampler(ROOTS).read()
         assert cpu == {"acquire": 500_000_000, "core": 100_000_000, "web": 20_000_000}
         assert threads == {}
+
+    def test_it_keeps_the_resident_size_of_each_role_at_the_last_read(
+        self, table: FakeTable
+    ) -> None:
+        table.process(210, 200, peak_mb=300)  # a child of core, which counts as `other`
+        table.lines[210] = "python -c from multiprocessing.resource_tracker import main;main(7)"
+        sampler = Sampler(ROOTS)
+        sampler.read()
+        # The table gives 90% of the peak as the resident size.
+        assert sampler.resident == {
+            "acquire": round(138 * MB * 0.9),
+            "core": round(130 * MB * 0.9),
+            "web": round(85 * MB * 0.9),
+            "other": round(300 * MB * 0.9),
+        }
+        table.readings[200] = procs.ProcessReading(200, 0, round(130 * MB), round(50 * MB))
+        sampler.read()
+        assert sampler.resident["core"] == round(50 * MB)  # the size now, and not the peak
 
     def test_it_reads_the_threads_of_the_roles_that_have_them(self, table: FakeTable) -> None:
         table.threads[200] = {201: 70_000_000, 202: 30_000_000}

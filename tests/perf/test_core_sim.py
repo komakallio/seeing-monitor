@@ -38,10 +38,13 @@ class TestFigures:
             "all.peak_rss_sum",
             "core.fast_share",
             "core.idle_share",
+            "core.rss_fast",
             "acquire.fast_share",
             "acquire.idle_share",
+            "acquire.rss_fast",
             "web.fast_share",
             "web.idle_share",
+            "web.rss_fast",
             "core.frame_cost",
             "core.fastpath_receive_share",
             "survey_worker.cpu",
@@ -62,6 +65,14 @@ class TestFigures:
         for role, peak in (("core", 132), ("web", 85), ("acquire", 138), ("survey_worker", 460)):
             item = found[f"{role}.peak_rss"]
             assert (item.value, item.unit, item.scale) == (peak * MB, "bytes", "memory")
+
+    def test_the_resident_size_in_the_fast_phase_is_a_median_in_bytes(self) -> None:
+        found = figures(fabricated_run())
+        for role, size in (("core", 130), ("acquire", 120), ("web", 80)):
+            item = found[f"{role}.rss_fast"]
+            assert (item.value, item.unit, item.scale) == (size * MB, "bytes", "memory")
+            assert item.detail["largest_in_fast_phase"] == f"{size} MB"
+        assert found["acquire.rss_fast"].detail["includes"] == "the simulator"
 
     def test_the_sum_of_the_peaks_adds_every_process_and_names_the_parts(self) -> None:
         item = figures(fabricated_run())["all.peak_rss_sum"]
