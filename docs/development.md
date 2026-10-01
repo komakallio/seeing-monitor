@@ -24,7 +24,10 @@ py -3.13 -m venv <clone>/.venv                 # Windows. On Linux: python3.13 -
 <py> -m ruff check <clone>                     # lint
 <py> -m mypy --config-file <clone>/pyproject.toml <clone>/src <clone>/tests   # strict type check
 <py> <clone>/tools/check_repo.py --repo <clone>             # private or machine-specific values
+<py> <clone>/tools/scan_secrets.py --repo <clone>           # the secret scan that CI runs
 ```
+
+The secret scan reads every tracked file, and one false positive turns `main` red on every runner. Add `--staged` to scan only the files in the index. Mark a false positive with `# pragma: allowlist secret` on the same line.
 
 CI runs every check on Windows, Linux x64, and Linux arm64 with Python 3.11 and 3.13, so write code that runs on 3.11. Do not use syntax or library features that appeared in 3.12 or later. Python 3.11 is not installed on the dev machine, so CI is the first place a 3.11 problem shows.
 
@@ -34,7 +37,7 @@ Run these steps for every commit.
 
 1. Format, lint, and type check, and run your lane's tests.
 2. Stage named files: `git -C <clone> add <path> ...`. Do not stage everything with `-A`.
-3. Run `<py> <clone>/tools/check_repo.py --repo <clone> --staged`, and review `git -C <clone> diff --staged` for leaks.
+3. Run `<py> <clone>/tools/check_repo.py --repo <clone> --staged` and `<py> <clone>/tools/scan_secrets.py --repo <clone> --staged`, and review `git -C <clone> diff --staged` for leaks.
 4. Commit with an imperative message: `git -C <clone> commit -m "Add the SER reader"`. Add no trailers and no co-authors.
 5. Run `git -C <clone> pull --rebase origin main`.
 6. Run your lane's tests again, and the full suite when the rebase brought in other lanes' files.
