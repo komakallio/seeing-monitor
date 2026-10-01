@@ -148,7 +148,7 @@ class CloudConfig(SectionModel):
     fast_window_s: Seconds = 60.0
     """The length of the fast period under cloud, in seconds."""
 
-    survey_cadence_s: Seconds = 90.0
+    survey_cadence_s: Seconds = 100.0
     """The survey cadence under cloud, in seconds."""
 
     @model_validator(mode="after")

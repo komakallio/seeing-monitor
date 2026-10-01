@@ -75,6 +75,7 @@ def test_the_survey_exposures_fit_the_cadence_and_the_profile() -> None:
     config = SchedulerConfig()
     step_s = config.survey.short_exposure_s + config.survey.long_exposure_s
     assert config.fast.window_s + step_s < config.survey.cadence_s
+    assert config.cloud.fast_window_s + step_s < config.cloud.survey_cadence_s
     limits = load_profile("asi294mm-gs250").limits
     for exposure_us in (
         config.survey.short_exposure_us,
