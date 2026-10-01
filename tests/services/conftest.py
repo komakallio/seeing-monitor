@@ -20,11 +20,11 @@ from seeingmon.services.ipc.server import ChannelHandler, IpcServer
 from seeingmon.services.ipc.wire import Wire
 
 
-def native_endpoint(directory: Path) -> Endpoint:
-    """An endpoint of the platform's own family, unique to this call."""
+def native_endpoint(directory: Path, name: str = "s") -> Endpoint:
+    """An endpoint of the platform's own family. Pass another `name` for a second one."""
     if os.name == "nt":
         return Endpoint(f"{PIPE_PREFIX}seeingmon-test-{uuid.uuid4().hex[:12]}", FAMILY_PIPE)
-    return Endpoint(str(directory / "s.sock"), FAMILY_UNIX)
+    return Endpoint(str(directory / f"{name}.sock"), FAMILY_UNIX)
 
 
 @pytest.fixture
