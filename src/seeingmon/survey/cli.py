@@ -1,9 +1,13 @@
-"""The `seeingmon catalog` commands.
+"""The survey commands: `seeingmon catalog` and `seeingmon dark`.
 
 `seeingmon catalog build` queries the Gaia archive and VizieR for the stars around the north
 celestial pole, writes the cap catalog, and, when the astrometry.net tool
 `build-astrometry-index` is installed, builds the solver index files. `seeingmon catalog info
 PATH` prints the header of a catalog and checks the file.
+
+`seeingmon dark` records a dark set with the camera covered and adds it to the dark library.
+It takes the camera driver from the `[services.acquire]` configuration, so stop `acquire` first:
+one process at a time can open the camera.
 """
 
 from __future__ import annotations
@@ -11,8 +15,14 @@ from __future__ import annotations
 import argparse
 import shlex
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from seeingmon.cli import CliError, Subparsers, add_command
+
+if TYPE_CHECKING:
+    from seeingmon.clock import Clock
+    from seeingmon.config import Config
+    from seeingmon.survey.config import SurveyConfig
 
 
 def register(subparsers: Subparsers) -> None:
@@ -83,6 +93,37 @@ def register(subparsers: Subparsers) -> None:
     )
     info.add_argument("path", type=Path, help="the catalog file")
     info.set_defaults(handler=_info)
+
+    dark = add_command(
+        subparsers,
+        "dark",
+        help="Record a dark set with the camera covered, and add it to the dark library.",
+        handler=_dark,
+    )
+    dark.description = (
+        "The camera has no lens cap, so cover it. The command takes bias frames, waits until a "
+        "test frame is dark (skip the wait with --no-wait), records dark frames at the survey "
+        "exposure, builds the master dark, and adds the set to the dark library. It reads the "
+        "camera driver from [services.acquire], so stop acquire first. Defaults come from "
+        "[survey.dark]."
+    )
+    dark.add_argument(
+        "--no-wait", action="store_true", help="record at once, without waiting for the cover"
+    )
+    dark.add_argument("--frames", type=int, help="dark frames in the set")
+    dark.add_argument("--bias-frames", type=int, help="bias frames at the shortest exposure")
+    dark.add_argument("--exposure-s", type=float, help="the exposure of a dark frame, in seconds")
+    dark.add_argument("--gain", type=int, help="the camera gain")
+    dark.add_argument("--mode", help="the readout mode")
+    dark.add_argument(
+        "--wait-timeout", type=float, help="seconds to wait for the cover before giving up"
+    )
+    dark.add_argument("--driver", help="the camera driver (default: driver in [services.acquire])")
+    dark.add_argument(
+        "--library",
+        type=Path,
+        help="the dark library folder (default: darks/ in calibration_dir or the data directory)",
+    )
 
 
 def _missing_subcommand(args: argparse.Namespace) -> int:
@@ -211,4 +252,99 @@ def _info(args: argparse.Namespace) -> int:
     width = max(len(label) for label, _ in rows)
     for label, value in rows:
         print(f"{label:<{width}}  {value}")
+    return 0
+
+
+def _make_clock(services: Any) -> Clock:
+    """The clock of the dark session: the one that `[services.clock]` selects."""
+    clock: Clock = services.clock.build()
+    return clock
+
+
+def _dark_library_dir(args: argparse.Namespace, config: Config, survey: SurveyConfig) -> Path:
+    from seeingmon.config import ConfigError
+    from seeingmon.store.layout import DataLayout
+    from seeingmon.survey.dark import CALIBRATION_DIRNAME, DARKS_DIRNAME
+
+    if args.library is not None:
+        return Path(args.library)
+    if survey.calibration_dir:
+        return Path(survey.calibration_dir) / DARKS_DIRNAME
+    try:
+        layout = DataLayout.from_config(config)
+    except ConfigError:
+        raise CliError(
+            "pass --library, or set calibration_dir in [survey] or data_dir in [paths] "
+            "of local/config.toml"
+        ) from None
+    return layout.root / CALIBRATION_DIRNAME / DARKS_DIRNAME
+
+
+def _dark(args: argparse.Namespace) -> int:
+    from seeingmon.config import ConfigError, load_config
+    from seeingmon.drivers import create_driver
+    from seeingmon.drivers.base import CameraError
+    from seeingmon.profile import ProfileError
+    from seeingmon.services.config import ServicesConfig
+    from seeingmon.survey.config import SurveyConfig
+    from seeingmon.survey.dark import DarkCheckOptions, DarkError, DarkLibrary
+    from seeingmon.survey.dark_session import DarkSessionOptions, run_dark_session
+
+    try:
+        config = load_config()
+        survey = config.section("survey", SurveyConfig)
+        services = config.section("services", ServicesConfig)
+        profile = config.profile
+    except (ConfigError, ProfileError) as exc:
+        raise CliError(str(exc)) from None
+    cfg = survey.dark
+    library = DarkLibrary(_dark_library_dir(args, config, survey))
+    try:
+        options = DarkSessionOptions(
+            mode=args.mode or cfg.mode,
+            gain=cfg.gain if args.gain is None else args.gain,
+            exposure_s=cfg.exposure_s if args.exposure_s is None else args.exposure_s,
+            frames=cfg.frames if args.frames is None else args.frames,
+            bias_frames=cfg.bias_frames if args.bias_frames is None else args.bias_frames,
+            wait=not args.no_wait,
+            test_exposure_s=cfg.test_exposure_s,
+            poll_s=cfg.poll_s,
+            stable_polls=cfg.stable_polls,
+            wait_timeout_s=cfg.wait_timeout_s if args.wait_timeout is None else args.wait_timeout,
+            max_temperature_spread_c=cfg.max_temperature_spread_c,
+            check=DarkCheckOptions(
+                rate_factor=cfg.rate_factor,
+                min_rate_e_per_s=cfg.min_rate_e_per_s,
+                noise_factor=cfg.noise_factor,
+                max_tail_fraction=cfg.max_tail_fraction,
+            ),
+            hot_sigma=cfg.hot_sigma,
+            hot_min_excess_dn=cfg.hot_min_excess_dn,
+            prior_doubling_c=cfg.doubling_c,
+            tolerance_c=cfg.temperature_tolerance_c,
+            max_age_days=cfg.max_age_days,
+        )
+        profile.mode(options.mode)
+    except (ValueError, ProfileError) as exc:
+        raise CliError(str(exc)) from None
+    clock = _make_clock(services)
+    name = args.driver or services.acquire.driver
+    try:
+        driver = create_driver(
+            name, profile=profile, clock=clock, options=dict(services.acquire.driver_options)
+        )
+    except Exception as exc:  # a driver can fail in its own ways, such as a missing library
+        raise CliError(f"cannot create the driver {name!r}: {type(exc).__name__}: {exc}") from None
+
+    def say(message: str) -> None:
+        print(message, flush=True)
+
+    try:
+        run_dark_session(driver, library, profile, clock, options, say=say)
+    except DarkError as exc:
+        raise CliError(str(exc)) from None
+    except CameraError as exc:
+        raise CliError(
+            f"the camera failed: {exc}. Stop acquire first: only one process can open the camera."
+        ) from None
     return 0

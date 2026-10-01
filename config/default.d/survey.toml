@@ -14,6 +14,9 @@ index_dir = ""
 # A NumPy file (.npy) with the boolean hot-pixel mask of the survey mode, from the dark frames.
 # Empty means no mask.
 hot_pixel_file = ""
+# The folder with the calibration files. The dark library lives in its darks/ subfolder, where
+# `seeingmon dark` adds the sets. Empty means that the pipeline subtracts no dark level.
+calibration_dir = ""
 # The solver programs. Each runs as a separate process, so its GPL or MPL code stays outside
 # this MIT code base.
 solve_field_command = "solve-field"
@@ -74,3 +77,25 @@ mag_limit = 12.0
 edge_px = 20.0
 min_expected = 8
 match_radius_px = 3.0
+
+# The dark library: how `seeingmon dark` records a set, and when `health` reports `dark_due`.
+[survey.dark]
+mode = "bin2"                  # The readout mode and the gain of the survey frames.
+gain = 120
+exposure_s = 30.0              # The survey exposure. The dark rate is the master dark over this.
+frames = 9
+bias_frames = 9                # Frames at the shortest exposure, for the bias level.
+test_exposure_s = 1.0          # The frames that the wait takes to see whether you covered the camera.
+poll_s = 5.0
+stable_polls = 2               # Dark test frames in a row that count as covered.
+wait_timeout_s = 1800.0
+max_temperature_spread_c = 2.0 # A larger drift during a set gets a warning.
+rate_factor = 3.0              # A dark frame rises at most this many times the expected dark rate,
+min_rate_e_per_s = 0.5         # and the limit is never below this rate.
+noise_factor = 1.5
+max_tail_fraction = 0.001      # The share of pixels that may stand far above the median.
+hot_sigma = 6.0                # A hot pixel rises this many robust sigmas above its neighbors,
+hot_min_excess_dn = 3.0        # and by at least this many counts.
+doubling_c = 6.0               # The prior doubling temperature of the dark current.
+temperature_tolerance_c = 3.0  # A set this close to the sensor temperature counts for `dark_due`.
+max_age_days = 183.0           # A set older than this (about six months) does not count.

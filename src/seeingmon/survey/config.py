@@ -72,6 +72,30 @@ class CloudConfig(SectionModel):
     match_radius_px: float = 3.0
 
 
+class DarkConfig(SectionModel):
+    """The dark library: `seeingmon dark` and `dark_due` (`seeingmon.survey.dark`)."""
+
+    mode: str = "bin2"  # the readout mode and the gain of the survey frames
+    gain: int = 120
+    exposure_s: float = 30.0  # the survey exposure, which the dark rate divides by
+    frames: int = 9
+    bias_frames: int = 9
+    test_exposure_s: float = 1.0  # the frames that the wait checks
+    poll_s: float = 5.0
+    stable_polls: int = 2  # dark test frames in a row that count as covered
+    wait_timeout_s: float = 1800.0
+    max_temperature_spread_c: float = 2.0  # a larger drift during a set gets a warning
+    rate_factor: float = 3.0  # a dark frame rises at most this many times the expected rate
+    min_rate_e_per_s: float = 0.5  # and at least this much is always allowed
+    noise_factor: float = 1.5
+    max_tail_fraction: float = 0.001  # the share of pixels far above the median in a dark frame
+    hot_sigma: float = 6.0  # a hot pixel rises this many robust sigmas above its neighbors
+    hot_min_excess_dn: float = 3.0
+    doubling_c: float = 6.0  # the prior doubling temperature of the dark current
+    temperature_tolerance_c: float = 3.0  # a set this close to the sensor temperature counts
+    max_age_days: float = 183.0  # a set older than this does not count
+
+
 class SurveyConfig(SectionModel):
     """Settings of the survey path. Every key has a default that suits the reference camera."""
 
@@ -79,6 +103,7 @@ class SurveyConfig(SectionModel):
     catalog_path: str = ""  # the cap catalog file; empty means "not configured"
     index_dir: str = ""  # the folder with the astrometry.net cap index files
     hot_pixel_file: str = ""  # a NumPy file with the boolean hot-pixel mask of the survey mode
+    calibration_dir: str = ""  # the folder with the dark library (in `darks/`); empty: none
     solve_field_command: str = "solve-field"
     astap_command: str = "astap"
     astap_database_dir: str = ""  # the folder with the ASTAP star database; empty uses its default
@@ -90,3 +115,4 @@ class SurveyConfig(SectionModel):
     pointing: PointingConfig = PointingConfig()
     solve: SolveConfig = SolveConfig()
     cloud: CloudConfig = CloudConfig()
+    dark: DarkConfig = DarkConfig()
