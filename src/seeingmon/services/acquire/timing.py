@@ -62,7 +62,7 @@ class TimingConfig:
     unknown_clock_error_s: float = 0.1
     invalid_clock_error_s: float = 86_400.0
     outlier_sigmas: float = 6.0
-    outlier_floor_s: float = 0.001
+    outlier_floor_s: float = 0.003
     step_frames: int = 3
 
     def __post_init__(self) -> None:

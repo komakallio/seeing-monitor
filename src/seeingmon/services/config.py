@@ -106,13 +106,18 @@ class AcquireSettings(SectionModel):
     fit_window: int = Field(128, ge=8)
     fit_warmup: int = Field(20, ge=4)
     outlier_sigmas: float = Field(6.0, gt=0)
-    outlier_floor_s: float = Field(0.001, ge=0)
+    outlier_floor_s: float = Field(0.003, ge=0)
     step_frames: int = Field(3, ge=2)
 
     # Drops. A gap between frames longer than `gap_factor` frame periods counts as lost frames.
     gap_factor: float = Field(1.5, gt=1.0)
 
     raise_priority: bool = True
+
+    # How `acquire` calls the driver from two threads. `serialize` lets one thread in at a time,
+    # for a driver that is not thread-safe (the fakes, `sim`, and `replay`). `concurrent` trusts a
+    # driver that is, such as `asi`. `auto` serializes unless the driver says that it is safe.
+    driver_threads: Literal["auto", "serialize", "concurrent"] = "auto"
 
     # The watchdog thread checks the process each tick, sends a heartbeat to systemd when it runs
     # under it, and logs a health summary.
