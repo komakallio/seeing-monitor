@@ -34,7 +34,22 @@ token_hash = "<hash of the API token>"
 # [survey]
 # catalog_path = "<path to the cap catalog file>"
 # index_dir = "<path to the astrometry.net index folder>"
+
+# Local connections between the acquire, core, and web processes. The processes prove that they
+# hold the same key before they talk, so every installation needs one. Generate it with
+# `python -c "import secrets; print(secrets.token_urlsafe(32))"`. The key may instead come from
+# SEEINGMON_SERVICES__CONNECTION_KEY or from a systemd credential. The addresses are optional:
+# an empty address selects a socket file in the runtime directory on Linux and a named pipe on
+# Windows. The lines below only show the shape.
+# [services]
+# connection_key = "<random string of 32 or more characters>"
+# connection_key_file = "<path to a file that holds the connection key>"
+# acquire_address = "<socket path on Linux, or pipe name on Windows>"
+# core_address = "<socket path on Linux, or pipe name on Windows>"
 #
+# [services.acquire]
+# driver = "<name of the camera driver>"
+
 # Result sinks. Each sink adapter documents its own keys; the lines below only show the shape.
 # [sinks.influx]
 # url = "https://influx.example.com:8086"

@@ -1,0 +1,96 @@
+# Defaults of the services lane: the acquire, core, and web processes and the local connections
+# between them. Every key lives under [services]. Override a value in local/config.toml, or with a
+# SEEINGMON_SERVICES__<KEY> environment variable, for example SEEINGMON_SERVICES__ACQUIRE__DRIVER.
+
+[services]
+# Where the processes listen. An empty address selects the default for the platform: a socket
+# file in the runtime directory on Linux, and a named pipe on Windows.
+acquire_address = ""
+core_address = ""
+
+# The processes prove that they hold the same key before they talk. The key is never stored in a
+# tracked file. Set connection_key in local/config.toml (or SEEINGMON_SERVICES__CONNECTION_KEY),
+# point connection_key_file at a file that holds it, or provide a systemd credential with the
+# name below.
+connection_key_credential = "seeingmon-connection-key"
+connection_key_file = ""
+
+# Seconds to keep trying to connect, to wait for the answer of a call, and to wait for the
+# first messages of a new connection.
+connect_timeout_s = 5.0
+rpc_timeout_s = 30.0
+handshake_timeout_s = 5.0
+
+# Flow control of a frame stream: the receiver accepts this many messages and bytes before it
+# has consumed the first ones. The sender holds frames back, and the acquire queue drops the
+# oldest frame when it fills.
+stream_window_messages = 64
+stream_window_bytes = 67108864
+
+# The largest message that a connection accepts, in bytes.
+max_rpc_bytes = 1048576
+max_frame_bytes = 134217728
+
+[services.clock]
+# `system` is the operating system clock. `scaled` (with start_utc_ns, origin_real_ns, and speed)
+# runs faster than real time and exists for end-to-end tests.
+kind = "system"
+speed = 1.0
+
+[services.acquire]
+# The camera driver that acquire creates (see seeingmon.drivers), and the options it takes.
+driver = "sim"
+
+# The frame queue between the capture thread and the sender thread.
+queue_depth = 256
+queue_max_bytes = 100663296
+
+# A frame read waits this many frame periods plus a margin before it reports a timeout.
+read_timeout_factor = 2.0
+read_timeout_margin_s = 0.5
+default_frame_period_s = 1.0
+error_backoff_s = 0.05
+
+# Timing. The latency is the delay between the end of the readout and the arrival stamp, and
+# commissioning measures it with a light pulse. The sigma is its uncertainty. `auto` keeps the
+# time of a frame that a simulator or a replay stamped exactly. `stamp` fits the arrival times
+# of every frame, and `driver` never changes a time.
+time_source = "auto"
+latency_s = 0.0
+latency_sigma_s = 0.005
+arrival_jitter_s = 0.002
+unknown_clock_error_s = 0.1
+invalid_clock_error_s = 86400.0
+fit_window = 128
+fit_warmup = 20
+outlier_sigmas = 6.0
+outlier_floor_s = 0.001
+step_frames = 3
+
+# A gap between two frames longer than this many frame periods counts as lost frames.
+gap_factor = 1.5
+
+# Raise the priority of the capture thread where the platform allows it.
+raise_priority = true
+
+# The watchdog thread ticks this often, tells systemd that the process lives (only under systemd),
+# and logs a health summary.
+watchdog_tick_s = 0.25
+heartbeat_interval_s = 5.0
+health_log_interval_s = 60.0
+
+[services.acquire.driver_options]
+
+[services.acquire.call_timeouts]
+# A driver call that takes longer makes acquire exit, and systemd restarts it.
+open_s = 60.0
+close_s = 30.0
+capabilities_s = 10.0
+configure_s = 60.0
+start_s = 30.0
+stop_s = 30.0
+move_roi_s = 10.0
+temperature_s = 10.0
+dropped_s = 10.0
+recover_s = 180.0
+read_grace_s = 5.0
