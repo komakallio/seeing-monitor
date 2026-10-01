@@ -313,3 +313,97 @@ class TestFactory:
     def test_an_unknown_driver_is_a_value_error(self) -> None:
         with pytest.raises(ValueError, match="unknown driver"):
             create_camera_driver("nope", profile=None, clock=VirtualClock(), options={})
+
+
+class TestServiceHelpers:
+    def test_the_default_guard_is_the_call_watchdog_of_the_hardware_lane(self) -> None:
+        from seeingmon.hardware.asi.watchdog import CallWatchdog
+        from seeingmon.services.acquire.service import default_guard
+
+        guard = default_guard(VirtualClock())
+        assert isinstance(guard, CallWatchdog)
+        with guard.guard("a quick call", 5.0):
+            pass
+        assert guard.hang_count == 0
+
+    def test_a_fatal_error_ends_the_process_with_its_own_exit_code(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from seeingmon.services.acquire.service import EXIT_THREAD_DIED, exit_on_fatal
+
+        codes: list[int] = []
+        monkeypatch.setattr(os, "_exit", codes.append)
+        exit_on_fatal("a service thread died")
+        assert codes == [EXIT_THREAD_DIED]
+        assert "a service thread died" in capsys.readouterr().err
+
+    def test_every_timing_setting_reaches_the_stamper(self) -> None:
+        from seeingmon.services.acquire.service import timing_config
+        from seeingmon.services.config import AcquireSettings
+
+        settings = AcquireSettings(
+            fit_window=64,
+            fit_warmup=10,
+            latency_s=0.004,
+            latency_sigma_s=0.002,
+            arrival_jitter_s=0.001,
+            unknown_clock_error_s=0.25,
+            invalid_clock_error_s=7.0,
+            outlier_sigmas=5.0,
+            outlier_floor_s=0.01,
+            step_frames=4,
+        )
+        config = timing_config(settings)
+        assert (config.window, config.warmup, config.step_frames) == (64, 10, 4)
+        assert (config.latency_s, config.latency_sigma_s) == (0.004, 0.002)
+        assert (config.arrival_jitter_s, config.unknown_clock_error_s) == (0.001, 0.25)
+        assert (config.invalid_clock_error_s, config.outlier_sigmas) == (7.0, 5.0)
+        assert config.outlier_floor_s == 0.01
+
+    def test_the_health_summary_is_json_and_one_line(self) -> None:
+        import json
+        from dataclasses import fields
+
+        from seeingmon.services.acquire.health import AcquireHealth
+
+        values: dict[str, object] = {}
+        for field in fields(AcquireHealth):
+            kind = str(field.type)
+            if "bool" in kind:
+                values[field.name] = False
+            elif "int" in kind and "None" not in kind:
+                values[field.name] = 1
+            elif "float" in kind:
+                values[field.name] = 2.5
+            elif "None" in kind:
+                values[field.name] = None
+            else:
+                values[field.name] = "text"
+        values.update(state="streaming", capturing=True, frame_rate_hz=88.5, last_error="boom")
+        health = AcquireHealth(**values)  # type: ignore[arg-type]
+        assert json.loads(json.dumps(health.to_json()))["state"] == "streaming"
+        summary = health.summary()
+        assert "\n" not in summary
+        assert summary.startswith("streaming, 88.5 fps")
+        assert summary.endswith("last error: boom")
+
+    def test_the_remote_driver_is_built_from_the_configuration(self, tmp_path: Path) -> None:
+        from seeingmon.config import load_config
+        from seeingmon.services.config import ServicesConfig
+        from seeingmon.services.remote import RemoteCameraDriver
+
+        key = "a-test-key-with-32-characters-long"
+        config = load_config(
+            local_file=tmp_path / "none.toml",
+            env={
+                "SEEINGMON_SERVICES__CONNECTION_KEY": key,
+                "SEEINGMON_SERVICES__ACQUIRE_ADDRESS": '"seeingmon-test-acquire"',
+                "SEEINGMON_SERVICES__RPC_TIMEOUT_S": "7",
+            },
+        )
+        services = config.section("services", ServicesConfig)
+        driver = RemoteCameraDriver.from_config(services, env={})
+        assert driver.name == "remote"
+        assert not driver.connected
+        assert driver._rpc_timeout_s == 7.0
+        assert driver._window.messages == services.stream_window_messages
