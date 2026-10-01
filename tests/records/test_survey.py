@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 from typing import Any
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -15,6 +16,8 @@ from seeingmon.records.survey import (
     StarEpochRecord,
     StarListRecord,
     SurveyFrameRecord,
+    pack_star_rows,
+    star_rows,
 )
 
 BASE: dict[str, Any] = {
@@ -201,6 +204,41 @@ class TestStarRecords:
     def test_a_night_is_a_calendar_date(self, night: str) -> None:
         with pytest.raises(ValidationError):
             StarEpochRecord(**BASE, night=night, n_stars=0, n_frames=0, columns=["mag"], data=b"")
+
+
+class TestStarRows:
+    def test_rows_survive_packing_and_reading(self) -> None:
+        rows = np.array([[1.5, -2.25, 9.0], [0.125, np.nan, 11.5]])
+        record = StarListRecord(
+            **BASE, n_stars=2, columns=["x_px", "y_px", "mag"], data=pack_star_rows(rows)
+        )
+        back = star_rows(record)
+        assert back.shape == (2, 3)
+        assert back.dtype == np.dtype("<f4")
+        assert np.array_equal(back, rows.astype("<f4"), equal_nan=True)
+        assert not back.flags.writeable
+
+    def test_the_packing_is_little_endian_float32_in_row_major_order(self) -> None:
+        data = pack_star_rows([[1.0, 2.0], [3.0, 4.0]])
+        assert data == struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
+        assert pack_star_rows(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=">f8")) == data
+        assert pack_star_rows(np.array([[1, 3], [2, 4]]).T) == data  # a transposed view
+
+    def test_an_empty_list_has_no_bytes_and_no_rows(self) -> None:
+        assert pack_star_rows(np.empty((0, 3))) == b""
+        record = StarEpochRecord(
+            **BASE, night="2026-10-01", n_stars=0, n_frames=0, columns=["a", "b", "c"], data=b""
+        )
+        assert star_rows(record).shape == (0, 3)
+
+    @pytest.mark.parametrize("rows", [[1.0, 2.0], 3.0, [[[1.0]]]])
+    def test_rows_must_be_two_dimensional(self, rows: object) -> None:
+        with pytest.raises(ValueError, match="2-D"):
+            pack_star_rows(rows)  # type: ignore[arg-type]
+
+    def test_stars_need_columns(self) -> None:
+        with pytest.raises(ValidationError, match="at least one column"):
+            StarListRecord(**BASE, n_stars=2, columns=[], data=b"")
 
 
 class TestReferenceRecord:

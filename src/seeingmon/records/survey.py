@@ -9,11 +9,15 @@ from __future__ import annotations
 import re
 from datetime import date
 from pathlib import PurePosixPath
-from typing import ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import field_validator, model_validator
 
 from seeingmon.records.base import Record, quantity
+
+if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
 
 TIME_INVALID = "The clock was not synchronized, so `t_utc_ns` is not trustworthy."
 
@@ -282,12 +286,38 @@ def _check_star_rows(n_stars: int, columns: list[str], data: bytes) -> None:
     """Check that the columns are distinct and that the data holds the rows that it claims."""
     if len(set(columns)) != len(columns) or "" in columns:
         raise ValueError("columns must be distinct and not empty")
+    if n_stars and not columns:
+        raise ValueError("a list with stars needs at least one column")
     expected = n_stars * len(columns) * _STAR_VALUE_BYTES
     if len(data) != expected:
         raise ValueError(
             f"data needs {expected} bytes for {n_stars} stars and {len(columns)} columns "
             f"of float32, not {len(data)}"
         )
+
+
+def pack_star_rows(rows: npt.ArrayLike) -> bytes:
+    """Pack star rows into the `data` of a star record.
+
+    `rows` is a 2-D array-like with one row for each star and one column for each name in
+    `columns`. The result holds little-endian float32 values in row-major order.
+    """
+    import numpy as np
+
+    array = np.asarray(rows, dtype="<f4")
+    if array.ndim != 2:
+        raise ValueError(
+            "rows must be 2-D, with one row for each star and one column for each name"
+        )
+    return np.ascontiguousarray(array).tobytes()
+
+
+def star_rows(record: StarListRecord | StarEpochRecord) -> npt.NDArray[np.float32]:
+    """Read the `data` of a star record as a read-only array, with one row for each star."""
+    import numpy as np
+
+    flat = np.frombuffer(record.data, dtype="<f4")
+    return flat.reshape(record.n_stars, len(record.columns))
 
 
 class StarListRecord(Record):
