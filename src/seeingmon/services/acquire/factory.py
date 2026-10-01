@@ -8,6 +8,9 @@ needs nothing. The options of the fake are `adc_bits`, `overhead_s`, `row_time_s
 `temperature_c`. The option `hang_in` (`open`, `configure`, `start`, or `read_frame`) makes that
 call block for good, so that a test can show that a hung driver call ends the process.
 
+The `sim` driver takes three options beyond its own: `pointing`, `polaris`, and `polaris_mag`, which
+let a simulated run agree with the survey code (see `seeingmon.services.simsky`).
+
 A driver whose `create` takes an `on_event` argument (the `asi` driver does) gets the callback, so
 that its hardware events reach the log of `acquire`. This module imports the fakes, so import it
 only when you create a driver.
@@ -88,9 +91,62 @@ def create_camera_driver(
             profile=profile, clock=clock, options=dict(options), on_event=on_event
         )
         return driver
+    if name == "sim":
+        return _create_sim(profile, clock, options)
     from seeingmon.drivers import create_driver
 
     return create_driver(name, profile=profile, clock=clock, options=dict(options))
+
+
+def _create_sim(profile: Any, clock: Clock, options: Mapping[str, Any]) -> CameraDriver:
+    """Build the simulator. Two options of this function go beyond the simulator's own.
+
+    `pointing` is a table with `t_ref_utc_ns` (the time at which Polaris sits at the optical axis
+    plus the offset), and the optional `roll_deg`, `offset_x_arcsec`, and `offset_y_arcsec`. Without
+    it the simulator takes the time of its creation as the reference time. A fixed reference time
+    lets another process compute where every simulated star is. `polaris = "real"` puts Polaris
+    where the survey code predicts the real one, and `polaris_mag` makes it fainter (see
+    `seeingmon.services.simsky`).
+    """
+    from dataclasses import replace
+
+    from seeingmon.drivers import create_driver
+    from seeingmon.drivers.sim import SimOptions
+    from seeingmon.drivers.sim.stars import Pointing
+
+    rest = dict(options)
+    table = rest.pop("pointing", None)
+    polaris = rest.pop("polaris", "synthetic")
+    polaris_mag = rest.pop("polaris_mag", None)
+    if polaris not in ("synthetic", "real"):
+        raise CameraConfigError("the sim option polaris is synthetic or real")
+    if table is None and polaris == "synthetic":
+        return create_driver("sim", profile=profile, clock=clock, options=rest)
+    sim_options = SimOptions.from_mapping(rest)
+    if table is not None:
+        allowed = {"t_ref_utc_ns", "roll_deg", "offset_x_arcsec", "offset_y_arcsec"}
+        if not isinstance(table, Mapping) or set(table) - allowed or "t_ref_utc_ns" not in table:
+            raise CameraConfigError(
+                "the sim option pointing is a table with t_ref_utc_ns, and optionally roll_deg, "
+                "offset_x_arcsec, and offset_y_arcsec"
+            )
+        sim_options = replace(
+            sim_options,
+            pointing=Pointing(
+                t_ref_utc_ns=int(table["t_ref_utc_ns"]),
+                roll_deg=float(table.get("roll_deg", 0.0)),
+                offset_arcsec=(
+                    float(table.get("offset_x_arcsec", 0.0)),
+                    float(table.get("offset_y_arcsec", 0.0)),
+                ),
+            ),
+        )
+    if polaris == "real":
+        from seeingmon.services.simsky import sim_field
+
+        magnitude = None if polaris_mag is None else float(polaris_mag)
+        sim_options = replace(sim_options, stars=sim_field(sim_options.seed, polaris_mag=magnitude))
+    return create_driver("sim", profile=profile, clock=clock, options=sim_options)
 
 
 def _create_fake(clock: Clock, options: Mapping[str, Any]) -> CameraDriver:

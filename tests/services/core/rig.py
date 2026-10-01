@@ -14,7 +14,6 @@ from typing import Any
 
 import numpy as np
 
-from seeingmon import paths
 from seeingmon.clock import NS_PER_S, Clock, ClockStatus, VirtualClock, iso_to_utc_ns
 from seeingmon.config import Config, load_config
 from seeingmon.frames import Frame
@@ -26,6 +25,7 @@ from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.app import CoreApp, CoreParts
 from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.notify import SystemdNotifier
+from seeingmon.services.simsky import write_small_profile
 from seeingmon.store.db import StoreReader, record_from_row
 from seeingmon.testing import (
     FakeCameraDriver,
@@ -39,27 +39,6 @@ from tests.services.addresses import unique_address
 # A clear autumn evening at a synthetic site (55 degrees north on the prime meridian).
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
 SMALL_BIN2 = (640, 480)
-
-
-def write_small_profile(directory: Path, name: str = "sim-small") -> Path:
-    """The reference profile with a 640 by 480 bin2 sensor (1280 by 960 in bin1), as a file.
-
-    The optics and the pixel size stay, so the plate scale is the real one and the field is small.
-    A small sensor keeps the simulator and the survey analysis fast.
-    """
-    text = (paths.profiles_dir() / "asi294mm-gs250.toml").read_text(encoding="utf-8")
-    text = text.replace('id = "asi294mm-gs250"', f'id = "{name}"', 1)
-    for old, new in (
-        ("width_px = 8288", "width_px = 1280"),
-        ("height_px = 5644", "height_px = 960"),
-        ("width_px = 4144", "width_px = 640"),
-        ("height_px = 2822", "height_px = 480"),
-    ):
-        assert old in text, old
-        text = text.replace(old, new, 1)
-    path = directory / f"{name}.toml"
-    path.write_text(text, encoding="utf-8", newline="\n")
-    return path
 
 
 def local_config_text(
