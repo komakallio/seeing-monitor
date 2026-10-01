@@ -249,6 +249,8 @@ class TestIdleAndSync:
     ) -> None:
         calls: list[int] = []
         monkeypatch.setattr(os, "fsync", calls.append)
+        # POSIX also forces the directory after the rename, and Windows does not.
+        monkeypatch.setattr("seeingmon.store.segments._fsync_directory", lambda directory: None)
         writer.write_metrics(1, make_rows(T0, 5))
         clock.advance(30)
         writer.write_metrics(1, make_rows(T0 + 30 * NS_PER_S, 5))
@@ -264,6 +266,8 @@ class TestIdleAndSync:
     ) -> None:
         calls: list[int] = []
         monkeypatch.setattr(os, "fsync", calls.append)
+        # POSIX also forces the directory after the rename, and Windows does not.
+        monkeypatch.setattr("seeingmon.store.segments._fsync_directory", lambda directory: None)
         writer.flush()
         assert calls == []
         writer.write_metrics(1, make_rows(T0, 2))
