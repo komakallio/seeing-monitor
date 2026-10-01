@@ -9,8 +9,8 @@ record type (`frame`) gets none. A table has these columns:
 - One column for each declared field, in declaration order, with the key columns first.
   `int` becomes `INTEGER`, `float` becomes `REAL`, `bool` becomes `INTEGER` with a check for 0
   and 1, `str` becomes `TEXT`, `bytes` becomes `BLOB`, and a list or a dict becomes `TEXT` that
-  holds JSON, with a `json_valid` check. A column is `NOT NULL` exactly when the field cannot
-  be `None`. A field with a default has the same default in the column.
+  holds JSON, with a `json_valid` check. A new table makes a column `NOT NULL` exactly when the
+  field cannot be `None`. A field with a default has the same default in the column.
 - `UNIQUE (station_id, t_utc_ns, revision)`. The record type is the table, so this is the key.
   A duplicate insert fails. A correction is a new row with the next `revision`.
 
@@ -20,9 +20,12 @@ idempotent, so a repeated batch changes nothing.
 **Migrations.** `migration_statements` compares the declaration with the output of
 `PRAGMA table_info` and returns `ALTER TABLE ... ADD COLUMN` statements for the new fields.
 A new field must be optional or must have a default, because SQLite cannot add a required
-column without a value. A removed field, a retyped field, or a field that changed from required
-to optional raises `SchemaError`, because SQLite cannot change those without rebuilding the
-table. `ensure_schema` creates the missing tables and applies the migrations.
+column without a value. The migration adds the column with its default and without `NOT NULL`,
+because some SQLite versions reject a `NOT NULL` column that you add to a table with rows and
+`CHECK` constraints. The record class still rejects `None` for the field. A removed field, a
+retyped field, or a field that changed from required to optional raises `SchemaError`, because
+SQLite cannot change those without rebuilding the table. `ensure_schema` creates the missing
+tables and applies the migrations.
 
 **Rows.** `row_to_sqlite` turns the output of `Record.to_row` into parameters for the
 statements, and `sqlite_to_row` turns a fetched row back into the input of `Record.from_row`.
@@ -92,11 +95,16 @@ def _literal(spec: FieldSpec, value: Any) -> str:
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def column_sql(spec: FieldSpec) -> str:
-    """The definition of one column, as it appears in `CREATE TABLE` and `ADD COLUMN`."""
+def column_sql(spec: FieldSpec, *, add_column: bool = False) -> str:
+    """The definition of one column, as it appears in `CREATE TABLE` or in `ADD COLUMN`.
+
+    An added column never says `NOT NULL`. A table that has rows and a `CHECK` constraint makes
+    some SQLite versions reject `ADD COLUMN ... NOT NULL DEFAULT ...` with a false violation, so
+    a migration adds the column with its default and leaves out the constraint.
+    """
     name = quote(spec.name)
     parts = [name, _SQL_TYPES[spec.kind]]
-    if not spec.nullable:
+    if not spec.nullable and not add_column:
         parts.append("NOT NULL")
     if spec.has_default and spec.default is not None:
         parts.append(f"DEFAULT {_literal(spec, spec.default)}")
@@ -205,7 +213,9 @@ def migration_statements(
         if not spec.nullable and not (spec.has_default and spec.default is not None):
             problems.append(f"new field {spec.name} must be optional or have a default")
             continue
-        statements.append(f"ALTER TABLE {quote(table)} ADD COLUMN {column_sql(spec)}")
+        statements.append(
+            f"ALTER TABLE {quote(table)} ADD COLUMN {column_sql(spec, add_column=True)}"
+        )
     if problems:
         raise SchemaError(f"cannot migrate {table}: " + "; ".join(problems))
     return statements

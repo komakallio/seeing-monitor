@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from seeingmon.records.base import Record, field_specs, quantity
 from seeingmon.records.seeing import SeeingWindowRecord
@@ -410,15 +411,37 @@ class TestMigration:
         assert migrated_old.extra_json == {}
         assert WindowV2.from_row(sqlite_to_row(WindowV2, new_row), strict=True) == new
 
-    def test_a_migrated_table_matches_a_new_table(self) -> None:
+    def test_a_migrated_table_matches_a_new_table_except_for_not_null(self) -> None:
         with memory_db() as migrated, memory_db() as fresh:
             ensure_schema(migrated, [SeeingWindowRecord])
             ensure_schema(migrated, [WindowV2])
             ensure_schema(fresh, [WindowV2])
-            columns = [
-                tuple(row)[1:] for row in table_info(migrated, "seeing_window")
-            ]  # skip the column ID
-            assert columns == [tuple(row)[1:] for row in table_info(fresh, "seeing_window")]
+            columns = {row["name"]: row for row in table_info(migrated, "seeing_window")}
+            expected = {row["name"]: row for row in table_info(fresh, "seeing_window")}
+        assert list(columns) == list(expected)
+        new_names = [spec.name for spec in field_specs(WindowV2) if spec.name.startswith("extra_")]
+        for name, row in columns.items():
+            assert (row["type"], row["dflt_value"], row["pk"]) == (
+                expected[name]["type"],
+                expected[name]["dflt_value"],
+                expected[name]["pk"],
+            )
+            if name in new_names:
+                assert row["notnull"] == 0, name  # a migration leaves out NOT NULL
+            else:
+                assert row["notnull"] == expected[name]["notnull"], name
+
+    def test_a_migration_never_adds_not_null(self) -> None:
+        with memory_db() as db:
+            ensure_schema(db, [SeeingWindowRecord])
+            statements = migration_statements(WindowV2, table_info(db, "seeing_window"))
+        assert len(statements) == 8
+        assert all("NOT NULL" not in statement for statement in statements)
+        assert any("DEFAULT 1 CHECK" in statement for statement in statements)
+
+    def test_the_record_class_still_rejects_none_for_a_migrated_required_field(self) -> None:
+        with pytest.raises(ValidationError):
+            WindowV2(**window_values(extra_count=None))
 
     def test_the_older_software_reads_a_row_that_the_newer_software_wrote(self) -> None:
         with memory_db() as db:
