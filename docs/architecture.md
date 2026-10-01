@@ -200,15 +200,21 @@ Each reconfiguration increments `stream_id`, so a window never spans one.
 
 ## Configuration and profiles
 
-| Layer | File | Tracked | Content |
+| Layer | Source | Tracked | Content |
 |---|---|---|---|
-| Profile | `profiles/*.toml` | Yes | Sensor, optics, readout modes, limits. One file per hardware configuration. |
-| Defaults | `config/default.toml` | Yes | Scheduler, windows, retention, thresholds |
+| Profile | `profiles/<id>.toml` | Yes | Sensor, optics, readout modes, limits. One file per hardware configuration, and the `id` equals the file name. |
+| Defaults | `config/default.toml`, then `config/default.d/*.toml` in file-name order | Yes | `default.toml` holds the keys that belong to no lane (`profile`, `station_id`). Each lane keeps its own defaults (scheduler, windows, retention, thresholds) in its own `default.d` file. |
 | Local | `local/config.toml` | No | Station ID, site location, data directory, sink endpoints, token hash |
-| Environment | `SEEINGMON_*`, systemd credentials | No | Secrets and overrides |
+| Environment | `SEEINGMON_<SECTION>__<KEY>` variables | No | Secrets and overrides |
 | Template | `config/local.example.toml` | Yes | Placeholders for the local file |
 
-Later layers override earlier ones. Pydantic validates the merged result, and the effective configuration (secrets removed) goes into the `run` record. A profile lists the readout modes (resolution, pixel size, ADC bits, full well, read noise, row time, frame overhead), cooling, the optics (focal length, aperture, usable image circle, effective wavelength), and the limits (ROI rules, gain, exposure). The software derives plate scale and field of view per mode, ROI size in pixels from an angular half-width, star sampling, and the saturation level per gain. Fast mode and survey mode each name their readout mode.
+Later layers override earlier ones. Tables merge key by key, and an array replaces the array in the layer below. A double underscore in a variable name nests one level, so `SEEINGMON_SINKS__INFLUX__URL` sets `url` in `[sinks.influx]`. A value parses as a TOML scalar or array and stays a string otherwise.
+
+`seeingmon.config.load_config` returns a `Config`. Each lane declares a pydantic model for its section and reads it with `config.section("scheduler", SchedulerConfig)`, which validates the merged section and applies the model's defaults. An error names the section and the keys, and it never shows a configured value. `config.profile` loads the profile that the top-level `profile` key names. `config.effective()` returns the merged configuration for the `run` record, with the value of every key whose name contains token, password, secret, credential, or key replaced by a fixed marker.
+
+The `profiles/` and `config/` directories sit at the repository root in a source checkout, and the wheel carries them as package data in `seeingmon/_data/`. `seeingmon.paths` finds them in either layout.
+
+A profile describes the sensor (cooling, temperature sensor), the optics (focal length, aperture, usable image circle, effective wavelength), the readout modes, and the limits (ROI rules, gain, exposure, offset). A readout mode states its resolution, pixel size, ADC bits, full well, read noise and conversion gain at gain 0, a table of rows for higher gains (with an explicit step for the high-conversion-gain switch), row time, and frame overhead. A profile can also hold two photometric priors: the photoelectron rate of a magnitude-0 star, flagged as an estimate, and a dark-current table. The software derives the plate scale and field of view per readout mode, the ROI size in pixels for an angular full width, the Airy size and star sampling, the saturation level per gain (in ADC counts and in 16-bit container counts), and the frame period and data rate. `seeingmon profile show` prints these values, and `profile_summary` returns them as JSON for the API. Fast mode and survey mode each name their readout mode.
 
 ## Commissioning support
 
