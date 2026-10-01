@@ -708,11 +708,24 @@ class TurbulenceModel:
         mapped = wy @ patch @ wx.transpose(0, 2, 1)
         return np.asarray(mapped.reshape(layers, count, grid.ny, grid.nx).sum(axis=0), np.float64)
 
-    def _sinusoid_phase(self, times: FloatArray, xs: FloatArray, ys: FloatArray) -> FloatArray:
-        """The low-frequency part, expanded to third order about the pupil centre."""
+    def _sinusoid_phase(
+        self,
+        times: FloatArray,
+        xs: FloatArray,
+        ys: FloatArray,
+        window_s: float | None = None,
+    ) -> FloatArray:
+        """The low-frequency part, expanded to third order about the pupil centre.
+
+        With `window_s`, the result is the mean over a window of that length centred on each time.
+        The mean of a sinusoid over a window is its value at the centre times a sinc factor.
+        """
         theta = self._lf_phase0[None, :] - np.outer(times, self._lf_rate)
-        c = self._lf_amplitude * np.cos(theta)
-        s = self._lf_amplitude * np.sin(theta)
+        amplitude = self._lf_amplitude
+        if window_s is not None:
+            amplitude = amplitude * np.sinc(self._lf_rate * window_s / (2.0 * math.pi))
+        c = amplitude * np.cos(theta)
+        s = amplitude * np.sin(theta)
         a0, hxx, hxy, hyy = (c @ self._lf_basis_c.T).T
         gx, gy, txxx, txxy, txyy, tyyy = (s @ self._lf_basis_s.T).T
         # Expand `a cos(theta + k.X)` to third order: with c = a cos(theta) and s = a sin(theta),
@@ -758,6 +771,24 @@ class TurbulenceModel:
         times = t_start_s + (np.arange(n_sub) + 0.5) * exposure_s / n_sub
         tilt = self.tilt_series_rad(times, pupil).mean(axis=0)
         return float(tilt[0]), float(tilt[1])
+
+    def long_exposure_tilt_rad(
+        self, t_start_s: float, exposure_s: float, pupil: PupilGrid
+    ) -> tuple[float, float]:
+        """The G-tilt averaged over a long exposure, in radians along `x` and `y`.
+
+        The mean of the low-frequency sinusoids over the exposure is exact. The screen part
+        averages out over many crossings of the screen, and the model drops it: for an exposure
+        of a few seconds, what remains of it is a few milliarcseconds. Use this for exposures
+        much longer than a screen crossing (0.1 s or more), where sampling every instant would
+        build a new screen at each one.
+        """
+        xs = pupil.spec.x0 + pupil.spec.dx * np.arange(pupil.spec.nx, dtype=np.float64)
+        ys = pupil.spec.y0 + pupil.spec.dx * np.arange(pupil.spec.ny, dtype=np.float64)
+        mid = np.asarray([t_start_s + 0.5 * exposure_s], dtype=np.float64)
+        phase = self._sinusoid_phase(mid, xs, ys, window_s=exposure_s)[0]
+        phase *= self._gain(float(mid[0]))
+        return pupil.tilt_rad(phase)
 
     def suggest_substeps(self, exposure_s: float, minimum: int = 4, maximum: int = 32) -> int:
         """How many instants to sample in an exposure.
