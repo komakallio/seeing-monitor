@@ -193,13 +193,20 @@ class TestTheTemplate:
             return False
         return True
 
+    @staticmethod
+    def sinks_block(repo_root: Path) -> str:
+        """The sinks part of the template, from its heading to the next blank line.
+
+        Other lanes add their own sections after it, so the tests read this block only.
+        """
+        text = (repo_root / "config" / "local.example.toml").read_text(encoding="utf-8")
+        return text[text.index("# Result sinks.") :].split("\n\n", 1)[0]
+
     def uncommented(self, repo_root: Path) -> str:
         """The TOML lines of the sinks block, without their `# `. Lines of prose do not parse."""
-        text = (repo_root / "config" / "local.example.toml").read_text(encoding="utf-8")
-        block = text[text.index("# Result sinks.") :]
         candidates = [
             line[2:]
-            for line in block.splitlines()
+            for line in self.sinks_block(repo_root).splitlines()
             if line.startswith("# [sinks.") or re.match(r"# [a-z_]+ = ", line)
         ]
         return "\n".join(line for line in candidates if self.is_toml(line))
@@ -230,9 +237,10 @@ class TestTheTemplate:
         sinks = build_sinks(Config(parsed), env=env, import_module=lambda name: fake_psycopg([]))
         assert [sink.name for sink in sinks] == ["lab_influx", "old_influx", "archive"]
 
-    def test_the_template_holds_no_real_looking_endpoint(self, repo_root: Path) -> None:
-        text = (repo_root / "config" / "local.example.toml").read_text(encoding="utf-8")
-        for host in re.findall(r"https?://([^/:\"]+)", text):
+    def test_the_sinks_block_holds_no_real_looking_endpoint(self, repo_root: Path) -> None:
+        hosts = re.findall(r"https?://([^/:\"]+)", self.sinks_block(repo_root))
+        assert hosts
+        for host in hosts:
             assert host.endswith(".example.org") or host.endswith(".example.com")
 
 
