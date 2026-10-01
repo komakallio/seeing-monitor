@@ -55,12 +55,13 @@ token_hash = "<hash of the API token>"
 #
 # To reach the UI through a VPN, such as a tailnet, bind the address of the VPN interface too
 # (extra_bind_addresses), and list the names that clients type (allowed_hosts). The server answers
-# a request only when its Host header names the loopback interface, a bind address, or an entry of
-# allowed_hosts. The entries below are documentation addresses and example names.
+# a request only when its Host header names the loopback interface, a bind address (the bind
+# addresses are always allowed, so list names only), or an entry of allowed_hosts. The entries
+# below are documentation addresses and example names.
 # [web]
 # bind_address = "<LAN address of this device>"
 # extra_bind_addresses = ["192.0.2.10", "2001:db8::10"]
-# allowed_hosts = ["seeing-pi", "seeing-pi.tailnet.example", "192.0.2.10", "2001:db8::10"]
+# allowed_hosts = ["seeing-pi", "seeing-pi.tailnet.example"]
 # port = 8080
 # require_token_for_reads = false
 # [web.rate_limit]
