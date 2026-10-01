@@ -212,30 +212,31 @@ class TestSystemdNotifier:
     def test_it_sends_datagrams_to_the_socket_that_systemd_names(self, short_dir: Path) -> None:
         path = str(short_dir / "notify.sock")
         receiver = socket.socket(socket.AddressFamily["AF_UNIX"], socket.SOCK_DGRAM)
+        notifier = SystemdNotifier(env={"NOTIFY_SOCKET": path})
         try:
             receiver.bind(path)
             receiver.settimeout(5.0)
-            notifier = SystemdNotifier(env={"NOTIFY_SOCKET": path})
             assert notifier.enabled
             notifier.ready("up")
             notifier.watchdog()
             assert receiver.recv(1024) == b"READY=1\nSTATUS=up"
             assert receiver.recv(1024) == b"WATCHDOG=1"
         finally:
+            notifier.close()
             receiver.close()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="the abstract socket namespace")
     def test_an_abstract_socket_name_starts_with_an_at_sign(self) -> None:
         name = f"seeingmon-test-{os.getpid()}-{time.monotonic_ns()}"
         receiver = socket.socket(socket.AddressFamily["AF_UNIX"], socket.SOCK_DGRAM)
+        notifier = SystemdNotifier(env={"NOTIFY_SOCKET": "@" + name})
         try:
             receiver.bind("\0" + name)
             receiver.settimeout(5.0)
-            notifier = SystemdNotifier(env={"NOTIFY_SOCKET": "@" + name})
             notifier.watchdog()
             assert receiver.recv(1024) == b"WATCHDOG=1"
-            notifier.close()
         finally:
+            notifier.close()
             receiver.close()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="systemd runs on Linux only")

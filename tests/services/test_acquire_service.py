@@ -757,3 +757,25 @@ class TestWithTheAsiDriver:
         finally:
             remote.close()
             service.stop()
+
+
+@pytest.mark.slow
+def test_a_long_run_with_constant_overflow_accounts_for_every_frame(build: RigFactory) -> None:
+    """The camera outruns the consumer for 8,000 frames, and the counts stay exact.
+
+    A scaled clock at 300 times real time turns every stall of a thread into minutes of camera
+    time, and the gap rule would count them as lost frames that the synchronous fake never lost.
+    The gap rule is off here, so the test checks the queue and the flow control alone.
+    """
+    rig = build(
+        speed=300.0,
+        acquire={"queue_depth": 32, "gap_factor": 1e12},
+        services={"stream_window_messages": 16},
+    )
+    driver = streaming(rig, SMALL)
+    frames = read_frames(driver, 8_000, timeout_s=30.0)
+    assert_every_frame_is_accounted_for(frames)
+    health = driver.health()
+    assert health["dropped_queue"] >= sum(f.dropped_before for f in frames)
+    assert health["queue_peak_frames"] <= 32
+    assert health["internal_errors"] == 0
