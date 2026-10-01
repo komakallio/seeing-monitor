@@ -29,14 +29,20 @@ from __future__ import annotations
 
 import calendar
 import codecs
+import json
+import math
+import os
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from enum import Enum
 from itertools import pairwise
 from pathlib import Path
 from typing import TypeVar
+
+from seeingmon.frames import PixelFormat, Roi, StreamConfig, StreamKind, TimeQuality
 
 NS_PER_S = 1_000_000_000
 JD_AT_UNIX_EPOCH = Decimal("2440587.5")
@@ -45,6 +51,14 @@ _MIN_JD = Decimal("2415020")  # 1900
 _MAX_JD = Decimal("2816788")  # 3000
 
 _T = TypeVar("_T")
+
+
+class SidecarError(Exception):
+    """A sidecar cannot be read or written, or its content is not valid.
+
+    The message never quotes the file's text or its path.
+    """
+
 
 # --- Value helpers ---------------------------------------------------------------------------
 
@@ -728,6 +742,254 @@ def sharpcap_sidecar_path(ser_path: str | Path) -> Path:
     return path.with_name(f"{path.stem}.CameraSettings.txt")
 
 
+def _read_bytes(path: str | Path) -> bytes:
+    try:
+        return Path(path).read_bytes()
+    except OSError as exc:
+        # The message omits the path on purpose: recording locations stay out of logs.
+        raise SidecarError(
+            f"cannot read the sidecar: {exc.strerror or type(exc).__name__}"
+        ) from None
+
+
 def read_sharpcap_sidecar(path: str | Path) -> SidecarInfo:
-    """Read and parse a SharpCap settings sidecar. Raises `OSError` when the file is unreadable."""
-    return parse_sharpcap_sidecar(decode_sidecar_bytes(Path(path).read_bytes()))
+    """Read and parse a SharpCap settings sidecar. Raises `SidecarError` when it is unreadable."""
+    return parse_sharpcap_sidecar(decode_sidecar_bytes(_read_bytes(path)))
+
+
+# --- Burst sidecar ---------------------------------------------------------------------------
+
+SIDECAR_SCHEMA_VERSION = 1
+_PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_E = TypeVar("_E", bound=Enum)
+
+
+@dataclass(frozen=True, slots=True)
+class BurstSidecar:
+    """What a burst records next to its SER file, in `<capture>.json`.
+
+    `stream` holds the settings of the stream, `profile_id` names the hardware profile, and
+    `adc_bits` is the ADC depth of the frames. `time_quality` says how the frames' UTC times
+    were derived. The SER trailer of a burst holds `t_arrival_ns`, the time that each frame
+    arrived. The optional fields are the nominal frame period, the number of frames, the UTC
+    time of the first frame, and the sensor temperature.
+
+    The sidecar carries no host name, path, address, or serial number: it has these fields
+    only, and `profile_id` takes letters, digits, dots, hyphens, and underscores.
+    """
+
+    profile_id: str
+    stream: StreamConfig
+    adc_bits: int
+    time_quality: TimeQuality
+    frame_period_s: float | None = None
+    frame_count: int | None = None
+    start_utc_ns: int | None = None
+    temperature_c: float | None = None
+
+    def __post_init__(self) -> None:
+        if not _PROFILE_ID.match(self.profile_id):
+            raise SidecarError(
+                "the profile ID must have 1 to 64 letters, digits, dots, hyphens, or underscores"
+            )
+        if not 1 <= self.adc_bits <= 16:
+            raise SidecarError("adc_bits must be between 1 and 16")
+        if self.frame_period_s is not None and not (
+            math.isfinite(self.frame_period_s) and self.frame_period_s > 0
+        ):
+            raise SidecarError("frame_period_s must be positive")
+        if self.frame_count is not None and self.frame_count < 0:
+            raise SidecarError("frame_count must not be negative")
+        if self.temperature_c is not None and not math.isfinite(self.temperature_c):
+            raise SidecarError("temperature_c must be finite")
+
+    def to_dict(self) -> dict[str, object]:
+        """The JSON-ready form, with the schema version."""
+        stream = self.stream
+        roi = (
+            None
+            if stream.roi is None
+            else {
+                "x": stream.roi.x,
+                "y": stream.roi.y,
+                "width": stream.roi.width,
+                "height": stream.roi.height,
+            }
+        )
+        return {
+            "schema_version": SIDECAR_SCHEMA_VERSION,
+            "profile_id": self.profile_id,
+            "stream": {
+                "mode": stream.mode,
+                "exposure_us": stream.exposure_us,
+                "gain": stream.gain,
+                "pixel_format": stream.pixel_format.name,
+                "kind": stream.kind.value,
+                "roi": roi,
+                "offset": stream.offset,
+                "bandwidth_pct": stream.bandwidth_pct,
+                "high_speed": stream.high_speed,
+            },
+            "adc_bits": self.adc_bits,
+            "time_quality": self.time_quality.name,
+            "frame_period_s": self.frame_period_s,
+            "frame_count": self.frame_count,
+            "start_utc_ns": self.start_utc_ns,
+            "temperature_c": self.temperature_c,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> BurstSidecar:
+        """Build a sidecar from parsed JSON. Raises `SidecarError` for anything invalid.
+
+        Unknown keys are ignored, so a newer writer of the same schema version still reads.
+        """
+        version = _int(data, "schema_version")
+        if version < 1:
+            raise SidecarError("the schema version must be 1 or more")
+        if version > SIDECAR_SCHEMA_VERSION:
+            raise SidecarError(
+                f"the sidecar uses schema version {version}, "
+                f"but this reader supports up to {SIDECAR_SCHEMA_VERSION}"
+            )
+        stream = _object(data, "stream")
+        roi_data = _optional_object(stream, "roi")
+        try:
+            roi = (
+                None
+                if roi_data is None
+                else Roi(
+                    _int(roi_data, "x"),
+                    _int(roi_data, "y"),
+                    _int(roi_data, "width"),
+                    _int(roi_data, "height"),
+                )
+            )
+            config = StreamConfig(
+                mode=_str(stream, "mode"),
+                exposure_us=_int(stream, "exposure_us"),
+                gain=_int(stream, "gain"),
+                pixel_format=_enum(stream, "pixel_format", PixelFormat),
+                roi=roi,
+                kind=StreamKind(_str(stream, "kind")),
+                offset=_optional_int(stream, "offset"),
+                bandwidth_pct=_optional_int(stream, "bandwidth_pct"),
+                high_speed=_bool(stream, "high_speed"),
+            )
+        except ValueError:
+            raise SidecarError("the stream settings are not valid") from None
+        return cls(
+            profile_id=_str(data, "profile_id"),
+            stream=config,
+            adc_bits=_int(data, "adc_bits"),
+            time_quality=_enum(data, "time_quality", TimeQuality),
+            frame_period_s=_optional_float(data, "frame_period_s"),
+            frame_count=_optional_int(data, "frame_count"),
+            start_utc_ns=_optional_int(data, "start_utc_ns"),
+            temperature_c=_optional_float(data, "temperature_c"),
+        )
+
+
+def _optional_int(data: Mapping[str, object], key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SidecarError(f"the field {key!r} must be an integer")
+    return value
+
+
+def _int(data: Mapping[str, object], key: str) -> int:
+    value = _optional_int(data, key)
+    if value is None:
+        raise SidecarError(f"the field {key!r} is missing")
+    return value
+
+
+def _optional_float(data: Mapping[str, object], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise SidecarError(f"the field {key!r} must be a number")
+    return float(value)
+
+
+def _str(data: Mapping[str, object], key: str) -> str:
+    value = data.get(key)
+    if value is None:
+        raise SidecarError(f"the field {key!r} is missing")
+    if not isinstance(value, str):
+        raise SidecarError(f"the field {key!r} must be a string")
+    return value
+
+
+def _bool(data: Mapping[str, object], key: str) -> bool:
+    value = data.get(key)
+    if value is None:
+        raise SidecarError(f"the field {key!r} is missing")
+    if not isinstance(value, bool):
+        raise SidecarError(f"the field {key!r} must be true or false")
+    return value
+
+
+def _optional_object(data: Mapping[str, object], key: str) -> Mapping[str, object] | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SidecarError(f"the field {key!r} must be an object")
+    return value
+
+
+def _object(data: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = _optional_object(data, key)
+    if value is None:
+        raise SidecarError(f"the field {key!r} is missing")
+    return value
+
+
+def _enum(data: Mapping[str, object], key: str, enum: type[_E]) -> _E:
+    name = _str(data, key)
+    try:
+        return enum[name]
+    except KeyError:
+        options = ", ".join(member.name for member in enum)
+        raise SidecarError(f"the field {key!r} must be one of {options}") from None
+
+
+def burst_sidecar_path(ser_path: str | Path) -> Path:
+    """The path of the burst sidecar of a SER file: `<capture>.json`."""
+    path = Path(ser_path)
+    return path.with_name(f"{path.stem}.json")
+
+
+def write_burst_sidecar(path: str | Path, sidecar: BurstSidecar) -> None:
+    """Write a burst sidecar as JSON. The file appears complete or not at all."""
+    target = Path(path)
+    temporary = target.with_name(f"{target.name}.tmp")
+    text = json.dumps(sidecar.to_dict(), indent=2, sort_keys=True) + "\n"
+    try:
+        temporary.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(temporary, target)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise SidecarError(
+            f"cannot write the sidecar: {exc.strerror or type(exc).__name__}"
+        ) from None
+
+
+def read_burst_sidecar(path: str | Path) -> BurstSidecar:
+    """Read a burst sidecar. Raises `SidecarError` for a file that is missing or invalid."""
+    raw = _read_bytes(path)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        raise SidecarError("the sidecar is not UTF-8 text") from None
+    except json.JSONDecodeError as exc:
+        raise SidecarError(
+            f"the sidecar is not valid JSON: {exc.msg} at line {exc.lineno}"
+        ) from None
+    if not isinstance(data, dict):
+        raise SidecarError("the sidecar must hold a JSON object")
+    return BurstSidecar.from_dict(data)

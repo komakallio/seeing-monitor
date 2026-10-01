@@ -10,6 +10,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from seeingmon.recordings.sidecar import (
+    SidecarError,
     SidecarInfo,
     decode_sidecar_bytes,
     is_private_key,
@@ -438,9 +439,15 @@ class TestReading:
         assert info.sensor_temperature_c == 18.3
         assert info.values["Note2"] == "caf\N{LATIN SMALL LETTER E WITH ACUTE}"
 
-    def test_a_missing_file_raises_os_error(self, tmp_path: Path) -> None:
-        with pytest.raises(OSError):  # noqa: PT011 - any OSError subclass is right
-            read_sharpcap_sidecar(tmp_path / "missing.CameraSettings.txt")
+    def test_a_missing_file_raises_a_sidecar_error_that_omits_the_path(
+        self, tmp_path: Path
+    ) -> None:
+        folder = tmp_path / "distinctive-folder-name"
+        folder.mkdir()
+        with pytest.raises(SidecarError, match="cannot read the sidecar") as raised:
+            read_sharpcap_sidecar(folder / "missing.CameraSettings.txt")
+        assert "distinctive-folder-name" not in str(raised.value)
+        assert raised.value.__cause__ is None
 
 
 class TestReadoutMode:
