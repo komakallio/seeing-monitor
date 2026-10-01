@@ -97,6 +97,7 @@ from seeingmon.scheduler.status import (
 
 _MIN_SLEEP_NS = 1_000_000  # a sleep is at least 1 ms, so every step moves the clock forward
 _OVERRUN_TOLERANCE_NS = NS_PER_S  # a cycle that starts later than this counts as an overrun
+_CLOCK_CHECK_NS = 5 * NS_PER_S  # how often the loop asks the clock whether it is synchronized
 _METRICS_DRAIN_NS = NS_PER_S  # drain per-frame metrics at least once per second of frame time
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _MAX_EVENT_REVISIONS = 64
@@ -195,8 +196,9 @@ class Scheduler:
         config: The `[scheduler]` table. The defaults apply when you leave it out.
         site: The observing site for the Sun's elevation. Without it the scheduler relies on the
             measured sky background and sets no `twilight` flag.
-        escalate: The supervisor's callback for the ladder steps above the driver's. Without it
-            the ladder stops at the last driver step.
+        escalate: The supervisor's callback for the ladder steps above the driver's. It runs on the
+            loop thread, so return when the step is done or has failed. Without it the ladder stops
+            at the last driver step.
         context_provider: Called with the UTC time, it returns the context that only the core
             knows, such as `heater_duty` and the `heater_on` flag. The scheduler adds its own.
         alignment_sink: Receives every frame of the alignment stream.
@@ -264,6 +266,8 @@ class Scheduler:
 
         # State of the loop thread.
         self._started = False
+        self._clock_ok = True  # the clock is synchronized, as far as the scheduler knows
+        self._clock_check_mono = now_mono
         self._opened = False
         self._stream: StreamInfo | None = None
         self._active: ActiveStream | None = None
@@ -299,6 +303,11 @@ class Scheduler:
     def stream(self) -> StreamInfo | None:
         """The stream that the camera runs or ran last."""
         return self._stream
+
+    @property
+    def config(self) -> SchedulerConfig:
+        """The configuration that the scheduler runs with."""
+        return self._config
 
     def register_handler(self, kind: str, handler: CommissionHandler) -> None:
         """Register the handler for a kind of commissioning task: `burst`, `replay`, or your own.
@@ -691,6 +700,7 @@ class Scheduler:
     def _step_once(self) -> StepKind:
         if not self._started:
             self._start()
+        self._check_clock()
         state = self.state
         if self._reconcile(state):
             return StepKind.TRANSITION
@@ -943,8 +953,33 @@ class Scheduler:
             kind=StreamKind.SNAPSHOT,
         )
 
+    def _check_clock(self) -> None:
+        """Ask the clock whether it is synchronized, at most once every few seconds.
+
+        Without synchronization the UTC time can be days off (a Pi 4 has no real-time clock), so
+        the Sun's elevation means nothing. The scheduler then relies on the measured sky alone, sets
+        no `twilight` flag, and marks windows and survey results `time_invalid`.
+        """
+        now = self._mono()
+        if now < self._clock_check_mono:
+            return
+        self._clock_check_mono = now + _CLOCK_CHECK_NS
+        trusted = self._clock.status().synchronized is not False
+        if trusted == self._clock_ok:
+            return
+        self._clock_ok = trusted
+        self._emit(
+            "info" if trusted else "warning",
+            "scheduler.clock_synchronized" if trusted else "scheduler.clock_unsynchronized",
+            "The clock is synchronized again, so the Sun's elevation applies."
+            if trusted
+            else "The clock is not synchronized, so the Sun's elevation and the times are off.",
+            {"synchronized": trusted},
+        )
+        self._refresh_context(force=True)
+
     def _sun_elevation(self) -> float | None:
-        if self._site is None:
+        if self._site is None or not self._clock_ok:
             return None
         return sun_elevation_deg(
             self._clock.utc_ns(), self._site.latitude_deg, self._site.longitude_deg
@@ -1313,7 +1348,9 @@ class Scheduler:
 
     def _survey_flags(self, output: SurveyOutput) -> frozenset[str]:
         flags: set[str] = set()
-        if self._site is not None:
+        if not self._clock_ok:
+            flags.add("time_invalid")
+        elif self._site is not None:
             elevation = sun_elevation_deg(
                 output.t_utc_ns, self._site.latitude_deg, self._site.longitude_deg
             )
@@ -1338,9 +1375,11 @@ class Scheduler:
             flags.add("cloud")
         if self._gate.is_twilight(self._sun_elevation()):
             flags.add("twilight")
+        if not self._clock_ok:
+            flags.add("time_invalid")
         extra = self._context_provider(t_ns) if self._context_provider is not None else None
         zenith = None if extra is None else extra.zenith_angle_deg
-        if zenith is None and self._site is not None:
+        if zenith is None and self._site is not None and self._clock_ok:
             zenith = polaris_zenith_angle_deg(
                 t_ns, self._site.latitude_deg, self._site.longitude_deg
             )

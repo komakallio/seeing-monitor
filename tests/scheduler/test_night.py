@@ -38,6 +38,7 @@ from seeingmon.scheduler import (
     StopAlignment,
 )
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
+from seeingmon.scheduler.events import EVENT_KINDS
 from tests.scheduler.scenario import SITE, START, World
 
 HOUR = 3600.0
@@ -378,6 +379,11 @@ class TestTheRecords:
                 (window.readout_mode, window.exposure_us, window.gain)
             )
         assert all(len(settings) == 1 for settings in by_stream.values())
+
+    def test_every_event_kind_is_declared(self, night: Night) -> None:
+        kinds = {e.kind for e in night.world.events()}
+        assert kinds <= set(EVENT_KINDS)
+        assert len(kinds) >= 11  # the night touched the main ones
 
     def test_event_keys_are_unique(self, night: Night) -> None:
         keys = [e.record_key for e in night.world.events()]

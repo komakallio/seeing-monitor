@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from seeingmon.analysis import SurveyOutput
-from seeingmon.clock import NS_PER_S, VirtualClock, iso_to_utc_ns
+from seeingmon.clock import NS_PER_S, Clock, VirtualClock, iso_to_utc_ns
 from seeingmon.drivers.base import CameraTimeoutError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, FrameData, Roi, StreamConfig, StreamKind
 from seeingmon.profile import load_profile
@@ -85,7 +85,7 @@ class ConfigureCall:
 class ScenarioCamera(FakeCameraDriver):
     """The fake camera, plus scripted faults and a log of every `configure`."""
 
-    def __init__(self, clock: VirtualClock, world: World) -> None:
+    def __init__(self, clock: Clock, world: World) -> None:
         super().__init__(
             clock,
             full_frames={"bin1": (8288, 5644), "bin2": SMALL_BIN2},
@@ -192,9 +192,10 @@ class World:
         solved_at_start: bool = True,
         escalate: bool = True,
         survey_polls: int = 0,
+        clock: Clock | None = None,
     ) -> None:
         self.start_utc_ns = start_utc_ns
-        self.clock = VirtualClock(start_utc_ns)
+        self.clock: Clock = clock or VirtualClock(start_utc_ns)
         self.writer = ListRecordWriter()
         self.camera = ScenarioCamera(self.clock, self)
         self.config = config or TEST_CONFIG

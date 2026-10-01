@@ -11,6 +11,7 @@ See the "Scheduler" section of `docs/architecture.md`. The modules are:
 - `gates`: the daylight gate, the twilight flag, and the cloud tracker.
 - `ephemeris`: the Sun's elevation, for the daylight gate and the twilight flag.
 - `status`: the snapshot for `/status` and the `health` record.
+- `events`: the codes of the events that the scheduler writes.
 """
 
 from __future__ import annotations
