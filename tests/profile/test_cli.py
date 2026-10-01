@@ -222,5 +222,6 @@ def test_the_package_names_import_on_first_use() -> None:
 def test_the_package_lists_its_names_and_rejects_others() -> None:
     assert "load_profile" in dir(seeingmon.profile)
     assert set(seeingmon.profile.__all__) <= set(dir(seeingmon.profile))
+    missing = "nothing"
     with pytest.raises(AttributeError, match="no attribute 'nothing'"):
-        seeingmon.profile.__getattr__("nothing")
+        getattr(seeingmon.profile, missing)

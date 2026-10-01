@@ -82,8 +82,10 @@ Keep your lane's defaults in `config/default.d/<lane>.toml`, with every key unde
 ```python
 from seeingmon.config import SectionModel, load_config
 
+
 class SchedulerConfig(SectionModel):  # a frozen model that rejects unknown keys
     window_s: float = 120.0
+
 
 config = load_config()
 scheduler = config.section("scheduler", SchedulerConfig)
