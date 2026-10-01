@@ -1,13 +1,19 @@
 # Defaults of the survey path. Every key sits under [survey], and no other file defines one.
 #
 # Paths belong to one installation, so they stay empty here: set them in local/config.toml.
-# Override a key there, or with an environment variable such as SEEINGMON_SURVEY__CATALOG_PATH.
+# The other values are provisional. They follow the "Pointing" section of docs/architecture.md
+# and the research notes, and they stay until commissioning (phase 3) shows what a real sky
+# needs. Override a key in local/config.toml, or with an environment variable such as
+# SEEINGMON_SURVEY__SOLVE__TIMEOUT_S=30.
 
 [survey]
 # The cap catalog that `seeingmon catalog build` writes.
 catalog_path = ""
 # The folder with the astrometry.net cap index files that the same command builds.
 index_dir = ""
+# A NumPy file (.npy) with the boolean hot-pixel mask of the survey mode, from the dark frames.
+# Empty means no mask.
+hot_pixel_file = ""
 # The solver programs. Each runs as a separate process, so its GPL or MPL code stays outside
 # this MIT code base.
 solve_field_command = "solve-field"
@@ -15,3 +21,56 @@ astap_command = "astap"
 astap_database_dir = ""   # Empty uses the star database that ASTAP finds by itself.
 # The solvers to try, in order, after the tracker fails to match the frame by itself.
 solvers = ["astrometry.net", "astap"]
+# UT1 - UTC in seconds (the IERS bulletins publish it). It moves the Earth rotation angle by
+# 15 arcsec for each second, so 0 is wrong by up to 0.9 s of that.
+dut1_s = 0.0
+
+# Star detection.
+[survey.detect]
+threshold_sigma = 5.0
+min_pixels = 2
+mesh_px = 64
+edge_margin_px = 6.0
+max_stars = 3000
+max_saturated_pixels = 6   # A star with more saturated pixels is measured by moments only.
+trail_flag_px = 1.5
+
+# The pointing fit.
+[survey.fit]
+match_radius_px = [4.0, 2.0, 1.2]   # One match pass for each radius.
+clip_sigma = 4.0
+min_stars = 4
+sigma_floor_px = 0.03
+final_match_radius_px = 1.5
+# A fit counts as a solution with at least min_stars pairs, a residual of at most max_rms_px,
+# and either confident_stars pairs or min_match_fraction of the reliable detections.
+max_rms_px = 1.5
+min_match_fraction = 0.3
+confident_stars = 30
+
+# The tracker and the pointing record.
+[survey.pointing]
+validity_s = 43200.0        # 12 hours.
+few_stars = 12
+moved_arcmin = 5.0
+moved_roll_deg = 0.5
+tracker_min_stars = 8
+tracker_max_rms_px = 1.5
+reference_file = ""         # The JSON reference solution that commissioning saves.
+
+# Calls to the plate solvers.
+[survey.solve]
+timeout_s = 20.0
+scale_tolerance = 0.15
+hint_radius_deg = 2.0
+max_stars = 600
+cross_check_every = 0       # Every Nth solved frame also runs the second solver. 0 never does.
+cross_check_max_px = 1.5
+
+# The cloud fraction: the share of expected catalog stars that detection missed.
+[survey.cloud]
+expected_snr = 20.0
+mag_limit = 12.0
+edge_px = 20.0
+min_expected = 8
+match_radius_px = 3.0

@@ -33,6 +33,7 @@ from seeingmon.profile import Profile
 from seeingmon.survey import apparent
 from seeingmon.survey.apparent import ObservationEpoch
 from seeingmon.survey.catalog import CapCatalog
+from seeingmon.survey.field import catalog_field
 from seeingmon.survey.geometry import FloatArray
 from seeingmon.survey.pointing import (
     PointingOffset,
@@ -45,8 +46,6 @@ from seeingmon.survey.wcs_fit import CameraAttitude, FitOptions, FitResult, fit_
 
 NS_PER_S = 1_000_000_000
 DEFAULT_VALIDITY_S = 12 * 3600.0
-# Catalog stars this much farther than the half diagonal of the frame can still match.
-FIELD_MARGIN_DEG = 0.15
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -208,26 +207,16 @@ class PointingTracker:
             return None
         predicted = solution.attitude_at(t_utc_ns)
         epoch = apparent.epoch_from_utc_ns(t_utc_ns, solution.dut1_s)
-        half_diagonal_deg = (
-            0.5
-            * float(np.hypot(solution.width_px, solution.height_px))
-            * solution.scale_rad_px
-            * 180.0
-            / np.pi
+        rows, vectors = catalog_field(
+            catalog,
+            predicted,
+            epoch,
+            width_px=solution.width_px,
+            height_px=solution.height_px,
+            max_g_mag=max_g_mag,
         )
-        center = apparent.astrometric_from_apparent(predicted.boresight(), epoch)
-        rows = catalog.cone(center, half_diagonal_deg + FIELD_MARGIN_DEG, max_g_mag=max_g_mag)
         if rows.size == 0:
             return None
-        vectors = apparent.apparent_vectors(
-            catalog.ra_deg[rows],
-            catalog.dec_deg[rows],
-            catalog.pm_ra_mas_yr[rows],
-            catalog.pm_dec_mas_yr[rows],
-            catalog.parallax_mas[rows],
-            epoch,
-            catalog_epoch_jyear=catalog.epoch_jyear,
-        )
         fit = fit_attitude(
             predicted,
             vectors,

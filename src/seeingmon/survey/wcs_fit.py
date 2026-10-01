@@ -356,7 +356,7 @@ def _gauss_newton(
     return current, False
 
 
-def _match(
+def match_stars(
     attitude: CameraAttitude,
     catalog_vectors: FloatArray,
     detections_xy: FloatArray,
@@ -430,7 +430,7 @@ def fit_attitude(
     candidates = 0
     converged = False
     for radius in opts.match_radius_px:
-        pairs_d, pairs_c, candidates = _match(
+        pairs_d, pairs_c, candidates = match_stars(
             attitude, vectors, detections_xy, radius, shape, opts.margin_px, usable
         )
         if pairs_d.size < opts.min_stars:
