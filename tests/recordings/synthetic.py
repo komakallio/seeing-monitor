@@ -70,3 +70,66 @@ def make_ser(
         for i, frame in enumerate(frames):
             writer.write_frame(frame, None if stamps is None else stamps[i])
     return Recording(path, frames, stamps)
+
+
+# The key set and the order of a real SharpCap 4.1 sidecar, with invented values.
+FAKE_SERIAL = "0000000000000000"
+
+SHARPCAP_SIDECAR = f"""\
+[ZWO ASI294MM]
+CameraSerialNumber={FAKE_SERIAL}
+FrameType=Light
+Pan=0
+Tilt=0
+Output Format=SER file (*.ser)
+Binning=1
+Resolution=320x240
+Read Mode=11 Megapixel
+Colour Space=MONO8
+Exposure/Gain Shift=0
+Temperature=20,5
+High Speed Mode=Off
+Turbo USB=72(Auto)
+Flip=None
+Frame Rate Limit=Maximum
+Gain=100
+Exposure=10,0000ms
+Timestamp Frames=Off
+Brightness=8
+Auto Exp Max Gain=285
+Auto Exp Max Exp MS=30000
+Auto Exp Target Brightness=100
+CA Reduction/Synthetic Blue=Off
+Mask over exposed pixels=Off
+Flip (after dark/flat)=None
+Trail Width=3
+Minimum Trail Length=100
+Trail Detection Sensitivity=9
+Remove Satellite Trails=Off
+Background Subtraction=Off
+Planet/Disk Stabilization=Off
+Banding Threshold=10
+Banding Suppression=0
+Apply Flat=None
+Dark Scaling (Experimental)=Off
+Hot Pixel Sensitivity=5
+Subtract Dark=None
+DisplayStretchEnable=1
+NegativeDisplay=0
+Display Black Point=0
+Display MidTone Point=0,5
+Display White Point=1
+Notes=
+TimeStamp=2026-01-01T12:00:00.1484567Z
+SharpCapVersion=4.1.99999.0
+StartCapture=2026-01-01T12:00:00.1234567Z
+MidCapture=2026-01-01T12:00:15.1234567Z
+EndCapture=2026-01-01T12:00:30.1234567Z
+JDStartCapture=2461042,000001
+JDMidCapture=2461042,000175
+JDEndCapture=2461042,000349
+Duration=30,000s
+FrameCount=3000
+ActualFrameRate=100,0000fps
+TimeZone=+3,00
+"""
