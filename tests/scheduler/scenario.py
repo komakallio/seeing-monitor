@@ -32,7 +32,7 @@ from seeingmon.drivers.base import CameraTimeoutError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, FrameData, Roi, StreamConfig, StreamKind
 from seeingmon.profile import load_profile
 from seeingmon.records import EventRecord, Record, SeeingWindowRecord, SkyQualityRecord
-from seeingmon.scheduler import Scheduler, SchedulerConfig, SiteConfig
+from seeingmon.scheduler import CommissionResult, Scheduler, SchedulerConfig, SiteConfig
 from seeingmon.scheduler.config import FastConfig, LoopConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
 from seeingmon.scheduler.levels import EscalationLevel
@@ -60,6 +60,7 @@ OFFSET_DN = 200  # the bias level of the frames
 SATURATION_DN = 65_532  # the bin2 saturation level in 16-bit counts, from the profile
 NIGHT_SKY_FRACTION = 2e-8  # the brightness of a dark sky at 1 ms, as a share of saturation
 REAL_FAST_EXPOSURE_MS = 2.0
+MAX_REAL_EXPOSURE_US = 100_000  # a longer fast exposure is the slow stream of the test
 SMALL_BIN2 = (640, 480)  # the full bin2 frame of the fake camera, much smaller than the real one
 
 TEST_CONFIG = SchedulerConfig(
@@ -203,6 +204,8 @@ class World:
         self.survey = ScenarioSurvey(self, survey_polls)
         self.pointing = FakePointingProvider()
         self.escalations: list[tuple[int, EscalationLevel]] = []
+        self.align_frames: list[Frame] = []
+        self.results: list[CommissionResult] = []
         self._lights: list[tuple[int, int, float]] = []
         self._clouds: list[tuple[int, int, float]] = []
         self._hidden: list[tuple[int, int, float]] = []
@@ -227,6 +230,8 @@ class World:
             config=self.config,
             site=site,
             escalate=self._escalate if escalate else None,
+            alignment_sink=self.align_frames.append,
+            result_sink=self.results.append,
         )
 
     # --- Time ---
@@ -344,11 +349,13 @@ class World:
         """The frame factory of the fake camera."""
         t_ns = self.clock.utc_ns()
         gain_factor = self._sky_scale(config.mode, config.gain)
-        # The fast stream runs 1,000 times slower here than on the real camera. The sky and the star
-        # use the real exposure of the fast stream, so that the frames look as they would.
+        # The fast stream of the test configuration runs 1,000 times slower than the real one. The
+        # sky then uses the real exposure of the fast stream, so that the frames look as they would.
+        # A sweep or a burst asks for a real exposure, and it gets that one.
+        slow_test_stream = config.exposure_us > MAX_REAL_EXPOSURE_US
         exposure_ms = (
             REAL_FAST_EXPOSURE_MS
-            if config.kind is StreamKind.VIDEO and config.mode == "bin1"
+            if slow_test_stream and config.kind is StreamKind.VIDEO and config.mode == "bin1"
             else config.exposure_us / 1000.0
         )
         sky_dn = self.sky_fraction_at_1ms(t_ns) * SATURATION_DN * exposure_ms * gain_factor
