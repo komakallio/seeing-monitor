@@ -25,6 +25,9 @@ the local configuration and never in the repository.
 drives every output off before it releases the lines. A line that nothing holds falls back to the
 board's default, so a HAT with its own failsafe should default to off.
 
+**Errors.** A failed libgpiod call raises `IoError` with the reason that the library gave in
+`errno`, such as "permission denied" or "the line is busy". The messages name no device path.
+
 **Not verified on hardware.** `LibgpiodIo` is tested against a stand-in for each libgpiod version.
 `docs/hardware-checks.md` lists the loopback test that confirms it on a real board.
 """
@@ -34,6 +37,8 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.util
+import errno
+import os
 import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -178,6 +183,27 @@ class FakeIo:
 
 # --- libgpiod ----------------------------------------------------------------------------
 
+_ERRNO_REASONS: Mapping[int, str] = {
+    errno.EACCES: "permission denied",
+    errno.EPERM: "permission denied",
+    errno.EBUSY: "the line is busy",
+    errno.ENOENT: "no such device",
+    errno.ENODEV: "no such device",
+}
+
+
+def _failure(message: str) -> IoError:
+    """The error for a libgpiod call that just failed, with the reason from `errno`.
+
+    The library loads with `use_errno`, so `ctypes.get_errno` holds the `errno` of the last call.
+    Read it before another call runs. A call that left no `errno` gives the message alone.
+    """
+    code = ctypes.get_errno()
+    if code == 0:
+        return IoError(message)
+    reason = _ERRNO_REASONS.get(code) or os.strerror(code)
+    return IoError(f"{message}: {reason[:1].lower()}{reason[1:]}")
+
 
 class _Backend(Protocol):
     """One API generation of libgpiod, reduced to the five operations that `LibgpiodIo` needs."""
@@ -232,7 +258,7 @@ class _GpiodV2:
         if path not in self._chips:
             chip = self._lib.gpiod_chip_open(path.encode())
             if not chip:
-                raise IoError("cannot open a GPIO chip")
+                raise _failure("cannot open a GPIO chip")
             self._chips[path] = chip
         return self._chips[path]
 
@@ -245,7 +271,7 @@ class _GpiodV2:
             line_config = lib.gpiod_line_config_new()
             request_config = lib.gpiod_request_config_new()
             if not (settings and line_config and request_config):
-                raise IoError("libgpiod could not allocate a request")
+                raise _failure("libgpiod could not allocate a request")
             if spec.direction == "output":
                 lib.gpiod_line_settings_set_direction(settings, self.DIRECTION_OUTPUT)
                 lib.gpiod_line_settings_set_output_value(settings, int(physical))
@@ -255,11 +281,11 @@ class _GpiodV2:
                     lib.gpiod_line_settings_set_bias(settings, self.BIAS[spec.bias])
             offsets = (ctypes.c_uint * 1)(spec.line)
             if lib.gpiod_line_config_add_line_settings(line_config, offsets, 1, settings) != 0:
-                raise IoError("libgpiod rejected the line settings")
+                raise _failure("libgpiod rejected the line settings")
             lib.gpiod_request_config_set_consumer(request_config, consumer.encode())
             request = lib.gpiod_chip_request_lines(chip, request_config, line_config)
             if not request:
-                raise IoError("libgpiod could not request the line")
+                raise _failure("libgpiod could not request the line")
             return request
         finally:
             for pointer, free in (
@@ -272,12 +298,12 @@ class _GpiodV2:
 
     def write(self, handle: object, spec: PinSpec, physical: bool) -> None:
         if self._lib.gpiod_line_request_set_value(handle, spec.line, int(physical)) != 0:
-            raise IoError("libgpiod could not set the line")
+            raise _failure("libgpiod could not set the line")
 
     def read(self, handle: object, spec: PinSpec) -> bool:
         value = self._lib.gpiod_line_request_get_value(handle, spec.line)
         if value < 0:
-            raise IoError("libgpiod could not read the line")
+            raise _failure("libgpiod could not read the line")
         return bool(value)
 
     def release(self, handle: object) -> None:
@@ -318,28 +344,28 @@ class _GpiodV1:
         if path not in self._chips:
             chip = self._lib.gpiod_chip_open(path.encode())
             if not chip:
-                raise IoError("cannot open a GPIO chip")
+                raise _failure("cannot open a GPIO chip")
             self._chips[path] = chip
         line = self._lib.gpiod_chip_get_line(self._chips[path], spec.line)
         if not line:
-            raise IoError("libgpiod has no such line")
+            raise _failure("libgpiod has no such line")
         if spec.direction == "output":
             status = self._lib.gpiod_line_request_output(line, consumer.encode(), int(physical))
         else:
             flags = self.FLAG_BIAS[spec.bias]
             status = self._lib.gpiod_line_request_input_flags(line, consumer.encode(), flags)
         if status != 0:
-            raise IoError("libgpiod could not request the line")
+            raise _failure("libgpiod could not request the line")
         return line
 
     def write(self, handle: object, spec: PinSpec, physical: bool) -> None:
         if self._lib.gpiod_line_set_value(handle, int(physical)) != 0:
-            raise IoError("libgpiod could not set the line")
+            raise _failure("libgpiod could not set the line")
 
     def read(self, handle: object, spec: PinSpec) -> bool:
         value = self._lib.gpiod_line_get_value(handle)
         if value < 0:
-            raise IoError("libgpiod could not read the line")
+            raise _failure("libgpiod could not read the line")
         return bool(value)
 
     def release(self, handle: object) -> None:
@@ -356,11 +382,16 @@ def _is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
+def _load_cdll(name: str) -> Any:
+    """Load a shared library so that `ctypes.get_errno` reports the errno of its failed calls."""
+    return ctypes.CDLL(name, use_errno=True)
+
+
 def load_libgpiod(
     library: Any | None = None,
     *,
     path: str | None = None,
-    loader: Callable[[str], Any] = ctypes.CDLL,
+    loader: Callable[[str], Any] = _load_cdll,
     find_library: Callable[[str], str | None] = ctypes.util.find_library,
 ) -> _Backend:
     """Load libgpiod and pick the API generation by the functions that the library exports.

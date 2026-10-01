@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,13 @@ from tests.hardware.gpiod_fakes import FakeGpiodV1, FakeGpiodV2
 
 HEATER = PinSpec(chip="gpiochip0", line=17)
 FAULT = PinSpec(chip="gpiochip0", line=27, direction="input")
+
+
+@pytest.fixture(autouse=True)
+def _clean_errno() -> Iterator[None]:
+    """Leave no errno behind: a stand-in sets it, and a later test would read it."""
+    yield
+    ctypes.set_errno(0)
 
 
 class TestPinSpec:
@@ -257,6 +267,85 @@ class TestLibgpiodV1:
         library.fail.add("gpiod_chip_get_line")
         with pytest.raises(IoError, match="no such line"):
             LibgpiodIo({"heater": HEATER}, library=library)
+
+
+class TestFailureReasons:
+    """A failed call names the reason that libgpiod left in `errno`, and no device path."""
+
+    @pytest.mark.parametrize(
+        ("code", "reason"),
+        [
+            (errno.EACCES, "permission denied"),
+            (errno.EPERM, "permission denied"),
+            (errno.EBUSY, "the line is busy"),
+            (errno.ENOENT, "no such device"),
+            (errno.ENODEV, "no such device"),
+            (errno.EINVAL, "invalid argument"),
+        ],
+    )
+    def test_a_refused_request_gives_its_reason(self, code: int, reason: str) -> None:
+        library = FakeGpiodV2()
+        library.fail.add("gpiod_chip_request_lines")
+        library.errno = code
+        with pytest.raises(IoError) as error:
+            LibgpiodIo({"heater": HEATER}, library=library)
+        assert str(error.value) == f"libgpiod could not request the line: {reason}"
+
+    def test_a_chip_that_does_not_open_gives_its_reason_in_both_versions(self) -> None:
+        for library in (FakeGpiodV2(), FakeGpiodV1()):
+            library.fail.add("gpiod_chip_open")
+            library.errno = errno.EACCES
+            with pytest.raises(IoError) as error:
+                LibgpiodIo({"heater": HEATER}, library=library)
+            assert str(error.value) == "cannot open a GPIO chip: permission denied"
+
+    def test_a_busy_line_in_version_1_gives_its_reason(self) -> None:
+        library = FakeGpiodV1()
+        library.fail.add("gpiod_line_request_output")
+        library.errno = errno.EBUSY
+        with pytest.raises(IoError) as error:
+            LibgpiodIo({"heater": HEATER}, library=library)
+        assert str(error.value) == "libgpiod could not request the line: the line is busy"
+
+    def test_a_failed_write_and_read_give_their_reason(self) -> None:
+        library = FakeGpiodV2()
+        io = LibgpiodIo({"heater": HEATER, "fault": FAULT}, library=library)
+        library.fail.update({"gpiod_line_request_set_value", "gpiod_line_request_get_value"})
+        library.errno = errno.EIO
+        with pytest.raises(IoError, match="could not set the line: input/output error"):
+            io.set_output("heater", True)
+        with pytest.raises(IoError, match="could not read the line: input/output error"):
+            io.read_input("fault")
+
+    def test_a_call_that_leaves_no_errno_gives_the_message_alone(self) -> None:
+        library = FakeGpiodV2()
+        library.fail.add("gpiod_chip_request_lines")
+        with pytest.raises(IoError) as error:
+            LibgpiodIo({"heater": HEATER}, library=library)
+        assert str(error.value) == "libgpiod could not request the line"
+
+    def test_no_message_carries_a_device_path_or_a_pin(self) -> None:
+        library = FakeGpiodV2()
+        library.fail.add("gpiod_chip_open")
+        library.errno = errno.ENOENT
+        with pytest.raises(IoError) as error:
+            LibgpiodIo({"heater": HEATER}, library=library)
+        assert "/dev" not in str(error.value)
+        assert "gpiochip" not in str(error.value)
+
+    def test_the_default_loader_asks_ctypes_to_keep_errno(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def cdll(name: str, **options: object) -> FakeGpiodV2:
+            calls.append((name, options))
+            return FakeGpiodV2()
+
+        monkeypatch.setattr(ctypes, "CDLL", cdll)
+        monkeypatch.setattr("seeingmon.hardware.io._is_linux", lambda: True)
+        load_libgpiod(path="gpiod-here")
+        assert calls == [("gpiod-here", {"use_errno": True})]
 
 
 class TestLoading:

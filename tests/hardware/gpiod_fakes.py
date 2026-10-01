@@ -9,6 +9,7 @@ function, so the code under test can set `argtypes` and `restype` on it.
 
 from __future__ import annotations
 
+import ctypes
 from typing import Any
 
 
@@ -17,6 +18,7 @@ class _FakeGpiod:
         self.levels: dict[tuple[str, int], int] = {}
         self.wires: dict[tuple[str, int], tuple[str, int]] = {}  # input line -> output line
         self.fail: set[str] = set()  # function names that report a failure
+        self.errno = 0  # the errno that a failing function leaves, as the C library does
         self.log: list[str] = []
         self.opened: list[str] = []
         self.closed_chips = 0
@@ -35,6 +37,7 @@ class _FakeGpiod:
         def called(*args: Any) -> Any:
             self.log.append(name)
             if name in self.fail:
+                ctypes.set_errno(self.errno)
                 return None if name.endswith(("_new", "_open", "request_lines", "get_line")) else -1
             return function(*args)
 
