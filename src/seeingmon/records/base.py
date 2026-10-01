@@ -543,10 +543,16 @@ def field_specs(record: str | type[Record]) -> tuple[FieldSpec, ...]:
 
 
 class RecordRegistry(Mapping[str, "type[Record]"]):
-    """The record types by name, in declaration order. The first read imports the declarations."""
+    """The record types by name. The first read imports the declaration modules.
+
+    The order is the same on every run, whatever the import order was: first the order of
+    `DECLARATION_MODULES`, then the order of the class statements in a module. The generated
+    files depend on that order.
+    """
 
     def __init__(self) -> None:
         self._types: dict[str, type[Record]] = {}
+        self._sequence: dict[str, int] = {}
         self._loaded = False
 
     def register(self, cls: type[Record]) -> None:
@@ -557,6 +563,7 @@ class RecordRegistry(Mapping[str, "type[Record]"]):
                 f"record type {cls.record_type!r} is already declared by {existing.__name__}"
             )
         self._types[cls.record_type] = cls
+        self._sequence.setdefault(cls.record_type, len(self._sequence))
 
     def _load(self) -> None:
         if self._loaded:
@@ -569,17 +576,26 @@ class RecordRegistry(Mapping[str, "type[Record]"]):
             self._loaded = False
             raise
 
+    def _position(self, name: str) -> tuple[int, int]:
+        module = self._types[name].__module__.removeprefix("seeingmon.records.")
+        rank = (
+            DECLARATION_MODULES.index(module)
+            if module in DECLARATION_MODULES
+            else len(DECLARATION_MODULES)
+        )
+        return rank, self._sequence[name]
+
     def __getitem__(self, name: str) -> type[Record]:
         self._load()
         try:
             return self._types[name]
         except KeyError:
-            known = ", ".join(self._types)
+            known = ", ".join(self)
             raise KeyError(f"unknown record type {name!r}; the known types are {known}") from None
 
     def __iter__(self) -> Iterator[str]:
         self._load()
-        return iter(self._types)
+        return iter(sorted(self._types, key=self._position))
 
     def __len__(self) -> int:
         self._load()

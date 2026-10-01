@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from seeingmon.records.base import RECORD_TYPES, Record, field_specs
@@ -47,6 +50,21 @@ def test_the_record_types_of_the_architecture_are_declared() -> None:
     for name, expected in ARCHITECTURE_RECORD_TYPES.items():
         assert declared.get(name) == expected, name
     assert list(RECORD_TYPES)[: len(ARCHITECTURE_RECORD_TYPES)] == list(ARCHITECTURE_RECORD_TYPES)
+
+
+def test_the_order_of_the_registry_does_not_depend_on_the_import_order() -> None:
+    # The generated files list the record types in registry order, so a lane that imports its
+    # own declaration module first must not change that order.
+    code = (
+        "import seeingmon.records.system, seeingmon.records.reference\n"
+        "from seeingmon.records.base import RECORD_TYPES\n"
+        "print(','.join(RECORD_TYPES))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=120
+    )
+    names = result.stdout.strip().split(",")
+    assert names[: len(ARCHITECTURE_RECORD_TYPES)] == list(ARCHITECTURE_RECORD_TYPES)
 
 
 @pytest.mark.parametrize("cls", ALL_RECORD_TYPES, ids=type_id)
