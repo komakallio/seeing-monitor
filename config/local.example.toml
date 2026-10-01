@@ -38,10 +38,13 @@ recordings_dir = "<path to the recordings folder>"
 
 [auth]
 # The hash of the API token that authorizes commands. Store the hash, never the token. Create both
-# with `seeingmon web hash-token --generate`: keep the token in a password manager, and paste the
-# hash here. The hash may instead come from SEEINGMON_AUTH__TOKEN_HASH, from a systemd credential
-# named seeingmon-token-hash, or from a file (token_hash_file = "<path to a file with the hash>").
-# Without a hash, the API refuses every command.
+# with `seeingmon web hash-token --generate`: the command prints the token on the standard error,
+# for you to keep in a password manager, and the hash on the standard output, for you to paste here.
+# Run `seeingmon web hash-token` alone to hash a token of your own: it reads the token from a
+# hidden prompt or from the standard input, never from an argument. The hash may instead come from
+# SEEINGMON_AUTH__TOKEN_HASH, from a systemd credential named seeingmon-token-hash, or from a file
+# (token_hash_file = "<path to a file with the hash>"). Without a hash, the API refuses every
+# command.
 token_hash = "<hash of the API token>"
 
 # The web process: the REST API, the UI, and the alignment live view. The defaults live in

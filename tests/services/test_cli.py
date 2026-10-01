@@ -20,7 +20,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
 
 
-@pytest.mark.parametrize("name", ["core", "web"])
+@pytest.mark.parametrize("name", ["core"])
 def test_the_other_processes_exit_with_a_clear_message_until_they_exist(
     name: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

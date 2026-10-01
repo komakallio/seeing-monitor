@@ -2,8 +2,9 @@
 
 `seeingmon acquire` runs the process that owns the camera driver (see
 `seeingmon.services.acquire`). Under systemd, its unit runs this command with `Type=notify`.
-`seeingmon core` and `seeingmon web` are registered so that unit files can name them. They exit
-with a message until the next part of step 9 builds them.
+`seeingmon core` is registered so that unit files can name it. It exits with a message until the
+next part of step 9 builds it. `seeingmon web` lives in `seeingmon.services.web.cli`, which this
+module registers.
 
 `acquire` reads the `[services]` section of the configuration (see
 `seeingmon.services.config`). The options override a few values for a single run:
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from seeingmon.cli import CliError, Subparsers, add_command
+from seeingmon.services.web.cli import register as register_web
 
 EXIT_NOT_IMPLEMENTED = 3
 LOG_LEVELS = ("debug", "info", "warning", "error")
@@ -55,9 +57,9 @@ def register(subparsers: Subparsers) -> None:
     acquire.add_argument("--log-level", choices=LOG_LEVELS, default="info")
     for name, text in (
         ("core", "Run the core process: scheduler, analysis, and store. Not available yet."),
-        ("web", "Run the web process: REST API and UI. Not available yet."),
     ):
         add_command(subparsers, name, help=text, handler=_not_available(name))
+    register_web(subparsers)
 
 
 def _not_available(name: str) -> Any:

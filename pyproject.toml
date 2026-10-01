@@ -34,7 +34,8 @@ fast = ["scipy>=1.13"]
 # `sep` is the Python wrapper of Source Extractor (LGPL-3.0-or-later). Its wheels cover Windows
 # x64, Linux x64, and Linux arm64 on Python 3.11 and 3.13.
 survey = ["seeingmon[fast]", "astropy>=6.1", "pyerfa>=2.0.1", "sep>=1.4"]
-web = ["fastapi>=0.115", "uvicorn>=0.30", "pillow>=10.4"]
+# uvicorn needs `websockets` to accept the WebSocket of the alignment live view.
+web = ["fastapi>=0.115", "uvicorn>=0.30", "websockets>=13", "pillow>=10.4"]
 timescale = ["psycopg[binary]>=3.2"]
 
 [project.scripts]
