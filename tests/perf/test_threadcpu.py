@@ -8,7 +8,8 @@ import time
 import pytest
 
 from seeingmon.perf.cases.fastmodes import FAST_MODES
-from seeingmon.perf.cases.ipc import RunResult, figures
+from seeingmon.perf.cases.ipc import RunResult, figures, saturated_figures
+from seeingmon.perf.report import Measurement
 from seeingmon.perf.threadcpu import thread_cpu_ns, threads_cpu_ns
 
 
@@ -77,7 +78,12 @@ class TestThreadCpu:
 
 
 def run_result(
-    sent: int = 400, acquire_cpu_ms: float = 200.0, core_cpu_ms: float = 120.0
+    sent: int = 400,
+    acquire_cpu_ms: float = 200.0,
+    core_cpu_ms: float = 120.0,
+    captured: int | None = None,
+    capture_ms: float = 80.0,
+    sender_ms: float = 90.0,
 ) -> RunResult:
     return RunResult(
         received=sent,
@@ -86,14 +92,14 @@ def run_result(
         acquire={
             "cpu_ns": round(acquire_cpu_ms * 1e6),
             "frames_sent": sent,
-            "frames_captured": sent + 3,
+            "frames_captured": sent + 3 if captured is None else captured,
             "dropped_queue": 0,
             "dropped_gap": 1,
             "queue_peak_frames": 4,
             "peak_rss_bytes": 50_000_000,
             "threads_cpu_ns": {
-                "acquire-capture": 80_000_000,
-                "acquire-sender": 90_000_000,
+                "acquire-capture": round(capture_ms * 1e6),
+                "acquire-sender": round(sender_ms * 1e6),
                 "acquire-control": 6_000_000,
                 "acquire-watchdog": 4_000_000,
             },
@@ -147,3 +153,50 @@ class TestFigures:
     def test_the_figures_are_in_the_classes_that_the_budgets_scale(self) -> None:
         assert {item.scale for item in figures("", 98.0, [run_result()])} == {"interpreter"}
         assert FAST_MODES[0].shape == (128, 128)
+
+
+class TestSaturatedFigures:
+    """The saturated run gives the work without wake-ups, and the nominal run the rest."""
+
+    def figures(self, **saturated: float) -> dict[str, Measurement]:
+        nominal = [run_result(acquire_cpu_ms=400.0, core_cpu_ms=240.0)]  # 1,000 and 600 us
+        run = run_result(sent=1000, captured=3000, **saturated)
+        return {item.name: item for item in saturated_figures(run, nominal, 98.0)}
+
+    def test_the_work_is_the_thread_time_per_frame_that_each_thread_handled(self) -> None:
+        found = self.figures(capture_ms=300.0, sender_ms=150.0, acquire_cpu_ms=500.0)
+        # The capture thread took 300 ms for 3,000 captured frames (100 us each). The sender took
+        # 150 ms and the control and watchdog threads 10 ms for 1,000 sent frames (160 us each).
+        assert found["saturated.acquire.compute_us"].value == pytest.approx(260.0)
+        assert found["saturated.core_rx.compute_us"].value == pytest.approx(
+            120.0
+        )  # 120 ms over 1,000
+        assert found["saturated.acquire.compute_us"].detail["frames_captured"] == 3000
+
+    def test_the_wake_ups_are_what_the_paced_run_costs_beyond_the_work(self) -> None:
+        found = self.figures(capture_ms=300.0, sender_ms=150.0, acquire_cpu_ms=500.0)
+        assert found["acquire.compute_share"].value == pytest.approx(260.0 * 98 / 1e4)
+        assert found["acquire.wakeup_share"].value == pytest.approx((1000.0 - 260.0) * 98 / 1e4)
+        assert found["core_rx.wakeup_share"].value == pytest.approx((600.0 - 120.0) * 98 / 1e4)
+
+    def test_each_part_is_in_its_own_scale_class(self) -> None:
+        found = self.figures()
+        assert found["acquire.compute_share"].scale == "interpreter"
+        assert found["core_rx.compute_share"].scale == "interpreter"
+        assert found["acquire.wakeup_share"].scale == "scheduler"
+        assert found["core_rx.wakeup_share"].scale == "scheduler"
+
+    def test_a_paced_run_cheaper_than_the_saturated_one_leaves_a_tiny_positive_wake_up_share(
+        self,
+    ) -> None:
+        nominal = [run_result(acquire_cpu_ms=10.0, core_cpu_ms=10.0)]  # 25 us per frame
+        run = run_result(sent=1000, captured=1000, capture_ms=500.0, sender_ms=500.0)
+        found = {item.name: item for item in saturated_figures(run, nominal, 98.0)}
+        assert 0 < found["acquire.wakeup_share"].value < 1e-3
+
+    def test_without_thread_clocks_the_whole_process_is_the_upper_bound(self) -> None:
+        run = run_result(sent=1000, captured=1000, acquire_cpu_ms=300.0)
+        run.acquire["threads_cpu_ns"] = {}
+        found = {item.name: item for item in saturated_figures(run, [run_result()], 98.0)}
+        assert found["saturated.acquire.compute_us"].value == pytest.approx(300.0)
+        assert "no thread clocks" in str(found["saturated.acquire.compute_us"].detail["basis"])

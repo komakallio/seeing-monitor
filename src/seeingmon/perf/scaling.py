@@ -67,6 +67,18 @@ PI4_SCALING: Mapping[str, ScaleRange] = {
         "does little work costs the interpreter ratio, which is 7 to 11 times. The range runs "
         "from the vector-bound end to the call-bound end.",
     ),
+    "scheduler": ScaleRange(
+        "scheduler",
+        1.0,
+        4.0,
+        "Thread wake-ups and system calls: the part of a stream that a sleeping thread costs",
+        "Assumption. A wake-up costs the scheduler of the kernel and the memory system, and not "
+        "the instruction stream. On a Pi 4 with Linux, a Python thread hand-off takes about as "
+        "long as it takes on the reference machine in a virtual machine on a hybrid laptop "
+        "core, which has expensive wake-ups, so the range starts at 1. The Pi's slower core and "
+        "memory make it up to 4 times longer. The `thread_handoff` workload of the `calibration` "
+        "case measures the ratio.",
+    ),
     "memory": ScaleRange(
         "memory",
         0.7,

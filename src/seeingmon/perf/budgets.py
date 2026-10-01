@@ -12,6 +12,12 @@ within the limit, `fail` when the whole range is above it, and `marginal` when t
 the limit. A report with the label `pi4` and a measured `calibration` case gives a measurement:
 the figures are compared with the limits directly, and the verdict is `pass` or `fail`.
 
+**Rows.** The fast path has two rows for the planned mode: the fast path as the brief defines it
+(the kernel, the window, and the segment append), and the fast path with the cost of receiving the
+frames from `acquire`, which the same consumer in `core` pays. A figure that mixes work and thread
+wake-ups, such as the stream between the two processes, is split in the `ipc` case, so that the
+work scales with the speed of the processor and the wake-ups with the `scheduler` range.
+
 A budget whose figures are missing, because a case skipped or failed, has the verdict `n/a`.
 """
 
@@ -83,12 +89,13 @@ class BudgetVerdict:
 
 
 def fast_path_budget(
-    mode: str, rate_hz: float, title: str, key: str, *, receive: str | None = None
+    mode: str, rate_hz: float, title: str, key: str, *, receive: bool = False
 ) -> Budget:
     """The 25% budget of the fast path for a mode at a frame rate (per frame: 25% of the period).
 
-    With `receive`, the budget also counts the cost of receiving the frames from `acquire`, which
-    is the name of that figure in the `ipc` case. The fast-path consumer of `core` pays it.
+    With `receive`, the budget also counts the cost of receiving the frames from `acquire`, in the
+    two parts that the `ipc` case measures: the work, and the wake-ups. The fast-path consumer of
+    `core` pays it.
     """
     per_frame_ms = 0.25 / rate_hz * 1e3
     terms = [
@@ -96,8 +103,9 @@ def fast_path_budget(
         Term("window close", "fastpath", f"{mode}.close_share"),
         Term("segment append", "fastpath", f"{mode}.append_share"),
     ]
-    if receive is not None:
-        terms.append(Term("receive from acquire", "ipc", receive))
+    if receive:
+        terms.append(Term("receive, the work", "ipc", "core_rx.compute_share"))
+        terms.append(Term("receive, the wake-ups", "ipc", "core_rx.wakeup_share"))
     return Budget(
         key=key,
         title=f"{title}, {rate_hz:g} fps ({per_frame_ms:.2f} ms per frame)",
@@ -132,7 +140,10 @@ def build_budgets(report: Report) -> list[Budget]:
             f"acquire, bin1 128 x 128 at {FAST_RATE_BIN1_HZ:g} fps",
             10.0,
             "% of one core",
-            (Term("acquire process", "ipc", "acquire.share"),),
+            (
+                Term("acquire, the work", "ipc", "acquire.compute_share"),
+                Term("acquire, the wake-ups", "ipc", "acquire.wakeup_share"),
+            ),
         ),
         fast_path_budget(
             "bin1_128x128_u16", FAST_RATE_BIN1_HZ, "Fast path, bin1 128 x 128", "fast-bin1"
@@ -142,17 +153,10 @@ def build_budgets(report: Report) -> list[Budget]:
             FAST_RATE_BIN1_HZ,
             "Fast path and receive, bin1 128 x 128",
             "core-bin1",
-            receive="core_rx.share",
+            receive=True,
         ),
         fast_path_budget(
             "bin2_64x64_u16", FAST_RATE_BIN2_HZ, "Fast path, bin2 64 x 64", "fast-bin2"
-        ),
-        fast_path_budget(
-            "bin2_64x64_u16",
-            FAST_RATE_BIN2_HZ,
-            "Fast path and receive, bin2 64 x 64",
-            "core-bin2",
-            receive="bin2.core_rx.share",
         ),
         Budget(
             "survey-time",

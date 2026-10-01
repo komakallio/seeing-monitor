@@ -1,6 +1,6 @@
 """The `acquire` side of the `ipc` case, in a process of its own.
 
-    python -m seeingmon.perf._acquire --address ADDRESS --pool FILE
+    python -m seeingmon.perf._acquire --address ADDRESS --pool FILE [--virtual-clock]
 
 The process runs an `AcquireService` with a fake camera that replays the frames of a pool (a NumPy
 `.npz` file that the case wrote, with one array of frames for each ROI size, such as `f128x128`).
@@ -8,6 +8,11 @@ The fake costs almost nothing, so the CPU time that the process uses is the cost
 itself: the capture thread, the time stamper, the queue, and the sender. The fake has no readout
 time, so the exposure of a stream is its frame period, and the frame rate is the inverse of the
 exposure.
+
+With `--virtual-clock`, the fake camera does not sleep: it advances a virtual clock instead, so the
+capture thread runs as fast as it can and never waits. The queue then drops the frames that the
+sender cannot take, and the CPU time of each thread, per frame that it handled, is the cost of the
+work without the wake-ups of a paced stream.
 
 The process reads commands from its standard input, one per line, and answers on its standard
 output:
@@ -57,11 +62,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run acquire with a fake camera for a benchmark.")
     parser.add_argument("--address", required=True, help="the socket path or pipe of the service")
     parser.add_argument("--pool", required=True, help="the NumPy file with the frames to replay")
+    parser.add_argument(
+        "--virtual-clock", action="store_true", help="never sleep: run the camera as fast as it can"
+    )
     args = parser.parse_args(argv)
 
     import numpy as np
 
-    from seeingmon.clock import SystemClock
+    from seeingmon.clock import Clock, SystemClock, VirtualClock
     from seeingmon.services.acquire.service import AcquireService
     from seeingmon.services.config import AcquireSettings, ServicesConfig
     from seeingmon.services.ipc.endpoint import Endpoint
@@ -76,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pool = pools[f"f{roi.height}x{roi.width}"]
         return pool[seq % len(pool)]
 
-    clock = SystemClock()
+    clock: Clock = VirtualClock() if args.virtual_clock else SystemClock()
     # The fake has no readout time, so the exposure of a stream is its frame period.
     driver = FakeCameraDriver(clock, overhead_s=0.0, row_time_s=0.0, frame_factory=next_frame)
     settings = ServicesConfig(

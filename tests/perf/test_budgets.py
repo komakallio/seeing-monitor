@@ -73,6 +73,32 @@ class TestEstimates:
         assert item.high == pytest.approx(2.2 * numpy.high + 0.1 * interpreter.high)
         assert not item.measured
 
+    def test_the_work_and_the_wake_ups_of_acquire_are_scaled_apart(self) -> None:
+        item = verdicts(fixture_report())["acquire-cpu"]
+        interpreter, scheduler = PI4_SCALING["interpreter"], PI4_SCALING["scheduler"]
+        assert item.value == pytest.approx(0.5)  # 0.3 for the work, 0.2 for the wake-ups
+        assert item.low == pytest.approx(0.3 * interpreter.low + 0.2 * scheduler.low)
+        assert item.high == pytest.approx(0.3 * interpreter.high + 0.2 * scheduler.high)
+
+    def test_the_receive_adds_to_the_fast_path_in_the_core_row_only(self) -> None:
+        found = verdicts(fixture_report())
+        plain, core = found["fast-bin1"], found["core-bin1"]
+        interpreter, scheduler = PI4_SCALING["interpreter"], PI4_SCALING["scheduler"]
+        assert plain.value is not None
+        assert plain.low is not None
+        assert plain.high is not None
+        assert core.value == pytest.approx(plain.value + 0.3 + 0.1)
+        assert core.low == pytest.approx(plain.low + 0.3 * interpreter.low + 0.1 * scheduler.low)
+        assert core.high == pytest.approx(
+            plain.high + 0.3 * interpreter.high + 0.1 * scheduler.high
+        )
+        assert "core-bin2" not in found  # only the planned mode counts the receive
+
+    def test_a_costly_receive_makes_the_core_row_fail_while_the_fast_path_passes(self) -> None:
+        found = verdicts(fixture_report(rx_compute=4.0, rx_wakeup=1.0))
+        assert found["fast-bin1"].verdict == "pass"
+        assert found["core-bin1"].verdict == "fail"
+
     def test_the_memory_budget_adds_the_assumed_share_of_the_operating_system(self) -> None:
         item = verdicts(fixture_report())["memory-1.4"]
         memory = PI4_SCALING["memory"]
@@ -113,7 +139,10 @@ class TestEstimates:
         found = verdicts(without_ipc)
         assert found["acquire-cpu"].verdict == "n/a"
         assert found["acquire-cpu"].value is None
-        assert found["acquire-cpu"].missing == ("ipc: acquire.share",)
+        assert found["acquire-cpu"].missing == (
+            "ipc: acquire.compute_share",
+            "ipc: acquire.wakeup_share",
+        )
         assert found["memory-1.4"].verdict == "n/a"
         assert found["fast-bin1"].verdict == "pass"  # the other budgets stand
 
@@ -272,4 +301,4 @@ class TestFormat:
         bare = Report(report.label, report.smoke, report.created_utc, report.environment, ())
         text = format_verdicts(evaluate(bare))
         assert "n/a" in text
-        assert "ipc: acquire.share" in text
+        assert "ipc: acquire.compute_share" in text

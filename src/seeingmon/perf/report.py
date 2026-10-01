@@ -27,7 +27,7 @@ Status = Literal["ok", "skipped", "failed"]
 STATUSES: tuple[Status, ...] = ("ok", "skipped", "failed")
 
 # The classes of code that the Raspberry Pi 4 estimate scales differently.
-SCALES = ("none", "numpy", "interpreter", "memory")
+SCALES = ("none", "numpy", "interpreter", "scheduler", "memory")
 
 DetailValue = float | int | str
 

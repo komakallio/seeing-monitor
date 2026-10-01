@@ -16,22 +16,24 @@ The camera paces itself on the real clock. The case runs
   reports the median of the runs and their spread. The CPU time of each process, per frame and as a
   share of one core, is the figure to compare with the 10% budget of `acquire`. The detail of the
   figure splits the CPU time of `acquire` among its threads;
-- **stress**: bin1 at four times the nominal rate. The processes work harder, so the CPU clock
-  (coarse on Windows) reads them more accurately, and the drop counters show whether the layer
-  keeps up;
-- **bin2**: 64 x 64 at 360 frames per second, for the receive cost of the second fast mode.
+- **bin2**: 64 x 64 at 360 frames per second, for the receive cost of the second fast mode;
+- **saturated**: bin1 with a camera that never sleeps (a virtual clock), so that no thread waits
+  for a frame. The CPU time of each thread, per frame that it handled, is then the cost of the
+  work without wake-ups, and the processes work flat out, so the CPU clock (coarse on Windows)
+  reads them accurately.
+
+**Why two kinds of run.** The cost per frame of a paced stream is dominated by thread wake-ups: the
+capture thread sleeps until the next frame, the sender wakes for each frame, and the reader of
+`core` wakes for each message. The cost of a wake-up depends on the operating system and, in a
+virtual machine, on the hypervisor, so it transfers to a Pi 4 less well than the cost of the work.
+The saturated run measures the work. The nominal share minus the saturated share is the share that
+the wake-ups take, and the budgets scale the two parts apart: the work with the `interpreter`
+range, and the wake-ups with the `scheduler` range. The `calibration` case has a thread hand-off
+workload that measures the cost of a wake-up on each machine.
 
 The CPU time of the `core` side is what receiving costs `core`: the stream reader thread and the
-decoder. It adds to the fast path in the 25% budget, so the budgets include it in a second row.
-An unthrottled source is not a useful test: the capture thread then outruns the sender, the queue
-drops frames, and the figure shows how the interpreter shares its lock between threads. The vendor
-SDK and the USB transfer cost something too, and the harness does not measure them.
-
-**Read the figure with care.** The cost per frame is dominated by thread wake-ups: the capture
-thread sleeps until the next frame, the sender wakes for each frame, and the reader of `core`
-wakes for each message. The cost of a wake-up depends on the operating system and, in a virtual
-machine, on the hypervisor, so this case transfers to a Pi 4 less well than the others do. The
-`calibration` case has a thread hand-off workload that measures the same effect on each machine.
+decoder. It adds to the fast path in the 25% budget, so the budgets include it in a second row. The
+vendor SDK and the USB transfer cost something too, and the harness does not measure them.
 """
 
 from __future__ import annotations
@@ -65,7 +67,6 @@ if TYPE_CHECKING:
 
 NOMINAL_HZ = 98.0
 BIN2_HZ = 360.0
-STRESS_FACTOR = 4.0
 _COMMAND_TIMEOUT_S = 60.0
 _ERROR_LINES = 12
 _FLOOR = 1e-3  # microseconds, for a CPU time below the resolution of the CPU clock
@@ -74,7 +75,9 @@ _FLOOR = 1e-3  # microseconds, for a CPU time below the resolution of the CPU cl
 class AcquireProcess:
     """The `acquire` helper process: a line-based control channel on its standard streams."""
 
-    def __init__(self, endpoint: Endpoint, key_text: str, pool_path: Path) -> None:
+    def __init__(
+        self, endpoint: Endpoint, key_text: str, pool_path: Path, *, virtual_clock: bool = False
+    ) -> None:
         self._process = subprocess.Popen(
             [
                 sys.executable,
@@ -84,6 +87,7 @@ class AcquireProcess:
                 str(endpoint),
                 "--pool",
                 str(pool_path),
+                *(["--virtual-clock"] if virtual_clock else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -203,13 +207,15 @@ def _per_frame_us(cpu_ns: float, frames: int) -> float:
 class Session:
     """The `acquire` process and the driver that reads from it, for several runs."""
 
-    def __init__(self, folder: Path, pool_path: Path) -> None:
+    def __init__(self, folder: Path, pool_path: Path, *, virtual_clock: bool = False) -> None:
         from seeingmon.services.ipc.keys import ConnectionKey
         from seeingmon.services.remote import RemoteCameraDriver
 
         self._endpoint = new_endpoint(folder)
         key_text = secrets.token_urlsafe(32)
-        self._helper = AcquireProcess(self._endpoint, key_text, pool_path)
+        self._helper = AcquireProcess(
+            self._endpoint, key_text, pool_path, virtual_clock=virtual_clock
+        )
         self._key = ConnectionKey.from_text(key_text)
         self._driver_class = RemoteCameraDriver
         self._driver: CameraDriver | None = None
@@ -340,6 +346,79 @@ def figures(
     return out
 
 
+def saturated_figures(
+    saturated: RunResult, nominal: list[RunResult], rate_hz: float
+) -> list[Measurement]:
+    """The cost of the work without wake-ups, and the share of a paced stream that wake-ups take.
+
+    In the saturated run the camera never sleeps, so no thread waits for a frame. The CPU time of
+    each thread, per frame that it handled, is then the cost of the work itself: the capture
+    thread per captured frame, and the other threads per sent frame. The nominal figure is the
+    median of the paced runs. Its excess over the saturated cost is what the wake-ups and the cold
+    caches of a paced stream add.
+    """
+    acquire = saturated.acquire
+    captured = max(int(acquire["frames_captured"]), 1)
+    sent = max(int(acquire["frames_sent"]), 1)
+    threads: dict[str, int] = acquire["threads_cpu_ns"]
+    capture_ns = sum(used for name, used in threads.items() if "capture" in name)
+    if capture_ns > 0:
+        rest_ns = sum(threads.values()) - capture_ns
+        acquire_us = capture_ns / captured / 1e3 + rest_ns / sent / 1e3
+        how = "capture thread per captured frame, other threads per sent frame"
+    else:  # a platform without thread clocks: the whole process per sent frame, an upper bound
+        acquire_us = float(acquire["cpu_ns"]) / sent / 1e3
+        how = "whole process per sent frame (no thread clocks on this platform)"
+    acquire_us = max(acquire_us, _FLOOR)
+    core_us = saturated.core_us
+    share = rate_hz / 1e4
+    detail: dict[str, float | int | str] = {
+        "rate_hz": rate_hz,
+        "frames_captured": captured,
+        "frames_sent": sent,
+        "frames_received": saturated.received,
+        "received_fps": round(saturated.received / saturated.wall_s, 1),
+        "dropped_at_queue": int(acquire["dropped_queue"]),
+        "basis": how,
+    }
+    out = [
+        Measurement(
+            "saturated.acquire.compute_us", "us/frame", acquire_us, None, "interpreter", detail
+        ),
+        Measurement(
+            "saturated.core_rx.compute_us", "us/frame", core_us, None, "interpreter", dict(detail)
+        ),
+    ]
+    sides = (
+        ("acquire", acquire_us, statistics.median(run.acquire_us for run in nominal)),
+        ("core_rx", core_us, statistics.median(run.core_us for run in nominal)),
+    )
+    for side, compute_us, paced_us in sides:
+        compute_share = compute_us * share
+        wakeup_share = max((paced_us - compute_us) * share, _FLOOR * share)
+        out.append(
+            Measurement(
+                f"{side}.compute_share",
+                "percent",
+                compute_share,
+                None,
+                "interpreter",
+                {"share_at_hz": rate_hz, "from": "saturated run"},
+            )
+        )
+        out.append(
+            Measurement(
+                f"{side}.wakeup_share",
+                "percent",
+                wakeup_share,
+                None,
+                "scheduler",
+                {"share_at_hz": rate_hz, "from": "paced run minus saturated run"},
+            )
+        )
+    return out
+
+
 @REGISTRY.case("ipc", summary="Cost of moving a frame from acquire to core, in CPU time per frame")
 def ipc(ctx: CaseContext) -> list[Measurement]:
     import numpy as np
@@ -361,7 +440,8 @@ def ipc(ctx: CaseContext) -> list[Measurement]:
         }
         np.savez(pool_path, **pools)
         with Session(folder, pool_path) as session:
-            session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
+            if not ctx.smoke:
+                session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
             nominal = [session.run(bin1, NOMINAL_HZ, seconds) for _ in range(repeats)]
             measurements.extend(figures("", NOMINAL_HZ, nominal, threads=True))
             peak = nominal[-1].acquire["peak_rss_bytes"]
@@ -375,16 +455,20 @@ def ipc(ctx: CaseContext) -> list[Measurement]:
                     {"process": "acquire"},
                 )
             )
-            second = [session.run(bin2, BIN2_HZ, ctx.pick(3.0, 0.4))]
-            measurements.extend(figures("bin2.", BIN2_HZ, second, with_acquire=False))
+            if not ctx.smoke:  # the second mode is for the page, and no budget reads it
+                second = [session.run(bin2, BIN2_HZ, 3.0)]
+                measurements.extend(figures("bin2.", BIN2_HZ, second, with_acquire=False))
+        with Session(folder, pool_path, virtual_clock=True) as session:
             if not ctx.smoke:
-                stress = [session.run(bin1, NOMINAL_HZ * STRESS_FACTOR, 3.0)]
-                measurements.extend(figures("stress.", NOMINAL_HZ, stress))
+                session.run(bin1, NOMINAL_HZ, seconds / 2)  # a warm-up that is not reported
+            saturated = session.run(bin1, NOMINAL_HZ, seconds)
+            measurements.extend(saturated_figures(saturated, nominal, NOMINAL_HZ))
     ctx.note(
         "acquire runs in its own process with a fake camera that replays 64 frames, and the CPU "
         "time of that process is the cost of acquire. This process reads the stream the way core "
         "does. A share is the CPU time of a frame times the nominal rate (98 fps for bin1, 360 fps "
-        "for the bin2 row). The nominal figure is the median of the runs. The stress run is four "
-        "times faster, and its share still uses the nominal rate."
+        "for the bin2 row). The nominal figure is the median of the runs. In the saturated run the "
+        "camera never sleeps, so the CPU time per frame is the cost of the work without wake-ups. "
+        "The nominal share minus the saturated share is the share of the wake-ups."
     )
     return measurements
