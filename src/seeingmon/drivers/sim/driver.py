@@ -99,7 +99,7 @@ class SimDriver:
             turbulence = TurbulenceConfig(seed=opts.seed, zenith_angle_deg=zenith)
         self._model = TurbulenceModel(turbulence, first.aperture_m)
         field = opts.stars if opts.stars is not None else make_polar_field(opts.seed)
-        pointing = opts.pointing or Pointing(t_ref_utc_ns=opts.epoch_utc_ns)
+        pointing = opts.pointing or Pointing(t_ref_utc_ns=clock.utc_ns())
         self._projector = SkyProjector(field, pointing)
         self._truth = SimTruth(
             model=self._model,

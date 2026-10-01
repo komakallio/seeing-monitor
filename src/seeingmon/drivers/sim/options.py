@@ -37,11 +37,12 @@ class SimOptions:
 
     `turbulence=None` builds `TurbulenceConfig(seed=seed, zenith_angle_deg=...)` with the zenith
     angle of the celestial pole at the site, so that the line of sight matches the camera.
-    `stars=None` builds `make_polar_field(seed)`, and `pointing=None` centres Polaris at
-    `epoch_utc_ns`. The turbulence has its own clock: its time is the seconds since `epoch_utc_ns`,
-    so a given seed gives the same atmosphere at the same time, whatever the clock's start. The
-    sensor reads `ambient_c + sensor_rise_c` degrees, because an uncooled camera runs warm.
-    `max_lag_frames` is how many frames the camera buffers before a slow reader loses frames.
+    `stars=None` builds `make_polar_field(seed)`, and `pointing=None` centres Polaris at the time
+    when you create the driver. The turbulence has its own clock: its time is the seconds since
+    `epoch_utc_ns`, so a given seed gives the same atmosphere at the same time, whatever the
+    clock's start. The sensor reads `ambient_c + sensor_rise_c` degrees, because an uncooled
+    camera runs warm. `max_lag_frames` is how many frames the camera buffers before a slow reader
+    loses frames.
     `keep_truth_frames` bounds the per-frame truth that the driver keeps (`None` keeps all).
     """
 
