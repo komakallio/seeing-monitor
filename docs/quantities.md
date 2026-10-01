@@ -51,7 +51,7 @@ The type in parentheses is the storage type of the field in a row. A row also st
 | `peak_dn` | `int` (`u2`) | `DN` | The value of the brightest pixel inside the aperture, in digital numbers. | No |
 | `flux_e` | `float` (`f4`) | `e-` | The sum of the pixels inside the aperture, minus the background, in electrons. | Yes |
 | `bg_dn` | `float` (`f4`) | `DN` | The local background, which is the median of the ROI border, in DN. | Yes |
-| `flags` | `int` (`u2`) | none | A bitmask of facts about the frame: bits 0 to 4 copy `seeingmon.frames.FrameFlag` (1 `time_invalid`, 2 `recovered`, 4 `incomplete`, 8 `simulated`, 16 `replayed`), and bits 5 to 15 are reserved for analysis flags. | No |
+| `flags` | `int` (`u2`) | none | A bitmask of facts about the frame: bits 0 to 4 copy `seeingmon.frames.FrameFlag` (1 `time_invalid`, 2 `recovered`, 4 `incomplete`, 8 `simulated`, 16 `replayed`), bits 5 to 8 are analysis flags (32 `saturated`, 64 `edge`, 128 `no_star`, 256 `hot_pixel`), and bits 9 to 15 are reserved. | No |
 | `dropped_before` | `int` (`u2`) | none | The number of frames that the system lost immediately before this frame, saturating at 65,535. | No |
 
 ## `seeing_window`
@@ -98,6 +98,9 @@ Storage: a row of a SQLite table. Retention: kept forever.
 | `heater_duty` | `float` | none | The mean duty cycle of the dew heater during the window, from 0 (off) to 1 (always on). | Yes |
 | `sensor_temperature_c` | `float` | `degC` | The mean sensor temperature during the window, in degrees Celsius. | Yes |
 | `flags` | `list[str]` | none | The conditions that apply to the window, as documented codes. | No |
+| `detrend_correction_factor` | `float` | none | The factor by which the estimator multiplied the variance to add back the turbulence that the polynomial detrend removed. | Yes |
+| `centroid_gain_correction_factor` | `float` | none | The factor by which the estimator multiplied the variance to correct for the difference between the centroid in the finite aperture and the G-tilt. | Yes |
+| `motion_psd_dof` | `float` | none | The degrees of freedom of each bin of the full-resolution image-motion spectrum, which sets the relative scatter of a bin to the square root of 2 divided by this number. | Yes |
 
 Codes for `flags`:
 

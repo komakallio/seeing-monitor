@@ -111,7 +111,8 @@ class FrameRecord(Record):
         definition=(
             "A bitmask of facts about the frame: bits 0 to 4 copy `seeingmon.frames.FrameFlag` "
             "(1 `time_invalid`, 2 `recovered`, 4 `incomplete`, 8 `simulated`, 16 `replayed`), "
-            "and bits 5 to 15 are reserved for analysis flags."
+            "bits 5 to 8 are analysis flags (32 `saturated`, 64 `edge`, 128 `no_star`, "
+            "256 `hot_pixel`), and bits 9 to 15 are reserved."
         ),
     )
     dropped_before: int = quantity(
@@ -350,6 +351,31 @@ class SeeingWindowRecord(Record):
         default_factory=list,
         codes=SEEING_WINDOW_FLAGS,
         definition="The conditions that apply to the window, as documented codes.",
+    )
+    detrend_correction_factor: float | None = quantity(
+        gt=0,
+        default=None,
+        definition=(
+            "The factor by which the estimator multiplied the variance to add back the turbulence "
+            "that the polynomial detrend removed."
+        ),
+    )
+    centroid_gain_correction_factor: float | None = quantity(
+        gt=0,
+        default=None,
+        definition=(
+            "The factor by which the estimator multiplied the variance to correct for the "
+            "difference between the centroid in the finite aperture and the G-tilt."
+        ),
+    )
+    motion_psd_dof: float | None = quantity(
+        gt=0,
+        default=None,
+        definition=(
+            "The degrees of freedom of each bin of the full-resolution image-motion spectrum, "
+            "which sets the relative scatter of a bin to the square root of 2 divided by this "
+            "number."
+        ),
     )
 
     @model_validator(mode="after")
