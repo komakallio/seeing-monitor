@@ -54,7 +54,7 @@ _IPV6_CANDIDATE = re.compile(r"(?<![\w:.])[0-9A-Fa-f:]{2,}:[0-9A-Fa-f:]*(?![\w:.
 _MAC = re.compile(r"(?<![0-9A-Fa-f:-])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:-])")
 _PRIVATE_HOST = re.compile(
     r"(?i)(?<![\w.-])[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*"
-    r"\.(?:local|lan|internal|localdomain|intranet|home\.arpa)(?![\w-]|\.[a-z0-9])"
+    r"\.(?:local|lan|internal|localdomain|intranet|home\.arpa|ts\.net)(?![\w-]|\.[a-z0-9])"
 )
 _URL_HOST = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^/\s@]+@)?(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)(?![A-Za-z0-9.-])"
