@@ -536,6 +536,7 @@ class TestFaults:
                 "turbulence": {
                     "r0_m": 0.07,
                     "outer_scale_m": "inf",
+                    "wind_variability": 0.05,
                     "layers": [{"wind_speed_m_s": 5}],
                 },
                 "clouds": [{"start_s": 10, "duration_s": 20, "transmission": 0.3}],
@@ -545,6 +546,7 @@ class TestFaults:
         assert options.faults.stall_clears_at is RecoveryLevel.USB_RESET
         assert options.turbulence is not None
         assert math.isinf(options.turbulence.outer_scale_m)
+        assert options.turbulence.wind_variability == 0.05
         assert options.clouds.events[0].start_utc_ns == DEFAULT_START_UTC_NS + 10 * NS_PER_S
         with pytest.raises(ValueError, match="unknown sim option"):
             SimOptions.from_mapping({"sede": 1})

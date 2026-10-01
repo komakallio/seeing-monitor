@@ -157,6 +157,25 @@ class SimTruth:
         """The turbulent layers: the share of the turbulence, the wind speed, and the direction."""
         return self._model.config.layers
 
+    def wind_speeds_m_s(self, t_utc_ns: int | None = None) -> tuple[float, ...]:
+        """The wind speed of each layer at a time, in meters per second.
+
+        It differs from the speeds in `layers` by the slow fluctuation of `wind_variability`.
+        """
+        speeds = self._model.layer_speeds_m_s(self._turbulence_time(t_utc_ns))
+        return tuple(float(speed) for speed in speeds)
+
+    def effective_wind_speed_m_s(self, t_utc_ns: int | None = None) -> float:
+        """The turbulence-weighted wind speed `(sum w v^(5/3))^(3/5)`, for the coherence time."""
+        layers = self.layers
+        total = sum(layer.cn2_fraction for layer in layers)
+        speeds = self.wind_speeds_m_s(t_utc_ns)
+        moment = sum(
+            layer.cn2_fraction / total * speed ** (5 / 3)
+            for layer, speed in zip(layers, speeds, strict=True)
+        )
+        return float(moment ** (3 / 5))
+
     @property
     def zenith_angle_deg(self) -> float:
         """The zenith angle of the line of sight, which scales `r0` by `(cos z)^(3/5)`."""

@@ -12,15 +12,31 @@ pure function of the seed and the time, so you can ask for any time in any order
   pupil crosses the screen length. The old and the new screen cross-fade, so the statistics
   stay exact at every instant.
 - The *low-frequency part* holds the frequencies below the lowest screen frequency, down to
-  scales of many kilometres. It is a sum of a few hundred sinusoids with random phases and
-  jittered frequencies. A sinusoid moves exactly with the wind, so this part never repeats.
+  scales of many kilometres. It is a sum of about 500 sinusoids with random phases and
+  jittered frequencies: one for each cell of a fine grid that fills the gap, with finer
+  cells toward zero frequency. A sinusoid moves exactly with the wind, so this part never
+  repeats.
 
 Image motion comes mostly from scales a few times larger than the aperture, so the low
 frequencies matter: with a 50 mm aperture and a pure Kolmogorov spectrum, 20% to 30% of the
 image-motion variance comes from scales above a metre. Both parts use the *moment-matched*
 weight for each spectral cell. That weight reproduces the integral of the spectrum times the
 squared frequency, which is what the gradient (and so the tilt) depends on. It makes the
-expected image-motion variance exact to better than 0.1% for any outer scale.
+expected image-motion variance exact to better than 0.4% for any outer scale.
+
+**The spectrum in time.** The wind turns a spatial frequency `f` into the temporal
+frequency `f v`. An estimator can read a line or a ripple in the temporal spectrum of the
+image motion as vibration or as wind, so the model keeps that spectrum smooth. The grid of
+sinusoids is fine, so the gap holds no isolated lines. The screens refresh by cross-fade, so
+nothing repeats. The wind speed of every layer also fluctuates slowly
+(`TurbulenceConfig.wind_variability`, 12% by default), which smears the comb that a screen
+of fixed length puts at multiples of `v / L`. With a 10 m/s wind and the default settings,
+a Welch estimate of the spectrum, averaged over bands of +-15%, follows the von Karman
+prediction within about 10% from 2 Hz to 100 Hz (the mean of six runs of 200 s). A search
+for lines above five times the local median finds none. Below about 3 Hz, a single run
+scatters by 20% to 50%, which is more than a Gaussian process would, because only a few
+sinusoids fall in each band. With `wind_variability=0` the flow is exactly frozen, and the
+comb adds a ripple of up to 25% above 10 Hz.
 
 **Conventions.** Phase is in radians at 500 nm, and `r0` is the Fried parameter at 500 nm.
 Scale the phase by 500 nm over the wavelength to get the phase at another wavelength. The
@@ -51,7 +67,8 @@ REFERENCE_WAVELENGTH_M = 500e-9
 _TWO_PI = 2.0 * math.pi
 _HOLE_CELLS = 1  # the screen omits the (2 * 1 + 1)^2 lowest cells, and sinusoids fill them
 _LOW_FREQUENCY_LEVELS = 6
-_SUBCELLS = 3
+_SUBCELLS = 3  # the hierarchy around the origin divides each square into 3 x 3
+_RING_SUBCELLS = 7  # each cell of the hole divides into 7 x 7 subcells
 _MAX_CACHED_PAIRS = 3
 
 
@@ -225,7 +242,12 @@ class TurbulenceConfig:
     screen part and costs more memory and time. `r0_schedule` lists `(time_s, r0_m)` points
     that the model interpolates linearly. Before the first point and after the last, the
     nearest value holds. `boiling=False` keeps the first screen forever, which gives an exactly
-    periodic screen for short experiments.
+    periodic screen for short experiments. `wind_variability` is the relative rms of a slow
+    fluctuation of every layer's wind speed around the configured speed. The pattern stays
+    frozen and only its speed changes, as the sum of two sinusoids with periods of 35 to 80 s
+    and 12 to 25 s. The fluctuation smears the comb of lines that a periodic screen puts into
+    the temporal spectrum, so the spectrum of the image motion comes out smooth. Use 0 for
+    exactly constant wind. Read the speed at a time with `TurbulenceModel.layer_speeds_m_s`.
     """
 
     r0_m: float = 0.10
@@ -236,6 +258,7 @@ class TurbulenceConfig:
     screen_points: int = 256
     r0_schedule: tuple[tuple[float, float], ...] = ()
     boiling: bool = True
+    wind_variability: float = 0.12
 
     def __post_init__(self) -> None:
         if self.r0_m <= 0 or self.outer_scale_m <= 0:
@@ -244,6 +267,8 @@ class TurbulenceConfig:
             raise ValueError("at least one layer is required")
         if not 0 <= self.zenith_angle_deg < 89:
             raise ValueError("zenith_angle_deg must be between 0 and 89")
+        if not 0.0 <= self.wind_variability < 0.5:
+            raise ValueError("wind_variability must be between 0 and 0.5")
         if self.screen_points < 32 or self.screen_points % 2:
             raise ValueError("screen_points must be an even number of at least 32")
         times = [time for time, _ in self.r0_schedule]
@@ -394,35 +419,33 @@ class _LowFrequencyPlan:
 
 @lru_cache(maxsize=32)
 def _low_frequency_plan(delta_f: float, f0: float, levels: int) -> _LowFrequencyPlan:
-    """Divide the hole `|f| <= 1.5 delta_f` into cells, with finer cells near the origin."""
+    """Divide the hole `|fx|, |fy| <= 1.5 delta_f` into cells, with finer cells near the origin.
+
+    A uniform grid of subcells fills the hole. One sinusoid per subcell makes the temporal
+    spectrum of the image motion smooth instead of a set of lines. The subcell at the origin
+    is replaced by a hierarchy of finer subdivisions, because the spectrum diverges there.
+    """
     centers: list[tuple[float, float]] = []
     widths: list[float] = []
     moments: list[float] = []
-    # The eight cells around the central one, each split into 3 x 3 subcells.
-    sub_width = delta_f / _SUBCELLS
-    for ix in range(-_HOLE_CELLS, _HOLE_CELLS + 1):
-        for iy in range(-_HOLE_CELLS, _HOLE_CELLS + 1):
-            if ix == 0 and iy == 0:
-                continue
-            for sx in range(_SUBCELLS):
-                for sy in range(_SUBCELLS):
-                    centers.append(
-                        (
-                            (ix + (sx - (_SUBCELLS - 1) / 2) / _SUBCELLS) * delta_f,
-                            (iy + (sy - (_SUBCELLS - 1) / 2) / _SUBCELLS) * delta_f,
-                        )
-                    )
-                    widths.append(sub_width)
-    centers_arr = np.asarray(centers, dtype=np.float64)
+    sub_width = delta_f / _RING_SUBCELLS
+    count = (2 * _HOLE_CELLS + 1) * _RING_SUBCELLS  # an odd number, so one subcell sits at 0
+    indices = np.arange(count) - (count - 1) // 2
+    grid_x, grid_y = np.meshgrid(indices * sub_width, indices * sub_width, indexing="ij")
+    not_origin = (grid_x != 0.0) | (grid_y != 0.0)
+    centers_arr = np.stack([grid_x[not_origin], grid_y[not_origin]], axis=1)
+    widths.extend([sub_width] * len(centers_arr))
     moments_arr = _cell_moments(centers_arr[:, 0], centers_arr[:, 1], sub_width / 2, f0, order=6)
-    # Scale the ring of outer cells to the exact integral, so that no quadrature error remains.
-    exact_outer = _square_moment(_HOLE_CELLS * delta_f + delta_f / 2, f0) - _square_moment(
-        delta_f / 2, f0
+    # Scale the subcells to the exact integral over the hole without the origin subcell, so
+    # that no quadrature error remains.
+    exact_hole = _square_moment(_HOLE_CELLS * delta_f + delta_f / 2, f0) - _square_moment(
+        sub_width / 2, f0
     )
-    moments_arr *= exact_outer / float(moments_arr.sum())
+    moments_arr *= exact_hole / float(moments_arr.sum())
+    centers.extend((float(cx), float(cy)) for cx, cy in centers_arr)
     moments.extend(float(m) for m in moments_arr)
-    # The central cell: a hierarchy of 3 x 3 subdivisions, each keeping its outer eight cells.
-    half = delta_f / 2
+    # The origin subcell: a hierarchy of 3 x 3 subdivisions, each keeping its outer eight cells.
+    half = sub_width / 2
     for _ in range(levels):
         sub = 2 * half / _SUBCELLS  # the width of a subcell
         ring_centers = [
@@ -548,6 +571,10 @@ class TurbulenceModel:
         self._vx = velocities[:, 0]
         self._vy = velocities[:, 1]
         self._speed = np.asarray([layer.wind_speed_m_s for layer in config.layers])
+        safe_speed = np.where(self._speed > 0, self._speed, 1.0)
+        self._dir_x = np.where(self._speed > 0, self._vx / safe_speed, 1.0)
+        self._dir_y = np.where(self._speed > 0, self._vy / safe_speed, 0.0)
+        self._gust_omega, self._gust_phase = self._build_gusts()
         offsets = np.empty((len(config.layers), 2), dtype=np.float64)
         sinusoids = [self._build_sinusoids(i, w, offsets) for i, w in enumerate(weights)]
         self._offset_x = offsets[:, 0]
@@ -555,7 +582,10 @@ class TurbulenceModel:
         # Stack the sinusoids of all layers: the polynomial coefficients add across layers.
         self._lf_amplitude = np.concatenate([item[0] for item in sinusoids])
         self._lf_phase0 = np.concatenate([item[1] for item in sinusoids])
-        self._lf_rate = np.concatenate([item[2] for item in sinusoids])
+        self._lf_rate = np.concatenate([item[2] for item in sinusoids])  # per metre of travel
+        self._lf_layer = np.concatenate(
+            [np.full(len(item[0]), index) for index, item in enumerate(sinusoids)]
+        )
         kx = np.concatenate([item[3] for item in sinusoids])
         ky = np.concatenate([item[4] for item in sinusoids])
         self._lf_basis_c = np.stack([np.ones_like(kx), kx * kx, kx * ky, ky * ky])
@@ -602,9 +632,9 @@ class TurbulenceModel:
     ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
         """Draw the low-frequency sinusoids of one layer.
 
-        Returns the amplitude, the starting phase, the phase rate per second of wind, and the
-        angular wavenumbers `kx` and `ky` of each sinusoid. It also stores the layer's screen
-        offset in `offsets`.
+        Returns the amplitude, the starting phase, the phase rate per metre of travel along the
+        wind, and the angular wavenumbers `kx` and `ky` of each sinusoid. It also stores the
+        layer's screen offset in `offsets`.
         """
         rng = np.random.default_rng(np.random.SeedSequence([self._config.seed, index, 0]))
         plan = self._plan
@@ -617,9 +647,60 @@ class TurbulenceModel:
         phase0 = rng.random(len(amplitude)) * _TWO_PI
         kx = _TWO_PI * freq[:, 0]
         ky = _TWO_PI * freq[:, 1]
-        rate = kx * self._vx[index] + ky * self._vy[index]
+        rate = kx * self._dir_x[index] + ky * self._dir_y[index]
         offsets[index] = rng.random(2) * self._length_m
         return amplitude, phase0, rate, kx, ky
+
+    def _build_gusts(self) -> tuple[FloatArray, FloatArray]:
+        """The angular frequencies and the phases of the two speed fluctuations of each layer.
+
+        A layer has a slow fluctuation (a period of 35 to 80 s) and a faster one (12 to 25 s).
+        Both arrays have the shape `(layers, 2)`.
+        """
+        layers = len(self._config.layers)
+        omega = np.empty((layers, 2), dtype=np.float64)
+        phase = np.empty((layers, 2), dtype=np.float64)
+        for index in range(layers):
+            rng = np.random.default_rng(np.random.SeedSequence([self._config.seed, index, 2]))
+            omega[index] = _TWO_PI / np.array([rng.uniform(35.0, 80.0), rng.uniform(12.0, 25.0)])
+            phase[index] = rng.random(2) * _TWO_PI
+        return omega, phase
+
+    def layer_speeds_m_s(self, t_s: float) -> FloatArray:
+        """The wind speed of each layer at time `t_s`, in meters per second.
+
+        The speed is the configured one when `wind_variability` is 0. Otherwise it fluctuates
+        around the configured speed by that relative rms.
+        """
+        return np.asarray(self._speed_at(np.asarray([t_s], dtype=np.float64))[:, 0])
+
+    def _speed_at(self, times: FloatArray) -> FloatArray:
+        """The speed of each layer at each time, shape `(layers, times)`."""
+        speed = np.repeat(self._speed[:, None], len(times), axis=1)
+        amplitude = self._config.wind_variability
+        if amplitude > 0.0:
+            fluctuation = np.zeros_like(speed)
+            for j in range(2):
+                omega = self._gust_omega[:, j : j + 1]
+                phase = self._gust_phase[:, j : j + 1]
+                fluctuation += np.sin(omega * times[None, :] + phase)
+            speed = speed * (1.0 + amplitude * fluctuation)
+        return speed
+
+    def _travel(self, times: FloatArray) -> FloatArray:
+        """The distance in meters that each layer has moved at each time, shape `(layers, times)`.
+
+        This is the integral of the speed from `t = 0`. For a constant wind it is `speed * t`.
+        """
+        travel = self._speed[:, None] * times[None, :]
+        amplitude = self._config.wind_variability
+        if amplitude > 0.0:
+            for j in range(2):
+                omega = self._gust_omega[:, j : j + 1]
+                phase = self._gust_phase[:, j : j + 1]
+                gust = (np.cos(phase) - np.cos(omega * times[None, :] + phase)) / omega
+                travel = travel + self._speed[:, None] * amplitude * gust
+        return travel
 
     def _screen(self, index: int, slot: int) -> SingleArray:
         """The screen for one slot: the real or the imaginary part of one FFT."""
@@ -678,15 +759,16 @@ class TurbulenceModel:
         n = self._n
         layers = len(self._layers)
         count = len(times)
+        travel_m = self._travel(times)
         if self._config.boiling:
-            travel = self._speed[:, None] * times[None, :] / self._length_m
+            travel = travel_m / self._length_m
             slots = np.floor(travel).astype(np.int64)
             fractions = travel - slots
         else:
             slots = np.zeros((layers, count), dtype=np.int64)
             fractions = np.zeros((layers, count), dtype=np.float64)
-        origin_x = grid.x0 + self._offset_x[:, None] - self._vx[:, None] * times[None, :]
-        origin_y = grid.y0 + self._offset_y[:, None] - self._vy[:, None] * times[None, :]
+        origin_x = grid.x0 + self._offset_x[:, None] - self._dir_x[:, None] * travel_m
+        origin_y = grid.y0 + self._offset_y[:, None] - self._dir_y[:, None] * travel_m
         ix, wx = _axis_weights(origin_x.reshape(-1), grid.dx, grid.nx, self._spacing_m, n)
         iy, wy = _axis_weights(origin_y.reshape(-1), grid.dx, grid.ny, self._spacing_m, n)
         patch = np.empty((layers * count, iy.shape[1], ix.shape[1]), dtype=np.float32)
@@ -720,10 +802,14 @@ class TurbulenceModel:
         With `window_s`, the result is the mean over a window of that length centred on each time.
         The mean of a sinusoid over a window is its value at the centre times a sinc factor.
         """
-        theta = self._lf_phase0[None, :] - np.outer(times, self._lf_rate)
+        travel = self._travel(times)[self._lf_layer].T  # (times, sinusoids)
+        theta = self._lf_phase0[None, :] - travel * self._lf_rate[None, :]
         amplitude = self._lf_amplitude
         if window_s is not None:
-            amplitude = amplitude * np.sinc(self._lf_rate * window_s / (2.0 * math.pi))
+            # The mean over the window is the centre value times a sinc of the phase change
+            # across the window. With a fluctuating wind, take the speed at the centre.
+            rate = self._lf_rate[None, :] * self._speed_at(times)[self._lf_layer].T
+            amplitude = amplitude * np.sinc(rate * window_s / _TWO_PI)
         c = amplitude * np.cos(theta)
         s = amplitude * np.sin(theta)
         a0, hxx, hxy, hyy = (c @ self._lf_basis_c.T).T

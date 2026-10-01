@@ -12,6 +12,11 @@ injected truth from `driver.truth`.
     frame = driver.read_frame(timeout_s=1.0)
     truth = driver.truth.frames[-1]  # the true image motion of this frame, in arcseconds
 
+The wind speed of every layer fluctuates slowly around the configured speed (12% rms by
+default), which keeps the temporal spectrum of the image motion smooth. Pass
+`wind_variability=0` for a constant wind. `driver.truth.wind_speeds_m_s(t_utc_ns)` gives the
+speed of each layer at any time.
+
 Importing this package needs SciPy (the `fast` extra).
 """
 

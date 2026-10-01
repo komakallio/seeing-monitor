@@ -79,9 +79,10 @@ class SimOptions:
         `hot_pixels_per_mpix`, `time_error_ns`, `max_lag_frames`, and `keep_truth_frames`. Four
         nested tables:
         `[turbulence]` takes `r0_m`, `outer_scale_m`, `zenith_angle_deg`, `screen_points`,
-        `boiling`, and `layers` (a list of tables with `cn2_fraction`, `wind_speed_m_s`, and
-        `wind_direction_deg`). `[scintillation]` takes `sigma0` and `enabled`. `[faults]` takes
-        the fields of `SimFaults`, with `scripted_drops` as a table of frame number to count.
+        `boiling`, `wind_variability`, and `layers` (a list of tables with `cn2_fraction`,
+        `wind_speed_m_s`, and `wind_direction_deg`). `[scintillation]` takes `sigma0` and
+        `enabled`. `[faults]` takes the fields of `SimFaults`, with `scripted_drops` as a table
+        of frame number to count.
         `[[clouds]]` entries take `start_s` (seconds after `epoch_s`, default 0), `duration_s`,
         `transmission`, and `ramp_s`.
         """
@@ -140,6 +141,7 @@ def _turbulence(table: Mapping[str, Any], seed: int) -> TurbulenceConfig:
         "zenith_angle_deg",
         "screen_points",
         "boiling",
+        "wind_variability",
         "layers",
         "seed",
     }

@@ -125,16 +125,28 @@ def test_the_wave_centroid_follows_the_true_tilt() -> None:
 
 
 def test_the_image_is_the_mean_over_the_exposure() -> None:
-    """With a fast wind, a long exposure smears the image and lowers the peak."""
-    config = TurbulenceConfig(
-        r0_m=0.05, layers=(Layer(1.0, 25.0, 0.0),), outer_scale_m=20.0, screen_points=128, seed=5
-    )
-    model = TurbulenceModel(config, BIN1.aperture_m)
-    wave = WavePsf(BIN1, PsfConfig(), model)
-    short = wave.render(1.0, 0.0005, n_sub=4).stamp
-    long = wave.render(1.0, 0.02, n_sub=16).stamp
-    assert float(long.sum()) == pytest.approx(1.0, abs=1e-5)
-    assert float(long.max()) < float(short.max())
+    """With a fast wind, a long exposure smears the image and lowers the peak.
+
+    One short exposure can fall on a poor instant, so the test compares the mean peak of 12
+    seeds. The means are 0.31 for 0.5 ms and 0.25 for 20 ms, about 4 standard errors apart.
+    """
+    short_peaks: list[float] = []
+    long_peaks: list[float] = []
+    for seed in range(12):
+        config = TurbulenceConfig(
+            r0_m=0.05,
+            layers=(Layer(1.0, 25.0, 0.0),),
+            outer_scale_m=20.0,
+            screen_points=128,
+            seed=seed,
+        )
+        wave = WavePsf(BIN1, PsfConfig(), TurbulenceModel(config, BIN1.aperture_m))
+        short = wave.render(1.0, 0.0005, n_sub=4).stamp
+        long = wave.render(1.0, 0.02, n_sub=16).stamp
+        assert float(long.sum()) == pytest.approx(1.0, abs=1e-5)
+        short_peaks.append(float(short.max()))
+        long_peaks.append(float(long.max()))
+    assert np.mean(long_peaks) < 0.9 * np.mean(short_peaks)
 
 
 def test_a_bandwidth_adds_two_wavelengths() -> None:

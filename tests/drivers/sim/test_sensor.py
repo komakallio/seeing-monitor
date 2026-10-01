@@ -46,9 +46,13 @@ def quiet_polaris(**kwargs: object) -> SimDriver:
     return sim_camera(VirtualClock(), **defaults)  # type: ignore[arg-type]
 
 
-def peak_electrons(exposure_us: int, seed: int = 1) -> tuple[float, int]:
-    """The peak pixel of Polaris at gain 0, in electrons, and the raw ADC value of the peak."""
-    camera = quiet_polaris(seed=seed)
+def peak_electrons(exposure_us: int, seed: int = 1, r0_m: float = 1000.0) -> tuple[float, int]:
+    """The peak pixel of Polaris at gain 0, in electrons, and the raw ADC value of the peak.
+
+    The default `r0_m` leaves no turbulence, so the star sits on a pixel centre and the peak is
+    the same in every frame. The peak then tests the photometry and the sensor, not the seeing.
+    """
+    camera = quiet_polaris(seed=seed, r0_m=r0_m)
     camera.open()
     camera.configure(StreamConfig("bin1", exposure_us, 0, roi=POLARIS_ROI, offset=30))
     camera.start()
@@ -74,6 +78,26 @@ def test_polaris_reaches_70_percent_of_the_full_well_in_a_few_milliseconds() -> 
     assert peaks[2] / peaks[0] == pytest.approx(2.0, rel=0.1)
 
 
+def test_polaris_peak_in_typical_seeing() -> None:
+    """With `r0` of 10 cm the image motion moves the star off the pixel centre in most frames.
+
+    The peak pixel then holds 0.32 of the flux on average, with 10% scatter from frame to frame,
+    against 0.375 without turbulence. The 70% crossing moves from 3.7 ms to about 4.4 ms.
+    """
+    camera = quiet_polaris(seed=1, r0_m=0.10)
+    camera.open()
+    camera.configure(StreamConfig("bin1", 3000, 0, roi=POLARIS_ROI, offset=30))
+    camera.start()
+    flux = 4.6e7 * 10 ** (-0.4 * 2.02) * 0.003
+    sensor = BIN1.sensor_at(0)
+    fractions = []
+    for _ in range(40):
+        adc = camera.read_frame(1.0).data.astype(np.int64) >> 4
+        fractions.append((float(adc.max()) - 30.0) * sensor.e_per_adu / flux)
+    assert np.mean(fractions) == pytest.approx(0.32, abs=0.03)
+    assert 0.01 < np.std(fractions) < 0.06
+
+
 def test_polaris_saturates_at_10_ms() -> None:
     peak, adc = peak_electrons(10_000)
     assert adc == 4095  # the 12-bit ADC clips before the 14,417 electron well fills
@@ -81,7 +105,7 @@ def test_polaris_saturates_at_10_ms() -> None:
     # A 2 ms frame keeps the star well inside the range.
     peak_fast, adc_fast = peak_electrons(2000)
     assert adc_fast < 2500
-    assert peak_fast == pytest.approx(0.37 * 7.2e6 * 0.002, rel=0.12)
+    assert peak_fast == pytest.approx(0.375 * 7.2e6 * 0.002, rel=0.05)
 
 
 def test_the_star_flux_follows_the_magnitude_and_the_aperture() -> None:

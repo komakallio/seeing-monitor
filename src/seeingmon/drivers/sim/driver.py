@@ -450,13 +450,16 @@ def sim_camera(
     psf_mode: str = "wave",
     zenith_angle_deg: float = 0.0,
     screen_points: int = 512,
+    wind_variability: float | None = None,
     **option_fields: Any,
 ) -> SimDriver:
     """Build a simulated camera with one turbulent layer of a known strength, for tests.
 
     The layer has `r0_m` at 500 nm at the zenith (at `zenith_angle_deg`, if you set it), blows at
-    `wind_speed_m_s` toward `wind_direction_deg`, and has the outer scale `outer_scale_m`. Other
-    keyword arguments go to `SimOptions` (for example `faults=SimFaults(...)` or `stars=...`).
+    `wind_speed_m_s` toward `wind_direction_deg`, and has the outer scale `outer_scale_m`. The
+    wind speed fluctuates slowly by `wind_variability` (the `TurbulenceConfig` default, 12%, when
+    you leave it out); pass 0 for a constant wind. Other keyword arguments go to `SimOptions`
+    (for example `faults=SimFaults(...)` or `stars=...`).
     Read the true image motion from `driver.truth`: `driver.truth.tilt_arcsec(t_start_utc_ns,
     exposure_s)` for any exposure, or `driver.truth.frames` for the frames that you read.
     """
@@ -468,6 +471,8 @@ def sim_camera(
         seed=seed,
         screen_points=screen_points,
     )
+    if wind_variability is not None:
+        turbulence = replace(turbulence, wind_variability=wind_variability)
     option_fields.setdefault("psf", PsfConfig(mode=psf_mode))  # type: ignore[arg-type]
     options = SimOptions(seed=seed, turbulence=turbulence, **option_fields)
     return SimDriver(_modes_from_profile(None), clock, options)

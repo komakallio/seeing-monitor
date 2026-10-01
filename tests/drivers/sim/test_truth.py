@@ -57,6 +57,29 @@ def test_the_recipe_for_a_camera_with_a_known_r0() -> None:
     assert set(arrays) >= {"tilt_x_arcsec", "tilt_y_arcsec", "t_ref_utc_ns", "star_x_px", "flux_e"}
 
 
+def test_the_truth_reports_the_wind_of_each_layer() -> None:
+    steady = sim_camera(VirtualClock(), wind_speed_m_s=8.0, wind_variability=0.0, screen_points=128)
+    assert steady.truth.wind_speeds_m_s() == (8.0,)
+    assert steady.truth.effective_wind_speed_m_s() == pytest.approx(8.0)
+    gusty = sim_camera(VirtualClock(), wind_speed_m_s=8.0, wind_variability=0.15, screen_points=128)
+    at_start = DEFAULT_START_UTC_NS
+    speeds = [gusty.truth.wind_speeds_m_s(at_start + s * NS_PER_S)[0] for s in range(0, 200, 5)]
+    assert min(speeds) < 8.0 < max(speeds)
+    assert gusty.truth.effective_wind_speed_m_s(at_start + 17 * NS_PER_S) == pytest.approx(
+        gusty.truth.wind_speeds_m_s(at_start + 17 * NS_PER_S)[0]
+    )
+    layers = (Layer(0.5, 4.0, 0.0), Layer(0.5, 16.0, 90.0))
+    camera = create(
+        profile=None,
+        clock=VirtualClock(),
+        options=SimOptions(
+            turbulence=TurbulenceConfig(layers=layers, screen_points=128, wind_variability=0.0)
+        ),
+    )
+    expected = (0.5 * 4.0 ** (5 / 3) + 0.5 * 16.0 ** (5 / 3)) ** (3 / 5)
+    assert camera.truth.effective_wind_speed_m_s() == pytest.approx(expected)
+
+
 def test_the_truth_tilt_of_a_frame_is_a_pure_function_of_its_time() -> None:
     driver = sim_camera(VirtualClock(), r0_m=0.07, wind_speed_m_s=12.0, seed=9, screen_points=128)
     driver.open()
