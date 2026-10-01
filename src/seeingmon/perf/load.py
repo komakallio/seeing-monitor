@@ -100,6 +100,15 @@ else:
         return None
 
 
+def busy_ticks() -> tuple[int, int] | None:
+    """`(busy, total)` ticks of all processors since the start of the system, or `None`.
+
+    Read it twice and pass the readings to `busy_percent_between`, to get the load over a long
+    run. The unit of a tick depends on the system, and only the ratio matters.
+    """
+    return _read_ticks()
+
+
 def system_busy_percent(sample_s: float = 0.2, *, sleep: Sleep = time.sleep) -> float | None:
     """The share of processor time, over all logical processors, that was not idle during
     the next `sample_s` seconds, in percent. Returns `None` when the system gives no answer.

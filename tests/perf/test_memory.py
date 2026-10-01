@@ -12,6 +12,7 @@ import pytest
 from seeingmon.perf.load import (
     QUIET_BUSY_PERCENT,
     busy_percent_between,
+    busy_ticks,
     parse_proc_stat,
     system_busy_percent,
     wait_for_quiet,
@@ -126,6 +127,18 @@ class TestLoadSampler:
 
     def test_a_counter_that_goes_back_is_clamped(self) -> None:
         assert busy_percent_between((50, 100), (40, 200)) == 0.0
+
+    def test_two_readings_of_the_ticks_give_the_load_between_them(self) -> None:
+        first = busy_ticks()
+        sum(index * index for index in range(300_000))
+        second = busy_ticks()
+        if first is None or second is None:
+            assert first is second  # a system without a reader gives none, both times
+            return
+        assert 0 <= first[0] <= first[1]
+        assert second[1] >= first[1]
+        share = busy_percent_between(first, second)
+        assert share is None or 0.0 <= share <= 100.0
 
     def test_the_sampler_returns_a_percentage_or_nothing(self) -> None:
         naps: list[float] = []
