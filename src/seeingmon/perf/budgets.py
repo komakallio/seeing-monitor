@@ -132,25 +132,75 @@ def fast_path_budget(
     )
 
 
+SYSTEM = "core-sim"  # the case that runs the whole system and reads it from outside
+
+
+def _system_figures(report: Report) -> set[str]:
+    """The names of the figures that the `core-sim` case gave, or none when it did not run."""
+    result = report.case(SYSTEM)
+    if result is None or not result.ok:
+        return set()
+    return {item.name for item in result.measurements}
+
+
 def build_budgets(report: Report) -> list[Budget]:
-    """The budgets for a report. The core process of the memory budget depends on the cases that
-    ran: `core-sim` replaces the stand-in of the fast path plus the store when it ran."""
-    core_sim = report.case("core-sim")
-    core_terms: tuple[Term, ...]
-    if core_sim is not None and core_sim.ok:
-        core_terms = (Term("core process peak", "core-sim", PEAK, 1 / MB, "memory"),)
+    """The budgets for a report.
+
+    The `core-sim` case measures `core`, the survey worker, and `web` as they run in the whole
+    system. When it ran, its figures replace the stand-ins: the peak of `core` replaces the sum of
+    the fast-path and store processes, the peak of `web` replaces the imports of `web`, the peak of
+    the survey worker replaces the peak of the worker of the `survey` case, and the CPU time of
+    `core` per frame replaces the sum of the fast path and the receive from two cases. `acquire`
+    keeps its figures of the `ipc` case, because `core-sim` runs the simulator inside `acquire`.
+    """
+    have = _system_figures(report)
+    measured = "core.peak_rss" in have
+    worker = (
+        Term("survey worker peak (measured in the system)", SYSTEM, "survey_worker.peak_rss")
+        if "survey_worker.peak_rss" in have
+        else Term("survey worker peak", "survey", "worker.peak_rss")
+    )
+    worker = Term(worker.label, worker.case, worker.measurement, 1 / MB, "memory")
+    memory_terms: tuple[Term, ...]
+    if measured:
+        memory_terms = (
+            Term("acquire peak (prebuilt frames)", "ipc", "acquire.peak_rss", 1 / MB, "memory"),
+            Term("core process peak (measured)", SYSTEM, "core.peak_rss", 1 / MB, "memory"),
+            worker,
+            Term("web process peak (measured)", SYSTEM, "web.peak_rss", 1 / MB, "memory"),
+            Term("other children of core (measured)", SYSTEM, "other.peak_rss", 1 / MB, "memory"),
+            Term("operating system (assumption)", constant=OS_MEMORY_MB),
+        )
     else:
-        core_terms = (
+        memory_terms = (
+            Term("acquire peak", "ipc", "acquire.peak_rss", 1 / MB, "memory"),
             Term("core, fast path peak (stand-in)", "fastpath", PEAK, 1 / MB, "memory"),
             Term("core, store peak (stand-in)", "store", PEAK, 1 / MB, "memory"),
+            worker,
+            Term(
+                "web process, imports only (lower bound)",
+                "memory",
+                "baseline.web",
+                1 / MB,
+                "memory",
+            ),
+            Term("operating system (assumption)", constant=OS_MEMORY_MB),
         )
-    memory_terms = (
-        Term("acquire peak", "ipc", "acquire.peak_rss", 1 / MB, "memory"),
-        *core_terms,
-        Term("survey worker peak", "survey", "worker.peak_rss", 1 / MB, "memory"),
-        Term("web process, imports only (lower bound)", "memory", "baseline.web", 1 / MB, "memory"),
-        Term("operating system (assumption)", constant=OS_MEMORY_MB),
+    core_bin1 = fast_path_budget(
+        BIN1, FAST_RATE_BIN1_HZ, "Fast path and receive, bin1 128 x 128", "core-bin1", receive=True
     )
+    if "core.fastpath_receive_share" in have:
+        core_bin1 = Budget(
+            key="core-bin1",
+            title=(
+                "Fast path and receive, bin1 128 x 128, "
+                f"{FAST_RATE_BIN1_HZ:g} fps ({0.25 / FAST_RATE_BIN1_HZ * 1e3:.2f} ms per frame), "
+                "measured in core"
+            ),
+            limit=25.0,
+            unit="% of one core",
+            terms=(Term("fast path and receive in core", SYSTEM, "core.fastpath_receive_share"),),
+        )
     return [
         Budget(
             "acquire-cpu",
@@ -163,13 +213,7 @@ def build_budgets(report: Report) -> list[Budget]:
             ),
         ),
         fast_path_budget(BIN1, FAST_RATE_BIN1_HZ, "Fast path, bin1 128 x 128", "fast-bin1"),
-        fast_path_budget(
-            BIN1,
-            FAST_RATE_BIN1_HZ,
-            "Fast path and receive, bin1 128 x 128",
-            "core-bin1",
-            receive=True,
-        ),
+        core_bin1,
         fast_path_budget(BIN2, FAST_RATE_BIN2_HZ, "Fast path, bin2 64 x 64", "fast-bin2"),
         fast_path_budget(
             BIN2,
@@ -186,13 +230,7 @@ def build_budgets(report: Report) -> list[Budget]:
             (Term("frame through the worker", "survey", "frame.total"),),
             gate=False,
         ),
-        Budget(
-            "survey-memory",
-            "Survey worker, peak memory",
-            550.0,
-            "MB",
-            (Term("survey worker peak", "survey", "worker.peak_rss", 1 / MB, "memory"),),
-        ),
+        Budget("survey-memory", "Survey worker, peak memory", 550.0, "MB", (worker,)),
         Budget("memory-1.4", "All processes, peak memory (the budget)", 1400.0, "MB", memory_terms),
         Budget(
             "memory-1.6", "All processes, peak memory (the 2 GB gate)", 1600.0, "MB", memory_terms

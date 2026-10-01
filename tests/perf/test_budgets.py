@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from seeingmon.perf.budgets import (
+    Budget,
     BudgetVerdict,
     build_budgets,
     classify,
@@ -22,7 +23,7 @@ from seeingmon.perf.scaling import (
     implied_factor,
 )
 
-from .helpers import case, figure, fixture_report
+from .helpers import case, core_sim_case, figure, fixture_report, with_case
 
 
 def verdicts(report: Report) -> dict[str, BudgetVerdict]:
@@ -171,34 +172,118 @@ class TestEstimates:
 
 
 class TestCoreSim:
-    def test_a_core_sim_result_replaces_the_stand_in_of_the_fast_path_and_the_store(
-        self,
-    ) -> None:
-        report = fixture_report()
-        with_core = Report(
-            report.label,
-            report.smoke,
-            report.created_utc,
-            report.environment,
-            (*report.cases, case("core-sim", figure("cpu_share", 5.0, "percent"), peak_mb=300)),
-        )
-        terms = [term.label for term in build_budgets(with_core)[-1].terms]
-        assert "core process peak" in terms
-        assert not any("stand-in" in label for label in terms)
-        found = verdicts(with_core)["memory-1.4"]
-        assert found.value == pytest.approx(60 + 300 + 100 + 90)
+    """The `core-sim` case replaces the stand-ins with figures from the whole system."""
 
-    def test_a_skipped_core_sim_keeps_the_stand_in(self) -> None:
-        report = fixture_report()
-        with_skip = Report(
-            report.label,
-            report.smoke,
-            report.created_utc,
-            report.environment,
-            (*report.cases, CaseResult("core-sim", "skipped", "the core process is not on main")),
+    @staticmethod
+    def budget(report: Report, key: str) -> Budget:
+        return next(item for item in build_budgets(report) if item.key == key)
+
+    def test_the_measured_peaks_replace_the_stand_ins_of_the_memory_rows(self) -> None:
+        report = with_case(fixture_report(), core_sim_case())
+        labels = [term.label for term in self.budget(report, "memory-1.4").terms]
+        assert "core process peak (measured)" in labels
+        assert "web process peak (measured)" in labels
+        assert "survey worker peak (measured in the system)" in labels
+        assert "other children of core (measured)" in labels
+        assert "acquire peak (prebuilt frames)" in labels
+        assert not any("stand-in" in label or "imports only" in label for label in labels)
+
+    def test_the_all_processes_figure_is_the_sum_of_the_measured_peaks(self) -> None:
+        report = with_case(fixture_report(), core_sim_case())
+        found = verdicts(report)
+        # acquire 60 (the ipc case), core 140, the worker 450, web 90, the other children 8
+        assert found["memory-1.4"].value == pytest.approx(60 + 140 + 450 + 90 + 8)
+        assert found["memory-1.6"].value == found["memory-1.4"].value
+
+    def test_the_sum_scales_with_the_memory_range_and_adds_the_share_of_the_system(self) -> None:
+        found = verdicts(with_case(fixture_report(), core_sim_case()))["memory-1.4"]
+        memory = PI4_SCALING["memory"]
+        os_low, os_high = OS_MEMORY_MB
+        total = 60 + 140 + 450 + 90 + 8
+        assert found.low == pytest.approx(total * memory.low + os_low)
+        assert found.high == pytest.approx(total * memory.high + os_high)
+
+    def test_the_measured_share_replaces_the_two_parts_of_the_core_row(self) -> None:
+        report = with_case(fixture_report(), core_sim_case(fastpath_receive=3.0))
+        row = self.budget(report, "core-bin1")
+        assert [(term.case, term.measurement) for term in row.terms] == [
+            ("core-sim", "core.fastpath_receive_share")
+        ]
+        assert row.title.endswith("measured in core")
+        assert (row.limit, row.unit) == (25.0, "% of one core")
+        found = verdicts(report)["core-bin1"]
+        interpreter = PI4_SCALING["interpreter"]
+        assert found.value == pytest.approx(3.0)
+        assert found.low == pytest.approx(3.0 * interpreter.low)
+        assert found.high == pytest.approx(3.0 * interpreter.high)
+
+    def test_a_share_in_the_range_of_the_limit_is_marginal_and_a_large_one_fails(self) -> None:
+        interpreter = PI4_SCALING["interpreter"]
+        straddles = (25.0 / interpreter.low + 25.0 / interpreter.high) / 2
+        marginal = verdicts(with_case(fixture_report(), core_sim_case(fastpath_receive=straddles)))
+        assert marginal["core-bin1"].verdict == "marginal"
+        too_much = verdicts(with_case(fixture_report(), core_sim_case(fastpath_receive=25.0)))
+        assert too_much["core-bin1"].verdict == "fail"
+
+    def test_a_pi4_report_compares_the_measured_share_without_scaling(self) -> None:
+        report = with_case(
+            fixture_report(label="pi4", machine="arm64"), core_sim_case(fastpath_receive=3.0)
         )
-        terms = [term.label for term in build_budgets(with_skip)[-1].terms]
-        assert any("stand-in" in label for label in terms)
+        found = verdicts(report)["core-bin1"]
+        assert (found.value, found.low, found.high) == (3.0, 3.0, 3.0)
+        assert found.measured
+        assert found.verdict == "pass"
+
+    def test_the_other_rows_do_not_change(self) -> None:
+        report = with_case(fixture_report(), core_sim_case())
+        with_system = {item.key: item for item in build_budgets(report)}
+        without = {item.key: item for item in build_budgets(fixture_report())}
+        for key in ("acquire-cpu", "fast-bin1", "fast-bin2", "core-bin2", "survey-time"):
+            assert with_system[key] == without[key], key
+
+    def test_the_survey_memory_row_reads_the_measured_worker(self) -> None:
+        found = verdicts(with_case(fixture_report(survey_peak_mb=100.0), core_sim_case()))
+        assert found["survey-memory"].value == pytest.approx(450.0)  # not the 100 MB of `survey`
+
+    def test_a_system_without_the_worker_reads_the_worker_of_the_survey_case(self) -> None:
+        report = with_case(fixture_report(survey_peak_mb=120.0), core_sim_case(worker_peak_mb=None))
+        found = verdicts(report)
+        assert found["survey-memory"].value == pytest.approx(120.0)
+        assert found["memory-1.4"].value == pytest.approx(60 + 140 + 120 + 90 + 8)
+
+    def test_a_system_without_the_share_keeps_the_two_parts_of_the_core_row(self) -> None:
+        report = with_case(fixture_report(), core_sim_case(fastpath_receive=None))
+        row = self.budget(report, "core-bin1")
+        assert [term.case for term in row.terms] == ["fastpath"] * 3 + ["ipc"] * 2
+        assert "measured in core" not in row.title
+        # The memory rows still read the measured peaks.
+        memory = [term.label for term in self.budget(report, "memory-1.4").terms]
+        assert "core process peak (measured)" in memory
+
+    def test_a_system_without_the_core_peak_keeps_the_stand_ins_of_the_memory_rows(self) -> None:
+        bare = core_sim_case()
+        without = CaseResult(
+            bare.name,
+            "ok",
+            measurements=tuple(item for item in bare.measurements if item.name != "core.peak_rss"),
+        )
+        report = with_case(fixture_report(), without)
+        assert any("stand-in" in term.label for term in self.budget(report, "memory-1.4").terms)
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            CaseResult("core-sim", "skipped", "the core process is not on main"),
+            CaseResult("core-sim", "failed", "RuntimeError: core stopped with code 3"),
+        ],
+    )
+    def test_a_case_that_did_not_run_keeps_the_stand_ins(self, result: CaseResult) -> None:
+        report = with_case(fixture_report(), result)
+        labels = [term.label for term in self.budget(report, "memory-1.4").terms]
+        assert any("stand-in" in label for label in labels)
+        cases = [term.case for term in self.budget(report, "core-bin1").terms]
+        assert cases == ["fastpath"] * 3 + ["ipc"] * 2
+        assert verdicts(report)["memory-1.4"].value == pytest.approx(60 + 120 + 80 + 100 + 90)
 
 
 class TestPi4Measurement:

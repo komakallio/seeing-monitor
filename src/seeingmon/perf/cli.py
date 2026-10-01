@@ -44,8 +44,9 @@ def register(subparsers: Subparsers) -> None:
     run.add_argument(
         "--smoke",
         action="store_true",
-        help="shrink every case to tens of milliseconds. The run checks that the cases work, and "
-        "its figures say nothing about speed.",
+        help="shrink every case to the least work that shows it runs: tens of milliseconds, and "
+        "about 20 s for core-sim, which starts three processes. The figures say nothing about "
+        "speed.",
     )
     run.add_argument(
         "--json",

@@ -15,19 +15,15 @@ from typing import Any
 import pytest
 
 from seeingmon.perf.budgets import BASELINE, PEAK, build_budgets
-from seeingmon.perf.cases import core_sim
 from seeingmon.perf.cases.fastmodes import FAST_MODES
 from seeingmon.perf.cases.survey import check_sky_step
-from seeingmon.perf.registry import REGISTRY, CaseContext, SkipCase, load_registry
+from seeingmon.perf.registry import REGISTRY, load_registry
 from seeingmon.perf.report import SCALES, Measurement, Report
 from seeingmon.perf.runner import execute_case
 
 from .helpers import environment
 
 CASE_NAMES = load_registry().names()
-
-
-CORE_IS_ON_MAIN = core_sim.core_process_exists()
 
 
 def empty_report() -> Report:
@@ -129,10 +125,28 @@ def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) 
     if name == "ipc":
         # The runs with the fake camera show what that fake adds, and no budget reads them.
         assert "fake_camera.acquire.cpu_per_frame" in names
+    if name == "core-sim":
+        # The system ran for real, so each process of it has a peak and the fast phase has a cost.
+        # A budget falls back to its stand-in when one of these is missing, so the test names them.
+        assert {
+            "core.peak_rss",
+            "web.peak_rss",
+            "acquire.peak_rss",
+            "other.peak_rss",
+            "all.peak_rss_sum",
+            "core.fast_share",
+            "core.idle_share",
+            "core.frame_cost",
+            "core.fastpath_receive_share",
+            "run.frame_rate",
+            "run.length",
+        } <= set(names)
     # The budgets read figures by name. A renamed figure must break this test and not the verdict.
+    # With this case in the report, the budgets of `core-sim` read their measured terms.
+    with_result = Report("dev", True, "2026-10-01T12:00:00Z", environment(), (result,))
     wanted = {
         term.measurement
-        for budget in build_budgets(empty_report())
+        for budget in (*build_budgets(empty_report()), *build_budgets(with_result))
         for term in budget.terms
         if term.case == name and term.measurement not in (PEAK, BASELINE) and term.constant is None
     }
@@ -170,44 +184,3 @@ class TestSurveyCase:
         job = {"timings": {"quality": 0.1}, "records": []}
         with pytest.raises(RuntimeError, match="measured no sky"):
             check_sky_step(job)
-
-
-class TestCoreSim:
-    @pytest.mark.skipif(CORE_IS_ON_MAIN, reason="the core process is on main now")
-    def test_it_skips_with_the_reason_until_the_core_process_exists(self) -> None:
-        result = execute_case(REGISTRY.get("core-sim"), smoke=True)
-        assert (result.status, result.reason) == ("skipped", "the core process is not on main")
-
-    def test_one_function_enables_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The lead writes `measure_core`, and the module of the core process appears. Stand in for
-        # both, and the case reports the figures that the function returns.
-        monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
-        monkeypatch.setattr(core_sim, "CORE_ENTRY", "percentile")
-        monkeypatch.setattr(
-            core_sim,
-            "measure_core",
-            lambda ctx: [Measurement("cpu_share", "percent", 12.5, scale="interpreter")],
-        )
-        result = execute_case(REGISTRY.get("core-sim"), smoke=True)
-        assert result.status == "ok"
-        assert [(item.name, item.value) for item in result.measurements] == [("cpu_share", 12.5)]
-
-    def test_before_the_function_is_written_the_case_skips_and_says_so(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
-        monkeypatch.setattr(core_sim, "CORE_ENTRY", "percentile")
-        result = execute_case(REGISTRY.get("core-sim"), smoke=True)
-        assert result.status == "skipped"
-        assert "measure_core is not written yet" in (result.reason or "")
-
-    def test_a_module_without_the_entry_function_does_not_count_as_the_core_process(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(core_sim, "CORE_MODULE", "seeingmon.perf.timing")
-        monkeypatch.setattr(core_sim, "CORE_ENTRY", "run_core")
-        assert not core_sim.core_process_exists()
-
-    def test_the_default_function_skips(self) -> None:
-        with pytest.raises(SkipCase, match="measure_core is not written yet"):
-            core_sim.measure_core(CaseContext(smoke=True))
