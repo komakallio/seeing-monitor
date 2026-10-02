@@ -29,6 +29,7 @@ class RejectReason(StrEnum):
     DEGRADED = "degraded"  # the camera has failed repeatedly, so alignment cannot start
     NO_HANDLER = "no_handler"  # nothing is registered to run this kind of task
     QUEUE_FULL = "queue_full"
+    BUSY = "busy"  # a task of this kind waits or runs, and only one may (a dark session)
     INVALID = "invalid"  # a field of the command is out of range
     CLOSED = "closed"  # the scheduler has shut down
 

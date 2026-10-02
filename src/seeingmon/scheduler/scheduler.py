@@ -29,6 +29,7 @@ streams, and the camera never serves two modes at once.
 from __future__ import annotations
 
 import contextlib
+import math
 import re
 import threading
 from collections import deque
@@ -60,6 +61,7 @@ from seeingmon.scheduler.commands import (
     CommandResult,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -77,7 +79,13 @@ from seeingmon.scheduler.commission import (
     SweepPlan,
     TaskQueue,
 )
-from seeingmon.scheduler.config import SchedulerConfig, SiteConfig, load_site, seconds_to_us
+from seeingmon.scheduler.config import (
+    MIN_DARK_FRAMES,
+    SchedulerConfig,
+    SiteConfig,
+    load_site,
+    seconds_to_us,
+)
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
 from seeingmon.scheduler.faults import FaultPlan, FaultTracker
 from seeingmon.scheduler.gates import (
@@ -261,6 +269,8 @@ class Scheduler:
         self._outbox: deque[EventRecord] = deque()
         self._event_revisions: dict[int, int] = {}
         self._next_task_id = 1
+        self._running_task: CommissionTask | None = None  # popped from the queue, and not done
+        self._pause_after: str | None = None  # why a commission episode ends in `paused`
         self._next_watch_mono = now_mono
         self._closed = False
 
@@ -351,7 +361,7 @@ class Scheduler:
                 result = self._pause()
             elif isinstance(command, Resume):
                 result = self._resume()
-            elif isinstance(command, QueueBurst | QueueSweep | QueueReplay):
+            elif isinstance(command, QueueBurst | QueueSweep | QueueReplay | QueueDark):
                 result = self._queue_task(command)
             else:
                 result = self._reject(RejectReason.INVALID, f"unknown command {command!r}")
@@ -562,13 +572,20 @@ class Scheduler:
         self._transition("resume command", State.SAFE)
         return self._accept("the scheduler resumed in safe and checks the sky")
 
-    def _queue_task(self, command: QueueBurst | QueueSweep | QueueReplay) -> CommandResult:
+    def _queue_task(
+        self, command: QueueBurst | QueueSweep | QueueReplay | QueueDark
+    ) -> CommandResult:
         kind = TASK_KINDS[type(command)]
         if kind not in self._handlers:
             return self._reject(RejectReason.NO_HANDLER, f"no handler is registered for {kind}")
         problem = self._check_task(command)
         if problem is not None:
             return self._reject(RejectReason.INVALID, problem)
+        if isinstance(command, QueueDark) and self._dark_task_pending():
+            return self._reject(
+                RejectReason.BUSY,
+                "a dark session is already queued or running; wait until it ends",
+            )
         task = CommissionTask(
             task_id=self._next_task_id,
             kind=kind,
@@ -583,7 +600,31 @@ class Scheduler:
             f"the {kind} is queued and runs at the next cycle boundary", task_id=task.task_id
         )
 
-    def _check_task(self, command: QueueBurst | QueueSweep | QueueReplay) -> str | None:
+    def _dark_task_pending(self) -> bool:
+        """Whether a dark task waits in the queue or runs. The caller holds the lock."""
+        running = self._running_task
+        return (running is not None and running.kind == "dark") or any(
+            task.kind == "dark" for task in self._queue.tasks()
+        )
+
+    def _check_dark(self, command: QueueDark) -> str | None:
+        """Return a problem with the settings of a dark task. A `None` field takes the default."""
+        limits = self._config.dark
+        for name, count in (("frames", command.frames), ("bias_frames", command.bias_frames)):
+            if count is not None and not MIN_DARK_FRAMES <= count <= limits.max_frames:
+                return f"{name} must be between {MIN_DARK_FRAMES} and {limits.max_frames}"
+        seconds = command.exposure_s
+        if seconds is not None:
+            if not (math.isfinite(seconds) and seconds > 0):
+                return "exposure_s must be a positive number of seconds"
+            low_us, high_us = self._profile.limits.exposure_us_range
+            if not low_us <= seconds_to_us(seconds) <= high_us:
+                return f"exposure_s must be between {low_us / 1e6:g} and {high_us / 1e6:g} seconds"
+        if len(command.label) > limits.max_label_chars:
+            return f"the label has at most {limits.max_label_chars} characters"
+        return None
+
+    def _check_task(self, command: QueueBurst | QueueSweep | QueueReplay | QueueDark) -> str | None:
         """Return a problem with the task's settings, or `None` when they are fine."""
         if isinstance(command, QueueBurst):
             if not (command.duration_s > 0 and command.duration_s < float("inf")):
@@ -598,6 +639,8 @@ class Scheduler:
                 SweepPlan.resolve(command, self._config.sweep, self._profile)
             except ValueError as error:
                 return str(error)
+        elif isinstance(command, QueueDark):
+            return self._check_dark(command)
         elif not (command.speed >= 0 and command.speed < float("inf")):
             return "speed must be zero (as fast as possible) or a positive factor"
         return None
@@ -1461,11 +1504,21 @@ class Scheduler:
         if not self._transition("a task is queued", State.COMMISSION, expect=from_state):
             return False
         self._return_state = from_state
+        with self._lock:
+            self._pause_after = None  # a request of an episode that a command cut short ends here
         return True
 
     def _step_commission(self) -> StepKind:
         with self._lock:
             task = self._queue.pop() if not self._faults.degraded else None
+            if task is not None:
+                # The task counts as running from the moment that it leaves the queue, so that
+                # `submit` never sees a gap between the two.
+                self._running_task = task
+                if isinstance(task.command, QueueDark) and task.command.pause_after:
+                    self._pause_after = (
+                        "the dark session is done, and the camera may still be covered"
+                    )
         if task is None:
             self._finish_commission()
             return StepKind.TRANSITION
@@ -1473,6 +1526,13 @@ class Scheduler:
         return StepKind.TASK
 
     def _finish_commission(self) -> None:
+        with self._lock:
+            pause_reason, self._pause_after = self._pause_after, None
+        if pause_reason is not None:
+            # Nothing may record data while the camera is covered, so the episode ends in `paused`
+            # and `Resume` continues.
+            self._transition(pause_reason, State.PAUSED, expect=State.COMMISSION)
+            return
         target = self._return_state
         if target is State.AUTO:
             if self._transition("commissioning is done", State.AUTO, expect=State.COMMISSION):
@@ -1506,6 +1566,8 @@ class Scheduler:
             result = _failed(task, started, self._clock.utc_ns(), f"handler error: {error}")
         finally:
             self._end_stream("task_end")
+            with self._lock:
+                self._running_task = None
         self._counters.tasks_run += 1
         with self._lock:
             self._results.append(result)

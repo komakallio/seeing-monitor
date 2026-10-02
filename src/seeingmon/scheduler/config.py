@@ -30,6 +30,7 @@ PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 
 _US_PER_S = 1_000_000
+MIN_DARK_FRAMES = 3  # a dark set needs at least this many dark frames and bias frames
 
 
 def seconds_to_us(seconds: float) -> int:
@@ -225,6 +226,16 @@ class CommissionConfig(SectionModel):
     """The number of finished results that the scheduler keeps in memory."""
 
 
+class DarkTaskConfig(SectionModel):
+    """The limits of a dark task (`QueueDark`). The defaults of the session are `[survey.dark]`."""
+
+    max_frames: Annotated[int, Field(ge=MIN_DARK_FRAMES)] = 60
+    """The most dark frames, and the most bias frames, that one task may ask for."""
+
+    max_label_chars: PositiveInt = 80
+    """The longest label that a dark task may carry, in characters."""
+
+
 class SweepConfig(SectionModel):
     """The default grid of a sweep. The values explore a range and choose nothing."""
 
@@ -277,6 +288,7 @@ class SchedulerConfig(SectionModel):
     faults: FaultConfig = Field(default_factory=FaultConfig)
     ladder: LadderConfig = Field(default_factory=LadderConfig)
     commission: CommissionConfig = Field(default_factory=CommissionConfig)
+    dark: DarkTaskConfig = Field(default_factory=DarkTaskConfig)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)
 

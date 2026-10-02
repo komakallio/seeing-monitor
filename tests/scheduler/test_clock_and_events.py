@@ -161,8 +161,14 @@ class TestTheEventList:
 
     def test_every_listed_kind_is_written_by_the_source_or_names_a_task_result(self) -> None:
         written = self.source_kinds()
-        results = {"scheduler.sweep_result", "scheduler.burst_result", "scheduler.replay_result"}
-        assert set(EVENT_KINDS) - written == results  # built from the kind of the task
+        results = {
+            "scheduler.sweep_result",
+            "scheduler.burst_result",
+            "scheduler.replay_result",
+            "scheduler.dark_result",
+        }  # built from the kind of the task
+        handlers = {"scheduler.dark_phase"}  # written through `emit_event` by the dark handler
+        assert set(EVENT_KINDS) - written == results | handlers
 
     def test_the_kinds_and_their_descriptions_are_well_formed(self) -> None:
         for kind, description in EVENT_KINDS.items():

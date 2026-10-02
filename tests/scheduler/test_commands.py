@@ -110,6 +110,7 @@ def test_the_rejection_reasons_are_stable_codes() -> None:
         "degraded",
         "no_handler",
         "queue_full",
+        "busy",
         "invalid",
         "closed",
     }

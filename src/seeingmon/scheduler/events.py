@@ -6,8 +6,10 @@ happened. The `detail` of each kind is a JSON object. `EVENT_KINDS` lists the co
 checks that the scheduler writes no code that this list leaves out.
 
 The result of a commissioning task has the kind `scheduler.<kind>_result`, with the kind of the
-task in place of `<kind>`: `scheduler.sweep_result`, `scheduler.burst_result`, and
-`scheduler.replay_result`, plus one for each kind that you register a handler for.
+task in place of `<kind>`: `scheduler.sweep_result`, `scheduler.burst_result`,
+`scheduler.replay_result`, and `scheduler.dark_result`, plus one for each kind that you register a
+handler for. A handler may write events of its own through `CommissionContext.emit_event`, and the
+list names those too (`scheduler.dark_phase`).
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.sweep_result": "A sweep finished. The detail holds the table of cells.",
     "scheduler.burst_result": "A burst finished. The detail names the files that it wrote.",
     "scheduler.replay_result": "A replay finished.",
+    "scheduler.dark_result": "A dark session finished. The detail holds the set and the dark rate.",
+    "scheduler.dark_phase": "A dark session moved to another phase: bias, cover, dark, or build.",
     "scheduler.task_error": "A commissioning handler raised an error. The task failed.",
     "scheduler.result_sink_failed": "Storing a commissioning result failed.",
     "scheduler.alignment_sink_failed": "The consumer of the alignment frames raised an error.",
