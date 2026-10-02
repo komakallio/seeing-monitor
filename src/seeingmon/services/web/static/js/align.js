@@ -21,6 +21,8 @@
   const FAMILY = "system-ui, sans-serif";
   const MAX_BACKING_PX = 2048; // the widest canvas that the page makes, in device pixels
   const FONT_PX = 11;
+  // The pole counts as aligned when it is this close to the aim, in arcminutes.
+  const ALIGNED_ARCMIN = 2;
 
   // The overlays that the person can switch off. The choice stays in this browser.
   const OVERLAYS = [
@@ -303,28 +305,53 @@
       }
     }
 
-    // 2. The orbit of Polaris, as the fixed reticle: a dashed circle at the aim (the middle of the
-    // frame) with the radius of the orbit, and the aim ring on it, where Polaris belongs for this
-    // frame. Alt-az moves translate the image, so the ring sits at the angle of (Polaris - pole)
-    // around the aim. The circle that the orbit makes around the pole in the sky is not drawn.
+    // 2. The orbit of Polaris, as the fixed reticle: a dashed circle at the aim with the radius of the
+    // orbit (from the server, so it shows without a solution and follows a configured aim pixel), a
+    // small cross at its center, and the aim ring on it, where Polaris belongs for this frame (the
+    // detected Polaris plus the aim minus the pole, because alt-az moves translate the image). The
+    // reticle turns green and the arrow goes away when the pole is within 2 arcminutes of the aim.
     let aimRing = null;
-    if (sky && show.pole && sky.polaris_colatitude_deg !== null && sky.polaris_colatitude_deg !== undefined) {
-      const camera = sky.camera;
-      const radiusFrame = Math.tan((sky.polaris_colatitude_deg * Math.PI) / 180) / ((camera.scale_arcsec_px * Math.PI) / 648000);
-      const middle = at(camera.center_x_px, camera.center_y_px);
-      const radius = radiusFrame * scale;
-      const aligned = sky.pole && sky.pole.distance_arcmin !== null && sky.pole.distance_arcmin !== undefined && sky.pole.distance_arcmin < 2;
-      const reticle = aligned ? colors.target : colors.aim;
-      ctx.strokeStyle = reticle;
-      ctx.lineWidth = 2;
+    let circle = null; // { x_px, y_px, radius_px } in frame pixels
+    if (state.reticle) {
+      circle = state.reticle;
+    } else if (sky && sky.polaris_colatitude_deg !== null && sky.polaris_colatitude_deg !== undefined) {
+      const camera = sky.camera; // an older core: the circle around the principal point
+      circle = {
+        x_px: camera.center_x_px,
+        y_px: camera.center_y_px,
+        radius_px: Math.tan((sky.polaris_colatitude_deg * Math.PI) / 180) / ((camera.scale_arcsec_px * Math.PI) / 648000),
+      };
+    }
+    let ringFrame = sky && sky.aim_ring ? sky.aim_ring : null;
+    if (!ringFrame && circle && sky && state.solved && sky.pole && sky.pole.x_px !== null && sky.pole.x_px !== undefined) {
+      ringFrame = {
+        x_px: circle.x_px + (state.solved.x_px - sky.pole.x_px),
+        y_px: circle.y_px + (state.solved.y_px - sky.pole.y_px),
+      };
+    }
+    const aimDistance = sky && sky.aim && sky.aim.distance_arcmin !== null && sky.aim.distance_arcmin !== undefined
+      ? sky.aim.distance_arcmin
+      : sky && sky.pole ? sky.pole.distance_arcmin : null;
+    const aligned = aimDistance !== null && aimDistance !== undefined && aimDistance < ALIGNED_ARCMIN;
+    if (circle && show.pole) {
+      const middle = at(circle.x_px, circle.y_px);
+      const radius = circle.radius_px * scale;
+      ctx.save();
+      ctx.globalAlpha = sky ? 1 : 0.5; // dimmed until there is a solution
+      ctx.strokeStyle = aligned ? colors.target : colors.aim;
+      ctx.lineWidth = aligned ? 2.6 : 2;
       ctx.setLineDash([7, 5]);
       ctx.beginPath();
       ctx.arc(middle[0], middle[1], radius, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
-      if (state.solved && sky.pole && sky.pole.x_px !== null && sky.pole.x_px !== undefined) {
-        const angle = Math.atan2(state.solved.y_px - sky.pole.y_px, state.solved.x_px - sky.pole.x_px);
-        aimRing = [middle[0] + Math.cos(angle) * radius, middle[1] + Math.sin(angle) * radius];
+      cross(ctx, middle[0], middle[1], 2, 9);
+      ctx.restore();
+      if (!sky) {
+        drawLabel(ctx, { text: "no solution yet", x: middle[0], y: middle[1] + 24, align: "center" }, colors.aim, colors.halo);
+      }
+      if (ringFrame) {
+        aimRing = at(ringFrame.x_px, ringFrame.y_px);
         ctx.strokeStyle = colors.target;
         ctx.fillStyle = colors.target;
         ctx.lineWidth = 2.2;
@@ -369,15 +396,13 @@
       }
     }
 
-    // 4. The aim: where the pole belongs in a first alignment, the center of the frame.
-    if (showAim) {
+    // 4. The aim: where the pole belongs, the center of the reticle (the frame center unless the
+    // configuration names another pixel). Its cross is drawn with the reticle above, and a page
+    // that has no reticle yet (an older core) still gets a cross at the middle of the frame.
+    if (showAim && !circle) {
       ctx.strokeStyle = colors.aim;
       ctx.lineWidth = 1.6;
       cross(ctx, (frame.width_px * scale) / 2, (frame.height_px * scale) / 2, 2, 9);
-      const label = labelFor("aim");
-      if (label) {
-        drawLabel(ctx, label, colors.aim, colors.halo);
-      }
     }
 
     // 5. Polaris, wherever the solver finds it, with or without a target.
