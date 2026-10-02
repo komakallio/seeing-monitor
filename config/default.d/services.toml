@@ -156,9 +156,12 @@ oom_score_adj = 500
 # What core keeps of the survey frames. `false` keeps nothing: no preview, no FITS file, and no
 # image_ref on the survey_frame record.
 enabled = true
-# The newest frames that stay in the memory of core (a bin2 frame takes 23 MB). A frame that falls
-# out of this number before its files are written gets no files.
-ram_frames = 3
+# The newest frames that stay in the memory of core (a bin2 frame takes 23 MB). One is enough for
+# the writer: the frame stays until its result comes back and its files are written, and a frame
+# that falls out of this number before then gets no files. Nothing reads the other frames of a
+# larger ring, because web is another process. A tmpfs file in the runtime directory would serve
+# them later.
+ram_frames = 1
 # Every long frame (an exposure of at least [survey.sky] min_exposure_s) gets a preview. Every
 # keep_every-th long frame, and every event frame, also goes to disk as a FITS file under survey/.
 keep_every = 10

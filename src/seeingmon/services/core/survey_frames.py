@@ -4,11 +4,13 @@ The survey path turns each frame into records and then forgets the pixels. `Surv
 the survey analyzer of `core` (it is a `SurveyAnalyzer` itself, as `NightlySummary` is) and keeps
 what an operator and a later reanalysis want to see:
 
-- **RAM.** `submit` keeps the frame in a ring of `ram_frames` frames (the newest three by default,
-  70 MB at bin2). The ring holds a frame until the analysis has returned its result and the files
-  are written, and it keeps the newest frames after that. It never copies a frame, and it never
-  holds more than `ram_frames` of them, so the memory of `core` stays within its budget. A frame
-  that falls out of the ring first gets no files.
+- **RAM.** `submit` keeps the frame in a ring of `ram_frames` frames (one by default, 23 MB at
+  bin2). The ring holds a frame until the analysis has returned its result and the files are
+  written, and it keeps the newest frames after that. It never copies a frame, and it never holds
+  more than `ram_frames` of them, so the memory of `core` stays within its budget. A frame that
+  falls out of the ring first gets no files. Nothing reads the frames that stay after their files
+  are written: `web` is another process and cannot see them. A larger ring needs a reader first,
+  such as a tmpfs file in the runtime directory that `core` writes and `web` serves.
 - **Preview.** Every long frame (an exposure of at least `[survey.sky] min_exposure_s`, the frames
   that carry the sky quality) gets a JPEG of at most 1 megapixel under `previews/`, because the
   Images page of the web UI lists previews. A short frame (the 1 ms frame of the bright stars)

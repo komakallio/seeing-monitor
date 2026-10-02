@@ -294,7 +294,7 @@ class TestTheRing:
     def test_the_ring_holds_the_newest_frames_and_never_copies_them(
         self, tmp_path: Path, profile: Profile
     ) -> None:
-        built = build(tmp_path, profile)
+        built = build(tmp_path, profile, ram_frames=3)
         frames = [make_survey_frame(step) for step in range(5)]
         for frame in frames:
             built.frames.submit(frame)
@@ -303,17 +303,26 @@ class TestTheRing:
         assert all(a is b for a, b in zip(held, reversed(frames[2:]), strict=True))
         assert built.frames.ram_frames == 3
 
+    def test_the_ring_holds_one_frame_by_default(self, tmp_path: Path, profile: Profile) -> None:
+        built = build(tmp_path, profile)
+        frames = [make_survey_frame(step) for step in range(3)]
+        for frame in frames:
+            built.frames.submit(frame)
+        (held,) = built.frames.recent_frames()
+        assert held is frames[-1]
+        assert built.frames.ram_frames == 1
+
     def test_the_size_of_the_ring_is_a_setting(self, tmp_path: Path, profile: Profile) -> None:
-        built = build(tmp_path, profile, ram_frames=1)
+        built = build(tmp_path, profile, ram_frames=2)
         for step in range(3):
             built.frames.submit(make_survey_frame(step))
-        assert [f.seq for f in built.frames.recent_frames()] == [2]
+        assert [f.seq for f in built.frames.recent_frames()] == [2, 1]
 
     def test_a_frame_that_leaves_before_its_result_comes_gets_no_files(
         self, tmp_path: Path, profile: Profile
     ) -> None:
         analyzer = FakeSurveyAnalyzer(station_id="st", profile_id="p", polls_until_ready=2)
-        built = build(tmp_path, profile, analyzer=analyzer)
+        built = build(tmp_path, profile, analyzer=analyzer, ram_frames=3)
         frames = [make_survey_frame(step) for step in range(4)]
         for frame in frames:
             built.frames.submit(frame)
@@ -458,7 +467,7 @@ class TestTheWriter:
     def test_the_writer_thread_writes_until_it_is_told_to_finish(
         self, tmp_path: Path, profile: Profile
     ) -> None:
-        built = build(tmp_path, profile, keep_every=1)
+        built = build(tmp_path, profile, keep_every=1, ram_frames=3)
         thread = threading.Thread(target=built.frames.run, daemon=True)
         thread.start()
         for step in range(3):
