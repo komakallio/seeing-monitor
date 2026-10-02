@@ -4,7 +4,7 @@ The architecture sets a performance gate for a Raspberry Pi 4 (see [architecture
 
 ## Summary
 
-On the estimate, the per-frame analysis fits its budget with a wide margin, and the transport between `acquire` and `core` does not.
+On the estimate, the per-frame analysis fits its budget with a wide margin. At commit `0a764af`, the transport between `acquire` and `core` did not. A whole-system run at commit `b2e1f93`, after the services lane batched the stream, puts the CPU time that `core` spends on the receive and the fast path within the budget. The memory is the open question: the peaks that the whole-system run measures put the estimate across the 1.4 GB budget.
 
 | Budget | Limit | Dev machine | Pi 4 (estimate) | Verdict | Verdict in the six runs |
 |---|---|---|---|---|---|
@@ -18,12 +18,21 @@ On the estimate, the per-frame analysis fits its budget with a wide margin, and 
 | Survey worker, peak memory | 550 MB | 454 MB | 318 to 590 MB | marginal | Marginal in six |
 | All processes, peak memory | 1.4 GB budget, 1.6 GB gate | 762 MB | 683 to 1,290 MB | pass | Pass in six |
 
-The table shows the least disturbed of three Linux runs. The last column gives the verdicts of all six runs: three on Linux, and three on Windows, which is slower in the bin2 fast path. The Pi 4 column is an estimate: read [How the estimate works](#how-the-estimate-works) before you rely on it.
+The table shows the least disturbed of three Linux runs at commit `0a764af`. The last column gives the verdicts of all six runs: three on Linux, and three on Windows, which is slower in the bin2 fast path. The Pi 4 column is an estimate: read [How the estimate works](#how-the-estimate-works) before you rely on it. The services lane has changed the stream since that commit, so the rows that come from the cases `fastpath`, `ipc`, `survey`, and `store` need a new run of the whole harness.
+
+The `core-sim` case (see [The whole-system case](#the-whole-system-case)) measured three rows again at commit `b2e1f93`, once on Linux and once on Windows. Another system ran on the machine during both runs, and the host was about 40 to 50% busy, so these are runs with another system active. The verdicts in the table above stay until a run on a quiet machine replaces them. The table below shows what the new figures give. The Pi 4 column uses the Linux figure.
+
+| Budget | Limit | Table above | Whole system, Linux / Windows | Pi 4 (estimate) | Verdict, Linux / Windows |
+|---|---|---|---|---|---|
+| Fast path and receive, bin1 at 98 fps, measured in `core` | 25% of a core | 4.3% | 1.9% / 2.5% | 13 to 21% | pass / marginal |
+| Survey worker, peak memory | 550 MB | 454 MB | 444 / 414 MB | 311 to 577 MB | marginal / pass |
+| All processes, peak memory, `acquire` from the `ipc` case | 1.4 GB budget, 1.6 GB gate | 762 MB | 904 / 775 MB | 783 to 1,475 MB | marginal, pass / pass, pass |
+| All processes, sum of the peaks in the whole system, with the simulator in `acquire` | 1.4 GB budget, 1.6 GB gate | | 1,143 / 966 MB | 950 to 1,786 MB | marginal, marginal / marginal, pass |
 
 - **The fast path has room.** One bin1 frame takes 32 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 23 µs of that. The Pi 4 estimate for the kernel (0.11 to 0.25 ms) agrees with the architecture's 0.2 to 0.4 ms.
-- **The stream between the processes is the risk.** The production code of `acquire` spends 0.69 ms of CPU on a frame, and `core` spends 0.41 ms on receiving it. Over the three Linux runs, the figures range from 0.69 to 1.0 ms and from 0.41 to 0.60 ms. Both costs come from Python threads that move each frame, with no array computation. The work alone puts `acquire` at 13 to 20% of a Pi 4 core, over its 10% budget, even if wake-ups cost nothing. The camera is not the cause: the fake camera of the tests adds about 5 µs to a frame (see [What the camera adds](#what-the-camera-adds)). At 360 frames per second, the receive alone costs an estimated 93 to 146% of a Pi 4 core. The costs belong to each message and each frame, not to the bytes (see [Where the stream spends its CPU time](#where-the-stream-spends-its-cpu-time)).
-- **The survey path has room in time and little in memory.** A bin2 frame takes 1.5 s on the dev machine (1.5 to 3.4 s over the three Linux runs), including 0.5 s for the sky quality step, and the worker peaks at 454 MB.
-- **Two gigabytes of memory is enough on this evidence.** The estimated peak of all processes stays under the 1.4 GB budget and the 1.6 GB gate (see [Memory](#memory)).
+- **The stream between the processes was the risk, and it has changed.** At commit `0a764af`, the production code of `acquire` spent 0.69 ms of CPU on a frame, and `core` spent 0.41 ms on receiving it. Over the three Linux runs, the figures range from 0.69 to 1.0 ms and from 0.41 to 0.60 ms. Both costs come from Python threads that move each frame, with no array computation. The work alone puts `acquire` at 13 to 20% of a Pi 4 core, over its 10% budget, even if wake-ups cost nothing. The camera is not the cause: the fake camera of the tests adds about 5 µs to a frame (see [What the camera adds](#what-the-camera-adds)). At 360 frames per second, the receive alone costs an estimated 93 to 146% of a Pi 4 core. The costs belong to each message and each frame, not to the bytes (see [Where the stream spends its CPU time](#where-the-stream-spends-its-cpu-time)). The services lane then cut the per-message work. In the whole system at commit `b2e1f93`, `core` spends 0.20 ms of CPU on a frame for the receive, the fast path, and the append together (0.25 ms on Windows). That is 1.9% of a core at 98 frames per second, and 13 to 21% on the Pi 4 estimate, within the 25% budget. The `ipc` case has not measured `acquire` again at that commit, so the `acquire` row and the bin2 row still show the figures of `0a764af`.
+- **The survey path has room in time and little in memory.** A bin2 frame takes 1.5 s on the dev machine (1.5 to 3.4 s over the three Linux runs), including 0.5 s for the sky quality step, and the worker peaks at 454 MB in the `survey` case and at 444 MB in the whole system.
+- **Two gigabytes of memory is not settled.** The earlier estimate used a stand-in of 197 MB for `core`. In the whole system, `core` peaks at 307 MB on Linux. The estimated peak of all processes is 783 to 1,475 MB, which straddles the 1.4 GB budget and stays under the 1.6 GB gate. The range crosses the gate too when `acquire` counts with the simulator inside it (950 to 1,786 MB), and the true figure for `acquire` lies between the two. A run on a Pi 4 decides it (see [Memory](#memory)).
 - **Rust for the per-frame metrics is not indicated** (see [The Rust decision](#the-rust-decision)).
 
 ## What the harness measures
@@ -39,7 +48,7 @@ The table shows the least disturbed of three Linux runs. The last column gives t
 | `survey` | One synthetic bin2 survey frame (4144 × 2822 pixels, 30 s, rendered by the simulator from catalog stars) through `create_survey_analyzer` and the process worker of `make_process_executor`, with the sky quality step and one synthetic dark set: the wall time, the CPU time of the worker, each stage, the cost of the process boundary, the start of the worker, and the peak memory of the worker. | The survey budgets |
 | `store` | Sustained result-row inserts, and the cost of the metrics-segment append per frame at 98 fps, in a temporary folder that the case deletes. | The 25% budget |
 | `memory` | The resident size of a fresh process after it imports each part of the software: the fast path, the survey path, astropy, and the web stack. | The memory budgets |
-| `core-sim` | A placeholder for the `core` process against `acquire` with the simulator. It skips until `measure_core` exists (see [Enable the core case](#enable-the-core-case)). | The memory budgets |
+| `core-sim` | The whole system on the simulated sky: `acquire` with the simulator, `core`, `web`, and the survey worker, started from the plan of `seeingmon dev` and read from outside for about 6 minutes (see [The whole-system case](#the-whole-system-case)). | The fast path with the receive in `core`, and the memory budgets |
 
 The sections below name each figure the way a report does (`<case>: <figure>`).
 
@@ -51,7 +60,7 @@ The Pi 4 budget comes from [architecture.md](architecture.md). The harness adds 
 |---|---|---|
 | `acquire`, bin1 128 × 128 at 98 fps | 10% of one core | The architecture. The harness counts the code of `acquire` and leaves the camera out, so the figure is a lower bound. |
 | Fast path, bin1 128 × 128 at 98 fps | 25% of one core, 2.55 ms per frame | The architecture |
-| Fast path and the receive from `acquire`, bin1 | 25% of one core | The same consumer in `core` pays for both |
+| Fast path and the receive from `acquire`, bin1 | 25% of one core | The same consumer in `core` pays for both. The row reads the CPU time that `core` spends on a frame in the whole system (the `core-sim` case), and it falls back to the sum of the `fastpath` and `ipc` figures when that case did not run. |
 | Fast path, bin2 64 × 64 at 360 fps | 25% of one core, 0.69 ms per frame | The architecture |
 | Fast path and the receive from `acquire`, bin2 | 25% of one core | The same consumer in `core` pays for both |
 | Survey frame, bin2 | 180 s (not a gate) | The survey interval: a frame must end before the next one |
@@ -65,13 +74,14 @@ The harness sums the figures of each row. It reports `pass` when the whole estim
 Run the commands on your development machine, from a clone with the extras installed (`uv sync --all-extras`, see [development.md](development.md)).
 
 ```bash
-seeingmon perf run --smoke                                  # under a minute: every case works
-seeingmon perf run --label dev --json local/perf/dev.json  # the full run
+seeingmon perf run --smoke                                  # about a minute: every case works
+seeingmon perf run --label dev --json local/perf/dev.json  # the full run: about 8 minutes
 seeingmon perf report local/perf/dev.json --budgets         # the tables, the verdicts, and the checks
 ```
 
 - `--cases NAME,...` runs some cases, and `--list` names them.
-- `--smoke` shrinks every case to a tiny workload, and the figures then say nothing about speed. CI runs it as a test (`tests/perf/test_cases.py`). The test checks that every case runs, that its figures are finite and positive, and that the budgets find the figures that they read. It checks nothing about size.
+- `--smoke` shrinks every case to a tiny workload, and the figures then say nothing about speed. The `core-sim` case still starts its three processes, so it takes about 20 s. CI runs the smoke run as a test (`tests/perf/test_cases.py`). The test checks that every case runs, that its figures are finite and positive, and that the budgets find the figures that they read. It checks nothing about size.
+- `--cases core-sim` runs the whole-system case alone, which takes about 6 minutes (see [The whole-system case](#the-whole-system-case)).
 - `--json PATH` saves the report. Use a path under `local/`, which Git ignores. The report holds the architecture, the operating-system family, the Python and library versions, the processor model, and the commit. It holds no host name, user name, or serial number.
 - `--label` names the machine class. Use `pi4` on a Raspberry Pi 4.
 - `--quiet-wait SECONDS` waits up to that long before each case for the machine to be at most 15% busy. Other work disturbs a timing, and each case records how busy the machine was.
@@ -82,7 +92,7 @@ A figure is the median of its repeats, and the table also shows the minimum, the
 
 ## Results on the development machine
 
-The tables show two sets of runs on the same laptop, a recent x86-64 machine with performance and efficiency cores. One set ran Linux in a WSL 2 virtual machine (CPython 3.12.14, NumPy 2.5.3, SciPy 1.18.1), and the other ran Windows (CPython 3.13.13, the same libraries). Each set has three runs of the whole harness at commit `0a764af`. A cell that holds two numbers reads `Linux / Windows`. The Pi runs Linux, so the estimate uses the Linux run.
+The tables show two sets of runs on the same laptop, a recent x86-64 machine with performance and efficiency cores. One set ran Linux in a WSL 2 virtual machine (CPython 3.12.14, NumPy 2.5.3, SciPy 1.18.1), and the other ran Windows (CPython 3.13.13, the same libraries). Each set has three runs of the whole harness at commit `0a764af`, except the last subsection, which shows the whole-system case at commit `b2e1f93`. A cell that holds two numbers reads `Linux / Windows`. The Pi runs Linux, so the estimate uses the Linux run.
 
 The laptop did other work during the runs, and the scheduler moves a process between fast and slow cores, so a figure changes from run to run. A disturbance only adds time. For that reason, each table shows the least disturbed run of each set, which is the run with the lowest sum of its key figures divided by the lowest figure of the three. The last table shows all three Linux runs.
 
@@ -227,6 +237,31 @@ The segment append costs under 0.01% of a core at 98 fps, so the store does not 
 
 The last column of the summary table gives the verdict of each of the six runs. Two verdicts depend on the run: the fast path with the receive in bin1 is `marginal` in the least disturbed Linux run and `fail` in the other five, and the bin2 fast path is `pass` in the three Linux runs and `marginal` in the three Windows runs.
 
+### The whole system
+
+The `core-sim` case ran once on each system at commit `b2e1f93`, with the full sensor at speed 1 (see [The whole-system case](#the-whole-system-case) for the method). Another system ran on the machine during both runs, so these are runs with another system active. The host was about 46% busy during the Linux run and 41% during the Windows run (the load of all processors, from the performance counter of Windows). The report of the Linux run says `machine 2% busy`, because a virtual machine does not see the load of its host. The report of the Windows run says `machine 26% busy`. The case itself used 1.7% of the Linux virtual machine and 2.1% of the Windows machine.
+
+Each run sampled once per second for 303 s, after 8 s (Linux) or 13 s (Windows) for the processes to start. It had 98 s of the fast phase (8,652 frames at 88.3 frames per second on Linux, and 8,658 frames on Windows), 31 s with the scheduler paused, two survey steps, and four survey frames that the worker analyzed.
+
+| Process | Peak (MB) | Resident in the fast phase (MB) | CPU in the fast phase | CPU with the scheduler paused | CPU over the whole cycle |
+|---|---|---|---|---|---|
+| `acquire`, with the simulator | 297 / 246 | 174 / 140 | 38.9% / 46.2% | 0.61% / 0.45% | 18.3% / 22.8% |
+| `core` | 307 / 222 | 261 / 152 | 2.31% / 2.82% | 0.58% / 0.61% | 1.54% / 1.89% |
+| Survey worker | 444 / 414 | | | | 4.0 s / 6.9 s for four frames |
+| `web`, polled every 5 s | 80 / 85 | 80 / 81 | 0.71% / 0.61% | 0.68% / 0.61% | 0.75% / 0.76% |
+| Children of `core` (the resource tracker) | 15 / none | | | | |
+| Sum of the peaks | 1,143 / 966 | | | | |
+
+The fast phase excludes the first window and every interval in which the stream switches or a survey frame waits for its analysis. The last column covers the whole cycle of 3 minutes: the fast stream, the survey step, and the gap that waits for the next slot.
+
+- **`acquire` includes the simulator.** It renders every frame, and its CPU time and its memory are not those of the production code. The `ipc` case measures the production code with prebuilt frames: 6.8% of a core at 98 frames per second and a peak of 58 MB (commit `0a764af`). The budgets read those figures.
+- **The cost of a frame in `core`** is the CPU time of the fast phase minus the CPU time with the scheduler paused, divided by the frame rate: 195 µs on Linux (2.31% minus 0.58%, over 88.3 frames per second) and 251 µs on Windows. At 98 frames per second, that is 1.92% of a core on Linux and 2.46% on Windows, and 13 to 21% and 17 to 27% on the Pi 4 estimate. The cost covers the receive, the fast path, and the append of the segment. For comparison, the sum of the `fastpath` and `ipc` figures at commit `0a764af` was 4.3% (440 µs a frame), and a run of the whole-system case a few commits before `b2e1f93`, before the services lane batched the stream, measured 585 µs a frame (5.7%). The batching cut the cost of a frame to a third.
+- **The paused scheduler costs 0.6% of a core.** That is the load that does not belong to the frames: the scheduler loop, the store, the health timer, and the answers to `web` and to the case, which asks for the status once per second.
+- **Linux gives the threads.** In the fast phase, `core` uses one thread with 1.5% of a core and one with 0.4%, and each of the others uses 0.1% or less. The threads have no names, because Python of this version sets none, so the case cannot say which is which. The capture thread of `acquire` uses 37.7%, which is the simulator.
+- **The survey worker** used 1.0 s of CPU for a frame on Linux and 1.7 s on Windows, which agrees with the 1.4 and 2.0 s of the `survey` case. Its peak is 444 and 414 MB.
+- **The resident size differs by system.** `core` holds 261 MB in the fast phase on Linux and 152 MB on Windows, and its peak is 307 and 222 MB. The two systems count resident memory in different ways, so the figures differ by more than the code does. The estimate uses Linux, which is the system of the Pi.
+- **`web` takes 80 to 85 MB with one client that polls it.** That is 27 to 32 MB more than the 53 MB of its imports, the lower bound that the earlier estimate used.
+
 ## How the estimate works
 
 The harness runs on a development machine, and the budgets are for a Pi 4. A figure from a dev run becomes a Pi 4 estimate when you multiply it by a range for its class of code. The module `seeingmon.perf.scaling` holds every range in one table, with its reason and its sources, and the table below copies it.
@@ -270,22 +305,25 @@ In every run, the factor that the architecture implies overlaps the range of the
 
 ## Memory
 
-The harness adds the peaks of the processes on the dev machine, multiplies the sum by the `memory` range, and adds the share of the operating system.
+The harness adds the peaks of the processes on the dev machine, multiplies the sum by the `memory` range, and adds the share of the operating system. The `core-sim` case measures the peaks of `core`, the survey worker, and `web` in the running system, and the budgets read them in place of the stand-ins that the first version of the page used. The table shows the Linux run at commit `b2e1f93` (a run with another system active, see [The whole system](#the-whole-system)).
 
 | Process | Dev machine peak (MB) | Pi 4 estimate (MB) |
 |---|---|---|
-| `acquire` with the zero-cost camera | 58 | 40 to 75 |
-| `core`, a stand-in: the fast-path process (145) plus the store process (52) | 197 | 138 to 256 |
-| Survey worker | 454 | 318 to 590 |
-| `web`, a lower bound: the imports only | 53 | 37 to 69 |
+| `acquire` with the zero-cost camera, from the `ipc` case | 58 | 40 to 75 |
+| `core`, measured in the system | 307 | 215 to 399 |
+| Survey worker, measured in the system | 444 | 311 to 577 |
+| `web`, measured with one client that polls it | 80 | 56 to 104 |
+| Children of `core` (the resource tracker), measured in the system | 15 | 11 to 20 |
 | Operating system, an assumption | | 150 to 300 |
-| Sum | 762 | 683 to 1,290 |
+| Sum | 904 | 783 to 1,475 |
 
-The estimated sum is under the 1.4 GB budget and under the 1.6 GB gate that separates the 2 GB model from the 4 GB model, so this evidence does not call for 4 GB. Four limits apply:
+The estimated sum straddles the 1.4 GB budget, so its verdict is `marginal`, and it stays under the 1.6 GB gate that separates the 2 GB model from the 4 GB model, so it is `pass`. This evidence does not call for 4 GB, and it does not settle the 1.4 GB budget either. The earlier estimate of 762 MB (683 to 1,290 MB) was lower, because it used a stand-in of 197 MB for `core` and the imports of `web` alone. On Windows the same peaks sum to 775 MB (`core` 222, the worker 414, and `web` 85), and the estimate passes both limits, but the Pi runs Linux.
 
-- The `core` row is a stand-in. It adds two whole processes, so it counts the shared imports twice, and it leaves out the parts of `core` that the harness does not run, such as the three survey frames that stay in RAM and the preview encoder. The `core-sim` case replaces it when it exists.
-- The `web` row counts what the imports take. A web process that serves connections takes more.
-- The architecture's conditions for 2 GB are design rules that the harness does not test: the out-of-memory killer takes the survey worker first, calibration frames stay memory-mapped, and the Pi processes bin2 frames only.
+The `acquire` row is the weak one. The `ipc` case streams 128 × 128 frames, and it never sends a survey frame, so its 58 MB leaves out the passage of the 23 MB survey frames through `acquire`. The whole-system case measures 297 MB for `acquire` on Linux (246 MB on Windows), but that figure includes the simulator, which holds several arrays of 47 MB while it renders a survey frame. A real `acquire` lies between the two. The sum of all the peaks in the whole system, with the simulator in `acquire`, is 1,143 MB on Linux (966 MB on Windows), and its estimate is 950 to 1,786 MB: `marginal` against both limits. Four limits apply:
+
+- The `core` row is measured in a system with one client of `web` and no sink. The sink forwarder, the daily retention, and several browsers add to it. In the fast phase, `core` holds 261 MB, which is 173 MB more than the 88 MB of its imports, and the case does not break the rest down.
+- The `web` row counts one client that polls every 5 s. The live views and the preview encoder take more.
+- The conditions of the architecture for 2 GB are design rules that the harness does not test: the out-of-memory killer takes the survey worker first, calibration frames stay memory-mapped, and the Pi processes bin2 frames only.
 - The survey worker straddles its 550 MB limit by itself, so it is the first figure to read in a Pi 4 run.
 
 The `memory` case reads the resident size of a fresh process after it imports each set of modules. The sets show where the baseline of each process comes from. Multiply them by 0.7 to 1.3 for a Pi 4 (the imports of `core` take an estimated 62 to 115 MB).
@@ -330,7 +368,7 @@ The Pi 4 measurement stays blocked (blocker B2), because no Pi 4 was available w
    vcgencmd get_throttled    # 0x0 before the run
    ```
 
-3. Run the harness. The full run takes about 2 minutes on the dev machine and an estimated 5 to 15 minutes on a Pi 4. The `survey` case needs about 1 GB of free memory for its two processes.
+3. Run the harness. The full run takes about 8 minutes on the dev machine: 2 minutes for the cases and 6 minutes for the whole system. On a Pi 4 the cases take an estimated 5 to 15 minutes. The `survey` case needs about 1 GB of free memory for its two processes. The whole-system case runs the simulator inside `acquire`, and the simulator may not reach 30 frames per second on a Pi 4. The case then fails with the message "the fast stream never reached a steady state". Run the other cases in that event (`--cases calibration,kernel,fastpath,ipc,survey,store,memory`), and send the message to the lead.
 
    ```bash
    .venv/bin/seeingmon perf run --label pi4 --quiet-wait 120 --json local/perf/pi4.json
@@ -354,8 +392,42 @@ The Pi 4 measurement stays blocked (blocker B2), because no Pi 4 was available w
 - **A real camera.** Jitter in the frame arrival, drops, and the recovery ladder.
 - **A multi-day soak.** Memory growth, file handle leaks, retention, and the long-term behavior of the three processes.
 - **The plate solver.** A first solve of a frame needs `solve-field` or ASTAP, which run outside Python. The `survey` case gives the pipeline the solution of a previous frame, as every frame after the first one has. The architecture's solver table estimates the first solve.
-- **The rest of `core`.** The scheduler loop, the preview encoder, the sink forwarder, retention, and the web process under load. The `core-sim` case is meant to measure them.
+- **A busy `web` and the rest of `core`.** The `core-sim` case polls `web` every 5 s, as one open page does, and it configures no sink. Several browsers, the live views of the alignment, the preview encoder, the sink forwarder, and the daily retention are not part of it.
 
-## Enable the core case
+## The whole-system case
 
-The `core-sim` case skips with the reason "the core process is on main, and `measure_core` is not written yet". The entry function `run_core` exists in `seeingmon.services.core.main`. To enable the case, replace the body of `measure_core` in `src/seeingmon/perf/cases/core_sim.py`. The docstring at the top of that file lists the steps and the two figures that the budgets read: `cpu_share` and `peak_rss`. When the case runs, the memory budget uses its peak in place of the stand-in from the `fastpath` and `store` cases.
+The `core-sim` case runs the system and reads it from outside. It starts `acquire` with the simulator, `core`, and `web` from the plan of `seeingmon dev` (`seeingmon.services.dev.build_plan`), on a free port of the loopback interface, with a temporary data folder and none of the settings of the person who runs it. The case changes no code of the system: it has no profiling hook and no extra counter.
+
+**The system.**
+
+- The sensor is the reference sensor (`full`), so the survey frames have the bin2 size of the real camera, 4144 × 2822 pixels, and the survey worker peaks where it peaks on a real night.
+- The clock runs at speed 1, in real time.
+- The fast stream uses the fast mode of the architecture (bin1, a 128 × 128 region, an exposure of 2 ms), which the readout of the sensor stretches to about 88 frames per second, and the real Polaris. The windows are those of the dev launcher, 20 s long. In production they are 60 s long.
+- The scheduler runs a fast stream, then a survey step (a short and a long exposure), then waits for the next slot, which comes every 3 minutes. The run waits for two survey steps and for the results of their four frames. It takes about 6 minutes.
+- One client polls `web` every 5 s with three requests (status, the latest seeing, and health), as an open page would.
+- The scheduler and `acquire` wait up to 20 s beyond the frame period for a frame. The simulator renders a survey frame inside the read, which takes longer than the default margin of 0.5 s on a slow or busy machine. The scheduler then counts a camera error, and it never completes a survey step: a run on Windows ended after one step in 12 minutes. The longer margin changes no work that the system does.
+
+**What the case reads.**
+
+- **Memory.** The peak resident size of each process, which the operating system keeps: `VmHWM` on Linux and `PeakWorkingSetSize` on Windows. The survey worker is a child of `core`, and the case finds it in the process tree. On Linux, the resource tracker of the `multiprocessing` module is another child, and the figures call it `other`. The case also reads the resident size of each process every second, for the figure in the fast phase.
+- **CPU time.** Every second, the CPU time of each process (`/proc/<pid>/stat` on Linux, with a tick of 10 ms, and `GetProcessTimes` on Windows, with a tick of about 15.6 ms), and on Linux the CPU time of each thread (`/proc/<pid>/task/<tid>/stat`). Windows has no such reading here, so it gives the process only. The share of a core in a phase is the CPU time of the phase divided by its length.
+- **The state of the scheduler.** The `status` call of `core`, which `web` also makes, says which stream runs and how many frames, windows, and survey frames the scheduler has handled. The samples use it to tell the phases apart.
+
+**The phases.**
+
+- *Fast*: the fast stream runs at 30 frames per second or more, no survey frame waits for its analysis, and the first window is over. The imports and the first allocations of the analysis happen in the first window.
+- *Paused*: the run ends with the `Pause` command, which the `web` page has a button for. No frame flows, so what `core` still uses is the load that does not belong to the frames: the scheduler loop, the store, the health timer, and the answers to `web` and to the case. The case reports it apart.
+- The cost of a frame in `core` is the difference of the two shares divided by the frame rate. It covers the receive, the fast path, and the append of the segment, and it does not cover the load of the paused scheduler. The case reports it as `core.frame_cost` and as a share of a core at 98 frames per second, the rate of the budget (`core.fastpath_receive_share`). The row "fast path and receive" of the budgets reads that share.
+
+**What includes the simulator.** The simulator renders every frame inside `acquire`, so the CPU time of `acquire` in this case includes it, and so does the peak memory of `acquire`: the simulator holds several arrays of the whole frame while it renders a survey frame, and each array of 32-bit floats takes 47 MB. The budgets keep reading `acquire` from the `ipc` case, which uses prebuilt frames, and the page shows the figures of the whole system apart and marks them. The peaks of `core`, the survey worker, and `web` are real, because none of them runs the simulator.
+
+**Sample interval and run length.** The case samples once per second. A full run takes 6 to 7 minutes of sampling after the processes start, and a smoke run takes about 8 s.
+
+**Run it.**
+
+```bash
+seeingmon perf run --cases core-sim --label dev --json local/perf/system.json
+seeingmon perf report local/perf/system.json --details
+```
+
+The extras `survey` and `web` must be installed. Other work on the machine changes the CPU figures, so run the case when the machine is quiet, and read the line `machine N% busy` and the figure `run.machine_busy`. The figure is the load of all processors during the run, and `system_share_percent` in its detail is the share that the system itself used. On Linux in a virtual machine, the load covers the virtual machine only, and the host can be busy without showing. The `--smoke` mode uses the `small` sensor and a few seconds of sampling.
