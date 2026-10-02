@@ -19,6 +19,8 @@
     library: null,
     failed: null, // the error of the last read, or null
     sending: false,
+    readCount: 0, // numbers the reads, so that an older answer never replaces a newer one
+    applied: 0,
     previousTask: null, // the state of the task at the last read, to notice that it ended
     exposureTouched: false,
   };
@@ -379,6 +381,9 @@
     const down = Boolean(state.failed) && state.failed.status === 503;
     $("dark-start").disabled = active || state.sending || !library || !enabled || down;
     $("dark-start").title = enabled ? "" : "The server has no token hash, so it refuses every command.";
+    if (!enabled && $("command-note").textContent === "") {
+      $("command-note").textContent = "The server has no API token configured, so it refuses every command.";
+    }
     $("dark-cancel").hidden = !active;
     $("dark-cancel").disabled = state.sending;
     const ended = Boolean(task) && !active && task.state !== "idle";
@@ -408,6 +413,7 @@
 
   async function read() {
     let library;
+    const mine = (state.readCount += 1);
     try {
       library = await api.get("dark");
     } catch (error) {
@@ -420,6 +426,10 @@
       renderControls();
       return;
     }
+    if (mine < state.applied) {
+      return; // a newer answer arrived first
+    }
+    state.applied = mine;
     state.failed = null;
     showError(null);
     const before = state.previousTask;
