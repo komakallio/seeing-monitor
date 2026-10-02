@@ -90,6 +90,14 @@ class RetentionConfig(SectionModel):
     previews_days: float = Field(
         default=7.0, gt=0, description="How long preview images stay, in days."
     )
+    previews_max_gb: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "The size cap of the preview images. Over the cap, the oldest previews go first, "
+            "and the previews of the survey frames that survive go last."
+        ),
+    )
     survey_full_days: float = Field(
         default=7.0, gt=0, description="How long every survey frame stays, in days."
     )
@@ -99,6 +107,14 @@ class RetentionConfig(SectionModel):
         description=(
             "After the full days, how long one survey frame for each night stays, in days. "
             "A night keeps the frame nearest to the middle of the night."
+        ),
+    )
+    survey_max_gb: float = Field(
+        default=4.0,
+        gt=0,
+        description=(
+            "The size cap of the survey frames. Over the cap, the oldest frames go first, "
+            "except the one frame for each night that thinning keeps, which goes last."
         ),
     )
     bursts_max_gb: float = Field(

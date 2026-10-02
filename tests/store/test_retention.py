@@ -665,6 +665,39 @@ class TestRealDisk:
         assert report.quota_bytes > 0
 
 
+def make_frame_files(
+    layout: DataLayout,
+    t_utc_ns: int,
+    *,
+    kind: str = "survey",
+    fits: bool = True,
+    preview: bool = True,
+    fits_size: int = 100,
+    preview_size: int = 10,
+) -> tuple[Path, Path]:
+    """The FITS file and the preview of a survey frame, named as `core` names them.
+
+    Both files last changed at the frame time. A file that the call does not create still has its
+    path in the result.
+    """
+    age_s = (NOW - t_utc_ns) / NS_PER_S
+    fits_path = layout.survey_path(t_utc_ns)
+    preview_path = layout.preview_path(t_utc_ns, kind=kind)
+    if fits:
+        make_file(fits_path, fits_size, age_s)
+    if preview:
+        make_file(preview_path, preview_size, age_s)
+    return fits_path, preview_path
+
+
+def night_times(n: int) -> list[int]:
+    """The times of three frames of the night `n` days ago: 8 hours before the middle of the
+    night, the middle (the frame that thinning keeps), and 8 hours after it. A night runs from
+    12:00 UTC to 12:00 UTC, and NOW is 00:00 UTC, so the middle is exactly `n` days before NOW."""
+    middle = NOW - n * DAY_NS
+    return [middle - 8 * 3600 * NS_PER_S, middle, middle + 8 * 3600 * NS_PER_S]
+
+
 class TestPreviewsOfSurvivingFrames:
     """A preview stays while the survey frame of the same time stays.
 
@@ -683,20 +716,10 @@ class TestPreviewsOfSurvivingFrames:
         preview: bool = True,
     ) -> tuple[Path, Path]:
         """The FITS file and the preview of a frame, and they last changed at the frame time."""
-        age_s = (NOW - t_utc_ns) / NS_PER_S
-        fits_path = layout.survey_path(t_utc_ns)
-        preview_path = layout.preview_path(t_utc_ns, kind=kind)
-        if fits:
-            make_file(fits_path, 100, age_s)
-        if preview:
-            make_file(preview_path, 10, age_s)
-        return fits_path, preview_path
+        return make_frame_files(layout, t_utc_ns, kind=kind, fits=fits, preview=preview)
 
     def night(self, n: int) -> list[int]:
-        """The times of three frames of the night `n` days ago: 8 hours before the middle, the
-        middle, and 8 hours after it."""
-        middle = NOW - n * DAY_NS
-        return [middle - 8 * 3600 * NS_PER_S, middle, middle + 8 * 3600 * NS_PER_S]
+        return night_times(n)
 
     def test_the_preview_of_the_frame_that_thinning_keeps_stays_and_the_others_go(
         self, layout: DataLayout, make_manager: Manager
@@ -804,3 +827,144 @@ class TestPreviewsOfSurvivingFrames:
         second = manager.run_once()
         assert (names(layout.survey_dir), names(layout.previews_dir)) == survivors
         assert second.deletions == ()
+
+
+class TestSurveyAndPreviewCaps:
+    """The caps of `survey/` and `previews/`: the oldest files first, and the nightly frame last."""
+
+    SIZE = 1000  # the size of each FITS file, so that a cap in bytes counts files
+
+    def survey(
+        self, layout: DataLayout, night: int, hours: tuple[int, ...] = (0, 1, 2)
+    ) -> list[Path]:
+        """The FITS files of a night: 0 is the early frame, 1 the middle one, and 2 the late one."""
+        times = night_times(night)
+        return [
+            make_frame_files(layout, times[hour], preview=False, fits_size=self.SIZE)[0]
+            for hour in hours
+        ]
+
+    def test_the_defaults_fit_a_card_of_32_gb(self) -> None:
+        retention = RetentionConfig()
+        assert (retention.survey_max_gb, retention.previews_max_gb) == (4.0, 1.0)
+        # The quota of 25% of a 32 GB card is 8 GB: the four caps add up to more, but the caps of
+        # the survey frames and the previews leave the metrics and the database their room.
+        assert retention.metrics_max_gb + retention.survey_max_gb + retention.previews_max_gb <= 8.0
+
+    def test_under_its_cap_a_tier_loses_nothing(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        files = self.survey(layout, 3) + self.survey(layout, 5)
+        report = make_manager(survey_max_gb=gb(6 * self.SIZE)).run_once()  # exactly at the cap
+        assert all(path.exists() for path in files)
+        assert report.deletions == ()
+
+    def test_over_the_cap_the_frames_that_thinning_would_delete_go_first_oldest_first(
+        self, layout: DataLayout, make_manager: Manager, events: list[EventRecord]
+    ) -> None:
+        old_keeper = self.survey(layout, 20, (1,))[0]  # the oldest file of all, and a keeper
+        n5_early, n5_middle, n5_late = self.survey(layout, 5)
+        n3_early, n3_middle, n3_late = self.survey(layout, 3)
+        report = make_manager(survey_max_gb=gb(4500)).run_once()  # 7,000 bytes: 2,500 too many
+        assert [p.exists() for p in (n5_early, n5_late, n3_early)] == [False, False, False]
+        assert n3_late.exists()  # the newest of the frames that thinning would delete
+        assert old_keeper.exists()  # older than everything, but the keeper of its night
+        assert n5_middle.exists()
+        assert n3_middle.exists()
+        (deletion,) = report.deletions
+        assert (deletion.tier, deletion.reason, deletion.files, deletion.size_bytes) == (
+            "survey",
+            "tier_quota",
+            3,
+            3 * self.SIZE,
+        )
+        (event,) = events
+        assert (event.level, event.kind) == ("warning", "retention.early_delete")
+        assert event.detail is not None
+        assert (event.detail["tier"], event.detail["reason"]) == ("survey", "tier_quota")
+
+    def test_when_the_other_frames_are_gone_the_nightly_frames_go_oldest_first(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        old_keeper = self.survey(layout, 20, (1,))[0]
+        n5_early, n5_middle, n5_late = self.survey(layout, 5)
+        n3_early, n3_middle, n3_late = self.survey(layout, 3)
+        make_manager(
+            survey_max_gb=gb(1500)
+        ).run_once()  # 5,500 over: the four others, then two more
+        assert not any(p.exists() for p in (n5_early, n5_late, n3_early, n3_late))
+        assert not old_keeper.exists()  # the oldest nightly frame goes first
+        assert not n5_middle.exists()
+        assert n3_middle.exists()  # the newest nightly frame is the last to go
+
+    def test_a_file_that_changed_within_the_guard_time_is_never_deleted(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        fresh = make_file(layout.survey_dir / "2026/07/19/fresh.fits", self.SIZE, 600)
+        stale = make_file(layout.survey_dir / "2026/07/19/stale.fits", self.SIZE, 1200)
+        report = make_manager(survey_max_gb=gb(1)).run_once()  # one byte: everything must go
+        assert fresh.exists()  # 600 s old: inside the 15 minutes
+        assert not stale.exists()
+        assert report.deletions[0].files == 1
+
+    def test_the_previews_of_frames_that_were_never_kept_go_before_the_previews_of_kept_ones(
+        self, layout: DataLayout, make_manager: Manager, events: list[EventRecord]
+    ) -> None:
+        times = night_times(20)
+        kept_old = make_frame_files(layout, times[1], preview_size=100)  # a keeper: its frame stays
+        plain_old = make_frame_files(layout, NOW - 6 * DAY_NS, fits=False, preview_size=100)
+        plain_new = make_frame_files(layout, NOW - 5 * DAY_NS, fits=False, preview_size=100)
+        kept_new = make_frame_files(layout, NOW - 4 * DAY_NS, preview_size=100)
+        report = make_manager(previews_max_gb=gb(250)).run_once()  # 150 over: two go
+        assert not plain_old[1].exists()
+        assert not plain_new[1].exists()
+        assert kept_old[1].exists()  # the oldest preview, and its frame stays
+        assert kept_new[1].exists()
+        (deletion,) = report.deletions
+        assert (deletion.tier, deletion.reason, deletion.files) == ("previews", "tier_quota", 2)
+        assert [e.kind for e in events] == ["retention.early_delete"]
+
+    def test_the_previews_of_kept_frames_go_oldest_first_when_nothing_else_is_left(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        old = make_frame_files(layout, night_times(30)[1], preview_size=100)
+        newer = make_frame_files(layout, night_times(12)[1], preview_size=100)
+        newest = make_frame_files(layout, NOW - 3 * DAY_NS, preview_size=100)
+        make_manager(previews_max_gb=gb(150)).run_once()  # 300 bytes, 150 over: two go
+        assert not old[1].exists()
+        assert not newer[1].exists()
+        assert newest[1].exists()
+
+    def test_a_preview_cap_never_deletes_a_preview_that_changed_in_the_last_15_minutes(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        fresh = make_file(layout.previews_dir / "2026/07/19/survey-x.jpg", 100, 600)
+        stale = make_file(layout.previews_dir / "2026/07/19/survey-y.jpg", 100, 1200)
+        make_manager(previews_max_gb=gb(1)).run_once()
+        assert fresh.exists()
+        assert not stale.exists()
+
+    def test_the_survey_cap_runs_before_the_preview_cap_and_the_orphan_ages_out_next_time(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        keeper_fits, keeper_preview = make_frame_files(layout, night_times(20)[1], fits_size=1000)
+        plain = make_frame_files(layout, NOW - 3 * DAY_NS, fits_size=1000)
+        manager = make_manager(survey_max_gb=gb(1000))  # 2,000 bytes of FITS: one file must go
+        manager.run_once()
+        assert not keeper_fits.exists()  # the oldest nightly frame goes, because the other is newer
+        assert plain[0].exists()
+        # The preview of the deleted frame is 20 days old and had a partner when the age rule ran,
+        # so it stays for this pass, and the next pass ages it out.
+        assert keeper_preview.exists()
+        manager.run_once()
+        assert not keeper_preview.exists()
+        assert plain[1].exists()
+
+    def test_the_caps_change_nothing_for_files_under_their_limits_and_say_nothing(
+        self, layout: DataLayout, make_manager: Manager, events: list[EventRecord]
+    ) -> None:
+        for t in night_times(4):
+            make_frame_files(layout, t, fits_size=self.SIZE, preview_size=100)
+        report = make_manager().run_once()  # the default caps are 4 GB and 1 GB
+        assert report.deletions == ()
+        assert events == []

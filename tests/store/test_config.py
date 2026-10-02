@@ -68,6 +68,8 @@ def test_the_retention_defaults_follow_the_architecture() -> None:
     assert retention.metrics_max_gb * GB == 2 * GB
     assert retention.bursts_max_gb * GB == 2 * GB
     assert retention.previews_days == 7
+    assert retention.previews_max_gb * GB == 1 * GB  # a week of previews takes 0.1 to 0.25 GB
+    assert retention.survey_max_gb * GB == 4 * GB  # and a week of survey frames 1.8 to 3.5 GB
     assert (retention.survey_full_days, retention.survey_thinned_days) == (7, 60)
     assert retention.min_free_gb * GB == 1 * GB  # below 1 GB, raw capture stops
     assert StarListRecord.retention_days == 365  # star lists follow the record declaration
@@ -84,6 +86,8 @@ def test_the_longest_backoff_may_not_be_shorter_than_the_first() -> None:
         (RetentionConfig, {"quota_fraction": 0}),
         (RetentionConfig, {"quota_fraction": 1.5}),
         (RetentionConfig, {"night_boundary_utc_hour": 24}),
+        (RetentionConfig, {"survey_max_gb": 0}),
+        (RetentionConfig, {"previews_max_gb": -1}),
         (ForwarderConfig, {"jitter": 2}),
         (ForwarderConfig, {"batch_rows": 0}),
     ],

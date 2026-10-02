@@ -10,18 +10,28 @@ that a writer holds open is safe.
   365 days) loses its rows after that time.
 - Per-frame metrics (`segments/`) stay for `metrics_days` or up to `metrics_max_gb`, whichever
   limit comes first.
-- Previews (`previews/`) stay for `previews_days`. A preview also stays while the survey frame of
-  the same time stays, whatever its age, so the frame that thinning keeps for a night keeps its
-  preview. The two files share the time stamp in their names (`<kind>-<stamp>.jpg` and
-  `<stamp>.fits`). A preview that outlives its frame ages out by the age limit in the same pass
-  that deletes the frame.
+- Previews (`previews/`) stay for `previews_days` or up to `previews_max_gb`. A preview also stays
+  while the survey frame of the same time stays, whatever its age, so the frame that thinning keeps
+  for a night keeps its preview. The two files share the time stamp in their names
+  (`<kind>-<stamp>.jpg` and `<stamp>.fits`). A preview that outlives its frame ages out by the age
+  limit in the same pass that deletes the frame.
 - Survey frames (`survey/`): every frame stays for `survey_full_days`. Then one frame for each
-  night stays for `survey_thinned_days`, the frame nearest to the middle of the night.
+  night stays for `survey_thinned_days`, the frame nearest to the middle of the night. The
+  tier also has a size cap, `survey_max_gb`.
 - Raw bursts (`bursts/`) have a quota of `bursts_max_gb` for unpinned bursts. A pinned burst (a
   `PINNED` marker file) never counts against the quota and is never deleted.
 
 A file's age is the time since its last change, from the file system. A burst is a directory, and
 its age is the newest change inside it.
+
+**Caps of the survey frames and the previews.** When `survey/` is over `survey_max_gb`, the pass
+deletes the frames that thinning would delete first (every frame except the one nearest to the
+middle of its night), the oldest first. It deletes the frame that thinning keeps for each night
+last, the oldest first, so the record of one frame a night lasts as long as the cap allows. When
+`previews/` is over `previews_max_gb`, the pass deletes the previews without a surviving survey
+frame first, the oldest first, and the previews of surviving frames last. A cap never deletes a
+file that changed within `protect_recent_s`. The quota of the data directory and low space delete
+the oldest files first, whatever they are.
 
 **Quota.** The data directory may use `quota_fraction` (25% by default) of the data partition.
 The usage is every byte under the data directory, including the database and pinned bursts. When
@@ -360,15 +370,22 @@ class RetentionManager:
         rows_expired, row_errors = self._expire_rows(now)
         errors += row_errors
 
-        # 2. The size cap of each tier that has one.
+        # 2. The size cap of each tier that has one. The survey frames come before the previews,
+        #    because the previews that go last are those of the frames that survive.
         for tier, cap_gb in (
             ("metrics", self._config.metrics_max_gb),
+            ("survey", self._config.survey_max_gb),
+            ("previews", self._config.previews_max_gb),
             ("bursts", self._config.bursts_max_gb),
         ):
             counted = sum(unit.size for unit in units[tier] if not unit.pinned)
             excess = counted - round(cap_gb * GB)
             if excess > 0:
-                apply(tier, self._shrink(tier, units[tier], excess, TIER_QUOTA, now))
+                last = self._goes_last(tier, units)
+                apply(
+                    tier,
+                    self._shrink(tier, units[tier], excess, TIER_QUOTA, now, last=last),
+                )
 
         # 3. The quota of the data directory, and the free space.
         disk = self._probe(self._layout.root)
@@ -507,13 +524,37 @@ class RetentionManager:
         stamps = {unit.path.stem for unit in frames}
         return frozenset(unit.path for unit in previews if _preview_stamp(unit.path) in stamps)
 
+    def _goes_last(self, tier: str, units: dict[str, list[_Unit]]) -> frozenset[Path]:
+        """The files of a tier that a cap deletes last, so that it keeps the oldest record longest.
+
+        For the survey frames, these are the frame that thinning keeps for each night. For the
+        previews, these are the previews of the survey frames that survive. Other tiers have none.
+        """
+        if tier == "survey":
+            nights: dict[int, list[_Unit]] = {}
+            for unit in units["survey"]:
+                nights.setdefault(self._night(unit.mtime_ns), []).append(unit)
+            return frozenset(self._keeper(night, members).path for night, members in nights.items())
+        if tier == "previews":
+            return self._paired(units["previews"], units["survey"])
+        return frozenset()
+
     def _shrink(
-        self, tier: str, units: list[_Unit], need_bytes: int, reason: str, now: int
+        self,
+        tier: str,
+        units: list[_Unit],
+        need_bytes: int,
+        reason: str,
+        now: int,
+        last: frozenset[Path] = frozenset(),
     ) -> _Outcome:
-        """Delete the oldest deletable units of a tier until `need_bytes` are free."""
+        """Delete the oldest deletable units of a tier until `need_bytes` are free.
+
+        The units in `last` go after all the others, the oldest of them first.
+        """
         victims: list[_Unit] = []
         freed = 0
-        for unit in sorted(units, key=_order):
+        for unit in sorted(units, key=lambda unit: (unit.path in last, *_order(unit))):
             if freed >= need_bytes:
                 break
             if self._deletable(unit, now):

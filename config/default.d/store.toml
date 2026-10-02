@@ -34,11 +34,22 @@ protect_recent_s = 900.0
 # Per-frame metric segments: this many days, or this size, whichever is smaller.
 metrics_days = 7.0
 metrics_max_gb = 2.0
-# Preview images.
+# Preview images: this many days, or this size, whichever is smaller. A preview also stays while
+# the survey frame of the same time stays. A night of 12 hours adds 12 to 36 MB, so a week takes
+# 0.1 to 0.25 GB, and 1 GB leaves room for the 100 s cadence of a cloudy week. Over the cap, the
+# oldest previews go first, and the previews of the survey frames that survive go last.
 previews_days = 7.0
-# Survey frames: all of them for the full days, then one for each night for the thinned days.
+previews_max_gb = 1.0
+# Survey frames: all of them for the full days, then one for each night for the thinned days,
+# and at most this size. A night of 12 hours adds 0.25 GB (24 FITS files of about 10 MB) and, with
+# the event frames at their limit, up to 0.5 GB. A week takes 1.8 to 3.5 GB, and the thinned
+# nights add 0.6 GB. With the metrics (2 GB) and the previews (1 GB), 4 GB takes 7 of the 8 GB
+# that the quota of 25% allows on a 32 GB card, and the database takes the rest.
+# Over the cap, the oldest frames go first, except the one frame for each night that thinning
+# keeps, which goes last.
 survey_full_days = 7.0
 survey_thinned_days = 60.0
+survey_max_gb = 4.0
 # Raw bursts: a size quota. Pinned bursts do not count against it and stay.
 bursts_max_gb = 2.0
 # The UTC hour at which one observing night ends and the next begins. Use the hour of local noon.
