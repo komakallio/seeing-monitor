@@ -42,6 +42,7 @@ from seeingmon.services.dev import (
 )
 from seeingmon.services.web.auth import hash_token, verify_token
 from seeingmon.services.web.config import AuthSettings, WebSettings
+from seeingmon.survey.config import SurveyConfig
 
 OWNER_TOKEN_HASH = hash_token(
     "an-owner-token-of-twenty-or-more-characters"
@@ -311,6 +312,66 @@ class TestTheIsolationOfTheRun:
             line = " ".join(spec.argv)
             assert owner_plan.key not in line
             assert OWNER_TOKEN_HASH not in line
+
+
+class TestTheCover:
+    def test_the_simulated_camera_gets_a_cover_file_in_the_run_folder(
+        self, owner_plan: DevPlan, tmp_path: Path
+    ) -> None:
+        assert owner_plan.cover_file == owner_plan.directory / "cover"
+        assert not owner_plan.cover_file.exists()  # the camera starts uncovered
+        config = load_config(
+            local_file=tmp_path / "absent.toml", env=seeingmon_env(child(owner_plan, "acquire"))
+        )
+        options = config.section("services", ServicesConfig).acquire.driver_options
+        assert options["cover_file"] == str(owner_plan.cover_file)
+
+    def test_only_acquire_hears_of_the_file(self, owner_plan: DevPlan) -> None:
+        assert owner_plan.cover_file is not None
+        for name in ("core", "web"):
+            assert str(owner_plan.cover_file) not in json.dumps(child(owner_plan, name).env)
+
+    def test_the_banner_says_in_one_line_how_to_cover_and_uncover_the_camera(
+        self, owner_plan: DevPlan
+    ) -> None:
+        assert owner_plan.cover_file is not None
+        lines = [line for line in banner(owner_plan) if "cover" in line]
+        assert len(lines) == 1
+        assert str(owner_plan.cover_file) in lines[0]
+        assert "create the file" in lines[0]
+        assert "uncover the camera, delete the file" in lines[0]
+
+    def test_another_driver_has_nothing_to_cover(self, tmp_path: Path) -> None:
+        plan = plan_for(tmp_path, acquire_driver="replay")
+        assert plan.cover_file is None
+        assert not [line for line in banner(plan) if "cover" in line]
+        assert "COVER_FILE" not in json.dumps(child(plan, "acquire").env)
+
+    def test_a_test_can_name_another_file(self, tmp_path: Path) -> None:
+        plan = plan_for(tmp_path, extra_sim={"cover_file": str(tmp_path / "elsewhere")})
+        acquire = seeingmon_env(child(plan, "acquire"))
+        key = "SEEINGMON_SERVICES__ACQUIRE__DRIVER_OPTIONS__COVER_FILE"
+        assert json.loads(acquire[key]) == str(tmp_path / "elsewhere")
+
+    def test_the_dark_session_of_a_dev_run_is_short(
+        self, owner_plan: DevPlan, tmp_path: Path
+    ) -> None:
+        core = load_config(
+            local_file=tmp_path / "absent.toml", env=seeingmon_env(child(owner_plan, "core"))
+        )
+        dark = core.section("survey", SurveyConfig).dark
+        assert (dark.frames, dark.bias_frames, dark.poll_s) == (5, 5, 2.0)
+        assert dark.exposure_s == 30.0  # the exposure of the survey stays
+
+    def test_a_test_can_set_the_dark_session_again(self, tmp_path: Path) -> None:
+        plan = plan_for(
+            tmp_path, core_overrides={"survey": {"dark": {"frames": 3, "wait_timeout_s": 60.0}}}
+        )
+        core = load_config(
+            local_file=tmp_path / "absent.toml", env=seeingmon_env(child(plan, "core"))
+        )
+        dark = core.section("survey", SurveyConfig).dark
+        assert (dark.frames, dark.bias_frames, dark.wait_timeout_s) == (3, 5, 60.0)
 
 
 class TestTheEndpoints:

@@ -110,6 +110,17 @@ class System:
         """The tail of every log, for the message of a failed test."""
         return "\n".join(f"--- {n}\n{c.log_tail(25)}" for n, c in self.children.items())
 
+    # --- The cover of the simulated camera -------------------------------------------------
+
+    def cover(self) -> None:
+        """Put the cover on the simulated camera, as the owner does with a hand on a real one."""
+        assert self.plan.cover_file is not None
+        self.plan.cover_file.touch()
+
+    def uncover(self) -> None:
+        assert self.plan.cover_file is not None
+        self.plan.cover_file.unlink(missing_ok=True)
+
     # --- Looking at the results ------------------------------------------------------------
 
     @property

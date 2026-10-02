@@ -44,6 +44,12 @@ class SimOptions:
     camera runs warm. `max_lag_frames` is how many frames the camera buffers before a slow reader
     loses frames.
     `keep_truth_frames` bounds the per-frame truth that the driver keeps (`None` keeps all).
+
+    **A cover.** A real camera has no lens cap, so the owner covers it by hand to take darks.
+    `cover_file` lets a person or a test do the same to the simulated camera while the system runs:
+    the camera is covered (no stars, no sky, only the sensor) while that file exists. The driver
+    looks for the file at most every `cover_check_s` seconds of its clock, because `acquire` runs
+    in its own process and the person cannot call it.
     """
 
     seed: int = 1
@@ -65,10 +71,16 @@ class SimOptions:
     time_error_ns: int = 1_000
     max_lag_frames: int = 3
     keep_truth_frames: int | None = 200_000
+    cover_file: str | None = None
+    cover_check_s: float = 0.5
 
     def __post_init__(self) -> None:
         if self.max_lag_frames < 0 or self.time_error_ns < 0:
             raise ValueError("max_lag_frames and time_error_ns must not be negative")
+        if not self.cover_check_s >= 0:
+            raise ValueError("cover_check_s must not be negative")
+        if self.cover_file is not None and not self.cover_file:
+            raise ValueError("cover_file names a file, or it is not set")
 
     @classmethod
     def from_mapping(cls, table: Mapping[str, Any] | None) -> SimOptions:
@@ -76,8 +88,8 @@ class SimOptions:
 
         The keys: `seed`, `psf_mode` (`wave` or `gaussian`), `bandwidth_fraction`,
         `sky_mag_arcsec2`, `twilight`, `ambient_c`, `sensor_rise_c`, `ambient_drift_c_per_hour`,
-        `hot_pixels_per_mpix`, `time_error_ns`, `max_lag_frames`, and `keep_truth_frames`. Four
-        nested tables:
+        `hot_pixels_per_mpix`, `time_error_ns`, `max_lag_frames`, `keep_truth_frames`,
+        `cover_file`, and `cover_check_s`. Four nested tables:
         `[turbulence]` takes `r0_m`, `outer_scale_m`, `zenith_angle_deg`, `screen_points`,
         `boiling`, `wind_variability`, and `layers` (a list of tables with `cn2_fraction`,
         `wind_speed_m_s`, and `wind_direction_deg`). `[scintillation]` takes `sigma0` and
@@ -98,6 +110,8 @@ class SimOptions:
             "time_error_ns",
             "max_lag_frames",
             "keep_truth_frames",
+            "cover_file",
+            "cover_check_s",
         }
         kwargs: dict[str, Any] = {key: data.pop(key) for key in list(data) if key in simple}
         psf_kwargs: dict[str, Any] = {}

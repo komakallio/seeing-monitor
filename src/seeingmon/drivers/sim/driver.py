@@ -16,6 +16,11 @@ once, and its period is the exposure plus the readout.
 **Faults.** `SimOptions.faults` injects drops, timeouts, slow reads, a disconnect, a stall that
 only a recovery clears, and a silent change of geometry. A reader that falls more than
 `max_lag_frames` behind loses frames, as a camera without a frame buffer does.
+
+**A cover.** With `SimOptions.cover_file`, the camera is covered while that file exists: a frame
+then shows the sensor alone (no star, no sky), as a camera under a lens cap does. The driver asks
+the file system at most every `cover_check_s`, so a person can cover and uncover a camera that runs
+in another process (`seeingmon dev` prints the file to create and to delete).
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -129,6 +135,9 @@ class SimDriver:
             epoch_utc_ns=opts.epoch_utc_ns,
         )
         self._faults = FaultRuntime(opts.faults)
+        self._cover_path = None if opts.cover_file is None else Path(opts.cover_file)
+        self._covered = False
+        self._next_cover_check_ns = 0
         self._rng = np.random.default_rng(np.random.SeedSequence([opts.seed, 0xF4A3E]))
         self._opened = False
         self._active: ActiveStream | None = None
@@ -303,7 +312,13 @@ class SimDriver:
         t_start_ns = self._t0_ns + index * period
         t_utc_ns = t_start_ns + round(exposure_s * 0.5 * NS_PER_S)
         rendered = self._renderer.render(
-            params, config, self._roi, t_start_ns, config.gain, self._rng
+            params,
+            config,
+            self._roi,
+            t_start_ns,
+            config.gain,
+            self._rng,
+            covered=self._is_covered(),
         )
         flags = FrameFlag.SIMULATED | (FrameFlag.RECOVERED if self._recovered else FrameFlag.NONE)
         frame = Frame(
@@ -392,6 +407,17 @@ class SimDriver:
         self._recovered = True
 
     # --- internals ---
+
+    def _is_covered(self) -> bool:
+        """Whether the cover file exists. The file system answers at most every `cover_check_s`."""
+        path = self._cover_path
+        if path is None:
+            return False
+        now_ns = self._clock.monotonic_ns()
+        if now_ns >= self._next_cover_check_ns:
+            self._covered = path.exists()
+            self._next_cover_check_ns = now_ns + round(self._options.cover_check_s * NS_PER_S)
+        return self._covered
 
     @staticmethod
     def _offset_of(config: StreamConfig, params: SimParams) -> int:

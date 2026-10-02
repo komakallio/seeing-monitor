@@ -13,6 +13,13 @@ hours of simulated time, because it drifts about 2.5 pixels a minute across 640 
 long run needs `--sensor full`. The fast stream uses a longer exposure and a dimmer Polaris than a
 real night, because a scaled clock multiplies the frame rate that the machine must sustain.
 
+**The cover.** A simulated camera has no lens cap, so a dark session needs a stand-in. The
+launcher gives the `sim` driver a cover file, named `cover` in the run folder. The camera shows
+the sensor alone while that file exists. To take darks from the web UI, create the file (the
+launcher prints its path), start the dark session on the Dark page, and delete the file when the
+session says that the cover can come off. The simulator looks at the file twice a second. A dev
+run also shortens the dark session to a few frames of each kind.
+
 **Isolation.** A simulated run must never reach a real sink, device, or data directory. Each child
 gets a clean environment: no `SEEINGMON_*` variable of yours reaches it, and `--local-config`
 points the children that take it at a file that does not exist, so `local/config.toml` is not
@@ -81,6 +88,12 @@ DEV_POLARIS_MAG = 6.0
 # The simulator of the full sensor renders a survey frame inside the camera read, which takes
 # seconds, so the reads of that run wait longer than the default half second.
 FULL_SENSOR_READ_MARGIN_S = 20.0
+# The cover of the simulated camera is a file in the run folder (see the docstring of the module),
+# and the dark session of a dev run is short: a few frames of each kind, and a quick look at the
+# cover. The frames keep the exposure of the survey, so the session takes minutes at real time.
+COVER_FILE_NAME = "cover"
+DEV_DARK_FRAMES = 5
+DEV_DARK_POLL_S = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +143,7 @@ class DevPlan:
     token: str | None = None
     core_endpoint: str = ""
     acquire_endpoint: str = ""
+    cover_file: Path | None = None  # the simulated camera is covered while this file exists
 
     def urls(self) -> list[str]:
         """One URL for each bind address, with an IPv6 address in brackets."""
@@ -293,6 +307,7 @@ def build_plan(
     )
     acquire_address = _endpoint_text(directory, "acquire", token)
     core_address = _endpoint_text(directory, "core", token)
+    cover_file = directory / COVER_FILE_NAME if options.acquire_driver == "sim" else None
     shared: dict[str, Any] = {
         "station_id": "dev",
         "profile": str(profile_path),
@@ -315,6 +330,7 @@ def build_plan(
         **({} if options.polaris_mag is None else {"polaris_mag": options.polaris_mag}),
         "psf_mode": "gaussian",
         "pointing": {"t_ref_utc_ns": start_utc_ns},
+        **({} if cover_file is None else {"cover_file": str(cover_file)}),
         **options.extra_sim,
     }
     acquire_settings = _merge(
@@ -357,6 +373,11 @@ def build_plan(
                     "catalog_path": str(catalog_path),
                     "solvers": [],
                     "cloud": {"min_expected": 4, "expected_snr": 10.0, "mag_limit": 13.0},
+                    "dark": {
+                        "frames": DEV_DARK_FRAMES,
+                        "bias_frames": DEV_DARK_FRAMES,
+                        "poll_s": DEV_DARK_POLL_S,
+                    },
                 },
                 "services": {"core": {"seed_solution_file": str(seed_path)}},
             },
@@ -414,6 +435,7 @@ def build_plan(
         token=generated,
         core_endpoint=core_address,
         acquire_endpoint=acquire_address,
+        cover_file=cover_file,
     )
 
 
@@ -544,6 +566,11 @@ def banner(plan: DevPlan) -> list[str]:
     options = plan.options
     lines = [f"Seeing monitor, simulated sky: {options.speed:g}x speed, {options.sensor} sensor."]
     lines.extend(f"Web UI: {url}" for url in plan.urls())
+    if plan.cover_file is not None:
+        lines.append(
+            f"To cover the simulated camera for a dark session, create the file {plan.cover_file}. "
+            "To uncover the camera, delete the file."
+        )
     if plan.token is not None:
         lines.append(f"API token for this run (shown once, never stored): {plan.token}")
     lines.append("Press Ctrl+C to stop.")

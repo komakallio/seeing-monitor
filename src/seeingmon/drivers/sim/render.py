@@ -13,6 +13,9 @@ detector. It handles two cases:
 
 The *reference star* of a frame is the brightest star whose centre falls inside the ROI, or the
 brightest one near the ROI when none does. The truth of the frame describes that star.
+
+A *covered* frame (see `SimOptions.cover_file`) has no star and no sky: the signal is the dark
+current, the hot pixels, and the noise of the sensor, as a camera with a lens cap on gives.
 """
 
 from __future__ import annotations
@@ -168,8 +171,13 @@ class FrameRenderer:
         t_start_ns: int,
         gain: int,
         rng: np.random.Generator,
+        *,
+        covered: bool = False,
     ) -> RenderedFrame:
-        """Render the frame whose first-row exposure starts at `t_start_ns`."""
+        """Render the frame whose first-row exposure starts at `t_start_ns`.
+
+        With `covered`, the frame shows the sensor alone: no star and no sky.
+        """
         exposure_s = config.exposure_us * 1e-6
         long = config.kind is StreamKind.SNAPSHOT or exposure_s > LONG_EXPOSURE_S
         t_mid_ns = t_start_ns + round(exposure_s * 0.5 * NS_PER_S)
@@ -177,11 +185,19 @@ class FrameRenderer:
         sky_mag = float(truth.sky_mag_arcsec2(t_mid_ns))
         temperature = truth.sensor_temperature_c(t_mid_ns)
         signal: SingleArray = np.zeros((roi.height, roi.width), dtype=np.float32)
-        if long:
-            reference = self._add_long(signal, params, roi, t_start_ns, exposure_s, rng)
+        if covered:
+            reference = _no_star(
+                t_mid_ns,
+                truth.tilt_arcsec(t_start_ns, exposure_s),
+                float(truth.transparency(t_mid_ns)),
+            )
+            background = params.dark_rate_e_per_s(temperature)
         else:
-            reference = self._add_short(signal, params, roi, t_start_ns, exposure_s, rng)
-        background = params.sky_rate_e_per_s_px(sky_mag) + params.dark_rate_e_per_s(temperature)
+            if long:
+                reference = self._add_long(signal, params, roi, t_start_ns, exposure_s, rng)
+            else:
+                reference = self._add_short(signal, params, roi, t_start_ns, exposure_s, rng)
+            background = params.sky_rate_e_per_s_px(sky_mag) + params.dark_rate_e_per_s(temperature)
         signal += np.float32(background * exposure_s)
         self._hot_map(params).add_to(signal, roi, exposure_s, temperature)
         data = self._detector(params).digitize(
