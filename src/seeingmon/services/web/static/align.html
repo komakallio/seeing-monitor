@@ -9,6 +9,8 @@
 <link rel="stylesheet" href="css/app.css">
 <script src="js/common.js" defer></script>
 <script src="js/live.js" defer></script>
+<script src="js/skygrid.js" defer></script>
+<script src="js/aligntext.js" defer></script>
 <script src="js/align.js" defer></script>
 </head>
 <body>
@@ -37,10 +39,13 @@
         <canvas id="view" width="640" height="436" role="img" aria-label="Live view of the star field"></canvas>
         <div class="cover" id="cover">Connecting to the live view.</div>
       </div>
-      <div class="row">
-        <label class="field" for="overlays"><input type="checkbox" id="overlays" checked> Show the overlays</label>
-        <span class="hint" id="frame-info"></span>
-      </div>
+      <fieldset class="overlays" id="overlays">
+        <legend>Overlays</legend>
+        <label class="check" for="overlay-pole"><input type="checkbox" id="overlay-pole" checked> Pole and orbit</label>
+        <label class="check" for="overlay-grid"><input type="checkbox" id="overlay-grid" checked> Coordinate grid</label>
+        <label class="check" for="overlay-target"><input type="checkbox" id="overlay-target" checked> Target and Polaris</label>
+      </fieldset>
+      <p class="hint" id="frame-info"></p>
       <section class="panel hist" aria-labelledby="h-hist">
         <h2 id="h-hist">Histogram of the pixel values</h2>
         <canvas id="hist" role="img" aria-label="Histogram of the pixel values"></canvas>
@@ -49,13 +54,31 @@
     </div>
 
     <div class="stack">
+      <section class="panel" aria-labelledby="h-pole">
+        <h2 id="h-pole">Pole alignment</h2>
+        <p class="sentence" id="pole-sentence">Waiting for a solution.</p>
+        <p class="sentence" id="orbit-sentence"></p>
+        <p class="note" id="coordinates-note">Coordinates are of date.</p>
+      </section>
       <section class="panel" aria-labelledby="h-offset">
         <h2 id="h-offset">Offset from the target</h2>
         <dl class="facts" id="offset-facts"></dl>
-        <h2>Roll</h2>
-        <div class="gauge" aria-hidden="true"><div class="zero"></div><div class="mark" id="roll-mark"></div></div>
-        <div class="scale"><span id="roll-min"></span><span>0</span><span id="roll-max"></span></div>
-        <p class="note" id="roll-note"></p>
+        <p class="note" id="offset-note"></p>
+        <div id="roll-block">
+          <h2>Roll</h2>
+          <div class="gauge" aria-hidden="true"><div class="zero"></div><div class="mark" id="roll-mark"></div></div>
+          <div class="scale"><span id="roll-min"></span><span>0</span><span id="roll-max"></span></div>
+          <p class="note" id="roll-note"></p>
+        </div>
+        <details class="settings" id="target-details">
+          <summary>Target settings for this frame</summary>
+          <p class="note" id="target-note">Add these lines to the local configuration to make the present position of Polaris the target.</p>
+          <pre class="toml" id="target-toml" tabindex="0" aria-label="Target settings in TOML"></pre>
+          <div class="row">
+            <button type="button" id="copy-target">Copy</button>
+            <span class="hint" id="copy-note" aria-live="polite"></span>
+          </div>
+        </details>
       </section>
       <section class="panel" aria-labelledby="h-focus">
         <h2 id="h-focus">Focus</h2>
@@ -69,7 +92,8 @@
       </section>
       <section class="panel" aria-labelledby="h-help">
         <h2 id="h-help">How to align</h2>
-        <p class="note">Start the alignment with the token. The green cross is where Polaris belongs, and the red circle is where the solver finds it. Move the mount until the circle sits on the cross, and until the roll is near zero. Stop the alignment when you finish, so that the camera goes back to measuring.</p>
+        <p class="note">Start the alignment with the token. In a first alignment, move the mount until the marker labeled pole sits on the cross labeled aim at the center of the image. The dashed circle is the orbit of Polaris around the pole. It is green when the whole circle fits in the frame with room to spare, amber when it fits tightly, and red when it leaves the frame. Check the focus bar too.</p>
+        <p class="note">When a target is set, the cross labeled target shows where Polaris belongs, and the ring labeled Polaris shows where the solver finds it. Move the mount until the ring sits on the cross, and until the roll is near zero. Stop the alignment when you finish, so that the camera goes back to measuring.</p>
       </section>
     </div>
   </div>

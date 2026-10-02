@@ -1,21 +1,43 @@
 "use strict";
 
 /*
- * The Align page: the live view of the star field with the target and the solved position drawn
- * over it, the offset and the roll, a focus bar, a histogram of the pixel values, and a warning for
+ * The Align page: the live view of the star field with the sky drawn over it, the cards that say
+ * what the numbers mean, a focus bar, a histogram of the pixel values, and a warning for
  * saturation. The page starts and stops the alignment (the commands need the token).
+ *
+ * The sky overlay has three parts that the person can switch off: the pole and the orbit of
+ * Polaris (with the aim cross for a first alignment), the coordinate grid, and the target and
+ * Polaris. The geometry comes from skygrid.js, which works in display pixels, and the sentences
+ * come from aligntext.js. This file draws what they plan, and puts the text into the page.
  *
  * `LiveLink` (live.js) keeps the connection to the server: a WebSocket with reconnects, and the
  * polling of the newest frame as a fallback. This file draws what the link delivers. The page
  * closes the connection while its tab stays hidden.
  */
 (function () {
-  const { h, $, fmt, api, ApiError, Status, Token, poller, LiveLink } = window.Seeing;
+  const { h, $, fmt, api, ApiError, Status, Token, poller, LiveLink, recall, remember, SkyGrid, AlignText } = window.Seeing;
 
   const HIDDEN_CLOSE_MS = 20000;
   const FAMILY = "system-ui, sans-serif";
+  const MAX_BACKING_PX = 2048; // the widest canvas that the page makes, in device pixels
+  const FONT_PX = 11;
 
-  const view = { canvas: null, ctx: null, hist: null, overlays: true, lastState: null, picture: null, bitmapOk: typeof createImageBitmap === "function" };
+  // The overlays that the person can switch off. The choice stays in this browser.
+  const OVERLAYS = [
+    { key: "pole", id: "overlay-pole" },
+    { key: "grid", id: "overlay-grid" },
+    { key: "target", id: "overlay-target" },
+  ];
+
+  const view = {
+    canvas: null,
+    ctx: null,
+    hist: null,
+    show: { pole: true, grid: true, target: true },
+    lastState: null,
+    picture: null,
+    bitmapOk: typeof createImageBitmap === "function",
+  };
   const align = { active: false, known: false };
   let live = null;
   let hiddenTimer = null;
@@ -81,23 +103,30 @@
     view.canvas = $("view");
     view.ctx = view.canvas.getContext("2d");
     view.hist = $("hist");
-    $("overlays").addEventListener("change", (event) => {
-      view.overlays = event.target.checked;
-      redraw();
-    });
+    for (const { key, id } of OVERLAYS) {
+      const box = $(id);
+      view.show[key] = recall("align." + key, "1") !== "0";
+      box.checked = view.show[key];
+      box.addEventListener("change", () => {
+        view.show[key] = box.checked;
+        remember("align." + key, box.checked ? "1" : "0");
+        paint();
+      });
+    }
     window.addEventListener("seeing:theme", () => {
-      redraw();
+      paint();
       drawHistogram(view.lastState);
     });
     if (typeof ResizeObserver === "function") {
       new ResizeObserver(() => drawHistogram(view.lastState)).observe(view.hist.parentElement);
-      new ResizeObserver(() => requestAnimationFrame(redraw)).observe(view.canvas);
+      new ResizeObserver(() => requestAnimationFrame(paint)).observe(view.canvas);
     }
     clearView();
   }
 
   function clearView() {
     const { canvas, ctx } = view;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#05070a";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
@@ -119,96 +148,242 @@
 
   async function showFrame(blob, state) {
     const picture = await decode(blob);
-    const width = picture.width;
-    const height = picture.height;
-    if (view.canvas.width !== width || view.canvas.height !== height) {
-      view.canvas.width = width;
-      view.canvas.height = height;
-    }
-    view.ctx.drawImage(picture, 0, 0);
     if (view.picture && typeof view.picture.close === "function") {
       view.picture.close();
     }
     view.picture = picture;
     view.lastState = state;
-    drawOverlays(state);
+    paint();
     renderState(state);
     updateCover();
   }
 
-  function redraw() {
-    if (view.picture) {
-      view.ctx.drawImage(view.picture, 0, 0);
-      drawOverlays(view.lastState);
-    }
-  }
-
-  function drawOverlays(state) {
-    if (!view.overlays || !state || !state.frame || !state.target) {
+  /**
+   * Draw the picture and the overlays. The canvas gets the size of the picture on the screen in
+   * device pixels (at most `MAX_BACKING_PX` wide), so the lines and the text stay sharp whatever
+   * the size of the JPEG that the server sent.
+   */
+  function paint() {
+    const { canvas, ctx, picture } = view;
+    if (!picture) {
       return;
     }
-    const { canvas, ctx } = view;
-    const sx = canvas.width / state.frame.width_px;
-    const sy = canvas.height / state.frame.height_px;
-    // Sizes are in CSS pixels on the screen, so the marks keep their size when the image scales.
     const shown = canvas.getBoundingClientRect().width;
-    const unit = shown > 0 ? canvas.width / shown : 1;
-    const target = [state.target.x_px * sx, state.target.y_px * sy];
-    const green = token("--overlay-target", "#0a7a3d");
-    const red = token("--overlay-solved", "#b3261e");
+    const width = shown > 0 ? Math.min(MAX_BACKING_PX, Math.max(2, Math.round(shown * (window.devicePixelRatio || 1)))) : picture.width;
+    const height = Math.max(2, Math.round((width * picture.height) / picture.width));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(picture, 0, 0, width, height);
+    drawOverlays(view.lastState);
+  }
+
+  // The marks. Sizes are in CSS pixels, because the overlay draws under a scale that makes one
+  // unit one CSS pixel of the shown image, and so the marks keep their size on every screen.
+
+  function ring(ctx, x, y, radius) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  /** A cross with a gap in the middle. */
+  function cross(ctx, x, y, gap, arm) {
+    ctx.beginPath();
+    ctx.moveTo(x - arm, y);
+    ctx.lineTo(x - gap, y);
+    ctx.moveTo(x + gap, y);
+    ctx.lineTo(x + arm, y);
+    ctx.moveTo(x, y - arm);
+    ctx.lineTo(x, y - gap);
+    ctx.moveTo(x, y + gap);
+    ctx.lineTo(x, y + arm);
+    ctx.stroke();
+  }
+
+  function arrowHead(ctx, x, y, angle, size) {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - Math.cos(angle - 0.45) * size, y - Math.sin(angle - 0.45) * size);
+    ctx.lineTo(x - Math.cos(angle + 0.45) * size, y - Math.sin(angle + 0.45) * size);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /** A line of text with a dark halo under it, so that it reads on stars and on the grid. */
+  function drawLabel(ctx, label, color, halo) {
+    ctx.textAlign = label.align;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = halo;
+    ctx.strokeText(label.text, label.x, label.y);
+    ctx.fillStyle = color;
+    ctx.fillText(label.text, label.x, label.y);
+  }
+
+  function polyline(ctx, points) {
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(points[i][0], points[i][1]);
+    }
+    ctx.stroke();
+  }
+
+  const ORBIT_TOKENS = { good: "--overlay-orbit-good", tight: "--overlay-orbit-warn", bad: "--overlay-orbit-bad", none: "--overlay-orbit-good" };
+
+  function drawOverlays(state) {
+    if (!state || !state.frame) {
+      return;
+    }
+    const { canvas, ctx, show } = view;
+    const frame = state.frame;
+    const sky = state.sky || null;
+    const shown = canvas.getBoundingClientRect().width || canvas.width;
+    const scale = shown / frame.width_px; // display pixels of one frame pixel
+    const k = canvas.width / shown; // canvas pixels of one CSS pixel
+    const at = (x, y) => [(x + 0.5) * scale, (y + 0.5) * scale];
+    const orbitState = AlignText.orbitState(sky, frame);
+    const colors = {
+      grid: token("--overlay-grid", "#a9b9d6"),
+      halo: token("--overlay-halo", "#000000"),
+      pole: token("--overlay-pole", "#6fd3ff"),
+      aim: token("--overlay-aim", "#f4f4f4"),
+      orbit: token(ORBIT_TOKENS[orbitState], "#4be08f"),
+      target: token("--overlay-target", "#4be08f"),
+      solved: token("--overlay-solved", "#ff6b5e"),
+    };
+    const gridAlpha = Math.min(1, Math.max(0.05, parseFloat(token("--overlay-grid-alpha", "0.45")) || 0.45));
+
+    const markers = [];
+    const target = show.target && state.target ? at(state.target.x_px, state.target.y_px) : null;
+    const solved = show.target && state.solved ? at(state.solved.x_px, state.solved.y_px) : null;
+    if (solved) {
+      markers.push({ id: "polaris", text: "Polaris", x: solved[0], y: solved[1], radius: 10, reserve: 14 });
+    }
+    if (target) {
+      markers.push({ id: "target", text: "target", x: target[0], y: target[1], radius: 16, reserve: 30 });
+    }
+    const showAim = show.pole && !state.target;
+    const plan = sky
+      ? SkyGrid.plan(sky.camera, { width: frame.width_px, height: frame.height_px }, scale, {
+          colatitudeDeg: sky.polaris_colatitude_deg === undefined ? null : sky.polaris_colatitude_deg,
+          grid: show.grid,
+          orbitText: show.pole ? AlignText.orbitLabel(orbitState) : "",
+          poleText: show.pole ? "pole" : "",
+          poleArrowText: show.pole ? (side) => AlignText.poleArrowText(sky, side) : null,
+          aimText: showAim ? "aim" : "",
+          markers,
+          fontPx: FONT_PX,
+        })
+      : null;
+    const labelFor = (id) => (plan ? plan.labels.find((label) => label.id === id) : undefined);
+
     ctx.save();
-    ctx.lineWidth = Math.max(1.5, 1.6 * unit);
-    ctx.font = "600 " + Math.round(12 * unit) + "px " + FAMILY;
-    ctx.textBaseline = "top";
-    // The target: a cross with a gap in the middle, and a ring.
-    ctx.strokeStyle = green;
-    ctx.fillStyle = green;
-    const gap = 6 * unit;
-    const arm = 28 * unit;
-    ctx.beginPath();
-    ctx.moveTo(target[0] - arm, target[1]);
-    ctx.lineTo(target[0] - gap, target[1]);
-    ctx.moveTo(target[0] + gap, target[1]);
-    ctx.lineTo(target[0] + arm, target[1]);
-    ctx.moveTo(target[0], target[1] - arm);
-    ctx.lineTo(target[0], target[1] - gap);
-    ctx.moveTo(target[0], target[1] + gap);
-    ctx.lineTo(target[0], target[1] + arm);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(target[0], target[1], 16 * unit, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillText("target", target[0] + 20 * unit, target[1] - 26 * unit);
-    if (state.solved) {
-      const solved = [state.solved.x_px * sx, state.solved.y_px * sy];
-      ctx.strokeStyle = red;
-      ctx.fillStyle = red;
-      const distance = Math.hypot(solved[0] - target[0], solved[1] - target[1]);
-      if (distance > 4 * unit) {
-        const angle = Math.atan2(solved[1] - target[1], solved[0] - target[0]);
-        const start = [target[0] + Math.cos(angle) * 16 * unit, target[1] + Math.sin(angle) * 16 * unit];
-        const end = [solved[0] - Math.cos(angle) * 10 * unit, solved[1] - Math.sin(angle) * 10 * unit];
-        if (Math.hypot(end[0] - start[0], end[1] - start[1]) > 2) {
-          ctx.beginPath();
-          ctx.moveTo(start[0], start[1]);
-          ctx.lineTo(end[0], end[1]);
-          ctx.stroke();
-          const head = 7 * unit;
-          ctx.beginPath();
-          ctx.moveTo(end[0], end[1]);
-          ctx.lineTo(end[0] - Math.cos(angle - 0.45) * head, end[1] - Math.sin(angle - 0.45) * head);
-          ctx.lineTo(end[0] - Math.cos(angle + 0.45) * head, end[1] - Math.sin(angle + 0.45) * head);
-          ctx.closePath();
-          ctx.fill();
+    ctx.setTransform(k, 0, 0, canvas.height / (frame.height_px * scale), 0, 0);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.font = "600 " + FONT_PX + "px " + FAMILY;
+    ctx.textBaseline = "middle";
+
+    // 1. The coordinate grid.
+    if (plan && show.grid) {
+      ctx.strokeStyle = colors.grid;
+      for (const line of plan.lines) {
+        ctx.globalAlpha = line.strong ? Math.min(1, gridAlpha + 0.2) : gridAlpha;
+        ctx.lineWidth = line.strong ? 1.4 : 1;
+        polyline(ctx, line.points);
+      }
+      ctx.globalAlpha = 1;
+      for (const label of plan.labels) {
+        if (label.kind === "meridian" || label.kind === "ring") {
+          drawLabel(ctx, label, colors.grid, colors.halo);
         }
       }
+    }
+
+    // 2. The orbit of Polaris, dashed and in the color of its state.
+    if (plan && show.pole && plan.orbit) {
+      ctx.strokeStyle = colors.orbit;
+      ctx.lineWidth = orbitState === "bad" ? 2.6 : 2;
+      ctx.setLineDash([7, 5]);
+      for (const points of plan.orbit.polylines) {
+        polyline(ctx, points);
+      }
+      ctx.setLineDash([]);
+      const label = labelFor("orbit");
+      if (label) {
+        drawLabel(ctx, label, colors.orbit, colors.halo);
+      }
+    }
+
+    // 3. The pole: a ring with a cross, or an arrow at the edge when it lies outside the frame.
+    if (plan && show.pole && plan.pole) {
+      ctx.strokeStyle = colors.pole;
+      ctx.fillStyle = colors.pole;
+      ctx.lineWidth = 1.8;
+      if (plan.pole.inside) {
+        ring(ctx, plan.pole.x, plan.pole.y, 8);
+        cross(ctx, plan.pole.x, plan.pole.y, 3, 15);
+      } else if (plan.arrow) {
+        const { x, y, angle } = plan.arrow;
+        ctx.beginPath();
+        ctx.moveTo(x - Math.cos(angle) * 22, y - Math.sin(angle) * 22);
+        ctx.lineTo(x - Math.cos(angle) * 8, y - Math.sin(angle) * 8);
+        ctx.stroke();
+        arrowHead(ctx, x, y, angle, 12);
+      }
+      const label = labelFor("pole");
+      if (label) {
+        drawLabel(ctx, label, colors.pole, colors.halo);
+      }
+    }
+
+    // 4. The aim: where the pole belongs in a first alignment, the center of the frame.
+    if (showAim) {
+      ctx.strokeStyle = colors.aim;
+      ctx.lineWidth = 1.6;
+      cross(ctx, (frame.width_px * scale) / 2, (frame.height_px * scale) / 2, 2, 9);
+      const label = labelFor("aim");
+      if (label) {
+        drawLabel(ctx, label, colors.aim, colors.halo);
+      }
+    }
+
+    // 5. Polaris, wherever the solver finds it, with or without a target.
+    if (solved) {
+      ctx.strokeStyle = colors.solved;
+      ctx.fillStyle = colors.solved;
+      ctx.lineWidth = 1.8;
+      ring(ctx, solved[0], solved[1], 10);
       ctx.beginPath();
-      ctx.arc(solved[0], solved[1], 10 * unit, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(solved[0], solved[1], 2 * unit, 0, Math.PI * 2);
+      ctx.arc(solved[0], solved[1], 2, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillText("Polaris", solved[0] + 14 * unit, solved[1] + 8 * unit);
+      drawLabel(ctx, labelFor("polaris") || { text: "Polaris", x: solved[0] + 14, y: solved[1] + 8, align: "left" }, colors.solved, colors.halo);
+    }
+
+    // 6. The target (a cross and a ring), and an arrow from it to Polaris.
+    if (target) {
+      ctx.strokeStyle = colors.target;
+      ctx.fillStyle = colors.target;
+      ctx.lineWidth = 1.8;
+      cross(ctx, target[0], target[1], 6, 28);
+      ring(ctx, target[0], target[1], 16);
+      if (solved) {
+        const distance = Math.hypot(solved[0] - target[0], solved[1] - target[1]);
+        if (distance > 30) {
+          const angle = Math.atan2(solved[1] - target[1], solved[0] - target[0]);
+          ctx.strokeStyle = colors.solved;
+          ctx.fillStyle = colors.solved;
+          ctx.beginPath();
+          ctx.moveTo(target[0] + Math.cos(angle) * 18, target[1] + Math.sin(angle) * 18);
+          ctx.lineTo(solved[0] - Math.cos(angle) * 12, solved[1] - Math.sin(angle) * 12);
+          ctx.stroke();
+          arrowHead(ctx, solved[0] - Math.cos(angle) * 12, solved[1] - Math.sin(angle) * 12, angle, 8);
+        }
+      }
+      drawLabel(ctx, labelFor("target") || { text: "target", x: target[0] + 20, y: target[1] - 26, align: "left" }, colors.target, colors.halo);
     }
     ctx.restore();
   }
@@ -269,26 +444,63 @@
     }
   }
 
-  function renderState(state) {
-    const offset = state.offset;
-    const solved = state.solved;
-    const frame = state.frame;
-    if (offset) {
-      setFacts("offset-facts", [
-        ["Horizontal (x)", fmt.signed(offset.dx_px, 1) + " px, " + fmt.signed(offset.dx_arcsec, 1) + "″"],
-        ["Vertical (y)", fmt.signed(offset.dy_px, 1) + " px, " + fmt.signed(offset.dy_arcsec, 1) + "″"],
-        ["Distance", fmt.num(offset.distance_px, 1) + " px, " + fmt.num(offset.distance_arcsec, 1) + "″"],
-        ["Roll", fmt.signed(offset.roll_deg, 2) + "°"],
-      ]);
+  const ORBIT_LEVELS = { good: "good", tight: "warn", bad: "bad" };
+
+  /** The pole card: where the pole is, and whether the orbit of Polaris fits in the frame. */
+  function renderPole(state) {
+    const sky = state.sky || null;
+    const sentence = $("pole-sentence");
+    const orbit = $("orbit-sentence");
+    if (!sky) {
+      sentence.textContent = AlignText.poleReason(state);
+      orbit.textContent = "";
+      delete orbit.dataset.level;
+      view.canvas.setAttribute("aria-label", "Live view of the star field");
+      return;
+    }
+    sentence.textContent = AlignText.poleSentence(sky);
+    orbit.textContent = AlignText.orbitSentences(sky, state.frame).join(" ");
+    const level = ORBIT_LEVELS[AlignText.orbitState(sky, state.frame)];
+    if (level) {
+      orbit.dataset.level = level;
+    } else {
+      delete orbit.dataset.level;
+    }
+    view.canvas.setAttribute("aria-label", "Live view of the star field. " + sentence.textContent);
+  }
+
+  /** The offset card: three states, with no solution, with a solution only, and with a target. */
+  function renderOffset(state) {
+    const card = AlignText.offsetCard(state);
+    setFacts("offset-facts", card.rows);
+    const note = $("offset-note");
+    note.textContent = card.note;
+    note.hidden = card.note === "";
+    $("roll-block").hidden = !card.roll;
+    if (card.roll) {
       const limit = 2;
-      const roll = Math.max(-limit, Math.min(limit, offset.roll_deg || 0));
+      const roll = Math.max(-limit, Math.min(limit, card.roll.value));
       $("roll-mark").style.left = "calc(" + ((roll + limit) / (2 * limit)) * 100 + "% - 1px)";
       $("roll-min").textContent = "−" + limit + "°";
       $("roll-max").textContent = "+" + limit + "°";
-      $("roll-note").textContent = Math.abs(offset.roll_deg || 0) < 0.1 ? "The roll is within 0.1 degrees of the target." : "Rotate the camera by " + fmt.signed(-(offset.roll_deg || 0), 2) + " degrees to match the target roll.";
-    } else {
-      setFacts("offset-facts", [["Offset", "no solution yet"]]);
+      $("roll-note").textContent = card.roll.text;
     }
+    const settings = AlignText.targetSettings(state.solved);
+    const toml = $("target-toml");
+    const text = settings || "No solution yet, so there is nothing to copy.";
+    // A new frame changes the last digits. Leave the text alone while the person has it selected,
+    // so that a copy with Ctrl+C gets what they see.
+    if (toml.textContent !== text && !selectionIn(toml)) {
+      toml.textContent = text;
+    }
+    $("copy-target").disabled = settings === "";
+  }
+
+  function renderState(state) {
+    const solved = state.solved;
+    const frame = state.frame;
+    renderPole(state);
+    renderOffset(state);
     const rows = [];
     if (solved) {
       rows.push(["Matched stars", String(solved.n_matched)]);
@@ -336,6 +548,50 @@
     } else {
       banner.hidden = true;
     }
+  }
+
+  // --- The target settings ----------------------------------------------------------------------
+
+  /** Whether the person has selected text inside `node`. */
+  function selectionIn(node) {
+    const selection = window.getSelection();
+    return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed && node.contains(selection.anchorNode));
+  }
+
+  function selectText(node) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  /**
+   * Copy the target settings. `navigator.clipboard` exists only on a secure page (https, or a
+   * loopback address), and the page often runs on a LAN address over plain HTTP. There the text
+   * stays selected, and the old copy command (which works from a click) tries once more.
+   */
+  async function copyTarget() {
+    const node = $("target-toml");
+    const note = $("copy-note");
+    const text = node.textContent;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(text);
+        note.textContent = "Copied.";
+        return;
+      } catch (error) {
+        /* The browser refused. Select the text below. */
+      }
+    }
+    selectText(node);
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (error) {
+      copied = false;
+    }
+    note.textContent = copied ? "Copied." : "The text is selected. Press Ctrl+C to copy it.";
   }
 
   // --- The link ---------------------------------------------------------------------------------
@@ -450,6 +706,9 @@
   function buildControls() {
     $("start").addEventListener("click", () => command("alignment/start", "Starting the alignment."));
     $("stop").addEventListener("click", () => command("alignment/stop", "Stopping the alignment."));
+    $("copy-target").addEventListener("click", () => {
+      copyTarget();
+    });
     window.addEventListener("seeing:status", () => {
       const enabled = commandsEnabled();
       $("start").disabled = !enabled;

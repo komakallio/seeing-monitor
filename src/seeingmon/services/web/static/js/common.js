@@ -45,6 +45,21 @@
     }
   }
 
+  // A choice that a page remembers in this browser, such as which overlays to show. It lives in
+  // the local storage under the prefix below, and a blocked or missing storage means the default.
+  const PREFERENCE_PREFIX = "seeingmon.pref.";
+
+  /** The remembered text for `name`, or `fallback` when there is none. */
+  function recall(name, fallback) {
+    const value = readStorage("localStorage", PREFERENCE_PREFIX + name);
+    return value === null ? fallback : value;
+  }
+
+  /** Remember `value` (text) for `name`. A `null` forgets it. */
+  function remember(name, value) {
+    writeStorage("localStorage", PREFERENCE_PREFIX + name, value === null ? null : String(value));
+  }
+
   // --- The DOM ----------------------------------------------------------------------------------
 
   /** Make an element. `props` may hold class, text, dataset, on-handlers, and attributes. */
@@ -688,6 +703,6 @@
 
   window.Seeing = {
     API, h, $, clear, emit, fmt, api, ApiError, Token, Night, Status, poller, boot, showImage,
-    openTokenPanel, readStorage, writeStorage, flagChip, explainReason, FLAG_HELP,
+    openTokenPanel, readStorage, writeStorage, recall, remember, flagChip, explainReason, FLAG_HELP,
   };
 })();

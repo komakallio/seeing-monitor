@@ -30,6 +30,17 @@
   /* The live view is a dark image in every theme, so its marks are bright in every theme. */
   --overlay-target: #4be08f;
   --overlay-solved: #ff6b5e;
+  /* The sky overlay of the Align page: the coordinate grid (its lines are drawn with the alpha
+     below), the halo under its labels, the three states of the orbit of Polaris, the celestial
+     pole, and the aim cross. A test checks each of them against the dark image, after the alpha. */
+  --overlay-grid: #d5e0f2;
+  --overlay-grid-alpha: 0.45;
+  --overlay-halo: #000000;
+  --overlay-orbit-good: #5be37d;
+  --overlay-orbit-warn: #ffc233;
+  --overlay-orbit-bad: #ff5a4d;
+  --overlay-pole: #6fd3ff;
+  --overlay-aim: #f4f4f4;
   --radius: 10px;
   --gap: 16px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -89,6 +100,16 @@
   --grid: #484848;
   --overlay-target: #ffffff;
   --overlay-solved: #cfcfcf;
+  /* The red filter cannot tell the three states of the orbit apart by color, so they differ in
+     brightness a little, and the canvas names the state next to the orbit in words. */
+  --overlay-grid: #ffffff;
+  --overlay-grid-alpha: 0.8;
+  --overlay-halo: #000000;
+  --overlay-orbit-good: #ffffff;
+  --overlay-orbit-warn: #e8e8e8;
+  --overlay-orbit-bad: #cfcfcf;
+  --overlay-pole: #ffffff;
+  --overlay-aim: #dddddd;
 }
 
 *,
@@ -924,6 +945,96 @@ label {
 
 .stack > .panel {
   margin-bottom: 0;
+}
+
+/* The three switches of the sky overlay. Each one is at least 44 pixels high, so a thumb hits it. */
+.overlays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 18px;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 14px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.overlays legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--text);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.check input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  flex: none;
+}
+
+/* The sentences of the pole card. A colored edge shows the state of the orbit, and the words say it. */
+.sentence {
+  margin: 0 0 8px;
+}
+
+.sentence[data-level] {
+  padding-left: 10px;
+  border-left: 4px solid var(--border);
+}
+
+.sentence[data-level="good"] {
+  border-left-color: var(--good);
+}
+
+.sentence[data-level="warn"] {
+  border-left-color: var(--warn);
+}
+
+.sentence[data-level="bad"] {
+  border-left-color: var(--bad);
+}
+
+#roll-block h2 {
+  margin-top: 12px;
+}
+
+/* The target settings: a block that one click selects, for a page on plain HTTP where the clipboard
+   is not available to scripts. */
+.settings {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.settings summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toml {
+  margin: 8px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: 0.85rem/1.5 var(--mono);
+  white-space: pre;
+  -webkit-user-select: all;
+  user-select: all;
 }
 
 /* --- API reference ----------------------------------------------------------------------- */

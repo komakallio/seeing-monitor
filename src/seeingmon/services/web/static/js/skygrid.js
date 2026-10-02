@@ -60,6 +60,7 @@
     colatitudeDeg: null,
     orbitText: "",
     poleText: "pole",
+    poleArrowText: null, // a function of the side (above, below, left, right) for a pole outside
     aimText: "",
     markers: [],
   });
@@ -247,6 +248,13 @@
     return Math.hypot(Math.max(box.x0 - x, 0, x - box.x1), Math.max(box.y0 - y, 0, y - box.y1));
   }
 
+  /** Whether the segment from `a` to `b` touches the box, grown by one pixel. */
+  function segmentHitsBox(a, b, box) {
+    const x0 = box.x0 - 1;
+    const y0 = box.y0 - 1;
+    return clipSegment([a[0] - x0, a[1] - y0], [b[0] - x0, b[1] - y0], box.x1 - box.x0 + 2, box.y1 - box.y0 + 2) !== null;
+  }
+
   function boxesOverlap(a, b, gap) {
     return a.x0 < b.x1 + gap && a.x1 > b.x0 - gap && a.y0 < b.y1 + gap && a.y1 > b.y0 - gap;
   }
@@ -299,9 +307,12 @@
    * `camera` is `sky.camera` of the state, `frame` is `{ width, height }` in frame pixels, and
    * `scale` is the display pixels of one frame pixel. The options are listed in `DEFAULTS`:
    * `colatitudeDeg` (the radius of the orbit, or `null`), the texts of the labels `orbitText`,
-   * `poleText`, and `aimText` (an empty text leaves a label out), `markers` (more labeled marks
-   * that the page draws, each `{ id, text, x, y, radius }` in display pixels, whose labels the
-   * plan places), and `grid` (false leaves the rings, the meridians, and their labels out).
+   * `poleText` (or `poleArrowText(side)` for a pole outside the frame), and `aimText` (an empty
+   * text leaves a label out), `markers` (more labeled marks
+   * that the page draws, each `{ id, text, x, y, radius, reserve }` in display pixels, whose
+   * labels the plan places, and whose glyph, `reserve` pixels around (the radius by default),
+   * stays free of other labels), and `grid` (false leaves the rings, the meridians, and their
+   * labels out).
    *
    * The result holds `width`, `height`, `pole` (`{ x, y, inside }` or `null`), `arrow` (for a pole
    * outside the frame), `lines` (the polylines of the grid in drawing order, each
@@ -486,17 +497,44 @@
     const height = out.height;
     const halfH = o.fontPx / 2 + PAD;
 
-    const fits = (box, exemptHole) =>
-      box.x0 >= 2 && box.x1 <= width - 2 && box.y0 >= 2 && box.y1 <= height - 2 &&
-      (exemptHole || boxDistance(poleX, poleY, box) >= o.hole) &&
-      labels.every((other) => !boxesOverlap(box, other.box, 2));
+    // The segments of the orbit. A label of the grid keeps off them, so that the dashed circle
+    // stays readable.
+    const orbitSegments = [];
+    for (const points of out.orbit ? out.orbit.polylines : []) {
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        orbitSegments.push([points[i], points[i + 1]]);
+      }
+    }
 
-    const add = (label, exemptHole) => {
+    // The glyphs that the page draws (the pole, the aim cross, Polaris, the target) are obstacles
+    // for every label except their own. A glyph is a ring of `core` pixels with two arms of `arm`
+    // pixels, and the diagonals between the arms stay free, so that a label can sit there.
+    const obstacles = [];
+    const reserve = (id, x, y, core, arm) => {
+      obstacles.push({ id, box: { x0: x - core, x1: x + core, y0: y - core, y1: y + core } });
+      obstacles.push({ id, box: { x0: x - arm, x1: x + arm, y0: y - 1.5, y1: y + 1.5 } });
+      obstacles.push({ id, box: { x0: x - 1.5, x1: x + 1.5, y0: y - arm, y1: y + arm } });
+    };
+
+    const fits = (label, exemptHole, offOrbit) => {
+      const box = label.box;
+      return (
+        box.x0 >= 2 && box.x1 <= width - 2 && box.y0 >= 2 && box.y1 <= height - 2 &&
+        (exemptHole || boxDistance(poleX, poleY, box) >= o.hole) &&
+        labels.every((other) => !boxesOverlap(box, other.box, 2)) &&
+        obstacles.every((item) => item.id === label.id || !boxesOverlap(box, item.box, 0)) &&
+        !(offOrbit && orbitSegments.some(([a, b]) => segmentHitsBox(a, b, box)))
+      );
+    };
+
+    // `exemptHole` lets a mark's label sit next to its glyph, and `offOrbit` keeps a grid label
+    // off the orbit.
+    const add = (label, exemptHole, offOrbit) => {
       if (labels.length >= o.maxLabels || !label.text) {
         return false;
       }
       label.box = labelBox(label.text, label.align, label.x, label.y, o.fontPx);
-      if (!fits(label.box, exemptHole)) {
+      if (!fits(label, exemptHole, offOrbit)) {
         return false;
       }
       labels.push(label);
@@ -504,7 +542,8 @@
     };
 
     // Marks first: each tries the four diagonals around its glyph, in a fixed order.
-    const around = (id, kind, text, x, y, radius, order) => {
+    const around = (id, kind, text, x, y, radius, order, arm, core) => {
+      reserve(id, x, y, core === undefined ? radius : core, arm === undefined ? radius : arm);
       const reach = radius + 4;
       const spots = {
         ne: ["left", x + reach, y - reach],
@@ -520,20 +559,22 @@
       }
     };
     if (out.pole.inside) {
-      around("pole", "pole", o.poleText, poleX, poleY, 12, ["ne", "se", "nw", "sw"]);
+      around("pole", "pole", o.poleText, poleX, poleY, 12, ["ne", "se", "nw", "sw"], 16, 9);
     } else if (out.arrow) {
-      around("pole", "pole", o.poleText, out.arrow.x, out.arrow.y, 14, INWARD[out.arrow.side]);
+      const text = typeof o.poleArrowText === "function" ? o.poleArrowText(out.arrow.side) : o.poleText;
+      around("pole", "pole", text, out.arrow.x, out.arrow.y, 14, INWARD[out.arrow.side], 22, 10);
     }
     if (o.aimText) {
-      around("aim", "aim", o.aimText, width / 2, height / 2, 12, ["sw", "nw", "se", "ne"]);
+      around("aim", "aim", o.aimText, width / 2, height / 2, 12, ["sw", "nw", "se", "ne"], 10, 3);
     }
     for (const marker of o.markers) {
-      around(marker.id, "marker", marker.text, marker.x, marker.y, marker.radius || 10, ["ne", "se", "nw", "sw"]);
+      const radius = marker.radius || 10;
+      around(marker.id, "marker", marker.text, marker.x, marker.y, radius, ["ne", "se", "nw", "sw"], marker.reserve || radius);
     }
 
     // The orbit gets a label where it crosses a ray from the pole.
     if (out.orbit && o.orbitText) {
-      placeOnRay(out.orbit.polylines, "orbit", "orbit", o.orbitText, add, out.pole, halfH);
+      placeOnRay(out.orbit.polylines, "orbit", "orbit", o.orbitText, add, out.pole, halfH, false);
     }
 
     // The 6-hour meridians, then the rings, then the finer meridians.
@@ -552,7 +593,7 @@
         const half = labelWidth(text, o.fontPx) / 2 + PAD;
         spot = ["center", clamp(end[0], 3 + half, width - 3 - half), height - 5 - halfH];
       }
-      add({ id: "ra-" + meridian.hour, kind: "meridian", text, x: spot[1], y: spot[2], align: spot[0] }, false);
+      add({ id: "ra-" + meridian.hour, kind: "meridian", text, x: spot[1], y: spot[2], align: spot[0] }, false, true);
     };
     for (const meridian of out.meridians) {
       if (meridian.cls === 6) {
@@ -560,7 +601,7 @@
       }
     }
     for (const ring of out.rings) {
-      placeOnRay(ring.polylines, "ring-" + ring.colatitudeDeg, "ring", ring.text, add, out.pole, halfH);
+      placeOnRay(ring.polylines, "ring-" + ring.colatitudeDeg, "ring", ring.text, add, out.pole, halfH, true);
     }
     for (const cls of [2, 1]) {
       for (const meridian of out.meridians) {
@@ -574,15 +615,17 @@
 
   /**
    * Label a ring (or the orbit) where it crosses a ray from the pole that runs along a screen
-   * axis: right, up, left, then down. The label sits outside the ring, next to the crossing.
+   * axis: right, up, left, then down. The label sits outside the ring, next to the crossing, and
+   * on the pole side of the ring when the outside is taken.
    */
-  function placeOnRay(polylines, id, kind, text, add, pole, halfH) {
+  function placeOnRay(polylines, id, kind, text, add, pole, halfH, offOrbit) {
     const rays = [
       { name: "right", test: (a, b) => crossHorizontal(a, b, pole, 1) },
       { name: "up", test: (a, b) => crossVertical(a, b, pole, -1) },
       { name: "left", test: (a, b) => crossHorizontal(a, b, pole, -1) },
       { name: "down", test: (a, b) => crossVertical(a, b, pole, 1) },
     ];
+    const reach = 4;
     for (const ray of rays) {
       let hit = null;
       for (const points of polylines) {
@@ -593,19 +636,21 @@
       if (!hit) {
         continue;
       }
-      const reach = 4;
-      let label;
-      if (ray.name === "right") {
-        label = { align: "left", x: hit[0] + reach, y: pole.y };
-      } else if (ray.name === "left") {
-        label = { align: "right", x: hit[0] - reach, y: pole.y };
-      } else if (ray.name === "up") {
-        label = { align: "center", x: pole.x, y: hit[1] - reach + 1 - halfH };
-      } else {
-        label = { align: "center", x: pole.x, y: hit[1] + reach - 1 + halfH };
-      }
-      if (add({ id, kind, text, x: label.x, y: label.y, align: label.align }, false)) {
-        return;
+      // Outside the ring first (away from the pole), then inside.
+      for (const sign of [1, -1]) {
+        let label;
+        if (ray.name === "right") {
+          label = sign > 0 ? { align: "left", x: hit[0] + reach, y: pole.y } : { align: "right", x: hit[0] - reach, y: pole.y };
+        } else if (ray.name === "left") {
+          label = sign > 0 ? { align: "right", x: hit[0] - reach, y: pole.y } : { align: "left", x: hit[0] + reach, y: pole.y };
+        } else if (ray.name === "up") {
+          label = { align: "center", x: pole.x, y: hit[1] - sign * (reach - 1 + halfH) };
+        } else {
+          label = { align: "center", x: pole.x, y: hit[1] + sign * (reach - 1 + halfH) };
+        }
+        if (add({ id, kind, text, x: label.x, y: label.y, align: label.align }, false, offOrbit)) {
+          return;
+        }
       }
     }
   }

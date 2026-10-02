@@ -158,6 +158,20 @@ module.exports = function scenarios(SkyGrid, test, assert, fixture) {
       for (let j = i + 1; j < plan.labels.length; j += 1) {
         assert.ok(!overlap(a.box, plan.labels[j].box), name + ": the labels " + a.text + " and " + plan.labels[j].text + " overlap");
       }
+      // A label of the grid keeps off the dashed circle of the orbit.
+      if (plan.orbit && (a.kind === "meridian" || a.kind === "ring")) {
+        for (const points of plan.orbit.polylines) {
+          for (let k = 0; k + 1 < points.length; k += 1) {
+            const hit = SkyGrid.clipSegment(
+              [points[k][0] - a.box.x0, points[k][1] - a.box.y0],
+              [points[k + 1][0] - a.box.x0, points[k + 1][1] - a.box.y0],
+              a.box.x1 - a.box.x0,
+              a.box.y1 - a.box.y0
+            );
+            assert.ok(hit === null, name + ": the label " + a.text + " sits on the orbit");
+          }
+        }
+      }
     }
   }
 
@@ -444,6 +458,38 @@ module.exports = function scenarios(SkyGrid, test, assert, fixture) {
     const plan = planFor(camera, 1100, { markers });
     assert.ok(plan.labels.find((l) => l.id === "polaris"));
     checkPlan(plan, "marks");
+  });
+
+  test("a label keeps off the glyph of a mark that the page draws, but its own label sits beside it", () => {
+    const camera = cameraWithPole(2071.5, 1410.5);
+    const base = planFor(camera, 470);
+    const crowded = base.labels.find((l) => l.kind === "ring");
+    const x = (crowded.box.x0 + crowded.box.x1) / 2;
+    const y = (crowded.box.y0 + crowded.box.y1) / 2;
+    const plan = planFor(camera, 470, { markers: [{ id: "target", text: "target", x, y, radius: 16, reserve: 30 }] });
+    // The glyph: a ring of 16 pixels and two arms of 30 pixels.
+    const glyph = [
+      { x0: x - 16, x1: x + 16, y0: y - 16, y1: y + 16 },
+      { x0: x - 30, x1: x + 30, y0: y - 1.5, y1: y + 1.5 },
+      { x0: x - 1.5, x1: x + 1.5, y0: y - 30, y1: y + 30 },
+    ];
+    for (const label of plan.labels) {
+      if (label.id !== "target") {
+        assert.ok(glyph.every((box) => !overlap(label.box, box)), "the label " + label.text + " sits on the mark");
+      }
+    }
+    const own = plan.labels.find((l) => l.id === "target");
+    assert.ok(own, "the mark has its label");
+    assert.ok(Math.hypot((own.box.x0 + own.box.x1) / 2 - x, (own.box.y0 + own.box.y1) / 2 - y) < 60, "beside its mark");
+    checkPlan(plan, "crowded");
+  });
+
+  test("the pole and the aim keep their labels when the pole sits on the aim", () => {
+    const plan = planFor(cameraWithPole(2071.5, 1410.5), 470);
+    const pole = plan.labels.find((l) => l.id === "pole");
+    const aim = plan.labels.find((l) => l.id === "aim");
+    assert.ok(pole && aim, "both labels");
+    assert.ok(!overlap(pole.box, aim.box));
   });
 
   test("a label that cannot be placed is dropped and never forced", () => {
