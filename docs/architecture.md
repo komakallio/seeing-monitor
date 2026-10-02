@@ -216,7 +216,7 @@ The API lives under `/api/v1`. Within `v1`, changes only add fields and endpoint
 | `/events` | GET | Events, newest first, filtered by `level` and `kind` |
 | `/images`, `/images/latest`, `/images/{id}` | GET | The list of previews, and one image as JPEG, FITS, or JSON |
 | `/profile`, `/config` | GET | The hardware profile with derived values, and the configuration without secrets, hosts, URLs, addresses, commands, paths, or site data |
-| `/commands/burst`, `/commands/sweep`, `/commands/replay`, `/commands/dark`, `/mode`, `/alignment/start`, `/alignment/stop` | POST | Commissioning, a dark session, mode changes, alignment (token required) |
+| `/commands/burst`, `/commands/sweep`, `/commands/replay`, `/commands/dark`, `/mode`, `/alignment/start`, `/alignment/stop` | POST | Commissioning tasks, a dark session, pause and resume (`/mode`), alignment (token required) |
 | `/dark` | GET | The dark sets of the library, whether it is due for a new set, the dark model, the sensor temperature, and the progress of the latest dark session |
 | `/alignment/state`, `/alignment/frame`, `/alignment/stream` | GET, GET, WebSocket | The alignment offsets, the newest live-view frame (for a client that cannot use a WebSocket), and the live view |
 
