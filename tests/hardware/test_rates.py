@@ -474,6 +474,30 @@ class TestCommand:
         assert args.json == Path("local") / "camera-rates.json"
         assert (args.settle, args.gain) == (10, 120)
 
+    def test_an_unwritable_json_path_is_an_error_message_after_the_table(
+        self, rig: Rig, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        blocked = tmp_path / "a-file"
+        blocked.write_text("x", encoding="utf-8")  # a folder cannot be made below a file
+        code = main(
+            self.run(
+                tmp_path,
+                "--frames",
+                "6",
+                "--settle",
+                "1",
+                "--groups",
+                "format",
+                "--json",
+                str(blocked / "rates.json"),
+            )
+        )
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "baseline" in captured.out  # the table came first
+        assert "cannot write" in captured.err
+        assert "--json PATH" in captured.err
+
     def test_the_command_prints_the_table_and_writes_the_json(
         self, rig: Rig, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

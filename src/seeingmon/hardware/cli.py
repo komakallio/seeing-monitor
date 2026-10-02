@@ -140,6 +140,13 @@ def _rates(args: argparse.Namespace) -> int:
     print()
     print(rates.format_footer(report))
     if args.json is not None:
-        rates.write_json(report, args.json)
+        try:
+            rates.write_json(report, args.json)
+        except OSError as error:
+            # The table is on the screen already, so say where the file failed and go on.
+            raise CliError(
+                f"cannot write {args.json.as_posix()}: {error.strerror or error}; "
+                "pass a folder that you can write with --json PATH"
+            ) from None
         print(f"The table is in {args.json.as_posix()}.")
     return 1 if report.failed else 0
