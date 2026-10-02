@@ -403,7 +403,7 @@ An SD card wears out with writes. The design keeps the write budget under 1 GB a
   | Survey frames | 7 days, then one a night for 60 more days |
   | Previews | 7 days |
 
-  Capture stops below 1 GB of free space and resumes at 1.5 GB, and the store writes `retention.capture_stopped` and `retention.capture_resumed`. `seeingmon store info <database>` prints the counts and the sink cursors.
+  Raw burst capture stops below 1 GB of free space and resumes at 1.5 GB, and the store writes `retention.capture_stopped` and `retention.capture_resumed`. `seeingmon store info <database>` prints the counts and the sink cursors.
 - **Keep a copy.** After commissioning, copy the configuration directory and clone the card. The remote sinks hold a second copy of the results.
 - **Expect a power cut.** SQLite runs in WAL mode, and the segment writer forces its file to disk every 60 seconds, so a power cut loses at most a minute of frame metrics. After a card error (`dmesg | grep -i mmc`, or a file system that turns read-only), replace the card.
 
@@ -477,7 +477,7 @@ The dark rate depends on the sensor temperature, so a set serves only the temper
 | The UI is not reachable from the LAN. | `bind_address` is still the loopback address. | Set the LAN address in `[web]` of the local configuration, and run the installer again. |
 | Commands over the API are refused. | `web` has no token hash. | Run `seeingmon web hash-token`, and install the hash with `--token-hash-file`. |
 | The data directory warns about the root file system. | No data partition. | See [Create the data partition](#create-the-data-partition). |
-| Capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts. |
+| A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts. |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
 | Nothing runs after a reboot. | The units are not enabled. | `systemctl is-enabled seeingmon.target`, and run the installer again. |
