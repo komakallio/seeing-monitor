@@ -61,7 +61,7 @@ Each lane edits only its own package, its own tests, and its own sections of `do
 | `src/seeingmon/survey/` | Survey path | Survey path (step 7) |
 | `src/seeingmon/recordings/`, `drivers/replay.py` | SER reader, replay driver, validation | Recordings (step 8) |
 | `src/seeingmon/services/` | `acquire`, `core`, `web`, REST API, UI | Services (step 9) |
-| `src/seeingmon/hardware/`, `perf/`, `deploy/` | ASI binding, GPIO, power cycle, SQM-LE, benchmarks, install scripts | Hardware-facing (steps 10 to 12) |
+| `src/seeingmon/hardware/`, `src/seeingmon/perf/`, `deploy/`, `tools/lint_deploy.py` | ASI binding, GPIO, power cycle, SQM-LE, benchmarks, install scripts and their linter | Hardware-facing (steps 10 to 12) |
 
 The contracts are stable after step 2. You may make an additive change to a contract that your lane owns, such as a new optional field with a default, and you must say so in the commit message and in your report. Any change that could break another lane goes to the lead: describe the problem in your report, work around it inside your own package, and let the lead decide.
 
@@ -108,7 +108,7 @@ A test fails when `docs/quantities.md` is stale. After a rebase conflict in that
 
 ## Dependencies and the lock
 
-The core install needs only `pydantic`. Add each new dependency to your lane's extra in `pyproject.toml` (`fast`, `survey`, `web`, or a new extra), with a lower bound and no upper bound unless a release is known to break. Do not edit or commit `uv.lock`. The lead regenerates it after merges (`uv lock`), and the lock job in CI reports when it is stale. Until then, install a new dependency into your environment with `uv pip install --python <py> <package>`.
+The core install needs only `pydantic` and NumPy. Add each new dependency to your lane's extra in `pyproject.toml` (`fast`, `survey`, `web`, `timescale`, or a new extra), with a lower bound and no upper bound unless a release is known to break. Do not edit or commit `uv.lock`. The lead regenerates it after merges (`uv lock`), and the lock job in CI reports when it is stale. Until then, install a new dependency into your environment with `uv pip install --python <py> <package>`.
 
 The lock tool is `uv`. Its universal lock covers Windows x64, Linux x64, and Linux arm64.
 
