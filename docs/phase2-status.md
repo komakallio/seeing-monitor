@@ -54,6 +54,15 @@ States are not started, in progress, blocked, and done.
 
 Let the images lane finish (survey frames and previews on disk, and the Dark page showing why a command was rejected). Then check the CI run of the tip and the nightly run, and send the owner one message that lists the remaining blockers and the open items below. B8 closes when you give your feedback on the UI. The quiet measurement of the whole system belongs on the Pi 4 (`seeingmon perf run --quiet-wait 120`, with B2), because a dev-machine run only tightens an estimate, so it is not on this list. Beyond the images lane, the software needs only the items below before the hardware arrives. The next real steps are the commissioning steps in `docs/runbook.md`, which need B1 and B2.
 
+## Work in progress on branches
+
+Two lanes were stopped on October 2 when the dev machine closed, and their work is on branches of the remote, unfinished and with no test run:
+
+- `wip/survey-frames-and-previews`: survey frames and previews on disk (the writer modules `core/survey_frames.py` and `survey/framefile.py`, the wiring in `core`, the web `ImageStore`, and a FITS helper). Nothing is on `main`. It closes the gap that the docs pass found, and it also fixes the Dark page message for a rejected command.
+- `wip/real-sky-dev`: `seeingmon dev --driver asi --real-sky` (the plan, the owner's `[site]` and `[survey]` tables, the banner, and tests). The solver and survey logging of this lane is already on `main` (`d340d86`).
+
+Resume each with a new lane that starts from its branch, runs the tests, and merges to `main`.
+
 ## Open items from the docs pass
 
 The docs lane checked the documentation against the code in 62 commits (October 2). It left these items, which are decisions or small fixes and not blockers:
