@@ -406,10 +406,12 @@ An SD card wears out with writes. The design keeps the write budget under 1 GB a
   | Per-frame metrics | 7 days or 2 GB |
   | Star lists | 1 year |
   | Raw bursts | A 2 GB quota for unpinned bursts. A burst with a `PINNED` marker is exempt. |
-  | Survey frames | 7 days, then one a night for 60 more days |
+  | Survey frames (FITS files) | 7 days, then one a night for 60 more days |
   | Previews | 7 days |
 
-  Raw burst capture stops below 1 GB of free space and resumes at 1.5 GB, and the store writes `retention.capture_stopped` and `retention.capture_resumed`. `seeingmon store info <database>` prints the counts and the sink cursors.
+  `core` writes a preview (50 to 150 KB) of each long survey frame. It also writes a FITS file of about 10 MB (bin2) for every tenth long frame and for the first frame after an event: no pointing solution, a pointing that moved, clouds, or a bright sky. A night of 12 hours adds about 0.3 GB, and a week about 2 GB. To write fewer files, raise `keep_every` or `event_min_interval_s` under `[services.core.survey_frames]` in the local configuration, or set `enabled = false` to write none. The Images page lists the previews of the last 7 days, and the FITS files of older nights stay in `<data-dir>/survey/` until retention deletes them. Open a FITS file with `astropy` (`fits.open(path)[1].data`), with DS9, or unpack it with `funpack`.
+
+  Raw burst capture and the FITS files of the survey frames stop below 1 GB of free space (the previews go on) and resume at 1.5 GB, and the store writes `retention.capture_stopped` and `retention.capture_resumed`. `seeingmon store info <database>` prints the counts and the sink cursors.
 - **Keep a copy.** After commissioning, copy the configuration directory and clone the card. The remote sinks hold a second copy of the results.
 - **Expect a power cut.** SQLite runs in WAL mode, and the segment writer forces its file to disk every 60 seconds, so a power cut loses at most a minute of frame metrics. After a card error (`dmesg | grep -i mmc`, or a file system that turns read-only), replace the card.
 
@@ -623,6 +625,7 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | Commands over the API are refused. | `web` has no token hash. | Run `seeingmon web hash-token`, and install the hash with `--token-hash-file`. |
 | The data directory warns about the root file system. | No data partition. | See [Create the data partition](#create-the-data-partition). |
 | A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts by deleting the `PINNED` file in their folders under `<data-dir>/bursts/`. |
+| The Images page is empty. | `core` writes the first preview after the first long exposure (30 s) of a survey step, and survey steps run only while the sky is dark. `[services.core.survey_frames]` may be off. | Check the state on the **Now** page, then `ls <data-dir>/previews/*/*/*`, and look for `survey_images.write_failed` events (`GET /api/v1/events?kind=survey_images.write_failed`) and for a full disk (`df -h <data-dir>`). |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
 | The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by the bind address. |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
