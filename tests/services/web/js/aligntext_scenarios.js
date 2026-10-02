@@ -28,18 +28,32 @@ module.exports = function scenarios(AlignText, test, assert) {
 
   // --- The pole card ------------------------------------------------------------------------------
 
-  test("the pole sentence names the distance and the image directions", () => {
+  test("the pole sentence says the move in altitude and azimuth, and falls back to the image directions", () => {
     assert.equal(AlignText.poleSentence(sky()), "The pole is 21′ from the center: 14′ right and 16′ down.");
     assert.equal(
       AlignText.poleSentence(sky({ dx_px: -220, dy_px: -252 })),
       "The pole is 21′ from the center: 14′ left and 16′ up."
     );
+    // With the site, positive altitude means raise and positive azimuth means east.
+    assert.equal(
+      AlignText.poleSentence(sky({}, null, { altitude_arcmin: 21, azimuth_arcmin: 8 })),
+      "Raise the camera by 21′ in altitude and turn it 8′ toward the east in azimuth."
+    );
+    assert.equal(
+      AlignText.poleSentence(sky({}, null, { altitude_arcmin: -21, azimuth_arcmin: -8 })),
+      "Lower the camera by 21′ in altitude and turn it 8′ toward the west in azimuth."
+    );
+    // The image directions run from the aim when the state names one.
+    assert.equal(
+      AlignText.poleSentence(sky({}, null, { aim: { x_px: 2071.5, y_px: 1410.5, dx_px: 220, dy_px: 252, distance_arcmin: 21.3 } })),
+      "The pole is 21′ from the aim: 14′ right and 16′ down."
+    );
   });
 
   test("a component that rounds to nothing stays out of the sentence", () => {
     assert.equal(
-      AlignText.poleSentence(sky({ dx_px: 20, dy_px: 0, distance_arcmin: 1.3 })),
-      "The pole is 1′ from the center: 1′ right."
+      AlignText.poleSentence(sky({ dx_px: 50, dy_px: 0, distance_arcmin: 3.2 })),
+      "The pole is 3′ from the center: 3′ right."
     );
     assert.equal(
       AlignText.poleSentence(sky({ dx_px: 0, dy_px: -157, distance_arcmin: 10 })),
@@ -47,8 +61,12 @@ module.exports = function scenarios(AlignText, test, assert) {
     );
   });
 
-  test("a pole within an arcminute of the center is at the center", () => {
-    assert.equal(AlignText.poleSentence(sky({ dx_px: 3, dy_px: -4, distance_arcmin: 0.4 })), "The pole is within 1′ of the center.");
+  test("a pole within two arcminutes of the aim is aligned", () => {
+    assert.equal(AlignText.poleSentence(sky({ dx_px: 3, dy_px: -4, distance_arcmin: 0.4 })), "Aligned: the pole is within 2′ of the center.");
+    assert.equal(
+      AlignText.poleSentence(sky({}, null, { aim: { x_px: 2071.5, y_px: 1410.5, dx_px: 20, dy_px: -10, distance_arcmin: 1.9 }, altitude_arcmin: 1.5, azimuth_arcmin: 1.0 })),
+      "Aligned: the pole is within 2′ of the aim."
+    );
   });
 
   test("a far pole is described in degrees, and a pole outside the frame says so", () => {
@@ -58,7 +76,7 @@ module.exports = function scenarios(AlignText, test, assert) {
     );
     assert.equal(
       AlignText.poleSentence(sky({ dx_px: 0, dy_px: 0, distance_arcmin: 0.2, inside_frame: false })),
-      "The pole is within 1′ of the center. It lies outside the frame."
+      "Aligned: the pole is within 2′ of the center. It lies outside the frame."
     );
   });
 
@@ -151,37 +169,45 @@ module.exports = function scenarios(AlignText, test, assert) {
     assert.deepEqual(card.rows, [
       ["Target", "No target is set"],
       ["Polaris", "x 2075.3, y 1400.2 px"],
-      ["Roll", "12.34°"],
     ]);
     assert.ok(card.note.includes("[alignment]"));
     assert.ok(card.note.includes("local configuration"));
-    assert.equal(card.roll, null);
+    assert.ok(card.note.includes("optional"));
+    assert.deepEqual(card.roll, {
+      text: "Camera roll: 12.3° from image up toward image left. Altitude and azimuth adjustments do not change it.",
+    });
   });
 
-  test("a solution with no roll shows a dash for the roll", () => {
+  test("a solution with no roll says that the roll is not defined", () => {
     const card = AlignText.offsetCard({ solved: Object.assign({}, SOLVED, { roll_deg: null }), target: null, offset: null, quality: {} });
-    assert.deepEqual(card.rows[2], ["Roll", "—"]);
+    assert.equal(card.rows.length, 2);
+    assert.equal(
+      card.roll.text,
+      "Camera roll: not defined while the pole sits at the center of the frame. Altitude and azimuth adjustments do not change it."
+    );
   });
 
-  test("with a solution and a target the card gives the offset and the roll gauge", () => {
+  test("with a solution and a target the card gives the offset and the roll line", () => {
     const card = AlignText.offsetCard({ solved: SOLVED, target: TARGET, offset: OFFSET, quality: {} });
     assert.equal(card.state, "targeted");
     assert.deepEqual(card.rows, [
       ["Horizontal (x)", "+3.0 px, +11.5″"],
       ["Vertical (y)", MINUS + "11.0 px, " + MINUS + "42.0″"],
       ["Distance", "11.4 px, 43.5″"],
-      ["Roll", "+2.00°"],
     ]);
     assert.equal(card.note, "");
-    assert.deepEqual(card.roll, { value: 2, text: "Rotate the camera by " + MINUS + "2.00 degrees to match the target roll." });
+    assert.deepEqual(card.roll, {
+      text: "Camera roll: 12.3° from image up toward image left. Altitude and azimuth adjustments do not change it.",
+    });
   });
 
-  test("a roll within a tenth of a degree is on target, and a missing roll offset is a dash", () => {
-    const close = AlignText.offsetCard({ solved: SOLVED, target: TARGET, offset: Object.assign({}, OFFSET, { roll_deg: 0.05 }), quality: {} });
-    assert.equal(close.roll.text, "The roll is within 0.1 degrees of the target.");
-    const none = AlignText.offsetCard({ solved: SOLVED, target: TARGET, offset: Object.assign({}, OFFSET, { roll_deg: null }), quality: {} });
-    assert.deepEqual(none.rows[3], ["Roll", "—"]);
-    assert.equal(none.roll.value, 0);
+  test("the roll is information only: it never asks for a correction, whatever the roll offset is", () => {
+    for (const rollOffset of [0.05, 2, -170, null]) {
+      const card = AlignText.offsetCard({ solved: SOLVED, target: TARGET, offset: Object.assign({}, OFFSET, { roll_deg: rollOffset }), quality: {} });
+      assert.equal(card.rows.length, 3);
+      assert.ok(card.roll.text.includes("do not change it"));
+      assert.ok(!/rotate/i.test(card.roll.text));
+    }
   });
 
   // --- The target settings ------------------------------------------------------------------------
