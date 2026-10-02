@@ -356,6 +356,57 @@ def test_the_layout_gives_a_phone_one_column_and_no_horizontal_scroll() -> None:
     assert re.search(narrow + r"minmax\(0, 1fr\)", css)
 
 
+# --- The header ------------------------------------------------------------------------------
+
+
+def media_block(css: str, query: str) -> str:
+    """The text between the braces of the first `@media` block with this query."""
+    start = css.index("{", css.index(query))
+    depth = 0
+    for position in range(start, len(css)):
+        if css[position] == "{":
+            depth += 1
+        elif css[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[start + 1 : position]
+    raise AssertionError(f"{query} has no closing brace")
+
+
+def test_the_tools_sit_in_the_title_row_and_have_an_icon_and_a_label() -> None:
+    frame = text_of("js/common.js")
+    row = frame[frame.index('class: "top-row"') : frame.index('class: "tabs"')]
+    assert 'class: "brand"' in row
+    assert 'h("div", { class: "tools" }, tokenButton, nightButton)' in row
+    assert 'class: "icon icon-" + icon' in frame
+    assert '"aria-hidden": "true"' in frame
+    assert 'class: "tool-label", text: label' in frame
+    assert '"Token"' in frame
+    assert '"Night mode"' in frame
+
+
+def test_a_narrow_screen_hides_the_tool_label_from_the_eye_but_not_a_screen_reader() -> None:
+    css = text_of("css/app.css")
+    rule = rule_for(media_block(css, "@media (max-width: 559px)"), ".tool-label")
+    assert "clip: rect(0 0 0 0)" in rule
+    assert "display: none" not in rule
+    assert "visibility: hidden" not in rule
+
+
+def test_a_tall_screen_keeps_the_whole_header_at_the_top() -> None:
+    css = text_of("css/app.css")
+    assert "position: sticky" in rule_for(css, "\n.top {")
+
+
+def test_a_short_screen_lets_the_title_row_scroll_away_and_keeps_the_tab_row_at_the_top() -> None:
+    css = text_of("css/app.css")
+    short = media_block(css, "@media (max-height: 639px)")
+    assert "display: contents" in rule_for(short, ".top {")
+    tabs = rule_for(short, ".tabs {")
+    assert "position: sticky" in tabs
+    assert "top: 0" in tabs
+
+
 # --- Contrast --------------------------------------------------------------------------------
 
 HEX_TOKEN = re.compile(r"(--[a-z0-9-]+):\s*(#[0-9a-fA-F]{6})")

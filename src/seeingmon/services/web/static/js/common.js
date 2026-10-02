@@ -561,28 +561,42 @@
   }
 
   function buildFrame(pageId) {
-    const tokenButton = h("button", {
-      id: "token-button",
-      type: "button",
-      text: "Token",
-      "aria-controls": "token-panel",
-      onclick: () => {
-        const panel = $("token-panel");
-        if (panel.hidden) {
-          openTokenPanel();
-        } else {
-          panel.hidden = true;
-        }
+    // A tool button has an icon (drawn in CSS) and a label. A narrow screen hides the label, but a
+    // screen reader still reads it, and the title shows it as a tooltip.
+    const tool = (props, icon, label) =>
+      h(
+        "button",
+        Object.assign({ class: "tool", type: "button" }, props),
+        h("span", { class: "icon icon-" + icon, "aria-hidden": "true" }),
+        h("span", { class: "tool-label", text: label })
+      );
+    const tokenButton = tool(
+      {
+        id: "token-button",
+        title: "API token",
+        "aria-controls": "token-panel",
+        onclick: () => {
+          const panel = $("token-panel");
+          if (panel.hidden) {
+            openTokenPanel();
+          } else {
+            panel.hidden = true;
+          }
+        },
       },
-    });
-    const nightButton = h("button", {
-      id: "night-button",
-      type: "button",
-      text: "Night mode",
-      "aria-pressed": "false",
-      title: "Show the page in red only, to keep your night vision",
-      onclick: () => Night.toggle(),
-    });
+      "lock",
+      "Token"
+    );
+    const nightButton = tool(
+      {
+        id: "night-button",
+        "aria-pressed": "false",
+        title: "Show the page in red only, to keep your night vision",
+        onclick: () => Night.toggle(),
+      },
+      "moon",
+      "Night mode"
+    );
     const header = h(
       "header",
       { class: "top" },
