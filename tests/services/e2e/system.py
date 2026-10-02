@@ -57,13 +57,22 @@ def clean_environment() -> dict[str, str]:
 class System:
     """`acquire`, `core`, and `web` as children of the test."""
 
-    def __init__(self, directory: Path, *, with_web: bool = True, **options: Any) -> None:
+    def __init__(
+        self, directory: Path, *, with_web: bool = True, owner_settings: str = "", **options: Any
+    ) -> None:
+        """`owner_settings` is the text of a local configuration, for a plan that reads one (the
+        real sky takes its site and its survey settings from it). A plan of the simulated sky reads
+        no owner settings, and the default is a file that does not exist."""
         self.directory = directory
         self.with_web = with_web
+        local = directory / "no-owner-settings.toml"
+        if owner_settings:
+            local = directory / "owner-settings.toml"
+            local.write_text(owner_settings, encoding="utf-8")
         self.plan: DevPlan = build_plan(
             DevOptions(port=free_port(), **options),
             directory=directory / "run",
-            local_file=directory / "no-owner-settings.toml",
+            local_file=local,
             env=clean_environment(),
         )
         self.children: dict[str, Child] = {
@@ -129,8 +138,13 @@ class System:
     # --- Looking at the results ------------------------------------------------------------
 
     @property
+    def data_dir(self) -> Path:
+        """The data folder of the run: the folder that the options name, or the one in the run."""
+        return self.plan.options.data_dir or self.plan.directory / "data"
+
+    @property
     def db_path(self) -> Path:
-        return self.plan.directory / "data" / "db" / "results.sqlite"
+        return self.data_dir / "db" / "results.sqlite"
 
     def records(self, record_type: str) -> list[Any]:
         """Every stored record of a type, read through a fresh read-only connection."""
