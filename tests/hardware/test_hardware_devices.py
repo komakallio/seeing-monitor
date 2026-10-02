@@ -5,8 +5,10 @@ Each check names what it needs. A check that lacks its configuration skips with 
 
 - GPIO loopback: `SEEINGMON_HARDWARE_GPIO_OUT` and `SEEINGMON_HARDWARE_GPIO_IN`, each as
   `chip:line` (for example `gpiochip0:17`), with a jumper wire between the two lines.
-- SQM-LE: `host` in the `[sqm]` section of `local/config.toml`, or `SEEINGMON_SQM__HOST`. Set
-  `SEEINGMON_HARDWARE_SQM_DUMP` to a file path to save the raw responses.
+- SQM-LE over TCP: `host` in the `[sqm]` section of `local/config.toml`, or `SEEINGMON_SQM__HOST`.
+  Set `SEEINGMON_HARDWARE_SQM_DUMP` to a file path to save the raw responses.
+- SQM-LE from InfluxDB: `source = "influx"` and the table `[sqm.influx]` in the same file, and
+  the environment variable that `token_env` or `password_env` names.
 - Power-cycle dry run: a route in the `[power]` section, and any environment variables that it
   names.
 """
@@ -19,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from seeingmon.clock import SystemClock
-from seeingmon.config import Config
+from seeingmon.config import Config, ConfigError
 from seeingmon.hardware.io import IoError, LibgpiodIo
 from seeingmon.hardware.power import PowerConfig, PowerCycle
 from seeingmon.hardware.sqm import SqmConfig, SqmLeClient
@@ -49,6 +51,8 @@ def test_a_gpio_loopback_follows_the_output() -> None:
 
 def test_the_sqm_le_answers(local_config: Config) -> None:
     config = local_config.section("sqm", SqmConfig)
+    if config.source != "tcp":
+        pytest.skip('[sqm] source is not "tcp": the next check reads the unit from InfluxDB')
     if not config.host:
         pytest.skip("no SQM-LE host: set it in [sqm] of local/config.toml")
     client = SqmLeClient(
@@ -59,6 +63,17 @@ def test_the_sqm_le_answers(local_config: Config) -> None:
     )
     dump = os.environ.get("SEEINGMON_HARDWARE_SQM_DUMP")
     print(checks.check_sqm_unit(client, dump=Path(dump) if dump else None))
+
+
+def test_the_sqm_le_readings_are_in_influxdb(local_config: Config) -> None:
+    config = local_config.section("sqm", SqmConfig)
+    if config.source != "influx" or config.influx is None:
+        pytest.skip('[sqm] source is not "influx": set it, and [sqm.influx], in local/config.toml')
+    try:
+        report = checks.check_sqm_influx(config, clock=SystemClock())
+    except ConfigError as error:  # a variable that token_env names is not set, for example
+        pytest.skip(f"the settings of [sqm.influx] are incomplete: {error}")
+    print(report)
 
 
 def test_the_power_cycle_dry_run_passes(local_config: Config) -> None:

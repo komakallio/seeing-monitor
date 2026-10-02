@@ -6,16 +6,21 @@ report. `test_device_checks_on_fakes` runs them against fakes, so their code is 
 
 from __future__ import annotations
 
+import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 
+from seeingmon.clock import Clock
 from seeingmon.hardware.io import Io, PinSpec
 from seeingmon.hardware.power import PowerCycle, PowerOutcome
 from seeingmon.hardware.sqm import (
+    SqmConfig,
     SqmLeClient,
     parse_calibration,
     parse_info,
     parse_reading,
 )
+from seeingmon.hardware.sqm_factory import read_sqm_once
 
 TOGGLES = 5
 
@@ -64,6 +69,31 @@ def check_sqm_unit(client: SqmLeClient, *, dump: Path | None = None) -> str:
         f"protocol {info.protocol}, model {info.model}, feature {info.feature}; "
         f"{reading.magnitude:.2f} mag/arcsec2, temperature {reading.temperature_c} C, "
         f"frequency {reading.frequency_hz} Hz; {numbers} calibration numbers"
+    )
+
+
+def check_sqm_influx(
+    config: SqmConfig,
+    *,
+    clock: Clock,
+    env: Mapping[str, str] | None = None,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> str:
+    """InfluxDB holds a fresh, plausible reading of the SQM-LE, and the reader reads it.
+
+    The check reads the newest point once, as `seeingmon hardware sqm` does. It fails with the
+    error of the reader when the server does not answer, refuses the credentials, rejects the
+    query, sends something that is no reading, holds no point, or holds only a point older than
+    `max_age_s`. The report names no endpoint, bucket, database, measurement, field, or tag.
+    """
+    assert config.influx is not None, "the source influx needs the table [sqm.influx]"
+    sample = read_sqm_once(config, clock=clock, env=env, opener=opener)
+    assert 5.0 < sample.magnitude < 25.0, f"the magnitude is implausible: {sample.magnitude}"
+    if sample.temperature_c is not None:
+        assert -50.0 < sample.temperature_c < 70.0, "the temperature is implausible"
+    return (
+        f"{sample.summary()}; the point is within max_age_s ({config.influx.max_age_s:g} s), "
+        f"and the server answered the query of version {config.influx.version}"
     )
 
 

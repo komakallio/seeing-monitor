@@ -1,4 +1,4 @@
-"""The `seeingmon camera` commands.
+"""The `seeingmon camera` and `seeingmon hardware` commands.
 
 `seeingmon camera rates` measures the frame rates of the connected camera in a table: the exposure,
 the ROI size, the pixel format, the USB bandwidth control, and the high-speed mode, one factor at a
@@ -6,6 +6,10 @@ time around the fast stream of the profile, and the second readout mode. It prin
 beside the rate of the profile's model and the fitted timing, and it can write the table as JSON
 (see `seeingmon.hardware.rates`). The command puts every control that it changed back, so another
 program that shares the camera finds it as it left it.
+
+`seeingmon hardware sqm` reads the SQM-LE one time from the source that `[sqm]` names (the unit over
+TCP, or the readings in InfluxDB), and it prints the magnitude, the temperature, and the age of the
+reading. Use it to try the settings of `[sqm]` and `[sqm.influx]` (see `seeingmon.hardware.sqm`).
 
 The handlers import the implementation on demand, so `seeingmon --help` stays fast.
 """
@@ -79,10 +83,58 @@ def register(subparsers: Subparsers) -> None:
     )
     rates.set_defaults(handler=_rates)
 
+    hardware = add_command(
+        subparsers,
+        "hardware",
+        help="Try the readers of this machine, such as the SQM-LE.",
+        handler=_missing_hardware_subcommand,
+    )
+    hardware_commands = hardware.add_subparsers(
+        dest="hardware_command", metavar="<subcommand>", required=True
+    )
+    sqm = hardware_commands.add_parser(
+        "sqm",
+        help="Read the SQM-LE once from the source that [sqm] names, and print the reading.",
+        description=(
+            "Read the SQM-LE one time from the source that [sqm] names: the unit over TCP "
+            '(source = "tcp") or the readings in InfluxDB (source = "influx", with the table '
+            "[sqm.influx]). Print the magnitude, the temperature, and the age of the reading. "
+            "The command ignores enabled, so you can try the settings before you turn the reader "
+            "on. It prints no address and no name from the configuration. It exits with 0 when it "
+            "has a reading, and with 1 and one line of text when the read fails or a setting is "
+            "missing. A secret that token_env or password_env names must be in the environment."
+        ),
+    )
+    sqm.add_argument(
+        "--local-config",
+        type=Path,
+        help="read this file instead of local/config.toml (an absent file is ignored)",
+    )
+    sqm.set_defaults(handler=_sqm)
+
 
 def _missing_subcommand(args: argparse.Namespace) -> int:
     # `required=True` makes argparse reject a missing subcommand before this runs.
     raise CliError("choose a subcommand: rates", exit_code=2)
+
+
+def _missing_hardware_subcommand(args: argparse.Namespace) -> int:
+    raise CliError("choose a subcommand: sqm", exit_code=2)
+
+
+def _sqm(args: argparse.Namespace) -> int:
+    from seeingmon.clock import SystemClock
+    from seeingmon.config import ConfigError, load_config
+    from seeingmon.hardware.sqm import SqmConfig, SqmError
+    from seeingmon.hardware.sqm_factory import read_sqm_once
+
+    try:
+        config = load_config(local_file=args.local_config)
+        sample = read_sqm_once(config.section("sqm", SqmConfig), clock=SystemClock())
+    except (ConfigError, SqmError) as error:
+        raise CliError(str(error)) from None
+    print(sample.summary())
+    return 0
 
 
 def _rates(args: argparse.Namespace) -> int:

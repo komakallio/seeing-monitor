@@ -10,10 +10,14 @@ import pytest
 from seeingmon.clock import VirtualClock
 from seeingmon.hardware.io import FakeIo, LibgpiodIo, PinSpec
 from seeingmon.hardware.power import CommandRoute, PowerConfig, PowerCycle
-from seeingmon.hardware.sqm import SqmLeClient
+from seeingmon.hardware.sqm import SqmConfig, SqmInfluxConfig, SqmLeClient
+from seeingmon.hardware.sqm_influx import InfluxStaleError
+from seeingmon.sinks.influx import make_opener
 from tests.hardware import device_checks as checks
 from tests.hardware.gpiod_fakes import FakeGpiodV1, FakeGpiodV2
+from tests.hardware.influx_replies import ago, v2_csv
 from tests.hardware.sqm_server import SERIAL, FakeSqmServer
+from tests.sinks.fake_influx import FakeInfluxServer, Reply
 
 
 class TestGpioLoopback:
@@ -74,6 +78,71 @@ class TestSqm:
         client = SqmLeClient("127.0.0.1", unit.port, read_timeout_s=1.0)
         with pytest.raises(AssertionError, match="implausible"):
             checks.check_sqm_unit(client)
+
+
+class TestSqmInflux:
+    @staticmethod
+    def config(server: FakeInfluxServer) -> SqmConfig:
+        table = SqmInfluxConfig(
+            endpoint=server.url,
+            org="example-org",
+            bucket="example-bucket",
+            token="example-token-value",
+            measurement="sqm",
+            field="mag",
+            temperature_field="temp",
+            timeout_s=5.0,
+        )
+        return SqmConfig(source="influx", influx=table)
+
+    @staticmethod
+    def point(clock: VirtualClock, magnitude: float, temperature: float, age_s: float) -> Reply:
+        t_utc_ns = ago(clock.utc_ns(), age_s)
+        return Reply(200, v2_csv([("mag", t_utc_ns, magnitude), ("temp", t_utc_ns, temperature)]))
+
+    def run(self, server: FakeInfluxServer, clock: VirtualClock) -> str:
+        return checks.check_sqm_influx(
+            self.config(server),
+            clock=clock,
+            env={},
+            opener=make_opener(use_environment_proxies=False),
+        )
+
+    def test_a_fresh_plausible_point_passes_and_the_report_names_nothing(self) -> None:
+        clock = VirtualClock()
+        with FakeInfluxServer() as server:
+            server.script(self.point(clock, 21.37, 3.5, 20.0))
+            report = self.run(server, clock)
+            assert server.url not in report
+        assert "magnitude 21.37 mag/arcsec^2, temperature 3.5 C, age 20.0 s" in report
+        assert "max_age_s (600 s)" in report
+        assert "example-bucket" not in report
+        assert "example-token-value" not in report
+
+    def test_an_implausible_magnitude_fails(self) -> None:
+        clock = VirtualClock()
+        with FakeInfluxServer() as server:
+            server.script(self.point(clock, 2.0, 3.5, 20.0))
+            with pytest.raises(AssertionError, match="implausible"):
+                self.run(server, clock)
+
+    def test_an_implausible_temperature_fails(self) -> None:
+        clock = VirtualClock()
+        with FakeInfluxServer() as server:
+            server.script(self.point(clock, 21.37, 300.0, 20.0))
+            with pytest.raises(AssertionError, match="temperature is implausible"):
+                self.run(server, clock)
+
+    def test_a_stale_point_fails_with_the_error_of_the_reader(self) -> None:
+        clock = VirtualClock()
+        with FakeInfluxServer() as server:
+            server.script(self.point(clock, 21.37, 3.5, 3000.0))
+            with pytest.raises(InfluxStaleError):
+                self.run(server, clock)
+
+    def test_the_source_tcp_has_no_influx_table_to_check(self) -> None:
+        with pytest.raises(AssertionError, match=r"needs the table \[sqm.influx\]"):
+            checks.check_sqm_influx(SqmConfig(), clock=VirtualClock())
 
 
 class TestPower:
