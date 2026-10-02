@@ -22,7 +22,8 @@ The checks read the same local configuration as the system: `local/config.toml` 
 
 - **Camera.** Install the vendor library, and tell the driver where it is. Set `library_path` under `[services.acquire.driver_options]` in `local/config.toml`, or set `SEEINGMON_ASI__LIBRARY_PATH`. Connect the camera to a USB 3 port, and install the camera's udev rule, so that your user can open the device.
 - **GPIO.** Install `libgpiod` (`apt install libgpiod2` on Debian 12 or `libgpiod3` on Debian 13). Your user needs access to `/dev/gpiochip*`.
-- **SQM-LE.** Set `host` under `[sqm]`.
+- **SQM-LE over TCP.** Set `host` under `[sqm]`.
+- **SQM-LE from InfluxDB.** Set `source = "influx"` under `[sqm]` and fill the table `[sqm.influx]` (see [Read the SQM-LE from InfluxDB](runbook.md#read-the-sqm-le-from-influxdb)). Set the environment variable that `token_env` or `password_env` names, in the shell that runs the checks.
 - **Power cycle.** Choose a route under `[power]`, and set any environment variable that the route names with `${NAME}`.
 
 ## The checks
@@ -39,7 +40,8 @@ The checks read the same local configuration as the system: `local/config.toml` 
 | Recovery step 1 | The same | Streams, restarts capture, and reads on | The first frame after the step has the `RECOVERED` flag, and the sequence continues |
 | Recovery step 3 (USB reset) | The same, plus `SEEINGMON_HARDWARE_USB_RESET=1` | Resets the USB device, waits for the camera, and reads on | The camera reappears within the timeout, and the stream continues. The reset interrupts the camera, so the check needs the extra opt-in. |
 | GPIO loopback | `SEEINGMON_HARDWARE_GPIO_OUT` and `SEEINGMON_HARDWARE_GPIO_IN` (each `chip:line`, such as `gpiochip0:17`) and a jumper wire between the two lines | Switches the output five times and reads the input | The input follows the output in both directions |
-| SQM-LE | `host` under `[sqm]` | Sends the four requests (`ix`, `rx`, `ux`, `cx`) and parses the answers | A magnitude between 5 and 25 mag/arcsec², the protocol, model, and feature numbers, and a temperature |
+| SQM-LE | `host` under `[sqm]`, and a `source` that is `tcp` | Sends the four requests (`ix`, `rx`, `ux`, `cx`) and parses the answers | A magnitude between 5 and 25 mag/arcsec², the protocol, model, and feature numbers, and a temperature |
+| SQM-LE from InfluxDB | `source = "influx"` and the table `[sqm.influx]` | Reads the newest point of the field once, as `seeingmon hardware sqm` does | A magnitude between 5 and 25 mag/arcsec², a temperature between -50 and 70 °C when `temperature_field` is set, and a point no older than `max_age_s`. The report names no endpoint, bucket, database, measurement, field, or tag. |
 | Power-cycle dry run | A route under `[power]` | Expands the route from the environment and reports what it would run | The outcome is a dry run, and nothing runs |
 
 ## Windows
@@ -125,9 +127,19 @@ SEEINGMON_ASI__HEADER_PATH=<path-to>/ASICamera2.h python -m pytest tests/hardwar
 
 Without the variable, the four checks against the header skip. A difference fails the test, and the message names the enumerator, the field, or the function. The header can also hold more than the binding lists, such as the controls of newer cameras. The test prints those with `-s` and does not fail. On a platform where `long` and `int` have the same size, such as Windows, `ctypes` makes the two types one, so the check cannot tell them apart there. The Windows archive and the Linux and macOS archive of V1.41 carry the same header file, and the binding matches it.
 
+## Try the SQM-LE settings
+
+`seeingmon hardware sqm` reads the SQM-LE one time from the source that `[sqm]` names, and it prints one line with the magnitude, the temperature, and the age of the reading. It ignores `enabled`, so you can run it before you turn the reader on. It prints no address and no name from the configuration, and it exits with 1 and one line when a setting is missing or the read fails. The check "SQM-LE from InfluxDB" above runs the same read under `pytest`. See [Check the settings](runbook.md#check-the-settings) for the output, and for the environment variable of the token.
+
+```bash
+seeingmon hardware sqm
+```
+
+For the `tcp` source, the line reports an age of 0 s, because the unit answers with its current reading.
+
 ## Send the SQM-LE sample to the maintainer
 
-The reader follows the protocol from documentation, and no real unit has confirmed it (blocker B5). To close the blocker, save the raw responses:
+This section concerns the `tcp` source. The reader follows the protocol from documentation, and no real unit has confirmed it (blocker B5). To close the blocker, save the raw responses:
 
 ```bash
 SEEINGMON_HARDWARE_SQM_DUMP=local/sqm-sample.txt python -m pytest tests/hardware --hardware -k sqm -s

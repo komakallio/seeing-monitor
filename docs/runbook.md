@@ -383,6 +383,81 @@ fi
 
 The sketch sends no token, so it fails on every poll when you set `require_token_for_reads`. Add the header `Authorization: Bearer <token>` to the `curl` command in that case, and keep the script readable by its owner only. The endpoint answers 503 for any failed component, including a heater fault and an SQM-LE reader that fails five polls in a row, so decide whether such a failure should cycle the power.
 
+## Read the SQM-LE from InfluxDB
+
+The SQM-LE does not have to be reachable over TCP. When another computer polls it and writes each reading to InfluxDB, `core` can read the readings from the database. Set `source = "influx"` in `[sqm]`, and describe the data in `[sqm.influx]`. Each poll asks InfluxDB for the newest point of the magnitude field, and each new point becomes a `reference` record with the time stamp of the point. The reader supports InfluxDB 1.x (InfluxQL) and 2.x (Flux), and it makes no claim about 3.x. No real server has answered it yet, so treat the first run as a test of your settings. The protocol of the `tcp` source stays unverified (blocker B5).
+
+1. Collect the details: the version of the server, the bucket (version 2) or the database (version 1), the measurement, the field with the magnitude in mag/arcsec², the field with the temperature (optional), and the tags that select the unit when the measurement holds more than one.
+2. Make a token that can read that one bucket and nothing else. On InfluxDB 2.x, create a custom API token with read access to the bucket. On 1.x, create a user that has `READ` on the database only. The reader never writes.
+3. Put the token in the environment file that you pass with `--env-file`. The installer installs the file as `<config-dir>/seeingmon.env` (mode 0600, owner root), and the `core` unit reads it as its `EnvironmentFile`:
+
+   ```text
+   SQM_INFLUX_TOKEN=<token>
+   ```
+
+4. Add the tables to `local/config.toml`. Every value belongs to your installation, so the file stays out of the repository:
+
+   ```toml
+   [sqm]
+   enabled = true
+   source = "influx"
+   altitude_deg = 45.0                  # optional: where the unit points
+   azimuth_deg = 0.0
+
+   [sqm.influx]
+   endpoint = "https://influx.example.org:8086"
+   version = 2
+   org = "<organization>"
+   bucket = "<bucket>"
+   token_env = "SQM_INFLUX_TOKEN"
+   measurement = "<measurement>"
+   field = "<field with the magnitude>"
+   temperature_field = "<field with the temperature>"     # optional
+   tags = { "<tag name>" = "<tag value>" }                 # optional: selects the unit
+   max_age_s = 600.0
+   lookback_s = 3600.0
+   ```
+
+   For version 1, set `version = 1` and `database` (and `retention_policy`, if you use one) instead of `org` and `bucket`, and give `username` and `password_env` instead of `token_env`. Set `max_age_s` to several times the interval at which the other program writes. `lookback_s` must be at least `max_age_s`, and a larger value lets the reader tell a stale reading from no reading. `verify_tls = false` turns the certificate check off, so use it only on a LAN that you trust. The reader never follows a redirect: put the final address in `endpoint`.
+5. Try the settings (see below), then run the installer again so that it copies the file, or restart the unit: `sudo systemctl restart seeingmon-core`.
+
+### Check the settings
+
+`seeingmon hardware sqm` reads the configured source once and prints one line. It ignores `enabled`, so you can run it before you turn the reader on. This line shows made-up values:
+
+```text
+magnitude 21.37 mag/arcsec^2, temperature 3.5 C, age 12.3 s (source influx)
+```
+
+A failure prints one line on the standard error and exits with 1, for example `seeingmon: error: InfluxDB answered HTTP 401: unauthorized access (check the token or the credentials)`. The command prints no endpoint and no name from your configuration, and so does every message of the reader: where a server repeats a name, the reader replaces it with `<redacted>`.
+
+The command needs the variable that `token_env` names. On a development machine, set it in the shell and run the command with the same `local/config.toml`. On the Pi, only root reads `seeingmon.env`, so load it for one command. This line is untested on a Pi:
+
+```bash
+sudo bash -c 'cd <config-dir> && set -a && . ./seeingmon.env && set +a && <prefix>/current/venv/bin/seeingmon hardware sqm'
+```
+
+`seeingmon hardware sqm` also reads the `tcp` source, with `host` in `[sqm]`.
+
+### When the readings stop
+
+The age of a point is the difference between the clock of the Pi and the time stamp that the writer gave it, so keep both clocks synchronized (see [Time sync](#time-sync)). A point older than `max_age_s` makes the poll fail with the cause `Stale`. A failed poll never stops `core`:
+
+- The first failed poll of a streak writes the event `sqm.read_failed` with the `cause` in its detail (`GET /api/v1/events?kind=sqm.read_failed`), and the `sqm` component of `health` reads `degraded`.
+- The reader polls again after 5 s, then 10 s, 20 s, and so on up to 300 s (`backoff_initial_s` and `backoff_max_s`). The component reads `failed` from the fifth failed poll in a row, about 75 s after the first, and then `GET /api/v1/health` answers 503.
+- The first poll that finds a fresh point writes `sqm.recovered`, returns to the poll interval (60 s), and the component reads `ok`. A point that repeats the last time stamp adds no record and is no failure, so a poll that is faster than the writer costs one small query.
+
+| Cause | What it means | What to do |
+|---|---|---|
+| `Stale` | The newest point is older than `max_age_s`. | Check that the other program still writes, that both clocks are right, and that `max_age_s` suits the interval of the writer. |
+| `NoData` | The last `lookback_s` seconds hold no point of the field. | Check `measurement`, `field`, and `tags`, and that the writer runs. |
+| `Unreachable` | The network failed, the server did not answer within `timeout_s`, or it answered 5xx, 408, or 429. | Check that the server runs and that the Pi reaches it. |
+| `Unauthorized` | The server answered 401 or 403. | Check the token or the user, and its read access to the bucket or the database. |
+| `BadRequest` | The server answered another 4xx, or a redirect, or it reported an error. The message holds the words of the server. | Check the endpoint, the version, and the organization, the bucket, or the database. |
+| `Parse` | The reply is not a reading: the field holds no number, or the magnitude lies outside -5 to 30. | Check that `field` names a numeric field, and `temperature_field` too. |
+
+The `run` record shows the endpoint, the token, the password, and the names of the data (organization, bucket, database, measurement, fields, and tags) as `<redacted>`.
+
 ## SD card care
 
 An SD card wears out with writes. The design keeps the write budget under 1 GB a day, and these rules keep it there:
@@ -431,6 +506,7 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
+| `seeingmon hardware sqm` | Reads the SQM-LE once from the source that `[sqm]` names (the unit over TCP, or the readings in InfluxDB), and prints the magnitude, the temperature, and the age of the reading. | Read-only, and it needs no camera. It ignores `enabled`. The wrapper does not load `seeingmon.env`, so a variable that `token_env` names must be in the environment of the command (see [Check the settings](#check-the-settings)). |
 | `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
 | `seeingmon recordings info <path>` | Prints the geometry, the frame count, and the timing of a recording. | Read-only. |
 | `seeingmon profile show` | Prints the hardware profile with its derived values. | Read-only. |
@@ -627,6 +703,7 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts by deleting the `PINNED` file in their folders under `<data-dir>/bursts/`. |
 | The Images page is empty. | `core` writes the first preview after the first long exposure (30 s) of a survey step, and survey steps run only while the sky is dark. `[services.core.survey_frames]` may be off. | Check the state on the **Now** page, then `ls <data-dir>/previews/*/*/*`, and look for `survey_images.write_failed` events (`GET /api/v1/events?kind=survey_images.write_failed`) and for a full disk (`df -h <data-dir>`). |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
+| The `sqm` component of `health` is `degraded` or `failed`, and the event `sqm.read_failed` names a cause. | The SQM-LE reader gets no fresh reading: the point in InfluxDB is stale, the server does not answer or refuses the token, or the unit does not answer over TCP. | See [When the readings stop](#when-the-readings-stop) for each cause, and run `seeingmon hardware sqm` to try the settings. |
 | The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by the bind address. |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
 | Nothing runs after a reboot. | The units are not enabled. | `systemctl is-enabled seeingmon.target`, and run the installer again. |
