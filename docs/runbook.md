@@ -426,10 +426,10 @@ Run `seeingmon <command> --help` for the options of your release, because the se
 
 ## Take a dark set from the UI
 
-The analysis subtracts a master dark from every survey frame. The dark current of the sensor roughly doubles for every 6 degrees C, so the dark library needs sets at the temperatures that the sensor reaches. The **Dark** page of the web UI records a set without a shell. The recording runs in `core`, so `core` must run.
+The analysis subtracts a master dark from every survey frame. The dark current of the sensor roughly doubles for every 5 degrees C (the development camera measures 4.9), so the dark library needs sets at the temperatures that the sensor reaches. The **Dark** page of the web UI records a set without a shell. The recording runs in `core`, so `core` must run.
 
 1. Open the **Dark** page. The status line says `Due`, `Up to date`, or `Empty`, and why, and it shows the sensor temperature now. The chart plots the dark rate of each set against its temperature on a logarithmic scale, with the model as a line and the sensor temperature as a dashed marker. A temperature without a point near it is a gap that a new set closes.
-1. Cover the camera, so that no light reaches the sensor. The camera has no lens cap, so use a cloth or a cap of your own.
+1. Cover the camera, so that no light reaches the sensor. The camera has no lens cap, so use a cloth or a cap of your own. A single cap or a thin cloth is often not enough, because black plastic and thin cloth pass near-infrared light, and the sensor sees it. Put the camera face down on a table or in a closed box, or add a second opaque layer. A good cover reads below 1 count per second above the bias in a 1 s frame at room temperature, which is the dark current of the sensor. A cap and a cloth in daylight left about 5 counts per second on the development camera, and the check kept waiting.
 1. Press **Start**. The first time, the page asks for the API token, because every command needs it.
 1. Wait. The page lists the phases (bias frames, the wait for the cover, dark frames, and the master dark), marks the active one, and shows its step. The session starts at the next step of the scheduler, after a survey exposure in progress finishes. A paused scheduler or a running alignment holds the session back until you press **Resume** or the alignment ends, and the page says so.
 1. When the page says that the session ended, remove the cover and press **Resume**. The page shows the set that the session added: its temperature, its dark rate, and its number of hot pixels.
@@ -438,7 +438,7 @@ The analysis subtracts a master dark from every survey frame. The dark current o
 
 After the bias frames, the session takes a short test frame every few seconds (`test_exposure_s` and `poll_s` in `[survey.dark]`) and checks whether it is dark. The page shows the latest check in words, such as "The frame is not dark yet: the median is 2400 counts above the expected level." Two dark test frames in a row (`stable_polls`) count as covered, and the dark frames start.
 
-The wait gives up after `wait_timeout_s` (30 minutes by default). The session then ends as `failed`, and the page says that the camera was not covered. Look for light around the cover, the lens, and the cable, and press **Start** again. To skip the wait, clear "Wait until a test frame is dark" under **Advanced**. The first frame that is not dark then ends the session as `failed`.
+The wait gives up after `wait_timeout_s` (30 minutes by default). The session then ends as `failed`, and the page says that the camera was not covered. Look for light around the cover, the lens, and the cable, and for light that passes through the cover itself, and press **Start** again. To skip the wait, clear "Wait until a test frame is dark" under **Advanced**. The first frame that is not dark then ends the session as `failed`.
 
 ### Why the station pauses afterwards
 
