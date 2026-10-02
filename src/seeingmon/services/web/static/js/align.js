@@ -270,7 +270,7 @@
       ? SkyGrid.plan(sky.camera, { width: frame.width_px, height: frame.height_px }, scale, {
           colatitudeDeg: sky.polaris_colatitude_deg === undefined ? null : sky.polaris_colatitude_deg,
           grid: show.grid,
-          orbitText: show.pole ? "Polaris’ circle" : "",
+          orbitText: "",
           poleText: show.pole ? "pole" : "",
           poleArrowText: show.pole ? (side) => AlignText.poleArrowText(sky, side) : null,
           aimText: "",
@@ -303,22 +303,10 @@
       }
     }
 
-    // 2. The orbit of Polaris in the sky: a solid ring that moves with the stars.
-    if (plan && show.pole && plan.orbit) {
-      ctx.strokeStyle = colors.orbit;
-      ctx.lineWidth = orbitState === "bad" ? 2.8 : 2.4;
-      for (const points of plan.orbit.polylines) {
-        polyline(ctx, points);
-      }
-      const label = labelFor("orbit");
-      if (label) {
-        drawLabel(ctx, label, colors.orbit, colors.halo);
-      }
-    }
-
-    // 2b. The reticle: a dashed circle fixed at the aim (the middle of the frame) with the radius of
-    // the orbit of Polaris, and the aim ring on it, where Polaris belongs for this frame. Alt-az moves
-    // translate the image, so the ring sits at the angle of (Polaris - pole) around the aim.
+    // 2. The orbit of Polaris, as the fixed reticle: a dashed circle at the aim (the middle of the
+    // frame) with the radius of the orbit, and the aim ring on it, where Polaris belongs for this
+    // frame. Alt-az moves translate the image, so the ring sits at the angle of (Polaris - pole)
+    // around the aim. The circle that the orbit makes around the pole in the sky is not drawn.
     let aimRing = null;
     if (sky && show.pole && sky.polaris_colatitude_deg !== null && sky.polaris_colatitude_deg !== undefined) {
       const camera = sky.camera;
@@ -341,9 +329,6 @@
         ctx.fillStyle = colors.target;
         ctx.lineWidth = 2.2;
         ring(ctx, aimRing[0], aimRing[1], 16);
-        ctx.beginPath();
-        ctx.arc(aimRing[0], aimRing[1], 2, 0, Math.PI * 2);
-        ctx.fill();
         drawLabel(ctx, { text: "aim", x: aimRing[0] + 20, y: aimRing[1] - 24, align: "left" }, colors.target, colors.halo);
         if (solved && !aligned) {
           const distance = Math.hypot(solved[0] - aimRing[0], solved[1] - aimRing[1]);
@@ -401,9 +386,6 @@
       ctx.fillStyle = colors.solved;
       ctx.lineWidth = 1.8;
       ring(ctx, solved[0], solved[1], 10);
-      ctx.beginPath();
-      ctx.arc(solved[0], solved[1], 2, 0, Math.PI * 2);
-      ctx.fill();
       drawLabel(ctx, labelFor("polaris") || { text: "Polaris", x: solved[0] + 14, y: solved[1] + 8, align: "left" }, colors.solved, colors.halo);
     }
 
