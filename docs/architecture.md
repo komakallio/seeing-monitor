@@ -1,6 +1,6 @@
 # Seeing monitor: architecture
 
-Status: approved by the owner on October 1, 2026 (phase 1). For a short read, start with Summary, Decisions, and Risks and open questions (about 1,700 words). Components, Reference hardware, and Measurement modes give the design in detail (about 5,400 words more). The other sections are reference, and the two appendixes are optional. Sources and calculations are in [research-notes.md](research-notes.md).
+Status: approved by the owner on October 1, 2026 (phase 1). For a short read, start with Summary, Decisions, and Risks and open questions (about 1,700 words). Components, Reference hardware, and Measurement modes give the design in detail (about 5,600 words more). The other sections are reference, and the two appendixes are optional. Sources and calculations are in [research-notes.md](research-notes.md).
 
 ## Summary
 
