@@ -12,7 +12,7 @@ The deploy lane could not run anything on a Raspberry Pi (blocker B2), so every 
 |---|---|---|
 | `build.sh`, `push.sh`, `install.sh`, `rollback.sh` | `shellcheck` (Windows and Linux x64; Linux arm64 gets `bash -n`), a structural linter (`tools/lint_deploy.py`), and tests that run each script under bash with stub programs. One test makes a real virtual environment and runs real pip against a local wheelhouse. | A run as root on Raspberry Pi OS: `useradd`, `systemctl`, `udevadm`, the real package index, a real SD card |
 | Systemd units | The linter parses them and checks the sandbox and the architecture rules. `systemd-analyze verify` printed no warning on a development machine. | Starting them on a Pi: the sandbox and the system call filter with the real libraries, and the memory limits |
-| `core` and `web` processes | `acquire` sends the `sd_notify` heartbeat today. The units of `core` and `web` expect the same (`Type=notify` with `READY=1` and `WATCHDOG=1`). | The services lane was still building `seeingmon core` and `seeingmon web` when this runbook was written. A unit whose command exits at once fails its start, and the installer reports it. Run `seeingmon --help` to see which commands your release has. |
+| `acquire`, `core`, and `web` processes | Each process sends `READY=1` and `WATCHDOG=1` over the `sd_notify` socket, as the `Type=notify` units expect. Tests read the messages from a stand-in socket. | systemd acting on the messages: the start timeout, the watchdog restart, and the start limit. The installer reports a unit that does not start. |
 | udev rule | Syntax (`udevadm verify` passed on a development machine) | A real camera: the group, the mode, and the autosuspend setting |
 | USB buffer, journald, chrony fragments | Syntax and rendering | Their effect on a Pi: the `usbfs_memory_mb` write, the volatile journal, time synchronization |
 | Polkit rule (`--supervisor-actions`) | Syntax and rendering | That `systemctl reboot` works for the service user |
@@ -414,16 +414,16 @@ sudo /opt/seeingmon/bin/seeingmon <command> --help
 
 | Command | What it does | Note |
 |---|---|---|
-| `seeingmon burst` | Records frames to a SER file with a JSON sidecar. Pinned bursts are exempt from retention. | Also `POST /api/v1/commands/burst` (token required). The command line comes with the services lane. |
-| `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | The services lane provides it. |
+| `seeingmon burst` | Records frames to a SER file with a JSON sidecar. Pinned bursts are exempt from retention. | Also `POST /api/v1/commands/burst` (token required). |
+| `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set and shows the progress. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json` also writes the table to `local/camera-rates.json`. |
-| `seeingmon replay` | Feeds a SER recording through `acquire` at the original rate, at the maximum rate, or at a speed factor. | The services lane provides it. |
+| `seeingmon replay <source>` | Feeds a SER recording through `acquire` at the original rate, at the maximum rate, or at a speed factor. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
 | `seeingmon recordings info <path>` | Prints the geometry, the frame count, and the timing of a recording. | Read-only. |
 | `seeingmon profile show` | Prints the hardware profile with its derived values. | Read-only. |
 | `seeingmon store info <database>` | Prints the counts, the last row IDs, and the sink cursors of a store. | Read-only. |
 
-Run `seeingmon <command> --help` for the options of your release, because the services lane is still adding commands. Build the cap catalog (`seeingmon catalog build`) on a larger machine, and copy the files to a folder under the data directory. The solver needs the files, and the `[survey]` table names their paths.
+`burst`, `sweep`, and `replay` queue a task in the running `core`, wait for the result, and print it. `--no-wait` queues the task and returns, and `--standalone` runs the task on the camera without `core`, so stop the services first. Run `seeingmon <command> --help` for the options. Build the cap catalog (`seeingmon catalog build`) on a larger machine, and copy the files to a folder under the data directory. The solver needs the files, and the `[survey]` table names their paths.
 
 ## Take a dark set from the UI
 
