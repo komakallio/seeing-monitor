@@ -293,3 +293,142 @@ class TestTheFallback:
 
     def test_the_probe_passes_here(self) -> None:
         assert framefile.rice_available() is True
+
+
+class TestTheSkyCards:
+    def cards(
+        self,
+        profile: Profile,
+        *,
+        cloud_fraction: float | None = None,
+        transparency: float | None = None,
+    ) -> dict[str, tuple[object, str]]:
+        found = framefile.frame_cards(
+            frame_of(sky()),
+            profile=profile,
+            station_id="st",
+            cloud_fraction=cloud_fraction,
+            transparency=transparency,
+        )
+        return {keyword: (value, comment) for keyword, value, comment in found}
+
+    def test_the_cloud_fraction_and_the_transparency_have_a_card_each(
+        self, profile: Profile
+    ) -> None:
+        cards = self.cards(profile, cloud_fraction=0.02345678, transparency=0.987654321)
+        assert cards["CLOUDFRC"][0] == 0.0235
+        assert cards["TRANSP"][0] == 0.9877
+        assert "stars" in str(cards["CLOUDFRC"][1])
+
+    def test_a_value_that_the_analysis_could_not_give_leaves_its_card_out(
+        self, profile: Profile
+    ) -> None:
+        only_cloud = self.cards(profile, cloud_fraction=0.0)
+        assert only_cloud["CLOUDFRC"][0] == 0.0
+        assert "TRANSP" not in only_cloud
+        neither = self.cards(profile)
+        assert not {"CLOUDFRC", "TRANSP"} & set(neither)
+
+    def test_the_cards_say_nothing_about_the_sun_the_moon_or_the_site(
+        self, profile: Profile
+    ) -> None:
+        cards = self.cards(profile, cloud_fraction=0.1, transparency=0.9)
+        text = " ".join(f"{key} {value} {comment}" for key, (value, comment) in cards.items())
+        for word in ("sun", "moon", "twilight", "latitude", "longitude", "elevation"):
+            assert word not in text.lower()
+
+    @pytest.mark.parametrize("compress", [True, False])
+    def test_the_values_survive_both_kinds_of_file(
+        self, tmp_path: Path, profile: Profile, compress: bool
+    ) -> None:
+        path = tmp_path / "frame.fits"
+        write(
+            path,
+            frame_of(sky()),
+            profile,
+            compress=compress,
+            reasons=("every_10",),
+            cloud_fraction=0.05,
+            transparency=0.97,
+        )
+        header = framefile.read_frame_header(path)
+        assert header["CLOUDFRC"] == 0.05
+        assert header["TRANSP"] == 0.97
+        meta = framefile.parse_frame_header(header)
+        assert meta.cloud_fraction == 0.05
+        assert meta.transparency == 0.97
+        assert framefile.read_frame_fits(path).header["TRANSP"] == 0.97
+
+
+class TestTheMeta:
+    def header(self, profile: Profile, **values: object) -> dict[str, object]:
+        frame = dataclasses.replace(frame_of(sky()), temperature_c=27.25)
+        cards = framefile.frame_cards(frame, profile=profile, station_id="st", **values)  # type: ignore[arg-type]
+        return {keyword: value for keyword, value, _ in cards}
+
+    def test_the_meta_reads_the_cards_that_the_writer_makes(self, profile: Profile) -> None:
+        meta = framefile.parse_frame_header(
+            self.header(
+                profile,
+                reasons=("every_10", "event:cloud+bright_sky"),
+                cloud_fraction=0.3,
+                transparency=0.8,
+            )
+        )
+        assert meta.t_utc_ns == T_MID_NS - T_MID_NS % 1_000_000  # the card keeps milliseconds
+        assert meta.exposure_s == 30.0
+        assert meta.gain == 120
+        assert meta.mode == "bin2"
+        assert meta.temperature_c == 27.25
+        assert meta.adc_bits == 14
+        assert meta.time_quality == "EXACT"
+        assert meta.kept == ("every_10", "event:cloud+bright_sky")
+        assert meta.events == ("cloud", "bright_sky")
+        assert (meta.cloud_fraction, meta.transparency) == (0.3, 0.8)
+        assert meta.origin == (0, 0)
+        assert meta.flags == int(FrameFlag.SIMULATED)
+        assert not meta.time_invalid
+
+    def test_an_old_file_without_the_new_cards_reads_with_none_in_their_place(
+        self, profile: Profile
+    ) -> None:
+        meta = framefile.parse_frame_header(self.header(profile, reasons=("every_10",)))
+        assert meta.cloud_fraction is None
+        assert meta.transparency is None
+        assert meta.events == ()
+        assert meta.exposure_s == 30.0  # the rest of the header still reads
+
+    def test_an_empty_header_and_malformed_cards_give_a_meta_and_no_error(self) -> None:
+        empty = framefile.parse_frame_header({})
+        assert empty == framefile.FrameMeta()
+        bad = framefile.parse_frame_header(
+            {
+                "DATE-AVG": "not a time",
+                "EXPTIME": "thirty",
+                "GAIN": True,
+                "CLOUDFRC": float("nan"),
+                "TRANSP": None,
+                "KEPT": 7,
+                "FRMFLAGS": "x",
+            }
+        )
+        assert bad == framefile.FrameMeta()
+
+    def test_a_time_without_a_zone_and_a_time_with_one_both_read(self) -> None:
+        plain = framefile.parse_frame_header({"DATE-AVG": "2026-09-21T14:13:20.123"})
+        zoned = framefile.parse_frame_header({"DATE-AVG": "2026-09-21T14:13:20.123Z"})
+        assert plain.t_utc_ns == zoned.t_utc_ns == 1_790_000_000_123_000_000
+
+    def test_a_clock_that_was_not_synchronized_marks_the_time_invalid(self) -> None:
+        assert framefile.parse_frame_header({"FRMFLAGS": 1}).time_invalid
+        assert framefile.parse_frame_header({"TIMEQUAL": "INVALID"}).time_invalid
+        assert not framefile.parse_frame_header({"TIMEQUAL": "FITTED", "FRMFLAGS": 8}).time_invalid
+
+    def test_the_header_of_a_file_reads_without_its_pixels(
+        self, tmp_path: Path, profile: Profile
+    ) -> None:
+        path = tmp_path / "frame.fits"
+        write(path, frame_of(sky(shape=(120, 160))), profile, compress=True)
+        header = framefile.read_frame_header(path)
+        assert header["READMODE"] == "bin2"
+        assert "image" not in header

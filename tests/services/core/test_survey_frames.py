@@ -21,7 +21,7 @@ from seeingmon.analysis import SurveyOutput
 from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile, load_profile
-from seeingmon.records import SurveyFrameRecord
+from seeingmon.records import SkyQualityRecord, SurveyFrameRecord
 from seeingmon.services.core import survey_frames
 from seeingmon.services.core.settings import SurveyFrameSettings
 from seeingmon.services.core.survey_frames import SurveyFrames
@@ -73,6 +73,24 @@ class BrightFake(FakeSurveyAnalyzer):
         (record,) = output.records
         update = {"background_dn": self.background_dn}
         return dataclasses.replace(output, records=(record.model_copy(update=update),))
+
+
+class SkyFake(BrightFake):
+    """A fake whose results also carry a `sky_quality` record with a transparency."""
+
+    transparency: float | None = 0.97
+
+    def _output(self, item: Any) -> SurveyOutput:
+        output = super()._output(item)
+        sky = SkyQualityRecord(
+            station_id="st",
+            t_utc_ns=output.t_utc_ns,
+            profile_id="p",
+            provenance={"algo": "fake"},
+            n_stars_used=0,
+            transparency=self.transparency,
+        )
+        return dataclasses.replace(output, records=(*output.records, sky))
 
 
 @dataclass
@@ -288,6 +306,48 @@ class TestTheFilesOfAFrame:
         assert back.compressed is False
         assert built.frames.stats.fits_compressed == 0
         np.testing.assert_array_equal(back.pixels, frame.data >> 2)
+
+
+class TestTheHeaderOfAFitsFile:
+    def test_the_header_carries_the_cloud_fraction_and_the_transparency_of_the_result(
+        self, tmp_path: Path, profile: Profile
+    ) -> None:
+        analyzer = SkyFake(station_id="st", profile_id="p", cloud_fraction=0.04)
+        analyzer.transparency = 0.9712
+        built = build(tmp_path, profile, analyzer=analyzer)
+        built.run(make_survey_frame(0))
+        header = framefile.read_frame_header(built.layout.survey_path(START_NS))
+        assert header["CLOUDFRC"] == 0.04
+        assert header["TRANSP"] == 0.9712
+        meta = framefile.parse_frame_header(header)
+        assert (meta.cloud_fraction, meta.transparency) == (0.04, 0.9712)
+        assert meta.kept == ("every_10",)
+
+    def test_a_result_without_a_transparency_or_a_cloud_fraction_leaves_the_cards_out(
+        self, tmp_path: Path, profile: Profile
+    ) -> None:
+        analyzer = SkyFake(station_id="st", profile_id="p", cloud_fraction=None)
+        analyzer.transparency = None  # no reference zero point yet
+        built = build(tmp_path, profile, analyzer=analyzer)
+        built.run(make_survey_frame(0))
+        header = framefile.read_frame_header(built.layout.survey_path(START_NS))
+        assert "CLOUDFRC" not in header
+        assert "TRANSP" not in header
+        assert header["KEPT"] == "every_10"
+
+    def test_an_event_frame_carries_the_values_that_made_it_one(
+        self, tmp_path: Path, profile: Profile
+    ) -> None:
+        analyzer = SkyFake(station_id="st", profile_id="p", cloud_fraction=0.0)
+        built = build(tmp_path, profile, analyzer=analyzer, keep_every=1000)
+        built.run(make_survey_frame(0))
+        analyzer.cloud_fraction = 0.8  # clouds from the next frame on
+        analyzer.transparency = 0.4
+        built.run(make_survey_frame(1))
+        header = framefile.read_frame_header(built.layout.survey_path(START_NS + STEP_NS))
+        assert header["KEPT"] == "event:cloud"
+        assert header["CLOUDFRC"] == 0.8
+        assert header["TRANSP"] == 0.4
 
 
 class TestTheRing:

@@ -25,7 +25,9 @@ what an operator and a later reanalysis want to see:
   pointing and cloud conditions come from the long frame of a step, and the brightness from either
   frame. Each kind of frame gets at most one event frame in `event_min_interval_s`, so flickering
   clouds cannot fill the card. Writing a FITS file respects the capture gate of retention: below
-  the free-space limit, the frame keeps its preview only.
+  the free-space limit, the frame keeps its preview only. The header carries the cloud fraction
+  and the transparency of the result when it has them (`CLOUDFRC` and `TRANSP`), so that
+  `seeingmon flat build` can pick the clear frames from the files alone.
 - **Reference.** The `survey_frame` record gets its `image_ref`: the FITS file when the frame was
   kept, else the preview, else `null`. The reference is a path under the data directory
   (`DataLayout.relative`), which the web process turns back into the image
@@ -62,7 +64,7 @@ from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile
 from seeingmon.profile.errors import ProfileError
-from seeingmon.records import PointingRecord, Record, SurveyFrameRecord
+from seeingmon.records import PointingRecord, Record, SkyQualityRecord, SurveyFrameRecord
 from seeingmon.services.core.alignment.preview import make_preview
 from seeingmon.services.core.settings import SurveyFrameSettings
 from seeingmon.store.layout import DataLayout
@@ -249,6 +251,8 @@ class _Job:
     t_utc_ns: int
     preview_path: Path | None
     fits_path: Path | None
+    cloud_fraction: float | None = None
+    transparency: float | None = None
 
 
 class SurveyFrames:
@@ -354,7 +358,7 @@ class SurveyFrames:
             return output
         try:
             decision = self._policy.decide(frame, output, capture_allowed=self._capture_allowed)
-            job = self._job(entry, frame, decision)
+            job = self._job(entry, frame, decision, output)
             ref = self._reference(job)
         except Exception:
             _log.exception(
@@ -383,7 +387,8 @@ class SurveyFrames:
         records = tuple(_with_image_ref(record, ref) for record in output.records)
         return dataclasses.replace(output, records=records)
 
-    def _job(self, entry: _Held, frame: Frame, decision: Decision) -> _Job:
+    def _job(self, entry: _Held, frame: Frame, decision: Decision, output: SurveyOutput) -> _Job:
+        sky = next((r for r in output.records if isinstance(r, SkyQualityRecord)), None)
         return _Job(
             entry,
             decision,
@@ -392,6 +397,8 @@ class SurveyFrames:
             if decision.preview
             else None,
             self._layout.survey_path(frame.t_utc_ns) if decision.fits else None,
+            cloud_fraction=output.cloud_fraction,
+            transparency=None if sky is None else sky.transparency,
         )
 
     def _reference(self, job: _Job) -> str | None:
@@ -495,7 +502,12 @@ class SurveyFrames:
             return
         pixels = native_pixels(frame)
         cards = frame_cards(
-            frame, profile=self._profile, station_id=self._station_id, reasons=decision.reasons
+            frame,
+            profile=self._profile,
+            station_id=self._station_id,
+            reasons=decision.reasons,
+            cloud_fraction=job.cloud_fraction,
+            transparency=job.transparency,
         )
         comments = frame_comments(frame)
         compressed = False

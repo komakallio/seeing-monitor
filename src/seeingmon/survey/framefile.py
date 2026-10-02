@@ -14,8 +14,11 @@ time (the start and the middle of the exposure, its quality and its error), the 
 and the conversion gain, the readout mode, the binning, the ROI, the sensor temperature, the pixel
 size, the plate scale, and the optics. They also carry the model of the camera, the profile, the
 station ID, the sequence number, the flags of the frame, the software version, and the reason why
-the frame was kept. They never carry a serial number, an address, or the coordinates of the site.
-The writer puts the cards in the primary header and in the header of the compressed image.
+the frame was kept. When the survey analysis knows them, they also carry the cloud fraction
+(`CLOUDFRC`) and the transparency (`TRANSP`) of the frame, so that a later step can pick the clear
+frames without the store. They never carry a serial number, an address, or the coordinates of the
+site, and they carry no Sun or Moon position either: a reader that needs those computes them from
+the time. The writer puts the cards in the primary header and in the header of the compressed image.
 
 **Compression.** `compress=True` writes the image as a tile-compressed HDU with Rice coding
 (`astropy.io.fits.CompImageHDU`, `RICE_1`, one image row for each tile). The coding is lossless. If
@@ -24,7 +27,9 @@ uncompressed file with the `seeingmon.solvers.fitsio` writer, which needs no ast
 frame in small chunks. The astropy import costs about 25 MB of memory, so the module loads it when
 the first file is written.
 
-`read_frame_fits` reads either kind of file.
+`read_frame_fits` reads either kind of file. `read_frame_header` reads only the header, which is
+cheap, and `parse_frame_header` turns a header into a `FrameMeta` that tolerates a file without the
+newer cards.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ import numpy as np
 import numpy.typing as npt
 
 import seeingmon
-from seeingmon.clock import NS_PER_S, utc_ns_to_iso
+from seeingmon.clock import NS_PER_S, iso_to_utc_ns, utc_ns_to_iso
 from seeingmon.frames import Frame, PixelFormat
 from seeingmon.profile import Profile
 from seeingmon.profile.errors import ProfileError
@@ -82,6 +87,8 @@ def frame_cards(
     profile: Profile | None,
     station_id: str = "",
     reasons: Sequence[str] = (),
+    cloud_fraction: float | None = None,
+    transparency: float | None = None,
 ) -> list[Card]:
     """The header cards of a frame: a keyword, a value, and a short comment.
 
@@ -89,6 +96,8 @@ def frame_cards(
     card. Every comment is short enough that a card fits in 80 characters with a long value.
     The cards that come from the profile (the binning, the pixel size, the plate scale, the
     conversion gain, and the optics) are left out when the profile does not know the readout mode.
+    `cloud_fraction` and `transparency` are the values of the survey analysis, and a value that the
+    analysis could not give (`None`) leaves its card out.
     """
     exposure_s = frame.exposure_us / 1e6
     start_ns = frame.t_utc_ns - round(exposure_s * NS_PER_S / 2)
@@ -120,6 +129,14 @@ def frame_cards(
         cards.append(("STATION", station_id, "station ID"))
     if reasons:
         cards.append(("KEPT", ",".join(reasons), "why the frame was kept"))
+    if cloud_fraction is not None:
+        cards.append(
+            ("CLOUDFRC", round(float(cloud_fraction), 4), "share of expected stars missed")
+        )
+    if transparency is not None:
+        cards.append(
+            ("TRANSP", round(float(transparency), 4), "transparency, 1 on the best nights")
+        )
     cards.append(("CREATOR", f"seeingmon {seeingmon.__version__}", "software that wrote the file"))
     return cards
 
@@ -245,3 +262,96 @@ def read_frame_fits(path: str | os.PathLike[str]) -> FrameFile:
             key: image.header[key] for key in image.header if key not in {"COMMENT", "HISTORY", ""}
         }
         return FrameFile(np.asarray(image.data), header, compressed=True)
+
+
+# --- Reading the header ---------------------------------------------------------------------
+
+
+def read_frame_header(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """The header of a frame file, read without its pixels.
+
+    Both kinds of file keep the cards in the primary header (the compressed file copies them there),
+    so the function reads only that header, and it needs no astropy.
+    """
+    return dict(fitsio.read_header(path))
+
+
+@dataclass(frozen=True, slots=True)
+class FrameMeta:
+    """What a later step reads from the header of a frame file.
+
+    A value that the header lacks (an old file, or a frame whose analysis had none) is `None`, and
+    `flags` is 0. `t_utc_ns` is the time at the middle of the exposure, `kept` the reasons that
+    the frame was kept, `origin` the position of the ROI on the sensor, and `flags` the bit flags
+    of the frame (see the commentary of the header).
+    """
+
+    t_utc_ns: int | None = None
+    exposure_s: float | None = None
+    gain: int | None = None
+    mode: str | None = None
+    temperature_c: float | None = None
+    adc_bits: int | None = None
+    flags: int = 0
+    time_quality: str | None = None
+    kept: tuple[str, ...] = ()
+    cloud_fraction: float | None = None
+    transparency: float | None = None
+    origin: tuple[int, int] = (0, 0)
+
+    @property
+    def time_invalid(self) -> bool:
+        """Whether the clock was not synchronized when the frame was taken."""
+        return bool(self.flags & 1) or self.time_quality == "INVALID"
+
+    @property
+    def events(self) -> tuple[str, ...]:
+        """The conditions that made the frame an event frame, such as `cloud` or `unsolved`."""
+        found: list[str] = []
+        for reason in self.kept:
+            if reason.startswith("event:"):
+                found.extend(part for part in reason.removeprefix("event:").split("+") if part)
+        return tuple(found)
+
+
+def _number(header: dict[str, Any], key: str) -> float | None:
+    value = header.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if np.isfinite(value) else None
+
+
+def _whole(header: dict[str, Any], key: str) -> int | None:
+    value = _number(header, key)
+    return None if value is None else round(value)
+
+
+def _text(header: dict[str, Any], key: str) -> str | None:
+    value = header.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def parse_frame_header(header: dict[str, Any]) -> FrameMeta:
+    """Read a header into a `FrameMeta`. A missing or malformed card gives `None`, and no error."""
+    t_utc_ns: int | None = None
+    stamp = _text(header, "DATE-AVG")
+    if stamp is not None:
+        try:
+            t_utc_ns = iso_to_utc_ns(stamp if stamp.endswith("Z") else f"{stamp}Z")
+        except ValueError:
+            t_utc_ns = None
+    kept = _text(header, "KEPT")
+    return FrameMeta(
+        t_utc_ns=t_utc_ns,
+        exposure_s=_number(header, "EXPTIME"),
+        gain=_whole(header, "GAIN"),
+        mode=_text(header, "READMODE"),
+        temperature_c=_number(header, "CCD-TEMP"),
+        adc_bits=_whole(header, "ADCBITS"),
+        flags=_whole(header, "FRMFLAGS") or 0,
+        time_quality=_text(header, "TIMEQUAL"),
+        kept=tuple(part for part in (kept or "").split(",") if part),
+        cloud_fraction=_number(header, "CLOUDFRC"),
+        transparency=_number(header, "TRANSP"),
+        origin=(_whole(header, "XORGSUBF") or 0, _whole(header, "YORGSUBF") or 0),
+    )
