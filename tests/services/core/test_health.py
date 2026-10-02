@@ -152,8 +152,12 @@ class TestComponents:
     def test_heater(self, state: str, expected: str | None) -> None:
         assert heater_component(state) == expected
 
-    @pytest.mark.parametrize(("failures", "expected"), [(0, "ok"), (1, "degraded"), (5, "failed")])
-    def test_sqm(self, failures: int, expected: str) -> None:
+    @pytest.mark.parametrize(
+        ("failures", "expected"), [(0, "ok"), (1, "degraded"), (5, "degraded"), (500, "degraded")]
+    )
+    def test_sqm_never_reads_failed(self, failures: int, expected: str) -> None:
+        # A lost reference instrument must not turn the health answer into a 503, which an external
+        # watchdog could answer with a power cycle of the Pi.
         assert sqm_component(failures) == expected
 
 

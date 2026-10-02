@@ -381,7 +381,7 @@ if [ "$count" -ge 10 ]; then
 fi
 ```
 
-The sketch sends no token, so it fails on every poll when you set `require_token_for_reads`. Add the header `Authorization: Bearer <token>` to the `curl` command in that case, and keep the script readable by its owner only. The endpoint answers 503 for any failed component, including a heater fault and an SQM-LE reader that fails five polls in a row, so decide whether such a failure should cycle the power.
+The sketch sends no token, so it fails on every poll when you set `require_token_for_reads`. Add the header `Authorization: Bearer <token>` to the `curl` command in that case, and keep the script readable by its owner only. The endpoint answers 503 for any failed component, including a heater fault, so decide whether such a failure should cycle the power. A lost SQM-LE reading never makes the endpoint answer 503: the `sqm` component stops at `degraded`, because a power cycle of the Pi cannot repair the unit or the program that feeds InfluxDB.
 
 ## Read the SQM-LE from InfluxDB
 
@@ -703,7 +703,7 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts by deleting the `PINNED` file in their folders under `<data-dir>/bursts/`. |
 | The Images page is empty. | `core` writes the first preview after the first long exposure (30 s) of a survey step, and survey steps run only while the sky is dark. `[services.core.survey_frames]` may be off. | Check the state on the **Now** page, then `ls <data-dir>/previews/*/*/*`, and look for `survey_images.write_failed` events (`GET /api/v1/events?kind=survey_images.write_failed`) and for a full disk (`df -h <data-dir>`). |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
-| The `sqm` component of `health` is `degraded` or `failed`, and the event `sqm.read_failed` names a cause. | The SQM-LE reader gets no fresh reading: the point in InfluxDB is stale, the server does not answer or refuses the token, or the unit does not answer over TCP. | See [When the readings stop](#when-the-readings-stop) for each cause, and run `seeingmon hardware sqm` to try the settings. |
+| The `sqm` component of `health` is `degraded`, and the event `sqm.read_failed` names a cause. | The SQM-LE reader gets no fresh reading: the point in InfluxDB is stale, the server does not answer or refuses the token, or the unit does not answer over TCP. | See [When the readings stop](#when-the-readings-stop) for each cause, and run `seeingmon hardware sqm` to try the settings. |
 | The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by the bind address. |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
 | Nothing runs after a reboot. | The units are not enabled. | `systemctl is-enabled seeingmon.target`, and run the installer again. |

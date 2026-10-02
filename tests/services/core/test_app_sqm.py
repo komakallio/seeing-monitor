@@ -204,7 +204,7 @@ class TestSteppedRun:
                 rig.clock.advance(wait_s)
                 rig.app.tick()
                 states.append(health_components(rig)["sqm"])
-            assert states == ["degraded", "degraded", "degraded", "degraded", "failed"]
+            assert states == ["degraded"] * 5  # the component never reads failed
             server.default = Respond(lambda request: point_reply(rig))
             rig.clock.advance(80.0)
             rig.app.tick()

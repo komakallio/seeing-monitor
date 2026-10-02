@@ -50,7 +50,6 @@ LIBRARIES = (
     "uvicorn",
     "psycopg",
 )
-SQM_FAILED_AFTER = 5  # failed polls in a row before the SQM-LE component counts as failed
 
 
 def library_versions(
@@ -163,10 +162,14 @@ def heater_component(state: str) -> str | None:
 
 
 def sqm_component(failures: int) -> str:
-    """The state of the SQM-LE reader from the polls that failed in a row."""
-    if failures == 0:
-        return "ok"
-    return "failed" if failures >= SQM_FAILED_AFTER else "degraded"
+    """The state of the SQM-LE reader from the polls that failed in a row.
+
+    A failure of the reader is never `failed`. The unit, or the program that feeds InfluxDB with its
+    readings, is not part of the station, and a power cycle of the Pi cannot repair it. A `failed`
+    component makes `/api/v1/health` answer 503, which an external watchdog may turn into a power
+    cycle, so a lost reference instrument must stop at `degraded`.
+    """
+    return "ok" if failures == 0 else "degraded"
 
 
 class HealthReporter:
