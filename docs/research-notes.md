@@ -286,7 +286,7 @@ Live Gaia archive queries on October 1, 2026 (P):
 | 10 degrees | 7,540 | 16,738 | 35,458 | 72,539 |
 | 15 degrees | 17,097 | 38,233 | 82,055 | 169,196 |
 
-At 44 bytes per row, G < 13 and G < 14 take 1.6 and 3.2 MB at 10 degrees, and 3.6 and 7.4 MB at 15 degrees. A frame holds about 320, 700, and 1,490 catalog stars at G < 11, 12, and 13 (I). Use an asynchronous ADQL job (anonymous limit 3 million rows). A synchronous query silently truncated at 16,385 of 35,458 rows (P).
+At 44 bytes per row, G < 13 and G < 14 take 1.6 and 3.2 MB at 10 degrees, and 3.6 and 7.4 MB at 15 degrees. The catalog file that phase 2 writes takes 50 bytes a row, so the 15 degree cap to G = 13 takes 4.1 MB (82,065 stars in the real build of October 2, 2026). A frame holds about 320, 700, and 1,490 catalog stars at G < 11, 12, and 13 (I). Use an asynchronous ADQL job (anonymous limit 3 million rows). A synchronous query silently truncated at 16,385 of 35,458 rows (P).
 
 ### Photometry
 
