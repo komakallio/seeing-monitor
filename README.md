@@ -6,6 +6,7 @@ A fixed camera points at Polaris, and a Raspberry Pi measures atmospheric seeing
 
 ## Documentation
 
+- [Project brief](docs/kickoff-prompt.md): the setup, the modes, the constraints, and the three phases.
 - [Architecture](docs/architecture.md): the design of record.
 - [Research notes](docs/research-notes.md): the sources and calculations behind the design.
 - [Development guide](docs/development.md): set up a clone, run the checks, and commit.
@@ -15,7 +16,9 @@ A fixed camera points at Polaris, and a Raspberry Pi measures atmospheric seeing
 - [Quantities](docs/quantities.md): every record field, generated from the declarations.
 - [REST API](docs/openapi.json): the OpenAPI description of API v1.
 - [Hardware checks](docs/hardware-checks.md): the checks that need a camera or a Pi.
+- [Phase 2 kickoff](docs/phase2-kickoff.md): the instructions and the steps of the implementation phase.
 - [Phase 2 status](docs/phase2-status.md): the state of each implementation step.
+- [Simulator demo](docs/demo/seeing-simulator.html): a page of rendered simulator output that you open in a browser.
 
 ## Try it
 
