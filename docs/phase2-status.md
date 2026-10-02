@@ -30,6 +30,7 @@ States are not started, in progress, blocked, and done.
 |---|---|---|
 | Reach the dev server over your tailnet | Done | `allowed_hosts` and `extra_bind_addresses` in `[web]`, a Host and Origin check, and `seeingmon dev` with your `[web]` settings. The values stay in your untracked `local/config.toml`. |
 | Dark acquisition from the web UI | In progress | A Dark page starts a dark session in `core` (bias frames, a wait until the frames are dark, dark frames, the master dark, then a pause so that you can uncover the camera and resume), with the progress, the library, and its temperature coverage. The contract is on `main` (`24ac511`). The services lane builds the scheduler task, the handler, and the RPC, and the web lane builds the endpoints, the page, and the demo. |
+| First-alignment overlay on the Align page | In progress | A new lane adds the celestial pole marker with its offset from the field center, the circle that Polaris follows around the pole (green when it fits in the frame), a polar coordinate grid of declination rings and right-ascension lines that thins out toward the pole instead of bunching, and a snippet of target settings. It also fixes the missing Polaris marker when no target is set. |
 
 ## Blockers
 
