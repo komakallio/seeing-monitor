@@ -6,7 +6,9 @@ Paths such as `/opt/seeingmon` and `/etc/seeingmon` are examples. The installer 
 
 ## What is tested and what is not
 
-The deploy lane could not run anything on a Raspberry Pi (blocker B2), so every step below that needs a real Pi is untested. The table separates what the checks cover from what stays open.
+The deploy lane could not run anything on a Raspberry Pi (blocker B2). On October 2, 2026 the lead ran `deploy/push.sh` on two Raspberry Pi 5 boards (Debian 13, Python 3.13, one with 8 GB and one with 16 GB of RAM, a ZWO ASI294MM on a USB 3 port), and the next paragraph lists what those runs confirmed. A Pi 4, a data partition, a heater HAT, and a night of running are still untested. The table separates what the checks cover from what stays open.
+
+**Confirmed on a Pi 5.** The install ran to the end, and the three services started and answered `/api/v1/health` with every component `ok` (`Type=notify` and the watchdog work). The udev rule gave the camera device the group of the service user, and `usbfs_memory_mb` was 1000 after a boot. The whole `tests/hardware` suite passed with the real camera on Linux (237 tests, including the USB reset, which the camera survives and streams again). `kill -9` of `acquire`, `core`, or `web` restarted the service after 6 to 7 s (`RestartSec` is 5 s). A hung `acquire` (`SIGSTOP`) was killed by the watchdog after 30 s with `SIGABRT` and restarted 37 s after the hang, and `core` reconnected on its own. Five restarts of one unit within 10 minutes make systemd stop restarting it: the unit stays `failed`, `seeingmon-failed@` writes "hit its start limit and stays stopped" to the journal, and the station stays down until you run `systemctl reset-failed <unit>` and start it (`StartLimitAction` is `none`). After `systemctl reboot`, all three services were active within 45 s, with the flag `time_invalid` until chrony had synchronized the clock, and the flag `low_space` appeared on a card with 400 MB free. The `camera` component reads `degraded` for a while after a restart of `acquire`, until frames flow again.
 
 | Piece | What checks it | Untested without a Pi |
 |---|---|---|
