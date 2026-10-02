@@ -9,11 +9,14 @@
  * - After a drop, it reconnects with a growing delay (1, 2, 4, 8, 15, then 30 s, each with some
  *   random spread, so that many viewers do not return at the same instant).
  * - After `pollAfterFailures` attempts that never opened, or when the browser has no WebSocket, it
- *   polls the newest frame with `pollFrame()` and keeps trying the WebSocket once a minute.
+ *   polls the newest frame with `pollFrame()` and keeps trying the WebSocket once a minute. The
+ *   polling runs only while the WebSocket is not usable: the open socket ends it, and a poll that
+ *   is still in flight then ends without drawing.
  * - Close code 1008 means that the server wants a token (or refused it). The link waits for
  *   `restart()`, which the page calls when the token changes.
  * - Close code 1013 means that the server shows the view to as many viewers as it allows. The
- *   link tries again after 10 to 20 seconds.
+ *   link tries again after 10 to 20 seconds. Such a refusal never starts the polling: the server
+ *   is up, and it is full.
  * - `tick()` marks the link stalled when frames stop while the alignment runs.
  *
  * Everything that touches the outside is an option, so the logic can run against a fake socket and
@@ -57,6 +60,7 @@
       this.timer = null;
       this.pollTimer = null;
       this.polling = false;
+      this.pollRun = 0;
       this.lastFrameAt = 0;
       this.lastSeq = 0;
     }
@@ -85,7 +89,10 @@
       this.stopPolling();
       const socket = this.socket;
       this.socket = null;
+      this.opened = false;
+      this.pending = null;
       if (socket) {
+        socket.onopen = null;
         socket.onclose = null;
         socket.onmessage = null;
         socket.close(1000);
@@ -121,7 +128,12 @@
       this.socket = socket;
       this.opened = false;
       this.pending = null;
+      // Each handler acts only for the current socket, so that a late event of a socket that the
+      // link has dropped cannot change what the link believes about the new one.
       socket.onopen = () => {
+        if (this.socket !== socket) {
+          return;
+        }
         this.opened = true;
         this.failures = 0;
         this.stopPolling();
@@ -130,7 +142,11 @@
         }
         this.setName("waiting");
       };
-      socket.onmessage = (event) => this.message(event.data);
+      socket.onmessage = (event) => {
+        if (this.socket === socket) {
+          this.message(event.data);
+        }
+      };
       socket.onerror = () => undefined;
       socket.onclose = (event) => {
         if (this.socket === socket) {
@@ -138,6 +154,11 @@
           this.closed(event);
         }
       };
+    }
+
+    /** True while the WebSocket is open. Frames then arrive on it, and the polling must stay off. */
+    socketUsable() {
+      return this.socket !== null && this.opened;
     }
 
     closed(event) {
@@ -152,6 +173,7 @@
       }
       if (code === 1013) {
         const [low, high] = this.o.busyRetryMs;
+        this.failures = 0; // the server answered, so the path of the WebSocket works
         this.setName("busy");
         this.timer = this.o.setTimeout(() => this.connect(), low + this.o.random() * (high - low));
         return;
@@ -214,32 +236,44 @@
 
     // --- Polling, the fallback --------------------------------------------------------------
 
+    /** The polling runs only while the WebSocket is not usable: it is closed, or it is still connecting. */
     startPolling() {
-      if (this.polling || !this.o.pollFrame) {
+      if (this.polling || !this.o.pollFrame || this.socketUsable()) {
         return;
       }
       this.polling = true;
+      this.pollRun += 1;
       this.setName("polling");
       this.schedulePoll(0);
     }
 
     stopPolling() {
       this.polling = false;
+      this.pollRun += 1; // a poll that is in flight belongs to the old run, and it ends when it returns
       this.o.clearTimeout(this.pollTimer);
     }
 
     schedulePoll(delay) {
       this.o.clearTimeout(this.pollTimer);
-      this.pollTimer = this.o.setTimeout(() => this.poll(), delay);
+      const run = this.pollRun;
+      this.pollTimer = this.o.setTimeout(() => this.poll(run), delay);
     }
 
-    async poll() {
-      if (!this.polling || this.stopped) {
+    /** True while the poll of this run may go on: the link runs, and the WebSocket is not open. */
+    pollingAllowed(run) {
+      if (this.polling && this.socketUsable()) {
+        this.stopPolling();
+      }
+      return this.polling && !this.stopped && run === this.pollRun;
+    }
+
+    async poll(run) {
+      if (!this.pollingAllowed(run)) {
         return;
       }
       try {
         const result = await this.o.pollFrame(this.lastSeq);
-        if (!this.polling) {
+        if (!this.pollingAllowed(run)) {
           return;
         }
         if (result && result.denied) {
@@ -256,7 +290,7 @@
       } catch (error) {
         /* The next poll tries again. */
       }
-      if (this.polling) {
+      if (this.pollingAllowed(run)) {
         this.schedulePoll(this.o.pollIntervalMs());
       }
     }

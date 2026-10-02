@@ -275,4 +275,170 @@ module.exports = function scenarios(LiveLink, test, assert) {
     link.connect();
     assert.equal(h.sockets.length, 1);
   });
+
+  // --- The polling runs only while the WebSocket is not usable ------------------------------------
+
+  /** Let the continuations of the promises that a test has just settled run. */
+  async function settle() {
+    for (let i = 0; i < 6; i += 1) {
+      await Promise.resolve();
+    }
+  }
+
+  /** Fail three attempts, so that the link polls. Returns once the first polls have gone out. */
+  async function pollingLink(h) {
+    const link = new LiveLink(h.options);
+    link.start();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      h.sockets[h.sockets.length - 1].onclose({ code: 1006 });
+      await h.advance(2500);
+    }
+    assert.equal(link.name, "polling");
+    return link;
+  }
+
+  test("the retry of the WebSocket does not stop the polling until the socket is open, and then it does", async () => {
+    const h = harness();
+    const link = await pollingLink(h);
+    await h.advance(60000); // the minute is over: the retry is connecting, and not open
+    const retry = h.sockets[h.sockets.length - 1];
+    assert.equal(link.socketUsable(), false);
+    const connecting = h.polls.length;
+    await h.advance(2000);
+    assert.ok(h.polls.length > connecting, "polls while the retry connects");
+    retry.onopen();
+    assert.equal(link.socketUsable(), true);
+    assert.equal(link.polling, false);
+    const polls = h.polls.length;
+    await h.advance(180000);
+    assert.equal(h.polls.length, polls, "no poll while the socket is open");
+    assert.equal(link.name, "waiting");
+  });
+
+  test("a poll that is in flight when the socket opens ends without drawing and without another poll", async () => {
+    const h = harness();
+    const returns = [];
+    h.options.pollFrame = (after) => {
+      h.polls.push(after);
+      return new Promise((resolve) => returns.push(resolve));
+    };
+    const link = await pollingLink(h);
+    assert.equal(h.polls.length, 1); // one poll waits for its answer
+    await h.advance(60000);
+    h.sockets[h.sockets.length - 1].onopen();
+    returns[0]({ blob: new Blob([JPEG]), state: { frame: { seq: 9 } }, seq: 9 });
+    await h.advance(5000);
+    assert.equal(h.polls.length, 1);
+    assert.deepEqual(h.frames, []);
+    assert.equal(link.polling, false);
+    assert.equal(link.name, "waiting");
+  });
+
+  test("a poll that is in flight across a stop and a start leaves one chain of polls", async () => {
+    const h = harness({ supportsWebSocket: () => false });
+    const returns = [];
+    h.options.pollFrame = (after) => {
+      h.polls.push(after);
+      return new Promise((resolve) => returns.push(resolve));
+    };
+    const link = new LiveLink(h.options);
+    link.start();
+    await h.advance(100);
+    assert.equal(h.polls.length, 1);
+    link.stop();
+    link.start();
+    await h.advance(100);
+    assert.equal(h.polls.length, 2); // the new run polls at once, and the old poll still waits
+    returns.splice(0).forEach((resolve) => resolve(null));
+    await settle();
+    await h.advance(600);
+    assert.equal(h.polls.length, 3, "only the new run goes on");
+    returns.splice(0).forEach((resolve) => resolve(null));
+    await settle();
+    await h.advance(600);
+    assert.equal(h.polls.length, 4);
+  });
+
+  test("a connection that opened and then dropped is retried, and it never starts the polling", async () => {
+    const h = harness();
+    const link = new LiveLink(h.options);
+    link.start();
+    for (let round = 0; round < 8; round += 1) {
+      const socket = h.sockets[h.sockets.length - 1];
+      socket.onopen();
+      assert.equal(link.polling, false);
+      socket.onclose({ code: 1006 });
+      assert.equal(link.name, "reconnecting");
+      await h.advance(1500);
+    }
+    assert.equal(h.sockets.length, 9);
+    assert.equal(h.polls.length, 0);
+    assert.equal(link.polling, false);
+  });
+
+  test("a refusal as busy never starts the polling, however often it comes", async () => {
+    const h = harness();
+    const link = new LiveLink(h.options);
+    link.start();
+    for (let round = 0; round < 6; round += 1) {
+      h.sockets[h.sockets.length - 1].onclose({ code: 1013 });
+      assert.equal(link.name, "busy");
+      await h.advance(21000);
+    }
+    assert.equal(h.sockets.length, 7);
+    assert.equal(h.polls.length, 0);
+    assert.equal(link.polling, false);
+  });
+
+  test("a busy answer shows that the WebSocket path works, so earlier failures do not add up to polling", async () => {
+    const h = harness();
+    const link = new LiveLink(h.options);
+    link.start();
+    h.sockets[0].onclose({ code: 1006 });
+    await h.advance(1500);
+    h.sockets[1].onclose({ code: 1006 });
+    await h.advance(2500);
+    h.sockets[2].onclose({ code: 1013 });
+    await h.advance(21000);
+    h.sockets[3].onclose({ code: 1006 });
+    assert.equal(link.name, "reconnecting");
+    assert.equal(link.polling, false);
+  });
+
+  test("a late event of a socket that the link dropped changes nothing", async () => {
+    const h = harness();
+    const link = new LiveLink(h.options);
+    link.start();
+    const lateOpen = h.sockets[0].onopen;
+    const lateMessage = h.sockets[0].onmessage;
+    const lateClose = h.sockets[0].onclose;
+    link.restart(); // drops the first socket, and connects a second one
+    assert.equal(h.sockets.length, 2);
+    lateOpen();
+    lateMessage({ data: state(1) });
+    lateMessage({ data: JPEG });
+    lateClose({ code: 1006 });
+    assert.equal(link.opened, false);
+    assert.equal(link.socketUsable(), false);
+    assert.equal(link.name, "connecting");
+    assert.deepEqual(h.frames, []);
+    assert.equal(h.sockets.length, 2);
+    // The second socket still counts its own failures, so three of them start the polling.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      h.sockets[h.sockets.length - 1].onclose({ code: 1006 });
+      await h.advance(2500);
+    }
+    assert.equal(link.polling, true);
+  });
+
+  test("startPolling and a poll that is due both refuse to run while the socket is open", async () => {
+    const { h, link } = opened();
+    link.startPolling();
+    assert.equal(link.polling, false);
+    link.polling = true; // a wrong flag, as a bug elsewhere could leave it
+    await link.poll(link.pollRun);
+    assert.equal(link.polling, false, "the poll notices the open socket and stops");
+    await h.advance(5000);
+    assert.equal(h.polls.length, 0);
+  });
 };

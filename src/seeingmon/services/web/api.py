@@ -869,12 +869,15 @@ async def _serve_stream(ctx: WebContext, websocket: WebSocket) -> None:
         except ApiError:
             await websocket.close(code=WS_CLOSE_POLICY)
             return
-    if ctx.hub.viewers >= ctx.settings.live.max_clients:
-        await websocket.close(code=WS_CLOSE_TRY_LATER)
-        return
     await websocket.accept()
     if not authorized and not await _read_token(ctx, websocket, client):
         await websocket.close(code=WS_CLOSE_POLICY)
+        return
+    if ctx.hub.viewers >= ctx.settings.live.max_clients:
+        # The close comes after the handshake on purpose. A close before it turns into an HTTP
+        # 403, which a browser reports as code 1006 (a failed connection). The page would take
+        # "busy" for "broken" and fall back to polling, which the limit does not cover.
+        await websocket.close(code=WS_CLOSE_TRY_LATER)
         return
     async with ctx.hub.subscribe() as subscription:
         sender = asyncio.ensure_future(_send_frames(ctx, websocket, subscription))

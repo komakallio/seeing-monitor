@@ -268,16 +268,34 @@ def test_the_live_view_reports_a_broken_stream_and_goes_on_when_it_recovers(
         assert state["frame"]["seq"] == 1
 
 
-def test_a_viewer_over_the_limit_is_turned_away_with_the_try_later_code(
+def test_a_viewer_over_the_limit_is_accepted_and_then_told_to_try_later(
     stream_client: TestClient,
 ) -> None:
+    """The handshake completes first. A close before it becomes an HTTP 403, and a browser reports
+    that as code 1006, so the page could not tell a full server from a broken one."""
     with stream_client.websocket_connect(STREAM) as first, stream_client.websocket_connect(STREAM):
         read_newest(first, 3)
-        with pytest.raises(WebSocketDisconnect) as raised, stream_client.websocket_connect(STREAM):
-            pass
-        assert raised.value.code == 1013
+        with stream_client.websocket_connect(STREAM) as turned_away:
+            with pytest.raises(WebSocketDisconnect) as raised:
+                turned_away.receive_json()
+            assert raised.value.code == 1013
     with stream_client.websocket_connect(STREAM) as again:  # a place is free again
         read_newest(again, 3)
+
+
+def test_a_viewer_that_was_turned_away_does_not_count_as_a_viewer(
+    stream_client: TestClient,
+) -> None:
+    ctx = stream_client.app.state.ctx  # type: ignore[attr-defined]
+    with stream_client.websocket_connect(STREAM) as first, stream_client.websocket_connect(STREAM):
+        read_newest(first, 3)
+        for _ in range(3):
+            with (
+                stream_client.websocket_connect(STREAM) as turned_away,
+                pytest.raises(WebSocketDisconnect),
+            ):
+                turned_away.receive_json()
+        assert ctx.hub.viewers == 2
 
 
 def test_a_websocket_to_an_unknown_path_is_refused(client: TestClient) -> None:
@@ -341,6 +359,29 @@ def test_a_wrong_first_message_closes_the_stream_with_the_policy_code(
         with pytest.raises(WebSocketDisconnect) as raised:
             session.receive_json()
         assert raised.value.code == 1008
+
+
+def test_a_full_server_asks_for_the_token_before_it_says_try_later(
+    locked_client: TestClient,
+) -> None:
+    """A viewer without the token learns nothing about the load of the server."""
+    with (
+        locked_client.websocket_connect(STREAM) as one,
+        locked_client.websocket_connect(STREAM) as two,
+    ):
+        for session in (one, two):
+            session.send_json({"type": "auth", "token": TOKEN})
+            read_newest(session, 3)
+        with locked_client.websocket_connect(STREAM) as with_token:
+            with_token.send_json({"type": "auth", "token": TOKEN})
+            with pytest.raises(WebSocketDisconnect) as busy:
+                with_token.receive_json()
+            assert busy.value.code == 1013
+        with locked_client.websocket_connect(STREAM) as without_token:
+            without_token.send_json({"type": "auth", "token": "wrong"})
+            with pytest.raises(WebSocketDisconnect) as denied:
+                without_token.receive_json()
+            assert denied.value.code == 1008
 
 
 def test_a_wrong_header_is_refused_before_the_handshake(locked_client: TestClient) -> None:
