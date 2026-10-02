@@ -15,6 +15,10 @@ value. A call that fails raises an exception that the connection layer sends bac
   `CommandResult` as JSON (`encode_result`).
 - `alignment_state` takes no parameters and answers with the `AlignmentState` as JSON, with
   `"active": false` outside alignment.
+- `dark_library` (`METHOD_DARK_LIBRARY`, in `METHODS` once `web` calls it) takes no parameters
+  and answers with the `DarkLibraryView` as JSON: the dark sets of the library, whether it is
+  due for a new set, the dark model, the sensor temperature, and the progress of the latest
+  dark session (`DarkTaskView`).
 
 `submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
 normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
@@ -31,10 +35,10 @@ person as present and calls `Scheduler.touch_alignment` now and then, so the idl
 `align`. Outside alignment, the stream stays open and sends nothing.
 
 **Commands.** `encode_command` writes a command as `{"type": <name>, ...fields}`. The names are
-`start_alignment`, `stop_alignment`, `pause`, `resume`, `queue_burst`, `queue_sweep`, and
-`queue_replay`. A field that the command lacks takes the default of the dataclass. `queue_replay`
-names its source (`source`) as a recording name without a directory part, and `core` resolves it
-under the configured recordings folder.
+`start_alignment`, `stop_alignment`, `pause`, `resume`, `queue_burst`, `queue_sweep`,
+`queue_replay`, and `queue_dark`. A field that the command lacks takes the default of the
+dataclass. `queue_replay` names its source (`source`) as a recording name without a directory
+part, and `core` resolves it under the configured recordings folder.
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ from seeingmon.scheduler.commands import (
     CommandResult,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -65,6 +70,7 @@ from seeingmon.services.ipc.codec import (
     as_mapping,
     decode_stream_config,
     encode_stream_config,
+    get_bool,
     get_float,
     get_int,
     get_opt_float,
@@ -79,7 +85,10 @@ METHOD_PING = "ping"
 METHOD_STATUS = "status"
 METHOD_SUBMIT = "submit"
 METHOD_ALIGNMENT_STATE = "alignment_state"
+METHOD_DARK_LIBRARY = "dark_library"
 METHODS = (METHOD_PING, METHOD_STATUS, METHOD_SUBMIT, METHOD_ALIGNMENT_STATE)
+# `METHOD_DARK_LIBRARY` joins `METHODS` in the commit that makes `web` call it and the reference
+# core of the tests serve it, so that the test of `METHODS` stays true at every commit.
 
 FRAME_MAGIC = b"SMAF"
 MAX_STATE_BYTES = 64 * 1024
@@ -156,6 +165,17 @@ def encode_command(command: Command) -> dict[str, Any]:
             "options": dict(command.options),
             "priority": command.priority,
         }
+    if isinstance(command, QueueDark):
+        return {
+            "type": "queue_dark",
+            "exposure_s": command.exposure_s,
+            "frames": command.frames,
+            "bias_frames": command.bias_frames,
+            "wait_for_cover": command.wait_for_cover,
+            "pause_after": command.pause_after,
+            "label": command.label,
+            "priority": command.priority,
+        }
     raise TypeError(f"cannot send {type(command).__name__} to core")
 
 
@@ -210,6 +230,32 @@ def decode_command(value: Any) -> Command:
             source=get_str(body, "source", what) if "source" in body else "",
             speed=get_float(body, "speed", what) if "speed" in body else 1.0,
             options={} if options is None else dict(as_mapping(options, f"{what}.options")),
+            priority=get_int(body, "priority", what) if "priority" in body else 0,
+        )
+    if kind == "queue_dark":
+        _expect_keys(
+            body,
+            what,
+            (),
+            (
+                "exposure_s",
+                "frames",
+                "bias_frames",
+                "wait_for_cover",
+                "pause_after",
+                "label",
+                "priority",
+            ),
+        )
+        return QueueDark(
+            exposure_s=get_opt_float(body, "exposure_s", what),
+            frames=get_opt_int(body, "frames", what),
+            bias_frames=get_opt_int(body, "bias_frames", what),
+            wait_for_cover=(
+                get_bool(body, "wait_for_cover", what) if "wait_for_cover" in body else True
+            ),
+            pause_after=get_bool(body, "pause_after", what) if "pause_after" in body else True,
+            label=get_str(body, "label", what) if "label" in body else "",
             priority=get_int(body, "priority", what) if "priority" in body else 0,
         )
     raise CodecError("command.type is not a command that core accepts")
@@ -468,3 +514,102 @@ def unpack_frame(payload: bytes | bytearray | memoryview) -> AlignmentFrame:
     except ValidationError:
         raise CodecError("the alignment frame has an unreadable state") from None
     return AlignmentFrame(state, jpeg)
+
+
+# --- The dark library ------------------------------------------------------------------------
+
+
+class DarkSetView(_View):
+    """One dark set of the library. The rate is in electrons per second per pixel."""
+
+    name: str
+    t_utc: str
+    age_days: float
+    temperature_c: float
+    temperature_spread_c: float
+    exposure_s: float
+    n_frames: int
+    n_bias_frames: int
+    rate_e_per_s: float
+    hot_pixels: int
+
+
+class DarkModelView(_View):
+    """The dark current as a function of temperature: the rate at the reference and the doubling."""
+
+    reference_c: float
+    rate_ref_e_per_s: float
+    doubling_c: float
+    doubling_fitted: bool
+    rms_log2: float | None = None
+    n_sets: int
+
+
+class DarkStatusView(_View):
+    """Whether the library needs a new set, and why (`reason` is a sentence)."""
+
+    due: bool
+    reason: str
+    tolerance_c: float
+    max_age_days: float
+    gap_c: float | None = None
+    nearest_name: str | None = None
+    newest_age_days: float | None = None
+
+
+class DarkTaskView(_View):
+    """The latest dark session of this `core` process.
+
+    `state` is `idle` (none yet), `queued`, `running`, `ok`, `failed`, or `aborted`. While it runs,
+    `phase` is `bias`, `cover` (waiting for dark frames), `dark`, or `build` (the master dark and
+    the library), with `step` of `steps` in that phase. `covered` and `level_dn` describe the
+    latest check of a frame, and `reason` says why a frame was not dark. A finished session keeps
+    its `summary` (one sentence) and the `set_name` that it added.
+    """
+
+    state: str = "idle"
+    task_id: int | None = None
+    phase: str | None = None
+    step: int = 0
+    steps: int = 0
+    message: str = ""
+    covered: bool | None = None
+    level_dn: float | None = None
+    reason: str = ""
+    exposure_s: float | None = None
+    frames: int | None = None
+    bias_frames: int | None = None
+    wait_for_cover: bool = True
+    pause_after: bool = True
+    started_utc: str | None = None
+    finished_utc: str | None = None
+    summary: str = ""
+    set_name: str | None = None
+
+
+class DarkLibraryView(_View):
+    """The answer of the `dark_library` method: the library, its status, and the latest session.
+
+    `mode`, `gain`, and `exposure_s` are the settings of the survey, which a new set should match.
+    `sets` holds the newest sets first, at most `MAX_LIST_ITEMS`.
+    """
+
+    mode: str
+    gain: int
+    exposure_s: float
+    sensor_temperature_c: float | None = None
+    status: DarkStatusView
+    model: DarkModelView | None = None
+    sets: list[DarkSetView] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+    task: DarkTaskView = Field(default_factory=DarkTaskView)
+
+
+def decode_dark_library(value: Any) -> DarkLibraryView:
+    """The answer of `dark_library` as a model. Raises `CodecError` for anything malformed."""
+    try:
+        return DarkLibraryView.model_validate(value)
+    except ValidationError as error:
+        fields = ", ".join(
+            sorted({".".join(str(part) for part in e["loc"]) for e in error.errors()})
+        )
+        raise CodecError(f"the dark library is not valid: {fields}") from None

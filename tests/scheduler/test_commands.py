@@ -15,6 +15,7 @@ from seeingmon.scheduler.commands import (
     CommandResult,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -31,6 +32,7 @@ ALL_COMMANDS = [
     QueueBurst(),
     QueueSweep(),
     QueueReplay(),
+    QueueDark(),
 ]
 
 
@@ -55,6 +57,7 @@ def test_the_commands_are_the_ones_that_the_brief_lists() -> None:
         "QueueBurst",
         "QueueSweep",
         "QueueReplay",
+        "QueueDark",
     }
 
 
@@ -63,6 +66,7 @@ def test_the_queue_commands_map_to_the_task_kinds() -> None:
     assert TASK_KINDS[QueueBurst] == "burst"
     assert TASK_KINDS[QueueSweep] == "sweep"
     assert TASK_KINDS[QueueReplay] == "replay"
+    assert TASK_KINDS[QueueDark] == "dark"
 
 
 def test_the_queue_commands_share_a_priority_that_defaults_to_zero() -> None:

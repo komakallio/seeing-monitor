@@ -5,8 +5,8 @@ scheduler accepted the command, or it names a reason for the rejection. The call
 for the camera. The scheduler writes an `event` record for every command, accepted or not.
 
 A command is a frozen dataclass with plain fields, so a web handler can build one from a
-request body. The queue commands (`QueueBurst`, `QueueSweep`, and `QueueReplay`) share a
-`priority`: a higher number runs first, and equal priorities run in the order of arrival.
+request body. The queue commands (`QueueBurst`, `QueueSweep`, `QueueReplay`, and `QueueDark`)
+share a `priority`: a higher number runs first, and equal priorities run in the order of arrival.
 """
 
 from __future__ import annotations
@@ -109,11 +109,33 @@ class QueueReplay(Command):
     priority: int = 0
 
 
-QUEUE_COMMANDS = (QueueBurst, QueueSweep, QueueReplay)
+@dataclass(frozen=True, slots=True)
+class QueueDark(Command):
+    """Queue a dark session: record bias and dark frames with the camera covered, and add a set
+    to the dark library, using the registered handler.
+
+    Leave a field `None` to use the configured value (`[survey.dark]`). With `wait_for_cover`, the
+    session waits until short test frames are dark, which means that you covered the camera.
+    Without it, the first frame that is not dark ends the task as failed. `pause_after` pauses
+    the scheduler when the queue is empty again, so that nothing records data while the camera is
+    still covered, and `Resume` continues. `label` is a note for the event.
+    """
+
+    exposure_s: float | None = None
+    frames: int | None = None
+    bias_frames: int | None = None
+    wait_for_cover: bool = True
+    pause_after: bool = True
+    label: str = ""
+    priority: int = 0
+
+
+QUEUE_COMMANDS = (QueueBurst, QueueSweep, QueueReplay, QueueDark)
 TASK_KINDS: Mapping[type[Command], str] = {
     QueueBurst: "burst",
     QueueSweep: "sweep",
     QueueReplay: "replay",
+    QueueDark: "dark",
 }
 
 

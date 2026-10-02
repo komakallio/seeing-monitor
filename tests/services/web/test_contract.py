@@ -15,6 +15,7 @@ from seeingmon.scheduler.commands import (
     CommandResult,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -31,6 +32,7 @@ from seeingmon.services.web.contract import (
     CoreStatus,
     decode_alignment_state,
     decode_command,
+    decode_dark_library,
     decode_result,
     decode_status,
     encode_command,
@@ -75,6 +77,16 @@ COMMANDS: list[Command] = [
     ),
     QueueReplay(),
     QueueReplay(source="night-1", speed=0.0, options={"loop": True, "start_s": 12.5}, priority=1),
+    QueueDark(),
+    QueueDark(
+        exposure_s=60.0,
+        frames=5,
+        bias_frames=4,
+        wait_for_cover=False,
+        pause_after=False,
+        label="winter set",
+        priority=2,
+    ),
 ]
 
 
@@ -94,6 +106,7 @@ def test_the_names_of_the_commands_are_the_documented_ones() -> None:
         "queue_burst",
         "queue_sweep",
         "queue_replay",
+        "queue_dark",
     }
 
 
@@ -102,6 +115,9 @@ def test_a_command_without_optional_fields_takes_the_defaults() -> None:
     assert decode_command({"type": "start_alignment"}) == StartAlignment()
     assert decode_command({"type": "queue_sweep"}) == QueueSweep()
     assert decode_command({"type": "queue_replay"}) == QueueReplay()
+    assert decode_command({"type": "queue_dark"}) == QueueDark()
+    assert QueueDark().wait_for_cover
+    assert QueueDark().pause_after
 
 
 def test_an_object_that_is_not_a_command_cannot_be_sent() -> None:
@@ -140,6 +156,15 @@ def test_an_object_that_is_not_a_command_cannot_be_sent() -> None:
         {"type": "queue_replay", "speed": "fast"},
         {"type": "queue_replay", "options": [1]},
         {"type": "queue_replay", "options": {1: 2}},
+        {"type": "queue_dark", "frames": 2.5},
+        {"type": "queue_dark", "frames": True},
+        {"type": "queue_dark", "exposure_s": "long"},
+        {"type": "queue_dark", "exposure_s": math.nan},
+        {"type": "queue_dark", "wait_for_cover": "yes"},
+        {"type": "queue_dark", "pause_after": 1},
+        {"type": "queue_dark", "label": 7},
+        {"type": "queue_dark", "priority": 1.5},
+        {"type": "queue_dark", "extra": 1},
     ],
 )
 def test_a_malformed_command_is_refused(value: Any) -> None:
@@ -350,3 +375,149 @@ def test_unpack_refuses_what_is_not_a_frame() -> None:
 
 def test_the_methods_are_the_documented_ones() -> None:
     assert METHODS == ("ping", "status", "submit", "alignment_state")
+
+
+# --- The dark library ------------------------------------------------------------------------
+
+
+def dark_library_example() -> dict[str, Any]:
+    return {
+        "mode": "bin2",
+        "gain": 120,
+        "exposure_s": 30.0,
+        "sensor_temperature_c": 18.4,
+        "status": {
+            "due": True,
+            "reason": "no recent set within 3.0 C of 18.4 C (the nearest is 6.2 C away)",
+            "tolerance_c": 3.0,
+            "max_age_days": 183.0,
+            "gap_c": 6.2,
+            "nearest_name": "dark-20260301T120000Z-bin2-g120.fits",
+            "newest_age_days": 40.5,
+        },
+        "model": {
+            "reference_c": 20.0,
+            "rate_ref_e_per_s": 0.21,
+            "doubling_c": 6.0,
+            "doubling_fitted": False,
+            "rms_log2": None,
+            "n_sets": 1,
+        },
+        "sets": [
+            {
+                "name": "dark-20260301T120000Z-bin2-g120.fits",
+                "t_utc": "2026-03-01T12:00:00Z",
+                "age_days": 40.5,
+                "temperature_c": 12.2,
+                "temperature_spread_c": 0.4,
+                "exposure_s": 30.0,
+                "n_frames": 9,
+                "n_bias_frames": 9,
+                "rate_e_per_s": 0.09,
+                "hot_pixels": 211,
+            }
+        ],
+        "task": {
+            "state": "running",
+            "task_id": 7,
+            "phase": "cover",
+            "step": 0,
+            "steps": 0,
+            "message": "Cover the camera now. Waiting for a dark frame.",
+            "covered": False,
+            "level_dn": 3012.5,
+            "reason": "the median is 2400 counts above the expected level",
+            "exposure_s": 30.0,
+            "frames": 9,
+            "bias_frames": 9,
+            "wait_for_cover": True,
+            "pause_after": True,
+            "started_utc": "2026-04-10T20:00:00Z",
+            "finished_utc": None,
+            "summary": "",
+            "set_name": None,
+        },
+    }
+
+
+def test_a_dark_library_survives_the_round_trip_through_json() -> None:
+    wire = decode_json(encode_json(dark_library_example()))
+    view = decode_dark_library(wire)
+    assert view.status.due is True
+    assert view.sets[0].temperature_c == 12.2
+    assert view.task.phase == "cover"
+    assert view.model is not None
+    assert view.model.doubling_fitted is False
+    assert json.loads(view.model_dump_json())["task"]["step"] == 0
+
+
+def test_an_empty_library_decodes_with_an_idle_task() -> None:
+    view = decode_dark_library(
+        {
+            "mode": "bin2",
+            "gain": 120,
+            "exposure_s": 30.0,
+            "status": {
+                "due": True,
+                "reason": "the library holds no dark set",
+                "tolerance_c": 3.0,
+                "max_age_days": 183.0,
+            },
+        }
+    )
+    assert view.sets == []
+    assert view.model is None
+    assert view.sensor_temperature_c is None
+    assert view.task.state == "idle"
+    assert view.task.phase is None
+    assert view.task.task_id is None
+
+
+def test_a_newer_core_may_add_dark_fields() -> None:
+    example = dark_library_example()
+    example["something_new"] = 1
+    example["task"]["something_new"] = "x"
+    example["sets"][0]["something_new"] = [1]
+    assert decode_dark_library(example).task.task_id == 7
+
+
+def test_numbers_that_json_writes_without_a_fraction_still_decode() -> None:
+    example = dark_library_example()
+    example["exposure_s"] = 30
+    example["sensor_temperature_c"] = 18
+    example["sets"][0]["temperature_c"] = 12
+    example["sets"][0]["rate_e_per_s"] = 0
+    view = decode_dark_library(decode_json(encode_json(example)))
+    assert view.exposure_s == 30.0
+    assert view.sets[0].temperature_c == 12.0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d.pop("status"),
+        lambda d: d.update(gain="120"),
+        lambda d: d.update(sets="none"),
+        lambda d: d.update(sets=[{"name": "x"}]),
+        lambda d: d["status"].update(due="yes"),
+        lambda d: d["task"].update(step="3"),
+        lambda d: d["task"].update(covered="false"),
+        lambda d: d["task"].update(level_dn=math.inf),
+        lambda d: d.update(sets=d["sets"] * 300),
+    ],
+)
+def test_a_malformed_dark_library_is_refused(change: Any) -> None:
+    example = dark_library_example()
+    change(example)
+    with pytest.raises(CodecError):
+        decode_dark_library(example)
+
+
+def test_the_error_of_a_malformed_dark_library_names_the_fields_and_not_the_values() -> None:
+    example = dark_library_example()
+    example["task"]["message"] = 5
+    example["gain"] = "a-secret-value"
+    with pytest.raises(CodecError) as error:
+        decode_dark_library(example)
+    assert "gain" in str(error.value)
+    assert "a-secret-value" not in str(error.value)
