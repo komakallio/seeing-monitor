@@ -460,6 +460,143 @@ The scheduler pauses when the session ends, whatever the outcome, because the ca
 
 The dark rate depends on the sensor temperature, so a set serves only the temperatures near its own. The library counts a set that lies within 3 degrees C of the sensor temperature (`temperature_tolerance_c`) and is younger than about six months (`max_age_days`). When no such set exists, the status line says `Due`. The model of the dark current fits the doubling step once the sets span 4 degrees C or more, and until then it assumes 6 degrees C (`doubling_c` in `[survey.dark]`). A wider span fits it better, so take a set on a cold night and another on a warm one, and look at the chart for the gaps. The `[web.requests]` table caps the exposure that the page may ask for (`max_dark_exposure_s`, 120 s by default).
 
+## First light on the dev machine
+
+`seeingmon dev --driver asi --real-sky --data-dir <data folder>` runs `acquire`, `core`, and `web` on the dev machine against the real sky: your camera in real time, the real star catalog, a real plate solver, and your site. It is the first test of the survey path on real stars, and it needs no Raspberry Pi. It is a development run and not an install: no systemd unit runs, and no sink, heater, SQM-LE reader, or power route takes part.
+
+**What is unverified.** No real star image has run through the detector and the plate solvers yet. The star detector, the pointing fit, and the sky quality have seen synthetic frames only. The solvers have solved synthetic star lists that the real catalog made (ASTAP in 0.7 to 0.8 s on the dev machine, and astrometry.net in 0.1 to 0.2 s in WSL), and the camera has run in this launcher only with a simulated sky, in a room or under a cover. This run is the first test of the whole chain, so read its first results as a test of the software and not as measurements. Commissioning (phase 3) chooses the exposures, the gain, and the cadence.
+
+### Before you start
+
+- Connect the camera to a USB 3 port, and close other camera software, because one process opens the camera at a time. Point the launcher at the vendor library with `--asi-library <path>` or with the variable `SEEINGMON_ASI__LIBRARY_PATH` (see [Windows](hardware-checks.md#windows)). The launcher gives the path to `acquire` alone and prints it nowhere.
+- Install the dependencies with `uv sync --all-extras`.
+- Check that Windows has synchronized its clock. The scheduler and the pointing use the system clock, and the launcher cannot tell on Windows whether it is synchronized, so it trusts it.
+- Choose a data folder on a local disk, outside the repository and outside any folder that a cloud service syncs. The run keeps the store (a SQLite database), the dark library, the images, and the logs there.
+
+### Set your site and survey
+
+The launcher reads three tables of `local/config.toml` for `core`: `[site]`, `[survey]`, and the optional `[alignment]`. It reads `[web]` and `[auth]` for `web`, as every dev run does, and it reads nothing else: no `[sinks]`, `[heater]`, `[sqm]`, or `[power]` setting reaches the run. Copy `config/local.example.toml` to `local/config.toml` when you have no file yet, and set at least:
+
+```toml
+[site]
+latitude_deg = 0.0     # your latitude in degrees, north positive
+longitude_deg = 0.0    # your longitude in degrees, east positive
+elevation_m = 0.0      # your elevation in meters
+
+[survey]
+catalog_path = "<path to the cap catalog file>"
+solvers = ["astap"]
+astap_command = "<path to the ASTAP command-line program>"
+astap_database_dir = "<path to the ASTAP star database folder>"
+```
+
+The values stay in the untracked file, or in the variables `SEEINGMON_SITE__LATITUDE_DEG`, `SEEINGMON_SURVEY__CATALOG_PATH`, and so on, which beat the file. They never go into the repository. The launcher checks your tables before it writes a file or starts a child. It refuses to start, and its message names the table and the setting and never shows a value, when:
+
+- `[site]` lacks `latitude_deg`, `longitude_deg`, or `elevation_m`, or it still holds the placeholders of the template (a latitude and a longitude of 0).
+- `[survey]` sets no `catalog_path`, or the path does not name a file that reads as a cap catalog.
+- `solvers` names a solver other than `astrometry.net` and `astap`, or a table has a key that does not exist or a value that does not fit.
+
+The launcher only warns, and the run goes on, when `solvers` is empty, when it finds no program for a solver in `solvers`, when it finds no index files for astrometry.net, or when `astap_database_dir` names no folder. The run keeps two shortcuts of a dev run: windows of 20 s, and a dark session of 5 frames of each kind (set `[survey.dark]` to change the session). The cloud limits stay at the production defaults, and `[survey.cloud]` changes them. The dark library is the folder `calibration` of your data folder unless `[survey]` names a `calibration_dir`, and the optional `[alignment]` table takes the aim and the target of the Align page (see the template).
+
+### Get the catalog and a plate solver
+
+Build the cap catalog as in [Prepare your files](#prepare-your-files), or copy a catalog that you built elsewhere, because the file works on any machine. Check it with `seeingmon catalog info <catalog file>`. The command prints the number of stars (about 82,000 for the standard cap) and the cap (15 degrees around the pole).
+
+Install one plate solver:
+
+- **ASTAP** (Windows, Linux, and macOS). Install the command-line program and a star database for a field of about 4 × 3 degrees (the dev machine used D05). Set `astap_command` to the program and `astap_database_dir` to the folder of the database. ASTAP reads its own database, so it needs no index, and the survey path still uses the cap catalog for everything after the solve: the fit, the matching, and the photometry.
+- **astrometry.net** (Linux, and WSL for building the index). Set `index_dir` to the folder with the index files that `seeingmon catalog build` wrote, and `solve_field_command` to the program. The adapter passes Windows paths to the program, so a `wsl solve-field` command does not work from Windows. Use ASTAP there.
+
+The default `solvers` list is `["astrometry.net", "astap"]`. On Windows, set `solvers = ["astap"]`, or each frame spends a run on a program that is not there. The adapters split a command like a shell line, so write a Windows path with forward slashes, and put a path that contains a space in double quotes inside the string, for example `astap_command = '"<folder>/astap_cli.exe"'`. A backslash disappears when the command splits, and the launcher warns about a command that it cannot find.
+
+### Start the run
+
+```bash
+uv run seeingmon dev --driver asi --real-sky --data-dir <data folder>
+```
+
+Add `--asi-library <path>` when the variable is not set. The launcher checks your tables, starts `acquire`, `core`, and `web`, and prints the banner:
+
+```text
+Seeing monitor, real sky (asi driver): real time, full sensor.
+Web UI: http://127.0.0.1:8080/
+Real: the camera, the system clock, the star catalog, the plate solvers, and the site (the last three come from your local configuration). Nothing about the sky is simulated.
+No pointing solution is seeded. The first survey frame goes to the plate solvers, in this order: astap.
+The scheduler follows the real Sun at your site (by the clock of this machine). It stays in safe while the Sun is above -3 degrees, so by day it takes no survey frame and records no seeing window. The Align page and a dark session run in safe too.
+Of your local configuration, only [site], [survey], [alignment], [web], and [auth] reach the system: no sink, heater, SQM-LE, or power setting does. As in every dev run, the windows are 20 s and a dark session takes 5 frames of each kind.
+No real star image has run through the detector and the plate solvers before, so read the first results as a test of them.
+The logs of the children are in the folder logs/20261003T184500Z of your data folder.
+Cover the camera by hand for a dark session.
+API token for this run (shown once, never stored): <token>
+Press Ctrl+C to stop.
+```
+
+Apart from the address of the web UI, the banner prints no coordinate, no path, and no host. A line that starts with `Warning:` follows the notes when the launcher finds a problem with a solver. Fix its cause before you rely on the run, because a solver that cannot run finds no pointing solution. The token is for the commands of the Align and Dark pages. The launcher prints none when `[auth]` holds a token hash.
+
+### Point the camera and align it
+
+Open the **Align** page, enter the token when the page asks for it, and press **Start alignment**. The camera streams bin2 frames of 0.5 s at gain 120, and the page shows the newest one. The first quick solve has no pointing to start from, so it detects the stars and runs a plate solver, which takes a few seconds. When it succeeds, the pole card replaces "Waiting for a solution." with a sentence that tells you how to move the camera in altitude and in azimuth (it uses `[site]`), the orbit sentence says whether the circle of Polaris fits in the frame, and the **Solution and frame** card lists the matched stars and the residual. Move the mount until the pole sits on the aim, check the focus bar, and press **Stop alignment**, so that the camera goes back to measuring. In daylight the frames saturate, and the page shows a saturation warning. When the quick solve fails, the offset card gives the reason, such as too few stars for a solver or a solver that found no solution. The text of the page may change until you approve its look (blocker B8).
+
+### Watch the night start
+
+| When | What happens | Where you see it |
+|---|---|---|
+| At the start | `core` has no pointing, logs which solvers it will try, and starts in `safe`. | `core.log`, and the **System** card (State) |
+| The Sun passes -4 degrees (the gate is -3 degrees, and the scheduler resumes a degree lower) | The scheduler enters `auto`, finds no pointing, writes the warning event `scheduler.solve_requested`, and takes a survey step: a 1 ms frame (bin2, gain 0) and a 30 s frame (bin2, gain 120). | **Latest events**, and `core.log` |
+| A few seconds after each frame | The analysis finds the stars, runs the solvers in order, and fits the pointing. A full bin2 frame took 2 to 3 s to analyze on the dev machine, before the time of the solver. | The `survey frame` lines of `core.log` |
+| After the first solution | The scheduler starts the fast stream with the ROI on Polaris. The first seeing window closes after 20 s. | The **Seeing** card |
+| Every 3 minutes | The survey step repeats. The tracker solves each frame from the last solution, so the log shows a solver run only when the tracker loses the field. | `core.log`, and the **Pointing** card |
+
+The warning event `scheduler.solve_requested` at the start is expected, and it comes again after a lost star. It does not mean a fault. The **Pointing** card shows the roll, the matched stars, the residual of the solution, the focus value, the plate scale (3.82 arcsec per pixel in bin2), and the solver. Its large value, the offset from the target, stays empty with the note "no reference solution", because nothing has saved a reference solution yet. The **Sky brightness** card needs at least 8 measurable stars for the zero point, and its records carry the `dark_due` flag until the library holds a set near the sensor temperature (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)). Transparency needs 20 clear zero points of history, so it stays empty at first. These are the expected results from the design and the synthetic tests, and the first night shows what a real sky does to them.
+
+### Read the logs
+
+Each child writes its log to the folder `logs/<start time>` of your data folder. The banner names the folder relative to your data folder, and the start time is UTC, such as `20261003T184500Z`. The files are `acquire.log`, `core.log`, and `web.log`. The run logs at the level `info`, and `--log-level warning` shows less. To follow one log in PowerShell:
+
+```powershell
+Get-Content "<data folder>\logs\<start time>\core.log" -Wait -Tail 20
+```
+
+The time at the start of a line is the local time of this machine. A `survey frame` line names the frame by its UTC time, which ends in `Z`. The first lines of `core.log` after a start with no pointing look like this (the numbers are made up):
+
+```text
+2026-10-03 21:45:03,154 INFO seeingmon.services.core.app: no pointing solution yet: the survey frames go to the plate solvers astap, in this order, until one solves
+2026-10-03 21:46:11,402 INFO seeingmon.survey: survey frame 2026-10-03T18:45:48Z: only 3 stars for a solver
+2026-10-03 21:46:11,403 INFO seeingmon.survey: survey frame 2026-10-03T18:45:48Z: 0.001 s bin2: 3 stars detected, not solved, analysis took 0.9 s
+2026-10-03 21:46:52,118 INFO seeingmon.survey: survey frame 2026-10-03T18:45:50Z: solver=astap result=solved stars=312 time_s=0.79 matched=214
+2026-10-03 21:46:52,119 INFO seeingmon.survey: survey frame 2026-10-03T18:45:50Z: 30 s bin2: 412 stars detected, solved by astap (214 matched), analysis took 4.1 s
+```
+
+Each survey frame gets one line with its outcome, and each run of a solver gets one line before it:
+
+| Field | Meaning |
+|---|---|
+| `solver=` | The solver that ran: `astrometry.net` or `astap`. |
+| `result=` | `solved`: the solver found a field, and the fit confirmed it. `no_solution`: the solver ran and found no field. `rejected`: the solver found a field that the catalog or the fit could not confirm. `error`: the program could not run. |
+| `stars=` | The number of stars that went to the solver: the brightest detections without the hot pixels, at most 600 (`[survey.solve] max_stars`). |
+| `time_s=` | The time of the solver run, in seconds. |
+| `matched=` | The stars that the fit paired with catalog stars. It appears for a solved run. |
+| `reason=` | Why a run failed. It appears for every other result. |
+
+A frame that the tracker solves from the last solution has no solver line, and its outcome line says `solved by tracker`. A line holds no coordinate. Retention does not manage the `logs` folder, so delete old run folders by hand. A log can name folders of your machine, so keep it out of the repository.
+
+### Stop the run
+
+Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `core`, and `acquire` in that order, which can take up to 25 s for each, and then names the folder of the logs. The data folder and the logs stay. If a child exits on its own, the launcher ends the run, prints the last lines of that child's log, and stops the others.
+
+### When something fails
+
+| Symptom | Likely cause | Check and fix |
+|---|---|---|
+| The launcher refuses to start and names `[site]` or `[survey]`. | A value is missing or does not fit. | Read the message: it names the table and the setting. Fix the local configuration or the variable. |
+| A `Warning:` line says that the machine finds no program for a solver. | The command is not on the PATH, or a backslash or a space broke it. | Give the path with forward slashes, put a path that contains a space in double quotes, and start again. |
+| Every solver line says `result=error`. | The program cannot run: it is not installed, it crashes, ASTAP finds no star database, or it hangs. | Read the `reason=` text. Run the command by hand. A hang shows as `did not finish within 25 s`, which is `[survey.solve] timeout_s` (20 s) plus 5 s of grace. |
+| Every 30 s frame says `result=no_solution` with a few hundred stars. | The solver does not match the field: the camera does not point at Polaris within the 15 degree cap, or clouds cover the sky. | Open the Align page and look at the frame. |
+| A frame says `result=rejected`. | The solver found a field that the catalog or the fit rejects, for example because the catalog is not the cap around the pole or the plate scale differs. | Run `seeingmon catalog info <catalog file>`, and compare the plate scale on the Pointing card with 3.82 arcsec per pixel in bin2. |
+| The frames show only "only N stars for a solver". | The detector finds fewer than 4 stars: a cover on the camera, clouds, or a bad focus. The 1 ms frame of each survey step shows this line by design, because it holds only the brightest stars. | Look at the 30 s frame, at the frame on the Align page, and at the focus bar. |
+| The state stays `safe`, and no survey frame runs. | The Sun is above -3 degrees at your `[site]`, or the measured sky brightness gate holds the scheduler. | Check the **System** card and the latest events. Check that the values of `[site]` are your own. |
+| The launcher ends with `acquire exited` and the end of its log. | The vendor library or the camera is not available. | Check `--asi-library` and `SEEINGMON_ASI__LIBRARY_PATH`, close other camera software, and see [Windows](hardware-checks.md#windows). |
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Check and fix |

@@ -2,7 +2,7 @@
 
 The hardware-facing code (the camera driver, the GPIO lines, the SQM-LE reader, and the power-cycle hook) passes its tests on fakes. The checks on this page run the same code against a real camera, board, or meter. They confirm what the fakes only model.
 
-The checks live in `tests/hardware/` and carry the `hardware` marker. They skip unless you opt in, so a normal test run never touches a device. To try the whole system on the real camera, and not only the driver, run `seeingmon dev --driver asi --asi-library PATH`, which starts `acquire`, `core`, and `web` in real time (see the development run in `docs/architecture.md`).
+The checks live in `tests/hardware/` and carry the `hardware` marker. They skip unless you opt in, so a normal test run never touches a device. To try the whole system on the real camera, and not only the driver, run `seeingmon dev --driver asi --asi-library PATH`, which starts `acquire`, `core`, and `web` in real time (see the development run in `docs/architecture.md`). For a real night with the real catalog and a plate solver, add `--real-sky --data-dir <folder>` and follow [First light on the dev machine](runbook.md#first-light-on-the-dev-machine).
 
 ## Run the checks
 

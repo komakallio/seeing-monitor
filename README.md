@@ -32,6 +32,8 @@ uv run seeingmon dev           # acquire, core, and web on a simulated sky
 
 `seeingmon dev` prints a random API token for each run, unless the `[auth]` table of `local/config.toml` holds a token hash. Both commands read the `[web]` table of that file, so you can set the address and the allowed host names of your own network there. That file stays out of the repository.
 
+With a camera on the dev machine, `seeingmon dev --driver asi --real-sky --data-dir <folder>` runs the whole system on the real sky, with your catalog, plate solver, and site. The runbook has the steps: [First light on the dev machine](docs/runbook.md#first-light-on-the-dev-machine).
+
 ## Develop
 
 You need Python 3.11 or later (3.13 recommended) and [uv](https://docs.astral.sh/uv/).
