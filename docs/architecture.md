@@ -439,7 +439,7 @@ The device sits on a LAN, and the repository is public.
 | Capture work of `acquire` on a Pi 4 | The estimate puts `acquire` at 12 to 24% of a core, against its 10% budget. The receive and the fast path fit. | Batched frames (60 ms) and a trimmed capture thread cut the cost to half. A measurement on a Pi 4 decides. If `acquire` stays over, trim the stamping fit and the watchdog calls, or accept the cost, because the Pi 4 has four cores and the whole system uses a fraction of one. |
 | SD card wear and corruption | Data loss or a failed boot | Write budget, tmpfs, WAL, atomic writes, a high-endurance card, remote sinks as a second copy |
 
-Deferred by you: the InfluxDB version, field names, and history import (the InfluxDB adapter waits for them), and the web access rule (until you decide, the design keeps the default: anyone on the local network can view, a token is needed for actions that change something, and outside access goes through a VPN).
+Deferred by you: the InfluxDB version, field names, and history import (the adapter takes the version as a setting, 1 or 2, and writes the field names of the record declarations until you decide), and the web access rule (until you decide, the design keeps the default: anyone on the local network can view, a token is needed for actions that change something, and outside access goes through a VPN).
 
 Questions for you:
 
