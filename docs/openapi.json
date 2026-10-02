@@ -105,7 +105,7 @@
         "type": "object"
       },
       "AlignmentState": {
-        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows.",
+        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `sky` holds the pole, the orbit of Polaris, and the\ncamera model of the latest current solution. It exists whether or not a target is set.",
         "properties": {
           "active": {
             "default": false,
@@ -164,6 +164,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SaturationView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sky": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkyView"
               },
               {
                 "type": "null"
@@ -267,6 +277,50 @@
           }
         },
         "title": "BurstRequest",
+        "type": "object"
+      },
+      "CameraView": {
+        "description": "The camera model of the frame, so that a page projects sky points like the solver does.\n\n`rotation` holds nine numbers, row by row: the rotation from CIRS (the apparent frame of\ndate) to the camera frame. A sky point `u` projects to `w = R u`, `x = center_x_px +\n(w_x / w_z) / s`, and `y = center_y_px + parity * (w_y / w_z) / s`, where `s` is\n`scale_arcsec_px` in radians per pixel. A point with `w_z` of 0.05 or less is not in front of\nthe camera. Pixels follow the frame of `AlignmentFrameInfo`, with the center of the first\npixel at 0.",
+        "properties": {
+          "center_x_px": {
+            "title": "Center X Px",
+            "type": "number"
+          },
+          "center_y_px": {
+            "title": "Center Y Px",
+            "type": "number"
+          },
+          "parity": {
+            "enum": [
+              1,
+              -1
+            ],
+            "title": "Parity",
+            "type": "integer"
+          },
+          "rotation": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 9,
+            "minItems": 9,
+            "title": "Rotation",
+            "type": "array"
+          },
+          "scale_arcsec_px": {
+            "exclusiveMinimum": 0.0,
+            "title": "Scale Arcsec Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "rotation",
+          "scale_arcsec_px",
+          "parity",
+          "center_x_px",
+          "center_y_px"
+        ],
+        "title": "CameraView",
         "type": "object"
       },
       "CommandResponse": {
@@ -1122,6 +1176,36 @@
         "title": "OffsetView",
         "type": "object"
       },
+      "OrbitView": {
+        "description": "How the circle that Polaris follows around the pole sits in the frame.\n\n`margin_px` is the distance from the circle to the nearest frame edge. It is negative when\nthe circle leaves the frame, and `fits` says the same in one flag.",
+        "properties": {
+          "fits": {
+            "title": "Fits",
+            "type": "boolean"
+          },
+          "margin_arcmin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Arcmin"
+          },
+          "margin_px": {
+            "title": "Margin Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "fits",
+          "margin_px"
+        ],
+        "title": "OrbitView",
+        "type": "object"
+      },
       "Order": {
         "description": "The order of a page of events.",
         "enum": [
@@ -1712,6 +1796,104 @@
         ],
         "x-record-type": "pointing",
         "x-storage": "table"
+      },
+      "PoleView": {
+        "description": "Where the celestial pole of date falls. Offsets are the pole minus the frame center.\n\n`x_px`, `y_px`, `dx_px`, `dy_px`, and `distance_px` are `null` when the pole lies behind the\ncamera. `distance_arcmin` is the exact angle between the frame center and the pole. `roll_deg`\nis the position angle of the direction to the pole, from image up toward image left, and it\nis `null` within one pixel of the center.",
+        "properties": {
+          "distance_arcmin": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Arcmin"
+          },
+          "distance_px": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Px"
+          },
+          "dx_px": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dx Px"
+          },
+          "dy_px": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dy Px"
+          },
+          "in_front": {
+            "title": "In Front",
+            "type": "boolean"
+          },
+          "inside_frame": {
+            "default": false,
+            "title": "Inside Frame",
+            "type": "boolean"
+          },
+          "roll_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Deg"
+          },
+          "x_px": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X Px"
+          },
+          "y_px": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y Px"
+          }
+        },
+        "required": [
+          "in_front"
+        ],
+        "title": "PoleView",
+        "type": "object"
       },
       "Quality": {
         "additionalProperties": {
@@ -3496,6 +3678,46 @@
         ],
         "x-record-type": "sky_quality",
         "x-storage": "table"
+      },
+      "SkyView": {
+        "description": "The pole, the orbit of Polaris, and the camera that projects them. Coordinates are of date.\n\n`polaris_colatitude_deg` is the angle between Polaris and the pole at the time of the frame,\nwhich is the radius of the orbit. `orbit` is `null` without it. The whole view takes a few\nhundred bytes, because the state travels with every frame.",
+        "properties": {
+          "camera": {
+            "$ref": "#/components/schemas/CameraView"
+          },
+          "orbit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrbitView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "polaris_colatitude_deg": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 90.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Polaris Colatitude Deg"
+          },
+          "pole": {
+            "$ref": "#/components/schemas/PoleView"
+          }
+        },
+        "required": [
+          "camera",
+          "pole"
+        ],
+        "title": "SkyView",
+        "type": "object"
       },
       "SolvedView": {
         "description": "Where the latest solution puts the star, and how good the solution is.",

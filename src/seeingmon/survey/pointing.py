@@ -116,15 +116,28 @@ class PointingSolution:
         """The boresight as an Earth-fixed unit vector. It stays constant for a rigid mount."""
         return np.asarray(self.rotation_earth_fixed.T @ _Z, dtype=np.float64)
 
+    def _polaris_vector(self, t_utc_ns: int) -> FloatArray:
+        """The apparent place of Polaris at a time, as a CIRS unit vector."""
+        epoch = apparent.epoch_from_utc_ns(t_utc_ns, self.dut1_s)
+        return apparent.apparent_vectors_for(apparent.POLARIS, epoch)
+
     def polaris_pixel(self, t_utc_ns: int) -> tuple[float, float] | None:
         """Where the apparent place of Polaris falls at a time, in pixels of `mode`.
 
         Returns `None` when Polaris lies behind the camera.
         """
-        epoch = apparent.epoch_from_utc_ns(t_utc_ns, self.dut1_s)
-        vector = apparent.apparent_vectors_for(apparent.POLARIS, epoch)
+        vector = self._polaris_vector(t_utc_ns)
         x, y, front = self.attitude_at(t_utc_ns).project(vector)
         return (float(x[0]), float(y[0])) if front[0] else None
+
+    def polaris_colatitude_deg(self, t_utc_ns: int) -> float:
+        """The angle between the apparent place of Polaris and the celestial pole, in degrees.
+
+        It is the radius of the circle that Polaris follows around the pole of date. The method
+        uses the same vector as `polaris_pixel`, so the two always agree.
+        """
+        vector = self._polaris_vector(t_utc_ns)
+        return float(np.degrees(np.arctan2(np.hypot(vector[0], vector[1]), vector[2])))
 
     def to_dict(self) -> dict[str, Any]:
         return {

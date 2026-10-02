@@ -47,7 +47,7 @@ import dataclasses
 import struct
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -449,12 +449,82 @@ class SaturationView(_View):
     warning: bool = False
 
 
+class CameraView(_View):
+    """The camera model of the frame, so that a page projects sky points like the solver does.
+
+    `rotation` holds nine numbers, row by row: the rotation from CIRS (the apparent frame of
+    date) to the camera frame. A sky point `u` projects to `w = R u`, `x = center_x_px +
+    (w_x / w_z) / s`, and `y = center_y_px + parity * (w_y / w_z) / s`, where `s` is
+    `scale_arcsec_px` in radians per pixel. A point with `w_z` of 0.05 or less is not in front of
+    the camera. Pixels follow the frame of `AlignmentFrameInfo`, with the center of the first
+    pixel at 0.
+    """
+
+    rotation: list[float] = Field(min_length=9, max_length=9)
+    scale_arcsec_px: float = Field(gt=0)
+    parity: Literal[1, -1]
+    center_x_px: float
+    center_y_px: float
+
+
+class PoleView(_View):
+    """Where the celestial pole of date falls. Offsets are the pole minus the frame center.
+
+    `x_px`, `y_px`, `dx_px`, `dy_px`, and `distance_px` are `null` when the pole lies behind the
+    camera. `distance_arcmin` is the exact angle between the frame center and the pole. `roll_deg`
+    is the position angle of the direction to the pole, from image up toward image left, and it
+    is `null` within one pixel of the center.
+    """
+
+    in_front: bool
+    x_px: float | None = None
+    y_px: float | None = None
+    inside_frame: bool = False
+    dx_px: float | None = None
+    dy_px: float | None = None
+    distance_px: float | None = Field(None, ge=0)
+    distance_arcmin: float | None = Field(None, ge=0)
+    roll_deg: float | None = None
+
+
+class OrbitView(_View):
+    """How the circle that Polaris follows around the pole sits in the frame.
+
+    `margin_px` is the distance from the circle to the nearest frame edge. It is negative when
+    the circle leaves the frame, and `fits` says the same in one flag.
+    """
+
+    fits: bool
+    margin_px: float
+    margin_arcmin: float | None = None
+
+
+class SkyView(_View):
+    """The pole, the orbit of Polaris, and the camera that projects them. Coordinates are of date.
+
+    `polaris_colatitude_deg` is the angle between Polaris and the pole at the time of the frame,
+    which is the radius of the orbit. `orbit` is `null` without it. The whole view takes a few
+    hundred bytes, because the state travels with every frame.
+    """
+
+    camera: CameraView
+    pole: PoleView
+    polaris_colatitude_deg: float | None = Field(None, ge=0, lt=90)
+    orbit: OrbitView | None = None
+
+    @classmethod
+    def from_geometry(cls, geometry: Any) -> SkyView:
+        """Wrap the `SkyGeometry` that `seeingmon.survey.skyview.build_sky_view` returns."""
+        return cls.model_validate(dataclasses.asdict(geometry))
+
+
 class AlignmentState(_View):
     """What the Align page shows next to the live view. The answer of `alignment_state`.
 
     Every part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an
     ISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to
-    the size of the image that it shows.
+    the size of the image that it shows. `sky` holds the pole, the orbit of Polaris, and the
+    camera model of the latest current solution. It exists whether or not a target is set.
     """
 
     active: bool = False
@@ -466,6 +536,7 @@ class AlignmentState(_View):
     focus: FocusView | None = None
     histogram: HistogramView | None = None
     saturation: SaturationView | None = None
+    sky: SkyView | None = None
     quality: dict[str, str] = Field(default_factory=dict, max_length=32)
 
 
