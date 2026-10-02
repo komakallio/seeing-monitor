@@ -3,11 +3,13 @@
 `core` listens at one address and serves two channels (see `seeingmon.services.web.contract`, which
 `web` owns and `core` implements):
 
-- **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, and `alignment_state`.
-  Every method answers at once, so all of them run inline on the connection thread and no worker is
-  needed. `core` adds one method that the contract does not name: `results` answers with the latest
-  commissioning results (the `detail` of each result), so that `seeingmon burst --wait` can show
-  the outcome of its task. A client that does not know the method never calls it.
+- **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, `alignment_state`, and
+  `dark_library`. Every method answers at once, so all of them run inline on the connection thread
+  and no worker is needed. `dark_library` answers with the `DarkLibraryView` as JSON: the sets of
+  the dark library, whether it is due, the model, the sensor temperature, and the progress of the
+  latest dark session. `core` adds one method that the contract does not name: `results` answers
+  with the latest commissioning results (the `detail` of each result), so that `seeingmon burst
+  --wait` can show the outcome of its task. A client that does not know the method never calls it.
 - **`alignment`**, a `StreamService`. The helper takes each client as a `StreamSender` and pushes
   the frames of the live view (see `seeingmon.services.core.alignment.helper`).
 
@@ -16,7 +18,9 @@ connection layer turns into an `InvalidParams` error) and hands it to `Scheduler
 answers at once. A replay command is checked before it reaches the scheduler: its source must be a
 recording name without a directory part that exists, and its options must be on the list that the
 replay accepts. A command that fails the check is a normal answer with `accepted` false, and
-`core` writes an event for it, as the scheduler does for every command that it sees.
+`core` writes an event for it, as the scheduler does for every command that it sees. The owner of
+the RPC can ask to hear about each command that the scheduler accepted (`on_accepted`), which is how
+`core` learns that a dark task is queued.
 
 **Roles.** A client names itself in the hello parameters (`role` is `web` or `cli`). The health
 record counts the `web` component as `ok` while a client with that role is connected.
@@ -42,10 +46,12 @@ from seeingmon.services.ipc.rpc import RpcService
 from seeingmon.services.ipc.stream import StreamSender, StreamService, StreamWindow
 from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_STATE,
+    METHOD_DARK_LIBRARY,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
     AlignmentState,
+    DarkLibraryView,
     decode_command,
     encode_result,
     encode_status,
@@ -87,12 +93,16 @@ class CoreRpc:
         alignment: AlignmentPort,
         check_replay: Callable[[QueueReplay], str | None] | None = None,
         writer: EventWriter | None = None,
+        dark_library: Callable[[], DarkLibraryView] | None = None,
+        on_accepted: Callable[[Command, CommandResult], None] | None = None,
     ) -> None:
         self.instance = instance
         self._scheduler = scheduler
         self._alignment = alignment
         self._check_replay = check_replay
         self._writer = writer
+        self._dark_library = dark_library
+        self._on_accepted = on_accepted
         self._service: RpcService | None = None
         self.submitted = 0
         self.refused = 0
@@ -100,13 +110,16 @@ class CoreRpc:
     # --- The methods -----------------------------------------------------------------------
 
     def handlers(self) -> dict[str, Callable[[Mapping[str, Any]], Any]]:
-        return {
+        methods: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             METHOD_PING: self._ping,
             METHOD_STATUS: self._status,
             METHOD_SUBMIT: self._submit,
             METHOD_ALIGNMENT_STATE: self._alignment_state,
             METHOD_RESULTS: self._results,
         }
+        if self._dark_library is not None:
+            methods[METHOD_DARK_LIBRARY] = self._answer_dark_library
+        return methods
 
     def _ping(self, params: Mapping[str, Any]) -> Any:
         return {"instance": self.instance}
@@ -116,6 +129,10 @@ class CoreRpc:
 
     def _alignment_state(self, params: Mapping[str, Any]) -> Any:
         return self._alignment.state().model_dump(mode="json")
+
+    def _answer_dark_library(self, params: Mapping[str, Any]) -> Any:
+        assert self._dark_library is not None
+        return self._dark_library().model_dump(mode="json")
 
     def _results(self, params: Mapping[str, Any]) -> Any:
         recent = self._scheduler.results()[-MAX_RESULTS:]
@@ -140,7 +157,13 @@ class CoreRpc:
                 )
             )
         self.submitted += 1
-        return encode_result(self._scheduler.submit(command))
+        result = self._scheduler.submit(command)
+        if result.accepted and self._on_accepted is not None:
+            try:
+                self._on_accepted(command, result)
+            except Exception:
+                _log.exception("the listener of the accepted commands failed")
+        return encode_result(result)
 
     def _problem_with(self, command: Command) -> str | None:
         if isinstance(command, QueueReplay) and self._check_replay is not None:

@@ -60,7 +60,10 @@ from seeingmon.hardware.power import CommandRunner, PowerConfig, PowerCycle
 from seeingmon.hardware.sqm import SqmConfig, SqmLeReader
 from seeingmon.records import ReferenceRecord
 from seeingmon.scheduler import (
+    Command,
+    CommandResult,
     CommissionResult,
+    QueueDark,
     Scheduler,
     SchedulerConfig,
     State,
@@ -307,6 +310,7 @@ class CoreApp:
         self.survey_config = with_calibration(
             config.section("survey", SurveyConfig), self.storage.layout
         )
+        self._build_dark()
         transparency = QualityOptions.from_config(self.survey_config).transparency
         self.tracker: PointingTracker | None = parts.tracker
         self.survey: SurveyAnalyzer
@@ -357,6 +361,18 @@ class CoreApp:
         self.pointing: PointingProvider = parts.pointing or (
             self.tracker if self.tracker is not None else _NoPointing()
         )
+
+    def _build_dark(self) -> None:
+        """The dark library of the survey analysis, and the state of the dark task.
+
+        The health record, the dark task, and the RPC share one library, the one that the survey
+        analysis reads (`calibration_dir`), so that a set that the task adds reaches the next frame.
+        """
+        from seeingmon.services.core.commissioning.dark import DarkTaskState
+        from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary
+
+        self.dark_library = DarkLibrary(Path(self.survey_config.calibration_dir) / DARKS_DIRNAME)
+        self.dark_state = DarkTaskState(self.clock, self.survey_config.dark)
 
     def _load_seed(self, tracker: Any) -> None:
         """Start the tracker with the solution of `seed_solution_file`, when one is configured."""
@@ -448,6 +464,19 @@ class CoreApp:
                 max_duration_s=commissioning.burst_max_duration_s,
             ),
         )
+        from seeingmon.services.core.commissioning.dark import DarkHandler
+
+        self.scheduler.register_handler(
+            "dark",
+            DarkHandler(
+                library=self.dark_library,
+                layout=self.storage.layout,
+                profile=self.profile,
+                clock=self.beat_clock,
+                config=self.survey_config.dark,
+                state=self.dark_state,
+            ),
+        )
         self.scheduler.register_handler(
             "replay",
             ReplayHandler(
@@ -465,11 +494,12 @@ class CoreApp:
 
     def _build_reporting(self) -> None:
         assert self.storage is not None
-        from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary, dark_due
+        from seeingmon.services.core.commissioning.dark import DarkLibraryReader
+        from seeingmon.survey.dark import dark_due
 
         # The library of the survey analysis (`calibration_dir`), so that the health record and
         # the `dark_due` flag of the sky quality agree.
-        library = DarkLibrary(Path(self.survey_config.calibration_dir) / DARKS_DIRNAME)
+        library = self.dark_library
         survey_mode = self.profile.survey_mode.mode
         dark = self.survey_config.dark
 
@@ -483,12 +513,22 @@ class CoreApp:
                 max_age_days=dark.max_age_days,
             )
 
+        self.dark_reader = DarkLibraryReader(
+            library=library,
+            profile=self.profile,
+            clock=self.clock,
+            config=dark,
+            state=self.dark_state,
+            temperature_c=lambda: self.scheduler.status().sensor_temperature_c,
+        )
         self.rpc = CoreRpc(
             instance=self.instance,
             scheduler=self.scheduler,
             alignment=self.alignment,
             check_replay=self._check_replay,
             writer=self.events,
+            dark_library=self.dark_reader.view,
+            on_accepted=self._on_command_accepted,
         )
         self.health = HealthReporter(
             clock=self.clock,
@@ -550,6 +590,11 @@ class CoreApp:
         self._camera = info
         self._write_run_record()
         self.tasks.trigger("health")  # the first record had no camera to report on
+
+    def _on_command_accepted(self, command: Command, result: CommandResult) -> None:
+        """The scheduler accepted a command that came through the RPC."""
+        if isinstance(command, QueueDark) and result.task_id is not None:
+            self.dark_state.queued(result.task_id, command)
 
     def _on_result(self, result: CommissionResult) -> None:
         _log.info("%s %d finished: %s", result.kind, result.task_id, result.summary)

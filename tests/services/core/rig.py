@@ -7,7 +7,7 @@ does nothing, so the housekeeping never moves virtual time.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,8 +16,10 @@ import numpy as np
 
 from seeingmon.clock import NS_PER_S, Clock, ClockStatus, VirtualClock, iso_to_utc_ns
 from seeingmon.config import Config, load_config
+from seeingmon.drivers.base import CameraDriver
 from seeingmon.frames import Frame
 from seeingmon.hardware.events import HardwareEvent
+from seeingmon.profile import Profile
 from seeingmon.records import Record
 from seeingmon.scheduler.levels import EscalationLevel
 from seeingmon.services.acquire.events import EventBatch, LoggedEvent
@@ -188,11 +190,19 @@ def build_rig(
     endpoint: Any = None,
     threads: bool = False,
     clock: Clock | None = None,
+    profile: Path | None = None,
+    driver_factory: Callable[[Clock, Profile], CameraDriver] | None = None,
 ) -> CoreRig:
-    """Build a `CoreApp` on fakes, a virtual clock, and a real store in `tmp_path`."""
+    """Build a `CoreApp` on fakes, a virtual clock, and a real store in `tmp_path`.
+
+    `profile` names a profile file instead of the default one. `driver_factory` builds the camera
+    from the clock of the app and the profile, for a test that needs a simulated camera.
+    """
     virtual = VirtualClock(start_utc_ns)
     use_clock: Clock = clock or virtual
-    config = make_config(tmp_path, extra=config_extra, analysis_window_s=analysis_window_s)
+    config = make_config(
+        tmp_path, profile=profile, extra=config_extra, analysis_window_s=analysis_window_s
+    )
     services = config.section("services", ServicesConfig).model_copy(
         update={
             "acquire_address": unique_address("acquire"),
@@ -216,6 +226,8 @@ def build_rig(
         storage_clock=NoSleepClock(use_clock),
         sinks=[],
     )
+    if driver_factory is not None:
+        core_parts.driver = driver_factory(use_clock, config.profile)
     for name, value in (parts or {}).items():
         setattr(core_parts, name, value)
     app = CoreApp(
