@@ -3,15 +3,18 @@
 Script the replies with `server.script(...)`: the server applies one behavior to each request, in
 order, and then falls back to `server.default` (204 No Content). A behavior is one of:
 
-- `Reply(status, body)`: answer with a status and a body.
+- `Reply(status, body)`: answer with a status and a body. A body of bytes may be no UTF-8.
 - `Hang(seconds)`: wait, then answer 204. A client with a shorter timeout gives up first.
 - `Drop()`: close the connection without a reply, as a crashed server does.
+- `Respond(make)`: call `make(request)` with the `Recorded` request, and apply the behavior that it
+  returns. The reply can then depend on the request, for example on a time that a test chose.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
@@ -22,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 @dataclass(frozen=True)
 class Reply:
     status: int = 204
-    body: str = ""
+    body: str | bytes = ""
     headers: dict[str, str] = field(default_factory=dict)
 
 
@@ -36,9 +39,6 @@ class Drop:
     pass
 
 
-Behavior = Reply | Hang | Drop
-
-
 @dataclass(frozen=True)
 class Recorded:
     """One request that the server received."""
@@ -48,6 +48,14 @@ class Recorded:
     query: dict[str, list[str]]
     headers: dict[str, str]  # the names in lowercase
     body: str
+
+
+@dataclass(frozen=True)
+class Respond:
+    make: Callable[[Recorded], Behavior]
+
+
+Behavior = Reply | Hang | Drop | Respond
 
 
 class _Server(ThreadingHTTPServer):
@@ -79,16 +87,15 @@ class FakeInfluxServer:
                 length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(length).decode("utf-8") if length else ""
                 parts = urlsplit(self.path)
-                outer.requests.append(
-                    Recorded(
-                        self.command,
-                        parts.path,
-                        parse_qs(parts.query),
-                        {name.lower(): value for name, value in self.headers.items()},
-                        body,
-                    )
+                recorded = Recorded(
+                    self.command,
+                    parts.path,
+                    parse_qs(parts.query),
+                    {name.lower(): value for name, value in self.headers.items()},
+                    body,
                 )
-                outer._act(self, outer._next())
+                outer.requests.append(recorded)
+                outer._act(self, outer._next(), recorded)
 
             do_POST = handle_request_body  # noqa: N815
             do_GET = handle_request_body  # noqa: N815
@@ -111,14 +118,17 @@ class FakeInfluxServer:
         with self._lock:
             return self._script.popleft() if self._script else self.default
 
-    def _act(self, handler: BaseHTTPRequestHandler, behavior: Behavior) -> None:
+    def _act(self, handler: BaseHTTPRequestHandler, behavior: Behavior, recorded: Recorded) -> None:
+        while isinstance(behavior, Respond):
+            behavior = behavior.make(recorded)
         if isinstance(behavior, Drop):
             handler.close_connection = True  # no reply: the client sees the connection close
             return
         if isinstance(behavior, Hang):
             self._stop.wait(behavior.seconds)
             behavior = Reply(204)
-        payload = behavior.body.encode("utf-8")
+        body = behavior.body
+        payload = body if isinstance(body, bytes) else body.encode("utf-8")
         handler.send_response(behavior.status)
         for name, value in behavior.headers.items():
             handler.send_header(name, value)
