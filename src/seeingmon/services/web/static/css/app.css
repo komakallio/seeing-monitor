@@ -995,14 +995,17 @@ label {
 
 .sentence[data-level="good"] {
   border-left-color: var(--good);
+  color: var(--good);
 }
 
 .sentence[data-level="warn"] {
   border-left-color: var(--warn);
+  color: var(--warn);
 }
 
 .sentence[data-level="bad"] {
   border-left-color: var(--bad);
+  color: var(--bad);
 }
 
 #roll-block h2 {

@@ -32,10 +32,37 @@
   }
 
   const COORDINATES = "Coordinates are of date.";
+  // The pole counts as aligned when it is this close to the aim, in arcminutes.
+  const ALIGNED_ARCMIN = 2;
 
   // --- The pole card ----------------------------------------------------------------------------
 
-  /** The offset of the pole from the center as a sentence, or `null` without a sky view. */
+  /** The move that brings the pole to the aim, as a sentence, or `null` when it rounds to nothing. */
+  function moveSentence(sky) {
+    const altitude = sky.altitude_arcmin;
+    const azimuth = sky.azimuth_arcmin;
+    const inDegrees = Math.hypot(altitude, azimuth) >= 60;
+    const vertical = Math.abs(altitude) >= 0.5;
+    const horizontal = Math.abs(azimuth) >= 0.5;
+    const turn = angle(azimuth, inDegrees) + " toward the " + (azimuth > 0 ? "east" : "west") + " in azimuth";
+    if (vertical && horizontal) {
+      return (altitude > 0 ? "Raise" : "Lower") + " the camera by " + angle(altitude, inDegrees) + " in altitude and turn it " + turn + ".";
+    }
+    if (vertical) {
+      return (altitude > 0 ? "Raise" : "Lower") + " the camera by " + angle(altitude, inDegrees) + " in altitude.";
+    }
+    if (horizontal) {
+      return "Turn the camera " + turn + ".";
+    }
+    return null;
+  }
+
+  /**
+   * What to do with the camera, as a sentence, or `null` without a sky view. With the site, it says
+   * how to move in altitude and in azimuth (positive altitude means raise, and positive azimuth
+   * means east). Without the site, it gives the image directions from the aim to the pole. Within
+   * 2 arcminutes of the aim the pole counts as aligned.
+   */
   function poleSentence(sky) {
     if (!sky) {
       return null;
@@ -44,26 +71,48 @@
     if (!pole.in_front) {
       return "The pole is behind the camera, so the camera points away from it.";
     }
-    const distance = pole.distance_arcmin;
-    if (distance === null || distance === undefined || pole.dx_px === null || pole.dy_px === null) {
+    const aim = sky.aim || null;
+    const hasAim = Boolean(aim) && aim.dx_px !== null && aim.dx_px !== undefined;
+    const distance = hasAim ? aim.distance_arcmin : pole.distance_arcmin;
+    const dx = hasAim ? aim.dx_px : pole.dx_px;
+    const dy = hasAim ? aim.dy_px : pole.dy_px;
+    if (distance === null || distance === undefined || dx === null || dx === undefined || dy === null || dy === undefined) {
       return "The position of the pole is not known.";
     }
     const outside = pole.inside_frame ? "" : " It lies outside the frame.";
-    if (distance < 1) {
-      return "The pole is within 1′ of the center." + outside;
+    const target = hasAim ? "the aim" : "the center";
+    if (distance < ALIGNED_ARCMIN) {
+      return "Aligned: the pole is within " + ALIGNED_ARCMIN + PRIME + " of " + target + "." + outside;
+    }
+    if (sky.altitude_arcmin !== null && sky.altitude_arcmin !== undefined && sky.azimuth_arcmin !== null && sky.azimuth_arcmin !== undefined) {
+      const move = moveSentence(sky);
+      if (move) {
+        return move + outside;
+      }
     }
     const inDegrees = distance >= 60;
     const scale = sky.camera.scale_arcsec_px;
     const parts = [];
-    const across = (pole.dx_px * scale) / 60;
-    const down = (pole.dy_px * scale) / 60;
+    const across = (dx * scale) / 60;
+    const down = (dy * scale) / 60;
     if (Math.abs(across) >= 0.05) {
       parts.push(angle(across, inDegrees) + (across > 0 ? " right" : " left"));
     }
     if (Math.abs(down) >= 0.05) {
       parts.push(angle(down, inDegrees) + (down > 0 ? " down" : " up"));
     }
-    return "The pole is " + angle(distance, inDegrees) + " from the center: " + parts.join(" and ") + "." + outside;
+    return "The pole is " + angle(distance, inDegrees) + " from " + target + ": " + parts.join(" and ") + "." + outside;
+  }
+
+  /** A hint for the pole card when the site is missing, so that the move in altitude and azimuth is not known. */
+  function siteNote(sky) {
+    if (!sky || !sky.aim || !sky.pole.in_front) {
+      return "";
+    }
+    if (sky.altitude_arcmin !== null && sky.altitude_arcmin !== undefined) {
+      return "";
+    }
+    return "Set [site] in the local configuration to get the move in altitude and in azimuth.";
   }
 
   /** `none` (no orbit known), `good`, `tight` (fits with a thin margin), or `bad` (leaves the frame). */
@@ -125,7 +174,19 @@
   // --- The offset card --------------------------------------------------------------------------
 
   const TARGET_NOTE =
-    "The target comes from [alignment] in the local configuration. When the camera sits where you want it, copy the target settings below into that file.";
+    "A target is optional: the overlay aims the pole at the center of the frame. The offset compares Polaris with a target from [alignment] in the local configuration, when you set one.";
+
+  /**
+   * The roll, for information only. A mount that moves in altitude and in azimuth cannot change the
+   * roll about the optical axis, so the page never asks the person to correct it.
+   */
+  function rollNote(solved) {
+    const tail = " Altitude and azimuth adjustments do not change it.";
+    if (!solved || solved.roll_deg === null || solved.roll_deg === undefined) {
+      return "Camera roll: not defined while the pole sits at the center of the frame." + tail;
+    }
+    return "Camera roll: " + fmt.num(solved.roll_deg, 1) + DEGREE + " from image up toward image left." + tail;
+  }
 
   /**
    * The rows and the notes of the offset card. The card has three states:
@@ -156,29 +217,20 @@
         rows: [
           ["Target", "No target is set"],
           ["Polaris", "x " + fmt.num(solved.x_px, 1) + ", y " + fmt.num(solved.y_px, 1) + " px"],
-          ["Roll", solved.roll_deg === null || solved.roll_deg === undefined ? fmt.dash : fmt.num(solved.roll_deg, 2) + DEGREE],
         ],
         note: TARGET_NOTE,
-        roll: null,
+        roll: { text: rollNote(solved) },
       };
     }
-    const roll = offset.roll_deg || 0;
     return {
       state: "targeted",
       rows: [
         ["Horizontal (x)", fmt.signed(offset.dx_px, 1) + " px, " + fmt.signed(offset.dx_arcsec, 1) + "″"],
         ["Vertical (y)", fmt.signed(offset.dy_px, 1) + " px, " + fmt.signed(offset.dy_arcsec, 1) + "″"],
         ["Distance", fmt.num(offset.distance_px, 1) + " px, " + fmt.num(offset.distance_arcsec, 1) + "″"],
-        ["Roll", offset.roll_deg === null || offset.roll_deg === undefined ? fmt.dash : fmt.signed(offset.roll_deg, 2) + DEGREE],
       ],
       note: "",
-      roll: {
-        value: roll,
-        text:
-          Math.abs(roll) < 0.1
-            ? "The roll is within 0.1 degrees of the target."
-            : "Rotate the camera by " + fmt.signed(-roll, 2) + " degrees to match the target roll.",
-      },
+      roll: { text: rollNote(solved) },
     };
   }
 
@@ -198,7 +250,8 @@
   }
 
   window.Seeing.AlignText = {
-    COORDINATES, TARGET_NOTE, TIGHT_FRACTION, poleSentence, orbitState, orbitSentences, orbitLabel,
-    poleArrowText, poleReason, offsetCard, targetSettings, arcminutes, degrees, angle,
+    COORDINATES, TARGET_NOTE, TIGHT_FRACTION, ALIGNED_ARCMIN, poleSentence, moveSentence, siteNote,
+    orbitState, orbitSentences, orbitLabel, poleArrowText, poleReason, offsetCard, rollNote,
+    targetSettings, arcminutes, degrees, angle,
   };
 })();

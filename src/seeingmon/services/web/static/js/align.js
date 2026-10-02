@@ -510,6 +510,9 @@
       return;
     }
     sentence.textContent = AlignText.poleSentence(sky);
+    const hint = $("adjust-note");
+    hint.textContent = AlignText.siteNote(sky);
+    hint.hidden = hint.textContent === "";
     orbit.textContent = AlignText.orbitSentences(sky, state.frame).join(" ");
     const level = ORBIT_LEVELS[AlignText.orbitState(sky, state.frame)];
     if (level) {
@@ -529,11 +532,6 @@
     note.hidden = card.note === "";
     $("roll-block").hidden = !card.roll;
     if (card.roll) {
-      const limit = 2;
-      const roll = Math.max(-limit, Math.min(limit, card.roll.value));
-      $("roll-mark").style.left = "calc(" + ((roll + limit) / (2 * limit)) * 100 + "% - 1px)";
-      $("roll-min").textContent = "−" + limit + "°";
-      $("roll-max").textContent = "+" + limit + "°";
       $("roll-note").textContent = card.roll.text;
     }
     const settings = AlignText.targetSettings(state.solved);
