@@ -6,8 +6,14 @@
     survey/YYYY/MM/DD/<stamp>.fits              the FITS frame, for some images
 
 The stamp is the UTC time of the image as `YYYYMMDDTHHMMSS.mmmZ`. The ID of an image is the name
-of its preview without the extension, such as `preview-20261001T201500.123Z`. The FITS frame of an
-image has the stamp of its ID, so the ID names both files.
+of its preview without the extension, such as `survey-20261001T201500.123Z`. The FITS frame of an
+image has the stamp of its ID, so the ID names both files. `core` names the kind of a preview after
+the frame: `survey` for a long exposure, `short` for a short one, and `event` for a frame that it
+kept because of an event.
+
+**From a record to its image.** The `image_ref` of a `survey_frame` record is the path of the FITS
+file when `core` kept the frame, and the path of the preview otherwise. `ImageStore.for_ref` turns
+either into the image, so one call gives the preview of a record.
 
 **No path from a client.** The ID passes a strict pattern, and the code builds every path from the
 parts that the pattern captured. A `/`, a `\\`, a `.`, and a `..` cannot pass it. The code then
@@ -34,6 +40,10 @@ from seeingmon.services.web.config import ImageSettings
 from seeingmon.services.web.data import InvalidQueryError
 from seeingmon.store.layout import DataLayout
 
+IMAGE_REF = re.compile(
+    r"(?P<tier>previews|survey)/(?P<year>[0-9]{4})/(?P<month>[0-9]{2})/(?P<day>[0-9]{2})/"
+    r"(?P<name>[A-Za-z0-9_.-]{1,80})"
+)
 IMAGE_ID = re.compile(
     r"(?P<kind>[a-z][a-z0-9_]{0,23})-"
     r"(?P<stamp>(?P<year>[0-9]{4})(?P<month>[0-9]{2})(?P<day>[0-9]{2})T(?P<time>[0-9]{6})"
@@ -186,6 +196,39 @@ class ImageStore:
     def get(self, image_id: str) -> ImageInfo | None:
         """The image with this ID, or `None` when no such image exists."""
         return self._info(parse_image_id(image_id))
+
+    def for_ref(self, ref: str) -> ImageInfo | None:
+        """The image that the `image_ref` of a `survey_frame` record names, or `None`.
+
+        The reference is a path under the data directory, `previews/YYYY/MM/DD/<kind>-<stamp>.jpg`
+        or `survey/YYYY/MM/DD/<stamp>.fits` (see `DataLayout.relative`). A FITS name has no kind, so
+        the function looks in the day folder of the previews for the preview with the same stamp.
+        A reference that does not match, a day folder that disagrees with the stamp, and a file
+        that is missing (retention deleted it) give `None`. The function never raises for a bad
+        reference, because the references come from stored records.
+        """
+        match = IMAGE_REF.fullmatch(ref)
+        if match is None:
+            return None
+        year, month, day = match["year"], match["month"], match["day"]
+        date = f"{year}{month}{day}"
+        name = match["name"]
+        if match["tier"] == "previews":
+            if not name.endswith(PREVIEW_SUFFIX):
+                return None
+            try:
+                key = ImageKey.from_text(name[: -len(PREVIEW_SUFFIX)])
+            except ValueError:
+                return None
+            return self._info(key) if key.date == date else None
+        if not name.endswith(FITS_SUFFIX):
+            return None
+        stamp = name[: -len(FITS_SUFFIX)]
+        directory = self._layout.previews_dir / year / month / day
+        for key in self._keys_in(directory, date):
+            if key.stamp == stamp and (info := self._info(key)) is not None:
+                return info
+        return None
 
     def latest(self) -> ImageInfo | None:
         """The newest image, or `None` when there is none."""

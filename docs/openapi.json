@@ -1582,6 +1582,7 @@
                 "type": "null"
               }
             ],
+            "description": "The size of the FITS file, or `null` without one.",
             "title": "Fits Bytes"
           },
           "fits_url": {
@@ -1596,6 +1597,7 @@
             "title": "Fits Url"
           },
           "has_fits": {
+            "description": "Whether the station kept the frame as a FITS file.",
             "title": "Has Fits",
             "type": "boolean"
           },
@@ -1605,6 +1607,7 @@
             "type": "string"
           },
           "kind": {
+            "description": "What the frame is: `survey` (a long exposure), `short` (the short exposure of a step), or `event` (a frame that the station kept because of an event).",
             "title": "Kind",
             "type": "string"
           },
@@ -1613,6 +1616,7 @@
             "type": "string"
           },
           "size_bytes": {
+            "description": "The size of the JPEG preview, in bytes.",
             "title": "Size Bytes",
             "type": "integer"
           },

@@ -255,3 +255,103 @@ def test_a_symbolic_link_to_a_sibling_file_is_not_followed_either(
         pytest.skip("this system does not allow symbolic links")
     assert store.get(f"preview-{STAMPS[1]}") is None
     assert [image.key.stamp for image in store.recent(10)[0]] == [STAMPS[3]]
+
+
+# --- From a record to its image --------------------------------------------------------------
+
+
+class TestFromARecordToItsImage:
+    """`for_ref` turns the `image_ref` of a `survey_frame` record into the image."""
+
+    def test_a_reference_to_a_preview_names_that_image(
+        self, layout: DataLayout, store: ImageStore
+    ) -> None:
+        write_preview(layout, STAMPS[1], kind="survey")
+        ref = layout.relative(layout.preview_path(_time_of(STAMPS[1]), kind="survey"))
+        assert ref == "previews/2026/09/30/survey-20260930T020000.500Z.jpg"
+        info = store.for_ref(ref)
+        assert info is not None
+        assert info.id == f"survey-{STAMPS[1]}"
+        assert not info.has_fits
+
+    def test_a_reference_to_a_fits_file_names_the_preview_with_its_stamp(
+        self, layout: DataLayout, store: ImageStore
+    ) -> None:
+        write_preview(layout, STAMPS[1], kind="event")  # the kind is not in the FITS name
+        write_preview(layout, STAMPS[2], kind="survey")
+        write_fits(layout, STAMPS[1])
+        ref = layout.relative(layout.survey_path(_time_of(STAMPS[1])))
+        assert ref == "survey/2026/09/30/20260930T020000.500Z.fits"
+        info = store.for_ref(ref)
+        assert info is not None
+        assert info.id == f"event-{STAMPS[1]}"
+        assert info.has_fits
+
+    def test_the_image_of_a_reference_is_the_image_that_the_list_shows(
+        self, layout: DataLayout, store: ImageStore
+    ) -> None:
+        for stamp in STAMPS:
+            write_preview(layout, stamp, kind="survey")
+        write_fits(layout, STAMPS[3])
+        listed = {image.id: image for image in store.recent(10)[0]}
+        for stamp in STAMPS:
+            path = layout.survey_path(_time_of(stamp)) if stamp == STAMPS[3] else None
+            path = path or layout.preview_path(_time_of(stamp), kind="survey")
+            info = store.for_ref(layout.relative(path))
+            assert info is not None
+            assert info == listed[info.id]
+
+    def test_a_file_that_retention_deleted_gives_none(
+        self, layout: DataLayout, store: ImageStore
+    ) -> None:
+        preview = write_preview(layout, STAMPS[1], kind="survey")
+        write_fits(layout, STAMPS[1])
+        preview.unlink()
+        assert store.for_ref("previews/2026/09/30/survey-20260930T020000.500Z.jpg") is None
+        assert store.for_ref("survey/2026/09/30/20260930T020000.500Z.fits") is None  # no preview
+
+    def test_a_fits_file_without_a_fits_frame_still_finds_the_preview(
+        self, layout: DataLayout, store: ImageStore
+    ) -> None:
+        write_preview(layout, STAMPS[1], kind="survey")  # the FITS file expired, the preview stayed
+        info = store.for_ref("survey/2026/09/30/20260930T020000.500Z.fits")
+        assert info is not None
+        assert not info.has_fits
+
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "",
+            "survey",
+            "../x",
+            "/previews/2026/09/30/survey-20260930T020000.500Z.jpg",
+            "previews/2026/09/30/../30/survey-20260930T020000.500Z.jpg",
+            r"previews\2026\09\30\survey-20260930T020000.500Z.jpg",
+            "C:/previews/2026/09/30/survey-20260930T020000.500Z.jpg",  # repo-check: allow
+            "previews/2026/09/30/survey-20260930T020000.500Z.png",
+            "previews/2026/09/30/survey-20260930T020000.500Z",
+            "previews/2026/09/30/other.jpg",
+            "previews/2026/09/29/survey-20260930T020000.500Z.jpg",  # the folder says another day
+            "survey/2026/09/29/20260930T020000.500Z.fits",
+            "survey/2026/09/30/20260930T020000.500Z.jpg",
+            "survey/2026/09/30/20260930T020000.500Z.fits.gz",
+            "survey/2026/09/30/2026.fits",
+            "survey/2026/09/30/%2e%2e.fits",
+            "calibration/darks/dark-20260930T020000Z-bin2-g120.fits",
+            "bursts/20260930T020000Z/burst.ser",
+            "previews/2026/09/30/survey-20260930T020000.500Z.jpg\x00",
+            "previews/2026/09/30/survey-20260930T020000.500Z.jpg\n",
+            "previews/2026/09/30/" + "a" * 200 + ".jpg",
+        ],
+    )
+    def test_a_reference_that_is_not_an_image_gives_none(
+        self, layout: DataLayout, store: ImageStore, ref: str
+    ) -> None:
+        write_preview(layout, STAMPS[1], kind="survey")
+        write_fits(layout, STAMPS[1])
+        assert store.for_ref(ref) is None
+
+
+def _time_of(stamp: str) -> int:
+    """The nanoseconds of a stamp, with the parser of the web process."""
+    return parse_image_id(f"preview-{stamp}").t_utc_ns

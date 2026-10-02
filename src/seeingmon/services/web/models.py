@@ -492,12 +492,17 @@ class ImageItem(_Response):
     """One image."""
 
     id: str = Field(description="The ID. Pass it to `GET /images/{id}`.")
-    kind: str
+    kind: str = Field(
+        description=(
+            "What the frame is: `survey` (a long exposure), `short` (the short exposure of a "
+            "step), or `event` (a frame that the station kept because of an event)."
+        )
+    )
     t_utc: str
     t_utc_ns: int
-    size_bytes: int
-    has_fits: bool
-    fits_bytes: int | None
+    size_bytes: int = Field(description="The size of the JPEG preview, in bytes.")
+    has_fits: bool = Field(description="Whether the station kept the frame as a FITS file.")
+    fits_bytes: int | None = Field(description="The size of the FITS file, or `null` without one.")
     preview_url: str
     fits_url: str | None
 
