@@ -161,11 +161,13 @@ class AlignmentHelper:
     ) -> AlignmentState:
         target = resolve_target(self._settings, self._tracker, summary.t_utc_ns, summary.mode)
         state = build_state(summary, solution, target, self._settings, best_fwhm_px=best)
-        if self._solver is None and "solved" in (state.quality or {}):
-            quality = dict(state.quality)
-            quality["solved"] = "the quick solve is not available: no catalog is configured"
-            state = state.model_copy(update={"quality": quality})
-        return state
+        if self._solver is not None:
+            return state
+        reason = "the quick solve is not available: no catalog is configured"
+        replaced = {key: reason for key in ("solved", "sky") if key in state.quality}
+        if not replaced:
+            return state
+        return state.model_copy(update={"quality": {**state.quality, **replaced}})
 
     def _end_session(self) -> None:
         with self._lock:

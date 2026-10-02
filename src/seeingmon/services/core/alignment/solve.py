@@ -32,6 +32,7 @@ from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import FrameAnalysis
 from seeingmon.survey.pointing import PointingSolution, ReferenceSolution
 from seeingmon.survey.tracker import PointingTracker
+from seeingmon.survey.wcs_fit import CameraAttitude
 
 _log = logging.getLogger(__name__)
 
@@ -46,6 +47,10 @@ class QuickSolution:
     `x_px` and `y_px` locate Polaris in the pixels of the frame's readout mode at the time of the
     frame, and `roll_deg` is the position angle of the direction to the pole (undefined when the
     pole sits on the field center). `focus_fwhm_px` is the median FWHM of the usable stars.
+
+    `attitude` is the camera model at the time of the frame (CIRS to camera, in the pixels of the
+    frame), and `polaris_colatitude_deg` is the angle between Polaris and the pole at that time.
+    The live view builds its sky view, the pole, and the orbit of Polaris from the two.
     """
 
     t_utc_ns: int
@@ -63,6 +68,8 @@ class QuickSolution:
     n_focus_stars: int = 0
     elapsed_s: float = 0.0
     note: str = ""
+    attitude: CameraAttitude | None = None
+    polaris_colatitude_deg: float | None = None
 
 
 class Analyzer(Protocol):
@@ -181,7 +188,7 @@ class QuickSolver:
         else:
             note = note or "the fit is too weak to move the tracker"
         position = solution.polaris_pixel(frame.t_utc_ns)
-        roll = solution.attitude_at(frame.t_utc_ns).roll_deg()
+        attitude = solution.attitude_at(frame.t_utc_ns)
         self.solves += 1
         return QuickSolution(
             frame.t_utc_ns,
@@ -189,7 +196,7 @@ class QuickSolver:
             True,
             x_px=None if position is None else position[0],
             y_px=None if position is None else position[1],
-            roll_deg=roll,
+            roll_deg=attitude.roll_deg(),
             n_matched=solution.n_matched,
             rms_arcsec=solution.rms_arcsec,
             scale_arcsec_px=solution.scale_rad_px * ARCSEC_PER_RAD,
@@ -199,4 +206,6 @@ class QuickSolver:
             n_focus_stars=n_focus,
             elapsed_s=elapsed_s,
             note=note,
+            attitude=attitude,
+            polaris_colatitude_deg=solution.polaris_colatitude_deg(frame.t_utc_ns),
         )

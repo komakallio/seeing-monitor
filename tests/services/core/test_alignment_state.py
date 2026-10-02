@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import math
+
 import pytest
 
 from seeingmon.clock import NS_PER_S
@@ -14,12 +17,34 @@ from seeingmon.services.core.alignment.state import (
     wrap_degrees,
 )
 from seeingmon.services.core.settings import AlignmentSettings
-from seeingmon.services.web.contract import HistogramView, SaturationView
+from seeingmon.services.web.contract import (
+    MAX_STATE_BYTES,
+    HistogramView,
+    SaturationView,
+    SkyView,
+    decode_alignment_state,
+    pack_frame,
+)
+from seeingmon.survey.geometry import ARCSEC_PER_RAD
+from seeingmon.survey.skyview import build_sky_view
 from seeingmon.survey.tracker import PointingTracker
+from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
+from tests.services.web.helpers import tiny_jpeg
 from tests.survey import synth
 
 T0 = 1_800_000_000 * NS_PER_S
 SCALE = 3.82
+COLATITUDE = 0.6265  # degrees: about the colatitude of Polaris in 2026
+
+
+def camera(distance_deg: float = 0.9, roll_deg: float = -65.0) -> CameraAttitude:
+    """A camera whose pole lies `distance_deg` from the center of a 4144 x 2822 frame."""
+    return CameraAttitude(
+        rotation=synth.make_attitude(distance_deg, 40.0, roll_deg),
+        scale_rad_px=SCALE / ARCSEC_PER_RAD,
+        parity=1,
+        center_px=pixel_center(4144, 2822),
+    )
 
 
 def frame_summary(**changes: object) -> FrameSummary:
@@ -54,6 +79,8 @@ def solution(**changes: object) -> QuickSolution:
         "n_detected": 120,
         "focus_fwhm_px": 2.4,
         "n_focus_stars": 40,
+        "attitude": camera(),
+        "polaris_colatitude_deg": COLATITUDE,
     }
     fields.update(changes)
     return QuickSolution(**fields)  # type: ignore[arg-type]
@@ -218,3 +245,99 @@ class TestTarget:
         tracker = PointingTracker(synth.reference_profile())
         assert resolve_target(AlignmentSettings(), tracker, T0, "bin2") is None
         assert resolve_target(AlignmentSettings(), None, T0, "bin2") is None
+
+
+class TestSky:
+    """The sky view follows the freshness rule of the solved position and ignores the target."""
+
+    def test_a_current_solution_gives_the_sky_view_of_its_attitude(self) -> None:
+        state = build_state(frame_summary(), solution(), TARGET, SETTINGS)
+        expected = SkyView.from_geometry(build_sky_view(camera(), 4144, 2822, COLATITUDE))
+        assert state.sky == expected
+        assert "sky" not in state.quality
+        assert state.sky is not None
+        assert state.sky.pole.in_front
+        assert state.sky.pole.roll_deg == pytest.approx(-65.0, abs=0.01)
+        assert state.sky.polaris_colatitude_deg == COLATITUDE
+        assert state.sky.orbit is not None
+        assert state.sky.orbit.fits
+
+    def test_a_new_install_without_a_target_still_has_the_pole_and_the_solved_position(
+        self,
+    ) -> None:
+        state = build_state(frame_summary(), solution(), None, AlignmentSettings())
+        assert state.target is None
+        assert state.offset is None
+        assert state.solved is not None
+        assert state.sky is not None
+        assert state.sky.pole.in_front
+
+    def test_the_view_measures_from_the_center_of_the_frame_that_it_describes(self) -> None:
+        state = build_state(
+            frame_summary(width_px=3000, height_px=2000), solution(), None, SETTINGS
+        )
+        assert state.sky is not None
+        pole = camera().pole_pixel()
+        assert pole is not None
+        assert state.sky.pole.dx_px == pytest.approx(pole[0] - 1499.5, abs=0.01)
+        assert state.sky.pole.dy_px == pytest.approx(pole[1] - 999.5, abs=0.01)
+
+    def test_a_colatitude_that_is_not_known_leaves_the_orbit_out(self) -> None:
+        state = build_state(
+            frame_summary(), solution(polaris_colatitude_deg=None), TARGET, SETTINGS
+        )
+        assert state.sky is not None
+        assert state.sky.orbit is None
+        assert state.sky.polaris_colatitude_deg is None
+        assert state.sky.pole.in_front
+
+    def test_without_a_solve_the_sky_is_null_and_the_quality_says_why(self) -> None:
+        state = build_state(frame_summary(), None, TARGET, SETTINGS)
+        assert state.sky is None
+        assert state.quality["sky"] == "no solve has finished yet"
+
+    def test_an_unsolved_frame_gives_its_note_for_the_sky_too(self) -> None:
+        failed = solution(solved=False, x_px=None, y_px=None, attitude=None, note="only 3 stars")
+        state = build_state(frame_summary(), failed, TARGET, SETTINGS)
+        assert state.sky is None
+        assert state.quality["sky"] == "only 3 stars"
+
+    def test_a_stale_solution_leaves_the_sky_out_like_the_solved_position(self) -> None:
+        state = build_state(
+            frame_summary(), solution(t_utc_ns=T0 - 30 * NS_PER_S), TARGET, SETTINGS
+        )
+        assert state.solved is None
+        assert state.sky is None
+        assert state.quality["sky"] == state.quality["solved"]
+        assert "30 s old" in state.quality["sky"]
+
+    def test_the_limit_of_the_age_is_the_same_for_both(self) -> None:
+        just_in = solution(t_utc_ns=T0 - round(9.9 * NS_PER_S))
+        just_out = solution(t_utc_ns=T0 - round(10.1 * NS_PER_S))
+        assert build_state(frame_summary(), just_in, None, AlignmentSettings()).sky is not None
+        assert build_state(frame_summary(), just_out, None, AlignmentSettings()).sky is None
+
+    def test_a_solution_without_an_attitude_keeps_the_position_and_says_why(self) -> None:
+        state = build_state(frame_summary(), solution(attitude=None), TARGET, SETTINGS)
+        assert state.solved is not None
+        assert state.sky is None
+        assert state.quality["sky"] == "the solution carries no camera attitude"
+
+    def test_a_pole_behind_the_camera_is_a_normal_state(self) -> None:
+        state = build_state(frame_summary(), solution(attitude=camera(120.0)), None, SETTINGS)
+        assert state.sky is not None
+        assert not state.sky.pole.in_front
+        assert state.sky.orbit is not None
+        assert not state.sky.orbit.fits
+
+    def test_the_sky_survives_the_json_of_the_contract(self) -> None:
+        state = build_state(frame_summary(), solution(), TARGET, SETTINGS)
+        assert decode_alignment_state(json.loads(state.model_dump_json())) == state
+
+    def test_the_state_travels_with_every_frame_and_stays_far_below_the_limit(self) -> None:
+        state = build_state(frame_summary(), solution(), TARGET, SETTINGS, best_fwhm_px=2.1)
+        assert state.sky is not None
+        assert len(state.sky.model_dump_json()) < 700
+        payload = pack_frame(state, tiny_jpeg())
+        assert len(payload) < MAX_STATE_BYTES // 16
+        assert math.isfinite(state.sky.pole.distance_arcmin or 0.0)

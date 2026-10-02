@@ -14,6 +14,12 @@ has no target and no offset.
 (through the plate scale of the readout mode), and the roll offset is the solved roll minus the
 target roll, wrapped to -180 to 180 degrees. A solution older than `solution_max_age_s` is no longer
 current, and the state leaves it out.
+
+**The sky view.** A current solution that carries a camera attitude also gives the `sky` view: the
+celestial pole, the circle that Polaris follows around it, and the camera model that projects both
+(`seeingmon.survey.skyview`). It does not depend on the target, so a new install that has none
+still shows the pole and the orbit. It follows the freshness rule of the solved position, and
+without a current solution `sky` is `None` and `quality["sky"]` says why.
 """
 
 from __future__ import annotations
@@ -31,9 +37,11 @@ from seeingmon.services.web.contract import (
     HistogramView,
     OffsetView,
     SaturationView,
+    SkyView,
     SolvedView,
     TargetView,
 )
+from seeingmon.survey.skyview import build_sky_view
 from seeingmon.survey.tracker import PointingTracker
 
 
@@ -124,6 +132,21 @@ def build_state(
     elif target is not None:
         quality["offset"] = "the offset needs a current solution"
 
+    sky_view: SkyView | None = None
+    if solved_view is None:
+        quality["sky"] = reason or "no current solution"
+    elif solution is None or solution.attitude is None:
+        quality["sky"] = "the solution carries no camera attitude"
+    else:
+        sky_view = SkyView.from_geometry(
+            build_sky_view(
+                solution.attitude,
+                frame.width_px,
+                frame.height_px,
+                solution.polaris_colatitude_deg,
+            )
+        )
+
     focus_view: FocusView | None = None
     if solution is not None and solution.focus_fwhm_px is not None:
         focus_view = FocusView(
@@ -146,6 +169,7 @@ def build_state(
         focus=focus_view,
         histogram=frame.histogram,
         saturation=frame.saturation,
+        sky=sky_view,
         quality=quality,
     )
 

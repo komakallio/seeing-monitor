@@ -27,7 +27,10 @@ from seeingmon.services.ipc.stream import (
     connect_stream,
 )
 from seeingmon.services.web.contract import unpack_frame
+from seeingmon.survey.geometry import ARCSEC_PER_RAD
+from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
 from tests.scheduler.helpers import make_frame
+from tests.survey.synth import make_attitude
 
 from ..conftest import wait_until
 from .rig import sky_frame
@@ -63,6 +66,16 @@ def solution(**changes: Any) -> QuickSolution:
     }
     fields.update(changes)
     return QuickSolution(**fields)
+
+
+def camera(width: int = 640, height: int = 480, distance_deg: float = 0.2) -> CameraAttitude:
+    """A camera whose pole lies `distance_deg` from the center of a `width` x `height` frame."""
+    return CameraAttitude(
+        rotation=make_attitude(distance_deg, 40.0, -65.0),
+        scale_rad_px=3.82 / ARCSEC_PER_RAD,
+        parity=1,
+        center_px=pixel_center(width, height),
+    )
 
 
 class StubSolver:
@@ -144,7 +157,39 @@ class TestOneFrame:
         state = unpack_frame(helper.process_frame(sky_frame())).state
         assert state.solved is None
         assert "not available" in state.quality["solved"]
+        assert state.sky is None
+        assert "not available" in state.quality["sky"]
         assert helper.solve_frame(sky_frame()) is None
+
+    def test_the_state_carries_the_sky_of_the_latest_solution(self, build: Build) -> None:
+        solver = StubSolver(solution(attitude=camera(), polaris_colatitude_deg=0.6265))
+        helper = build(solver=solver)
+        frame = sky_frame(seq=3)
+        helper.solve_frame(frame)
+        state = unpack_frame(helper.process_frame(frame)).state
+        assert state.sky is not None
+        assert state.sky.pole.in_front
+        assert state.sky.polaris_colatitude_deg == 0.6265
+        assert state.sky.orbit is not None
+        pole = camera().pole_pixel()
+        assert pole is not None
+        assert state.sky.pole.dx_px == pytest.approx(
+            pole[0] - 319.5, abs=0.01
+        )  # the frame is 640 x 480
+        assert state.sky.pole.dy_px == pytest.approx(pole[1] - 239.5, abs=0.01)
+        assert "sky" not in state.quality
+
+    def test_a_helper_without_a_target_still_has_the_sky_and_the_solved_position(
+        self, build: Build
+    ) -> None:
+        solver = StubSolver(solution(attitude=camera(), polaris_colatitude_deg=0.6265))
+        helper = build(solver=solver, settings=AlignmentSettings(histogram_bins=16))
+        helper.solve_frame(sky_frame())
+        state = unpack_frame(helper.process_frame(sky_frame())).state
+        assert state.target is None
+        assert state.offset is None
+        assert state.solved is not None
+        assert state.sky is not None
 
     def test_the_best_focus_of_the_session_is_the_smallest(self, build: Build) -> None:
         solver = StubSolver()

@@ -83,6 +83,32 @@ class TestSolving:
         assert solver.tracker.solution is not None  # the next frame can skip the solver
         assert solver.solves == 1
 
+    def test_the_solution_carries_the_attitude_and_the_colatitude_of_polaris(
+        self, scene: Scene
+    ) -> None:
+        solver, _ = quick_solver(scene)
+        frame = scene.first[0]
+        solution = solver.solve(frame)
+        assert solution.attitude is not None
+        assert solution.x_px is not None
+        assert solution.y_px is not None
+        adopted = solver.tracker.solution
+        assert adopted is not None
+        # The attitude is the one that the tracker holds for the time of the frame.
+        expected = adopted.attitude_at(frame.t_utc_ns)
+        assert solution.attitude.rotation == pytest.approx(expected.rotation, abs=1e-12)
+        assert solution.attitude.center_px == expected.center_px
+        # The distance from the pole to Polaris in the frame is the colatitude, to the
+        # difference between a tangent and an angle.
+        pole = solution.attitude.pole_pixel()
+        assert pole is not None
+        assert solution.polaris_colatitude_deg is not None
+        assert solution.scale_arcsec_px is not None
+        distance_px = math.hypot(solution.x_px - pole[0], solution.y_px - pole[1])
+        distance_deg = distance_px * solution.scale_arcsec_px / 3600.0
+        assert solution.polaris_colatitude_deg == pytest.approx(distance_deg, rel=2e-3)
+        assert 0.55 < solution.polaris_colatitude_deg < 0.70
+
     def test_a_moved_mount_shows_as_the_displacement_of_the_field_through_the_tracker(
         self, scene: Scene
     ) -> None:
@@ -125,6 +151,8 @@ class TestSolving:
         assert not solution.solved
         assert solution.note
         assert solution.x_px is None
+        assert solution.attitude is None
+        assert solution.polaris_colatitude_deg is None
         assert solver.tracker.solution is None
         assert solver.failures == 1
 
