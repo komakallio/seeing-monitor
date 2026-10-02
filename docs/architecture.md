@@ -168,7 +168,7 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 | Fast frames, bin1, 128 × 128 ROI (4.1 arcmin) | 32 KB | About 90 fps, 2.9 MB/s | Limited by readout, not by the exposure |
 | Fast frames, bin2, 64 × 64 ROI | 8 KB | Up to about 360 fps at 2 ms | Needs about 3 pixels of defocus |
 | Survey frame, bin2 | 23 MB | 1 per 3 minutes | A bin1 frame is 94 MB, too heavy for a Pi 4 |
-| Per-frame metrics | About 40 bytes | 3.5 KB/s at 90 fps | 0.3 GB per 24 hours |
+| Per-frame metrics | 44 bytes | 4 KB/s at 90 fps | 0.3 GB per 24 hours |
 | Star list rows | 24 bytes a star, about 8 KB for each survey step | 1 per 3 minutes while the sky is dark | About 0.45 GB per year |
 | Results | 0.15 to 0.4 KB | About 4 rows per minute | Under 0.5 GB per year |
 
