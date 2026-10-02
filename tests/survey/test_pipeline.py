@@ -23,7 +23,16 @@ from seeingmon.survey.catalog import CapCatalog
 from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.detect import StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
-from seeingmon.survey.pipeline import STAR_LIST_COLUMNS, FrameAnalysis, SurveyPipeline
+from seeingmon.survey.pipeline import (
+    ERROR,
+    NO_SOLUTION,
+    REJECTED,
+    SOLVED,
+    STAR_LIST_COLUMNS,
+    FrameAnalysis,
+    SolveAttempt,
+    SurveyPipeline,
+)
 from seeingmon.survey.wcs_fit import CameraAttitude
 from seeingmon.testing import FakeSolver
 from tests.survey import synth
@@ -281,6 +290,116 @@ def test_the_second_solver_runs_when_the_first_fails(
     again = pipeline_for(profile, catalog, [unsolved, truth_solver(truth, catalog)]).analyze(frame)
     assert again.solved
     assert any("found no solution" in note for note in again.notes)
+
+
+def test_every_solver_run_leaves_an_attempt_with_its_stars_time_and_reason(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    broken = FakeSolver(error=SolverError("the index folder holds no index files"))
+    silent = synth.QueueSolver(name="astap")  # reports "no solution"
+    working = truth_solver(truth, catalog)  # solves in 0.25 s, and is called "synthetic"
+    analysis = pipeline_for(profile, catalog, [broken, silent, working]).analyze(frame)
+    assert analysis.solved
+    assert analysis.fit is not None
+    first, second, third = analysis.attempts
+    stars = len(working.requests[0].stars)
+    assert stars >= 4
+    assert (first.solver, first.outcome, first.stars) == ("fake", ERROR, stars)
+    assert first.reason == "fake failed: the index folder holds no index files"
+    assert 0.0 <= first.elapsed_s < 30.0  # the time that the pipeline waited for the solver
+    assert (second.solver, second.outcome, second.stars) == ("astap", NO_SOLUTION, stars)
+    assert (second.reason, second.elapsed_s) == ("astap found no solution", 0.0)
+    assert (third.solver, third.outcome, third.stars) == ("synthetic", SOLVED, stars)
+    assert third.matched == analysis.fit.n_matched > 100
+    assert (third.reason, third.elapsed_s) == ("", 0.25)  # the time that the solver reports
+    for failed in (first, second):
+        assert failed.reason in analysis.notes  # the reason is the note of the analysis
+
+
+def test_a_solver_result_that_the_fit_rejects_is_an_attempt_that_says_so(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    good = synth.truth_solve_result(truth, catalog)
+    wrong = replace(good, center_ra_deg=(good.center_ra_deg or 0.0) + 60.0)
+    analysis = pipeline_for(profile, catalog, [synth.QueueSolver([wrong])]).analyze(frame)
+    assert not analysis.solved
+    (attempt,) = analysis.attempts
+    assert attempt.outcome == REJECTED
+    assert attempt.matched == 0
+    assert attempt.reason in analysis.notes
+    assert "solved a field that the catalog does not cover" in attempt.reason or (
+        "the fit failed after synthetic solved" in attempt.reason
+    )
+
+
+def test_a_frame_that_the_tracker_solves_has_no_attempt_and_one_with_few_stars_has_none_either(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    first = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert first.solution is not None
+    later = truth.t_utc_ns + 180 * NS
+    frame2, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        t_utc_ns=later,
+        exposure_s=30.0,
+        seed=4,
+    )
+    tracked = pipeline_for(profile, catalog, [FakeSolver()]).analyze(
+        frame2, previous=first.solution
+    )
+    assert tracked.solved
+    assert tracked.attempts == ()  # the tracker needed no solver
+    dark, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        exposure_s=0.0001,
+        gain=0,
+        seed=7,
+    )
+    solver = FakeSolver()
+    empty = pipeline_for(profile, catalog, [solver]).analyze(dark)
+    assert not empty.solved
+    assert solver.requests == []  # fewer than 4 stars never reach a solver
+    assert empty.attempts == ()
+    assert any("stars for a solver" in note for note in empty.notes)
+
+
+class TestTheSolveAttempt:
+    def test_a_solved_attempt_reads_as_structured_text_with_the_matched_stars(self) -> None:
+        attempt = SolveAttempt("astap", SOLVED, stars=48, elapsed_s=0.8123, matched=87)
+        assert attempt.describe() == "solver=astap result=solved stars=48 time_s=0.81 matched=87"
+
+    def test_a_failed_attempt_gives_its_reason_as_one_quoted_line(self) -> None:
+        attempt = SolveAttempt(
+            "astrometry.net",
+            ERROR,
+            stars=600,
+            elapsed_s=3.0,
+            reason='astrometry.net failed: solve-field exited\nwith code 1: "no index"',
+        )
+        assert attempt.describe() == (
+            "solver=astrometry.net result=error stars=600 time_s=3.00 "
+            'reason="astrometry.net failed: solve-field exited with code 1: \\"no index\\""'
+        )
+        assert "\n" not in attempt.describe()
+
+    def test_an_attempt_survives_the_trip_through_the_worker_as_a_dictionary(self) -> None:
+        attempt = SolveAttempt("astap", NO_SOLUTION, 12, 1.5, reason="astap found no solution")
+        assert SolveAttempt.from_dict(attempt.to_dict()) == attempt
+        assert set(attempt.to_dict()) == {
+            "solver",
+            "outcome",
+            "stars",
+            "elapsed_s",
+            "matched",
+            "reason",
+        }
 
 
 def test_no_solution_gives_an_unsolved_record_and_no_star_list(

@@ -28,7 +28,14 @@ from seeingmon.survey.catalog import CapCatalog, write_catalog
 from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.dark import DarkLibrary
 from seeingmon.survey.geometry import ARCSEC_PER_RAD, exp_so3
-from seeingmon.survey.pipeline import FrameAnalysis, PipelineSpec, SurveyPipeline
+from seeingmon.survey.pipeline import (
+    NO_SOLUTION,
+    SOLVED,
+    FrameAnalysis,
+    PipelineSpec,
+    SolveAttempt,
+    SurveyPipeline,
+)
 from seeingmon.survey.transparency import ZeroPointReference
 from seeingmon.survey.wcs_fit import CameraAttitude
 from tests.survey import synth
@@ -58,6 +65,9 @@ class ScriptedPipeline(SurveyPipeline):
         self.solution_for: dict[int, pt.PointingSolution | None] = {}
         self.fail_at: set[int] = set()
         self.references: list[ZeroPointReference | None] = []  # the zp_reference of each call
+        self.notes_for: dict[int, tuple[str, ...]] = {}
+        self.attempts_for: dict[int, tuple[SolveAttempt, ...]] = {}
+        self.timings_for: dict[int, dict[str, float]] = {}
 
     def analyze(
         self,
@@ -93,6 +103,9 @@ class ScriptedPipeline(SurveyPipeline):
             solved=solution is not None,
             cloud_fraction=0.1 * index,
             solution=solution,
+            notes=self.notes_for.get(index, ()),
+            attempts=self.attempts_for.get(index, ()),
+            timings=self.timings_for.get(index, {}),
         )
 
 
@@ -301,6 +314,74 @@ def test_a_failed_job_gives_an_unsolved_output_and_the_analyzer_goes_on(
     assert failed.cloud_fraction is None
     assert any("failed" in message for message in caplog.messages)
     assert analyzer.tracker.solution is not None  # the second frame still updated it
+
+
+def survey_log(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The messages of the survey logger, without the time that the logging module adds."""
+    return [r.getMessage() for r in caplog.records if r.name == "seeingmon.survey"]
+
+
+def test_the_log_follows_each_solver_run_and_the_outcome_of_a_frame(
+    profile: Profile, catalog: CapCatalog, caplog: pytest.LogCaptureFixture
+) -> None:
+    analyzer, pipeline = scripted(profile, catalog, executor=InlineExecutor())
+    pipeline.solution_for[0] = replace(solution_with(87, 0.1, t_utc_ns=10 * NS), solver="astap")
+    pipeline.notes_for[0] = (
+        "the tracker could not match the frame",
+        "astrometry.net found no solution",
+    )
+    pipeline.attempts_for[0] = (
+        SolveAttempt(
+            "astrometry.net", NO_SOLUTION, 48, 2.41, reason="astrometry.net found no solution"
+        ),
+        SolveAttempt("astap", SOLVED, 48, 0.81, matched=87),
+    )
+    pipeline.timings_for[0] = {"detect": 1.5, "solve": 0.9}
+    analyzer.submit(small_frame(10 * NS))
+    with caplog.at_level("INFO", logger="seeingmon.survey"):
+        analyzer.poll()
+    stamp = "survey frame 1970-01-01T00:00:10Z"
+    assert survey_log(caplog) == [
+        f"{stamp}: the tracker could not match the frame",
+        f"{stamp}: solver=astrometry.net result=no_solution stars=48 time_s=2.41 "
+        'reason="astrometry.net found no solution"',
+        f"{stamp}: solver=astap result=solved stars=48 time_s=0.81 matched=87",
+        f"{stamp}: 1 s bin2: 0 stars detected, solved by astap (87 matched), analysis took 2.4 s",
+    ]
+
+
+def test_a_frame_without_a_solution_says_so_and_a_frame_that_the_tracker_solved_has_one_line(
+    profile: Profile, catalog: CapCatalog, caplog: pytest.LogCaptureFixture
+) -> None:
+    analyzer, pipeline = scripted(profile, catalog, executor=InlineExecutor())
+    pipeline.notes_for[0] = ("only 3 stars for a solver",)
+    pipeline.solution_for[1] = replace(solution_with(214, 0.1, t_utc_ns=20 * NS), solver="tracker")
+    pipeline.timings_for[1] = {"detect": 0.5}
+    analyzer.submit(small_frame(10 * NS))
+    analyzer.submit(small_frame(20 * NS))
+    with caplog.at_level("INFO", logger="seeingmon.survey"):
+        analyzer.poll()
+    assert survey_log(caplog) == [
+        "survey frame 1970-01-01T00:00:10Z: only 3 stars for a solver",
+        "survey frame 1970-01-01T00:00:10Z: 1 s bin2: 0 stars detected, not solved, "
+        "analysis took 0.0 s",
+        "survey frame 1970-01-01T00:00:20Z: 1 s bin2: 1 stars detected, "
+        "solved by tracker (214 matched), analysis took 0.5 s",
+    ]
+
+
+def test_an_attempt_reaches_core_through_the_dictionary_of_the_worker(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    attempt = SolveAttempt("astap", SOLVED, 48, 0.81, matched=87)
+    analysis = FrameAnalysis(records=(), solved=True, cloud_fraction=None, attempts=(attempt,))
+    encoded = encode_analysis(analysis)
+    assert encoded["attempts"] == [attempt.to_dict()]
+    assert all(isinstance(value, str | int | float) for value in encoded["attempts"][0].values())
+    assert (
+        encode_analysis(FrameAnalysis(records=(), solved=False, cloud_fraction=None))["attempts"]
+        == []
+    )
 
 
 def test_the_reference_file_in_the_configuration_is_loaded(

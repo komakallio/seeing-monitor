@@ -29,6 +29,12 @@ its own copy.
 **Failure.** A frame that cannot be solved is a normal result. The pointing record gets the
 `unsolved` flag, and `quality` says why. Only an unexpected error propagates.
 
+**Solve attempts.** Each run of a plate solver leaves a `SolveAttempt` in `FrameAnalysis.attempts`:
+the solver, the number of stars that went to it, its time, and the outcome with the reason for a
+failure. The pipeline does not log them, because it often runs in a worker process that has no log
+setup, where an info line would vanish. `SurveyPipelineAnalyzer` logs one line for each attempt in
+the process of `core`.
+
 **Cloud fraction.** The expected stars are the catalog stars in the field that the profile's
 photometric prior says a clear sky would show at a signal-to-noise ratio of
 `CloudConfig.expected_snr` or better. The cloud fraction is the share of them that no detection
@@ -37,6 +43,7 @@ matches. Stars that a saturated star covers do not count.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +115,59 @@ STAR_LIST_COLUMNS = ["x_px", "y_px", "flux_dn", "fwhm_px", "flags", "cat_row"]
 STAR_LIST_CATALOG = "gaia-dr3+tycho-2"
 STAR_LIST_G_LIMIT = 11.0  # matched stars brighter than this go to the star list
 _UNMATCHED_ROW = -1.0
+
+# The outcomes of `SolveAttempt`.
+SOLVED = "solved"  # the solver found a field, and the fit confirmed it
+NO_SOLUTION = "no_solution"  # the solver ran and found no field
+REJECTED = "rejected"  # the solver found a field that the catalog or the fit could not confirm
+ERROR = "error"  # the solver could not run: a missing program, a crash, or a timeout
+
+
+@dataclass(frozen=True, slots=True)
+class SolveAttempt:
+    """One run of a plate solver on the stars of a frame, as the log of `core` reports it.
+
+    `stars` is the number of stars that went to the solver and `elapsed_s` its time. `matched` is
+    the number of stars that the fit paired with the catalog, for a solved attempt. `reason` says
+    why any other attempt failed, in the words of the matching note of the analysis. An attempt
+    holds no coordinate. It crosses the boundary of the worker process as a dictionary.
+    """
+
+    solver: str
+    outcome: str
+    stars: int
+    elapsed_s: float
+    matched: int = 0
+    reason: str = ""
+
+    def describe(self) -> str:
+        """The attempt as one structured text, such as `solver=astap result=solved stars=48 ...`."""
+        text = f"solver={self.solver} result={self.outcome} stars={self.stars}"
+        text += f" time_s={self.elapsed_s:.2f}"
+        if self.outcome == SOLVED:
+            return f"{text} matched={self.matched}"
+        return f"{text} reason={json.dumps(' '.join(self.reason.split()))}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "solver": self.solver,
+            "outcome": self.outcome,
+            "stars": self.stars,
+            "elapsed_s": self.elapsed_s,
+            "matched": self.matched,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SolveAttempt:
+        return cls(
+            solver=str(data["solver"]),
+            outcome=str(data["outcome"]),
+            stars=int(data["stars"]),
+            elapsed_s=float(data["elapsed_s"]),
+            matched=int(data.get("matched", 0)),
+            reason=str(data.get("reason", "")),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,7 +264,8 @@ class FrameAnalysis:
     the catalog stars of the field with their apparent places. `epoch_stars` holds what the frame
     adds to the nightly star summary, and `quality` the intermediate results of the sky quality.
     `timings` maps each step to its time in seconds, and `notes` explain a failure or a
-    disagreement.
+    disagreement. `attempts` lists the runs of the plate solvers, in order, and it stays empty when
+    the tracker solved the frame.
     """
 
     records: tuple[Record, ...]
@@ -222,6 +283,7 @@ class FrameAnalysis:
     field_vectors: FloatArray | None = None
     epoch_stars: FrameStars | None = None
     quality: SkyQualityResult | None = None
+    attempts: tuple[SolveAttempt, ...] = ()
 
 
 @dataclass(slots=True)
@@ -315,6 +377,7 @@ class SurveyPipeline:
         timings: dict[str, float] = {}
         started = self._clock.monotonic_ns()
         notes: list[str] = []
+        attempts: list[SolveAttempt] = []
         try:
             readout = self._profile.mode(frame.mode)
         except ProfileError:
@@ -355,7 +418,7 @@ class SurveyPipeline:
         lap("detect")
 
         epoch = apparent.epoch_from_utc_ns(frame.t_utc_ns, self._config.dut1_s)
-        solved = self._solve(frame, detections, tracker, epoch, mode_shape, index, notes)
+        solved = self._solve(frame, detections, tracker, epoch, mode_shape, index, notes, attempts)
         lap("solve")
         fit = None if solved is None else solved.fit
 
@@ -471,6 +534,7 @@ class SurveyPipeline:
             field_vectors=field_vectors,
             epoch_stars=FrameStars.empty() if quality is None else quality.stars,
             quality=quality,
+            attempts=tuple(attempts),
         )
 
     def _window(self, mask: npt.NDArray[np.bool_], frame: Frame) -> npt.NDArray[np.bool_] | None:
@@ -543,6 +607,7 @@ class SurveyPipeline:
         shape: tuple[int, int],
         index: int,
         notes: list[str],
+        attempts: list[SolveAttempt],
     ) -> _Solved | None:
         reliable = detections.reliable()
         x, y = detections.x[reliable], detections.y[reliable]
@@ -572,7 +637,7 @@ class SurveyPipeline:
         request = self._solve_request(frame, stars, tracker, epoch)
         for solver in self._solvers:
             outcome = self._run_solver(
-                solver, request, frame, detections, x, y, error, epoch, shape, notes
+                solver, request, frame, detections, x, y, error, epoch, shape, notes, attempts
             )
             if outcome is not None:
                 every = self._config.solve.cross_check_every
@@ -667,22 +732,36 @@ class SurveyPipeline:
         epoch: apparent.ObservationEpoch,
         shape: tuple[int, int],
         notes: list[str],
+        attempts: list[SolveAttempt],
     ) -> _Solved | None:
+        stars = len(request.stars)
+        started = self._clock.monotonic_ns()
+
+        def failed(outcome: str, reason: str, elapsed_s: float) -> None:
+            """Record a failed attempt. The reason is also the note of the analysis."""
+            notes.append(reason)
+            attempts.append(SolveAttempt(solver.name, outcome, stars, elapsed_s, reason=reason))
+
         try:
             result = solver.solve(request)
         except SolverError as exc:
-            notes.append(f"{solver.name} failed: {exc}")
             log.warning("the %s solver failed: %s", solver.name, exc)
+            waited_s = (self._clock.monotonic_ns() - started) / NS_PER_S
+            failed(ERROR, f"{solver.name} failed: {exc}", waited_s)
             return None
         if not result.solved or result.cd_matrix is None or result.center_ra_deg is None:
-            notes.append(f"{solver.name} found no solution")
+            failed(NO_SOLUTION, f"{solver.name} found no solution", result.elapsed_s)
             return None
         assert result.center_dec_deg is not None
         initial = self._attitude_from_result(
             (result.center_ra_deg, result.center_dec_deg), result.cd_matrix, frame, epoch
         )
         if initial is None:
-            notes.append(f"{solver.name} solved a field that the catalog does not cover")
+            failed(
+                REJECTED,
+                f"{solver.name} solved a field that the catalog does not cover",
+                result.elapsed_s,
+            )
             return None
         readout = self._profile.mode(frame.mode)
         rows, vectors = catalog_field(
@@ -690,8 +769,11 @@ class SurveyPipeline:
         )
         fit = fit_attitude(initial, vectors, x, y, error, shape=shape, options=self._fit_options)
         if fit is None or not self._acceptable(fit, int(x.size)):
-            notes.append(f"the fit failed after {solver.name} solved")
+            failed(REJECTED, f"the fit failed after {solver.name} solved", result.elapsed_s)
             return None
+        attempts.append(
+            SolveAttempt(solver.name, SOLVED, stars, result.elapsed_s, matched=fit.n_matched)
+        )
         return _Solved(fit, rows, vectors, solver.name, result.elapsed_s)
 
     def _cross_check(

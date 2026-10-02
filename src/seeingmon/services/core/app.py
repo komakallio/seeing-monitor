@@ -347,6 +347,7 @@ class CoreApp:
             )
             self.tracker = analyzer.tracker
             self._load_seed(self.tracker)
+            self._log_pointing_start(self.tracker, [solver.kind for solver in spec.solvers])
         # An analyzer with a nightly summary gets its nights closed on time and at shutdown.
         self.nightly: NightlySummary | None = None
         if callable(getattr(analyzer, "flush_night", None)):
@@ -389,6 +390,28 @@ class CoreApp:
                 f"cannot read the seed solution: {type(error).__name__}: {error}"
             ) from None
         _log.info("the pointing tracker starts with the seed solution")
+
+    @staticmethod
+    def _log_pointing_start(tracker: Any, solvers: Sequence[str]) -> None:
+        """Say in the log how a start without a pointing solution finds its first one.
+
+        The scheduler then takes a survey frame, and the plate solvers of `[survey] solvers` run in
+        the order of the list until one solves it. A person who follows the log sees that line
+        first, and then one line for each solver run (`seeingmon.survey.analyzer`).
+        """
+        if tracker.solution is not None:
+            return
+        if solvers:
+            _log.info(
+                "no pointing solution yet: the survey frames go to the plate solvers %s, in this "
+                "order, until one solves",
+                ", ".join(solvers),
+            )
+        else:
+            _log.warning(
+                "no pointing solution yet, and [survey] solvers names no plate solver, so the "
+                "scheduler cannot find Polaris"
+            )
 
     def _build_hardware(self) -> None:
         parts, config, clock = self.parts, self.config, self.clock

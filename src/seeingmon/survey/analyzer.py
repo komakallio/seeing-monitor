@@ -49,11 +49,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from seeingmon.analysis import SurveyOutput
-from seeingmon.clock import Clock
+from seeingmon.clock import Clock, utc_ns_to_iso
 from seeingmon.frames import Frame, decode_frame, encode_frame
 from seeingmon.profile import Profile
 from seeingmon.records import Record, get_record_type
-from seeingmon.records.survey import SkyQualityRecord
+from seeingmon.records.survey import SkyQualityRecord, SurveyFrameRecord
 from seeingmon.store.layout import DataLayout
 from seeingmon.survey.catalog import read_info
 from seeingmon.survey.config import SurveyConfig
@@ -62,6 +62,7 @@ from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import (
     FrameAnalysis,
     PipelineSpec,
+    SolveAttempt,
     SurveyPipeline,
     build_pipeline,
     failure_records,
@@ -173,6 +174,7 @@ def encode_analysis(analysis: FrameAnalysis) -> dict[str, Any]:
         "epoch_stars": b"" if analysis.epoch_stars is None else analysis.epoch_stars.to_bytes(),
         "timings": dict(analysis.timings),
         "notes": list(analysis.notes),
+        "attempts": [attempt.to_dict() for attempt in analysis.attempts],
     }
 
 
@@ -348,11 +350,16 @@ class SurveyPipelineAnalyzer:
                 else PointingSolution.from_dict(result["solution"])
             )
             epoch_stars = FrameStars.from_bytes(result.get("epoch_stars", b""))
-            for note in result["notes"]:
-                log.info("survey frame at %d: %s", info.t_utc_ns, note)
+            attempts = [SolveAttempt.from_dict(item) for item in result.get("attempts", ())]
+            notes = [str(note) for note in result["notes"]]
+            timings = {str(name): float(seconds) for name, seconds in result["timings"].items()}
         except Exception as error:
-            log.exception("the survey analysis of the frame at %d failed", info.t_utc_ns)
+            log.exception(
+                "the survey analysis of the frame at %s failed",
+                utc_ns_to_iso(info.t_utc_ns, digits=0),
+            )
             return self._failure_output(job, f"analysis error: {type(error).__name__}")
+        self._log_frame(info, records, solution, notes, attempts, timings)
         if solution is not None and self._trusted(solution):
             self._tracker.update(solution)
         records = records + self._remember(records, info.t_utc_ns, epoch_stars)
@@ -361,6 +368,45 @@ class SurveyPipelineAnalyzer:
             records=records,
             solved=solved,
             cloud_fraction=None if cloud is None else float(cloud),
+        )
+
+    @staticmethod
+    def _log_frame(
+        info: _FrameInfo,
+        records: tuple[Record, ...],
+        solution: PointingSolution | None,
+        notes: list[str],
+        attempts: list[SolveAttempt],
+        timings: dict[str, float],
+    ) -> None:
+        """Say in the log what the analysis of one survey frame did, in the process of `core`.
+
+        Each line starts with the time of the frame. The lines are the notes that explain a frame
+        (a tracker that lost the field, too few stars), one line for each run of a plate solver
+        (`SolveAttempt.describe`), and one line with the outcome. A failed attempt has the text of
+        its note as the reason, so its note stays out of the log. The lines hold no coordinate.
+        """
+        prefix = f"survey frame {utc_ns_to_iso(info.t_utc_ns, digits=0)}"
+        explained = {attempt.reason for attempt in attempts}
+        for note in notes:
+            if note not in explained:
+                log.info("%s: %s", prefix, note)
+        for attempt in attempts:
+            log.info("%s: %s", prefix, attempt.describe())
+        detected = next((r.n_detected for r in records if isinstance(r, SurveyFrameRecord)), None)
+        stars = "an unknown number of stars" if detected is None else f"{detected} stars"
+        if solution is None:
+            outcome = "not solved"
+        else:
+            outcome = f"solved by {solution.solver or 'a solver'} ({solution.n_matched} matched)"
+        log.info(
+            "%s: %g s %s: %s detected, %s, analysis took %.1f s",
+            prefix,
+            info.exposure_us / 1e6,
+            info.mode,
+            stars,
+            outcome,
+            sum(timings.values()),
         )
 
     @staticmethod

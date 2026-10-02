@@ -15,6 +15,7 @@ from seeingmon.analysis import SurveyOutput
 from seeingmon.clock import iso_to_utc_ns
 from seeingmon.records import EventRecord, Record
 from seeingmon.records.survey import SkyQualityRecord
+from seeingmon.services.core.app import CoreApp
 from seeingmon.store.db import Store
 from seeingmon.testing import FakeSurveyAnalyzer
 
@@ -246,3 +247,59 @@ class TestTheDarkLibrary:
             assert record.dark_due is True  # type: ignore[attr-defined]  # nothing is in the library
         finally:
             rig.app.stop()
+
+
+class TestTheStartWithoutAPointing:
+    """A start with no pointing solution says in the log which solvers find the first one."""
+
+    LOGGER = "seeingmon.services.core.app"
+
+    @staticmethod
+    def rig(tmp_path: Path, solvers: str) -> CoreRig:
+        """A core with the real survey analysis (inline) and a small catalog, and no seed."""
+        from seeingmon.survey.analyzer import InlineExecutor
+        from seeingmon.survey.catalog import write_catalog
+        from tests.survey import synth
+
+        catalog = tmp_path / "catalog.bin"
+        write_catalog(catalog, synth.synthetic_catalog(cap_radius_deg=5.0, density_scale=0.05))
+        return build_rig(
+            tmp_path,
+            config_extra=f'[survey]\ncatalog_path = "{catalog.as_posix()}"\nsolvers = {solvers}\n',
+            parts={"survey": None, "pointing": None, "survey_executor": InlineExecutor()},
+        )
+
+    def test_the_solvers_are_named_in_the_order_that_they_run(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            rig = self.rig(tmp_path, '["astrometry.net", "astap"]')
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        assert rig.app.tracker.solution is None
+        lines = [r for r in caplog.records if r.name == self.LOGGER]
+        assert [(r.levelname, r.getMessage()) for r in lines] == [
+            (
+                "INFO",
+                "no pointing solution yet: the survey frames go to the plate solvers "
+                "astrometry.net, astap, in this order, until one solves",
+            )
+        ]
+
+    def test_a_start_without_a_solver_warns_that_nothing_can_find_polaris(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            rig = self.rig(tmp_path, "[]")
+        rig.app.stop()
+        (record,) = [r for r in caplog.records if r.name == self.LOGGER]
+        assert record.levelname == "WARNING"
+        assert "names no plate solver" in record.getMessage()
+
+    def test_a_tracker_that_holds_a_solution_adds_no_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        seeded = SimpleNamespace(solution=object())
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            CoreApp._log_pointing_start(seeded, ["astap"])
+        assert not [r for r in caplog.records if r.name == self.LOGGER]
