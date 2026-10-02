@@ -33,7 +33,9 @@ bandwidth halves the frame rate (the vendor default after power-up is 50), a sta
 frames, and a stale offset moves the bias level. So every `configure` sets high-speed mode, flip,
 bandwidth, offset, gain, and exposure in manual mode, and it reads each back. Flip is always 0.
 Bandwidth and offset come from the stream, or else from the `bandwidth_pct` and `offset` options.
-`ActiveStream.config` reports the values that applied.
+`ActiveStream.config` reports the values that applied. A tool that changes the camera for a while,
+such as `seeingmon camera rates`, calls `save_settings` first and `restore_settings` last, because
+another program shares the camera.
 
 **Frames.** A `RAW8` buffer becomes a `uint8` array, and a `RAW16` buffer becomes a `uint16` array
 with the ADC value in the high bits, as the SDK delivers it. `dropped_before` is the change of the
@@ -97,6 +99,7 @@ from seeingmon.hardware.asi.api import (
     AsiError,
     AsiExposureStatus,
     AsiImageType,
+    AsiRoiFormat,
 )
 from seeingmon.hardware.asi.usb import UsbResetter
 from seeingmon.hardware.asi.watchdog import CallWatchdog
@@ -130,6 +133,28 @@ FLIP_NONE = 0  # the value of the flip control for an image that is neither mirr
 
 def _normalize(name: str) -> str:
     return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+@dataclass(frozen=True, slots=True)
+class SavedControl:
+    """One writable control as `AsiDriver.save_settings` read it."""
+
+    name: str
+    value: int
+    automatic: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CameraSettings:
+    """What a tool needs to put the camera back as it found it.
+
+    `controls` maps the SDK control number of each writable control to its saved value. `roi` and
+    `start` are the ROI format and the position of the ROI.
+    """
+
+    controls: dict[int, SavedControl]
+    roi: AsiRoiFormat
+    start: tuple[int, int]
 
 
 @dataclass(slots=True)
@@ -1035,6 +1060,93 @@ class AsiDriver:
             if self._open and self._capturing:
                 return self._read_counter()
             return self._last_counter
+
+    # --- Saving and restoring the settings of the camera ---
+
+    def save_settings(self) -> CameraSettings:
+        """Read every writable control and the geometry, so that `restore_settings` can put them
+        back. A tool that changes the camera for a while, such as `seeingmon camera rates`, saves
+        first, because another program shares the camera and expects it as it left it."""
+        with self._lock:
+            self._require_open()
+            with self._guard("get_control_count"):
+                count = self._api.get_control_count(self._camera_id)
+            controls: dict[int, SavedControl] = {}
+            for index in range(count):
+                with self._guard("get_control_caps"):
+                    caps = self._api.get_control_caps(self._camera_id, index)
+                if not caps.is_writable:
+                    continue
+                with self._guard("get_control_value"):
+                    value, automatic = self._api.get_control_value(self._camera_id, caps.control)
+                controls[caps.control] = SavedControl(caps.name, value, automatic)
+            with self._guard("get_roi_format"):
+                roi = self._api.get_roi_format(self._camera_id)
+            with self._guard("get_start_position"):
+                start = self._api.get_start_position(self._camera_id)
+            return CameraSettings(controls, roi, start)
+
+    def restore_settings(self, settings: CameraSettings) -> list[str]:
+        """Stop capture and write back the settings that `save_settings` read.
+
+        The function writes only what differs, and it tries every setting even when one fails. It
+        returns the names of the settings that it could not restore, so an empty list means that
+        the camera is as saved. It never raises for a failed write, because a tool calls it in a
+        `finally` clause. It drops the stream, so call `configure` before the next `start`.
+        """
+        problems: list[str] = []
+        try:
+            self._stop_capture()
+        except CameraError as error:
+            _log.warning("stopping capture failed before the settings were restored: %s", error)
+            return ["capture"]
+        with self._lock:
+            self._stream = None
+            self._intent_running = False
+            if not self._open:
+                return ["camera"]
+            for number, saved in settings.controls.items():
+                try:
+                    with self._guard("get_control_value"):
+                        value, automatic = self._api.get_control_value(self._camera_id, number)
+                    if (value, automatic) == (saved.value, saved.automatic):
+                        continue
+                    with self._guard("set_control_value"):
+                        self._api.set_control_value(
+                            self._camera_id, number, saved.value, auto=saved.automatic
+                        )
+                    with self._guard("get_control_value"):
+                        value, automatic = self._api.get_control_value(self._camera_id, number)
+                    if value != saved.value:
+                        problems.append(saved.name)
+                except AsiError as error:
+                    _log.warning("restoring %s failed: %s", saved.name, error)
+                    problems.append(saved.name)
+            problems.extend(self._restore_geometry(settings))
+        return problems
+
+    def _restore_geometry(self, settings: CameraSettings) -> list[str]:
+        """Put the ROI format and the position back. The caller holds the lock."""
+        saved = settings.roi
+        if saved.image_type is AsiImageType.END:
+            return []  # a format that the binding does not know: leave the geometry alone
+        try:
+            with self._guard("get_roi_format"):
+                roi = self._api.get_roi_format(self._camera_id)
+            with self._guard("get_start_position"):
+                start = self._api.get_start_position(self._camera_id)
+            if roi == saved and start == settings.start:
+                return []
+            with self._guard("set_roi_format"):
+                self._api.set_roi_format(
+                    self._camera_id, saved.width, saved.height, saved.binning, saved.image_type
+                )
+            with self._guard("set_start_position"):
+                self._api.set_start_position(self._camera_id, *settings.start)
+        except AsiError as error:
+            _log.warning("restoring the geometry failed: %s", error)
+            return ["roi"]
+        return []
 
     # --- Recovery ---
 

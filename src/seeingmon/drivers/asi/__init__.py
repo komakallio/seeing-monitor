@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from seeingmon.clock import Clock
-from seeingmon.drivers.asi.driver import AsiDriver
+from seeingmon.drivers.asi.driver import AsiDriver, CameraSettings, SavedControl
 from seeingmon.drivers.asi.options import AsiOptions
 from seeingmon.drivers.base import CameraConfigError
 from seeingmon.hardware.asi.ctypes_api import load_asi_api
@@ -70,4 +70,4 @@ def create(
     )
 
 
-__all__ = ["AsiDriver", "AsiOptions", "create"]
+__all__ = ["AsiDriver", "AsiOptions", "CameraSettings", "SavedControl", "create"]

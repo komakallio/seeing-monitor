@@ -28,7 +28,7 @@ from seeingmon.frames import (
     StreamKind,
     TimeQuality,
 )
-from seeingmon.hardware.asi.api import AsiControl, AsiImageType, AsiLibraryError
+from seeingmon.hardware.asi.api import AsiControl, AsiErrorCode, AsiImageType, AsiLibraryError
 from seeingmon.hardware.asi.fake import (
     FakeAsiSdk,
     FakeCameraState,
@@ -449,6 +449,101 @@ class TestPersistentControls:
         for bad in ({"bandwidth_pct": 0}, {"bandwidth_pct": 101}, {"offset": -1}):
             with pytest.raises(CameraConfigError):
                 AsiOptions.from_mapping(bad)
+
+
+class TestSaveAndRestoreSettings:
+    """A tool that shares the camera with another program saves the settings, and puts them back."""
+
+    @staticmethod
+    def owner_state() -> FakeCameraState:
+        """The state that the other program left: not the defaults, and one control automatic."""
+        state = FakeCameraState(
+            {
+                AsiControl.BANDWIDTH_OVERLOAD: 60,
+                AsiControl.FLIP: 2,
+                AsiControl.OFFSET: 33,
+                AsiControl.GAIN: 77,
+                AsiControl.EXPOSURE: 12_345,
+                AsiControl.HIGH_SPEED_MODE: 1,
+            }
+        )
+        state.automatic.add(AsiControl.EXPOSURE)
+        return state
+
+    def test_the_saved_controls_are_the_writable_ones_with_their_names(self) -> None:
+        rig = make_rig(sdk={"state": self.owner_state()}).opened()
+        saved = rig.driver.save_settings()
+        names = {control.name for control in saved.controls.values()}
+        assert names == {
+            "Gain",
+            "Exposure",
+            "Gamma",
+            "Offset",
+            "BandWidth",
+            "HighSpeedMode",
+            "Flip",
+        }
+        assert saved.controls[int(AsiControl.BANDWIDTH_OVERLOAD)].value == 60
+        assert saved.controls[int(AsiControl.EXPOSURE)].automatic is True
+        assert saved.roi.width == 8288  # the fake starts with the full frame
+        assert saved.start == (0, 0)
+
+    def test_restore_puts_back_what_a_stream_changed(self) -> None:
+        state = self.owner_state()
+        rig = make_rig(sdk={"state": state}).opened()
+        before = (dict(state.controls), set(state.automatic))  # with the defaults filled in
+        saved = rig.driver.save_settings()
+        rig.driver.configure(FAST)
+        rig.driver.start()
+        rig.driver.read_frame(1.0)
+        assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 100  # the stream changed it
+        assert rig.driver.restore_settings(saved) == []
+        assert (dict(state.controls), set(state.automatic)) == before
+        assert rig.sdk.roi == (0, 0, 8288, 5644)  # the geometry came back too
+        assert not rig.sdk.video_active
+
+    def test_restore_drops_the_stream(self) -> None:
+        rig = make_rig().opened()
+        saved = rig.driver.save_settings()
+        rig.driver.configure(TINY)
+        rig.driver.restore_settings(saved)
+        with pytest.raises(CameraStateError, match="start before configure"):
+            rig.driver.start()
+
+    def test_restore_writes_only_what_differs(self) -> None:
+        rig = make_rig().opened()
+        saved = rig.driver.save_settings()
+        rig.sdk.calls.clear()
+        assert rig.driver.restore_settings(saved) == []
+        assert rig.sdk.calls_named("set_control_value") == []
+        assert rig.sdk.calls_named("set_roi_format") == []
+
+    def test_restore_tries_every_setting_when_one_write_fails(self) -> None:
+        state = self.owner_state()
+        rig = make_rig(sdk={"state": state}).opened()
+        saved = rig.driver.save_settings()
+        rig.driver.configure(FAST)
+        rig.sdk.fail_next("set_control_value", AsiErrorCode.GENERAL_ERROR)
+        problems = rig.driver.restore_settings(saved)
+        assert len(problems) == 1
+        assert state.controls[AsiControl.GAIN] != 120 or problems  # the others were still written
+        changed_back = [
+            control
+            for control, value in saved.controls.items()
+            if rig.sdk.control(AsiControl(control)) == value.value
+        ]
+        assert len(changed_back) >= len(saved.controls) - 1
+
+    def test_restore_reports_a_failed_geometry_and_still_returns(self) -> None:
+        rig = make_rig().opened()
+        saved = rig.driver.save_settings()
+        rig.driver.configure(TINY)
+        rig.sdk.fail_next("set_roi_format", AsiErrorCode.INVALID_SIZE)
+        assert rig.driver.restore_settings(saved) == ["roi"]
+
+    def test_saving_needs_an_open_camera(self) -> None:
+        with pytest.raises(CameraStateError):
+            make_rig().driver.save_settings()
 
 
 class TestControlNumbers:
