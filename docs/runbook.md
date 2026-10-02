@@ -506,6 +506,7 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon flat make` | Combines frames of a lit panel into the master flat for `[survey] flat_file`, and prints the vignetting, the tilt, the shadows, and how well the sets agree. | Offline: it needs no camera and no running service. See [Take a flat with a panel](#take-a-flat-with-a-panel). |
+| `seeingmon flat build` | Builds a flat from the survey frames of the night sky, adds them to an accumulator file on request, and prints the vignetting, the shadows, and a check of the mask around Polaris. | Offline: it needs no camera and no running service. It needs a clear night of frames, a dark library, and `[site]`. See [Build a flat from the night sky](#build-a-flat-from-the-night-sky). |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
 | `seeingmon hardware sqm` | Reads the SQM-LE once from the source that `[sqm]` names (the unit over TCP, or the readings in InfluxDB), and prints the magnitude, the temperature, and the age of the reading. | Read-only, and it needs no camera. It ignores `enabled`. The wrapper does not load `seeingmon.env`, so a variable that `token_env` names must be in the environment of the command (see [Check the settings](#check-the-settings)). |
 | `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
@@ -563,7 +564,7 @@ A flat field corrects the vignetting of the lens and the shadows of the dust on 
 
 A light source has a gradient of its own. A phone screen shows up to about 1% across its width, and that gradient lands in the flat as a tilt. One set cannot tell the gradient of the source from the tilt of the optics and the sensor, which is the part that you want. A second set that you record after you turn the source by 180 degrees separates the two: the gradient of the source flips, and the tilt of the optics stays. The command averages the two sets, which cancels a gradient that turned (to first order), and it reports the tilt of each part.
 
-You can skip the second set. The flat then carries the gradient of the source in its tilt, up to about 1% across the frame for a phone screen, and the command warns about it. The night sky cannot correct that tilt later, because it cannot tell a tilt of the flat from a gradient of the sky itself.
+You can skip the second set. The flat then carries the gradient of the source in its tilt, up to about 1% across the frame for a phone screen, and the command warns about it. The night sky cannot correct that tilt later, because it cannot tell a tilt of the flat from a gradient of the sky itself (see [Build a flat from the night sky](#build-a-flat-from-the-night-sky)).
 
 Pass `--source-turned` only when you did turn the source. The pixels cannot show whether you did, so the command takes your word. Without the option, it prints the same numbers under neutral names, and it warns when the two sets differ in tilt by more than 0.3%: the source drifted, or you turned it and did not say so.
 
@@ -638,6 +639,90 @@ The flat has a median of 1. The command floors a pixel that reads at or below ze
 ### When to take it again
 
 Take a new flat when the camera comes off the lens, when you change the spacing or the focus, and when you clean the sensor window, because each of them moves the shadows of the dust or changes the vignetting.
+
+## Build a flat from the night sky
+
+The camera is fixed to the ground and points at the pole, so the sky turns about the middle of the frame, 15 arcsec every second. The mean of many frames in the sensor frame, with the stars masked, holds the flat times the mean sky. The structure that is fixed on the sky (faint stars, nebulosity) averages down to its mean about the pole, because the rotation spreads it round the frame. A mount that tracks the sky could not do this. `seeingmon flat build` takes the survey frames that `core` keeps as FITS files and turns them into the flat that `[survey] flat_file` loads. It needs no panel and no camera.
+
+The sky cannot give the tilt. It cannot tell a tilt of the flat from a gradient of the sky itself, so the flat holds none. The tilt of the optics and the sensor stays in your frames, about 1% at the frame edges, until you take a panel flat (see [Take a flat with a panel](#take-a-flat-with-a-panel)).
+
+### When to run it
+
+Run it after the first clear night, and again after later clear nights. You need:
+
+- **Survey frames.** `core` keeps every tenth long frame as a FITS file under `<data-dir>/survey/`, which is about 24 frames in a clear night. The files expire after 7 days, and one frame a night stays for 60 days more, so run the command before the files go. The header of each file carries the cloud fraction and the transparency of its result (`CLOUDFRC` and `TRANSP`). Files from before those cards existed are *unchecked*: pass `--accept-unchecked` to use them anyway.
+- **A dark library.** The command subtracts the dark the way the survey pipeline does: the level of the dark model for the sensor temperature and the exposure. When a dark set lies within 3 degrees C of the sensor temperature of a frame and has its exposure, the command also subtracts the per-pixel master dark of that set, so the pattern of the dark does not reach the flat. The report says which dark each frame had. Record a set at the temperature of your nights first (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)).
+- **A site.** The command computes the Sun and the Moon from the time of each frame and from `[site]` in `local/config.toml`, because the header carries no position. Without a site, it cannot rule out twilight or moonlight, so it refuses the frames, unless you pass `--accept-unchecked`. The sky level test still guards against a bright sky then.
+
+### Run it
+
+```bash
+uv run seeingmon flat build <data-dir>/survey --out <flat file>.npy --accumulator <accumulator file>.npz
+```
+
+The command reads the header of every file, applies the selection below, and prints a line for each frame that it processes. A frame of 4144 × 2822 pixels takes about 1 s on a development machine, and the command holds one frame at a time, which takes a few hundred MB. A Pi takes a few times longer, so run it on the dev machine when you can, and copy the `.npy` file to the Pi.
+
+`--accumulator` keeps the running sums, so that a later run adds only the new frames. The file holds the sum of the masked, normalized frames at 4 × 4 binning, the sum of their squares, a count, and the time and the roll of every frame that went in. A run reads the folder, skips the frames that the file already holds, adds the new ones, saves the file, and builds the flat from the whole file. A frame that expires from the folder stays in the sum. The command writes the file to a temporary name and renames it, so a crash cannot corrupt it. Without the option, one run uses the frames of the folder and keeps nothing.
+
+### Which frames count
+
+An event frame never counts: the `KEPT` card of a frame that `core` kept for no pointing solution, a pointing that moved, clouds, or a bright sky says so. Every other frame counts when all of these hold:
+
+| Test | Default | Option |
+|---|---|---|
+| The Sun is below this elevation | -18 degrees | `--max-sun-elevation` |
+| The Moon is down (below `--moon-min-elevation`, 0 degrees), or it is lit less than this | 25% | `--max-moon-illumination` |
+| The cloud fraction is under | 0.1 | `--max-cloud-fraction` |
+| The transparency is at least | 0.95 | `--min-transparency` |
+| The sky level is within this share of the median level of the chosen frames | 10% | `--sky-tolerance-percent` |
+| The exposure is at least | 5 s | `--min-exposure-s` |
+
+The clock must have been synchronized, the frame must be in the survey mode with no region of interest, and the header must carry a sensor temperature. The sky level comes from the pixels (the median above the dark per second), so it needs no header card, and its median covers the frames in the accumulator too. The report counts the rejected frames for each reason.
+
+### What the command does to a frame
+
+It detects the stars (`seeingmon.survey.detect`) and masks each one with a radius that grows with its flux. It also masks the saturated pixels, the hot pixels of the dark library and of `[survey] hot_pixel_file`, the 8 pixels at the frame edge, and a large disk around Polaris. The halo of Polaris makes a bright ring at the radius of its orbit, and nobody has measured the wings of this lens yet, so the disk has a radius of 400 pixels (`--polaris-mask-px`). The command takes the brightest star of the frame, when it outshines the next one by a factor of 3, for Polaris. It divides the frame by its own sky level (a sigma-clipped median of the pixels that stay), and adds the result into the sums.
+
+After the last frame, the mean `M` is the sum over the count. The flat is the radial part of `M` (the azimuthal mean about the middle of the frame, which is the optical center unless you set `--center-x` and `--center-y`) times the fine part (`M` over the radial part and over its smooth rest, a Gaussian of 40 binned pixels, `--high-pass-px`). The smooth rest holds the tilt and the gradients of the sky, and the flat leaves it out. The flat has a median of 1, and the command spreads it over the sensor with bilinear interpolation (`--bin` sets the binning, 4 by default).
+
+### Read the report
+
+```text
+Flat from the night sky.
+Frames: 31 found in the folder, 4 already in the accumulator, 3 rejected, 24 added now.
+  Rejected: 1 frame with a cloud fraction of 0.1 or more, 2 frames with a sky level more than 10% from the median.
+Accumulator: 28 frames from 2026-12-09 to 2026-12-10. Roll coverage: 173 degrees.
+Dark: the master dark of the set of 2026-12-01 for 24 frames.
+Noise: 0.57% per binned pixel (4 x 4) in the mean sky. One pixel of one frame scatters by 11.4%.
+Vignetting at each radius from the center, against the center:
+  0.5 degrees: -0.38%
+  ...
+  corners (2.65 degrees): -9.91%
+Tilt: not determined. The sky cannot tell a tilt of the flat from a gradient of the sky itself, so the flat holds none. ...
+Shadows deeper than 1%: 3
+  x 2489, y 1994: depth 3.0%, width 71 px
+  ...
+Edge artifacts deeper than 1% (center within 20 px of an edge): none
+Polaris orbit: radius 584 px (from the positions of Polaris), bump +0.12% against a limit of 0.3%.
+Time: 28.4 s, 1.2 s for each frame added.
+Wrote flat.npy. Set flat_file in the [survey] table to its path.
+```
+
+The numbers in this example come from a synthetic night. Read the lines like this:
+
+- **Frames and the accumulator.** The report counts the frames of the folder, the ones that the accumulator already holds, the ones that the tests rejected (with the reasons), and the ones that this run added. It then gives the number of frames in the accumulator, their date range, and the roll coverage: 360 degrees minus the largest gap between the roll angles of the frames, and the roll of a frame is the Earth rotation angle at its time.
+- **Dark.** The report names the dark sets that the frames used, and the number of frames that had only the level of the dark model.
+- **Noise.** The noise of the mean sky in a binned pixel, and the scatter of one pixel of one frame. With 24 frames the noise is about 0.6% at 4 × 4 binning, and it falls with the square root of the number of frames.
+- **Vignetting.** The flat at five radii from the optical center and in the corners, against the center. Compare it with the panel flat when you have one: the two should agree within about 0.5%.
+- **Shadows.** The dips deeper than 1% in the fine part. When the noise is high (a few frames), the search needs 5 times the local noise instead, and the heading says so. A dip within 20 pixels of an edge is an edge artifact, and the report lists it apart.
+- **Polaris orbit.** The command measures the circle that Polaris follows from its positions in the frames (the pole is the center, and the orbit its radius), and falls back on the ephemeris and the optical center when fewer than 8 frames spread over 90 degrees. It compares the mean sky at that radius with a smooth baseline from the rings on both sides. A bump over 0.3% means that the mask around Polaris is too small, and the report warns. Raise `--polaris-mask-px` and build again. The accumulator keeps the masks of the earlier frames, so delete it and run the command on the frames that you still have.
+- **Time.** The time of the run and for each frame added.
+
+The command warns when fewer than 20 frames (`--min-frames`) or less than 60 degrees of roll (`--min-roll-deg`) went in, because the rotation has not averaged the structure of the sky then, and the fine structure is noisy. A simulation with the roll angles of a real year at 60 degrees north gave, for one clear night of 24 frames over 190 degrees of roll, a fine part good to 0.31% rms and a radial profile good to 0.14%, and for 240 frames 0.22% and 0.15%. The structure of the sky about the pole sets that floor, and not the photon noise.
+
+### Use the flat
+
+Set `flat_file` in the `[survey]` table of `local/config.toml` to the path of the file on the Pi, and restart `core`. A unit flat stays the default until you do. The `sky_quality` records then carry `provenance.flat` with the name of the flat. Without a panel flat, the tilt of the optics, about 1% at the frame edges, stays in your sky quality values.
 
 ## First light on the dev machine
 

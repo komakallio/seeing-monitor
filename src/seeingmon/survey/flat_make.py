@@ -952,10 +952,14 @@ def format_make_report(result: MakeResult, *, name: str | None = None) -> list[s
             "  The tilt includes the gradient of your light source. A second set with the source "
             "turned by 180 degrees (a second --frames) separates the two."
         )
-    lines.extend(flat_report.shadow_lines(result.summary.shadows))
+    lines.extend(
+        flat_report.shadow_lines(result.summary.shadows, depth=result.summary.shadow_depth)
+    )
     lines.extend(
         flat_report.edge_artifact_lines(
-            result.summary.edge_artifacts, margin_px=result.options.edge_margin_px
+            result.summary.edge_artifacts,
+            margin_px=result.options.edge_margin_px,
+            depth=result.summary.shadow_depth,
         )
     )
     if result.elapsed_s is not None:

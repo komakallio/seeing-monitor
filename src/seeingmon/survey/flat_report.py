@@ -53,10 +53,15 @@ RADII_DEG: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 2.5)
 SHADOW_MIN_DEPTH = 0.01
 # A dip whose center lies this close to an edge is an edge artifact, in sensor pixels.
 EDGE_MARGIN_PX = 20.0
+# The search for shadows needs a depth of this many times the noise of the fine part, so that
+# the noise of a flat from the night sky does not make shadows.
+SHADOW_NOISE_SIGMAS = 5.0
 # The most shadows that a report lists. The rest are counted.
 MAX_LISTED_SHADOWS = 12
-# The radius of the disk that gives the value at the center, in binned pixels.
+# The radius of the disk that gives the value at the center: 4 binned pixels, or 3% of the radius
+# of the corners when that is more, so that a structure of the sky near the pole averages down.
 _CENTER_RADIUS_BINS = 4.0
+_CENTER_RADIUS_FRACTION = 0.03
 # The width of the ring that gives the value in the corners, in binned pixels.
 _CORNER_RING_BINS = 2.0
 # The fewest pixels that a ring needs to give a value.
@@ -173,8 +178,24 @@ def azimuthal_profile(
 
 
 def profile_map(profile: RadialProfile, radius: FloatArray) -> FloatArray:
-    """The profile at the radius of every pixel, by linear interpolation."""
-    return np.asarray(np.interp(radius, profile.radius, profile.value), dtype=np.float64)
+    """The profile at the radius of every pixel, by linear interpolation.
+
+    Inside the first ring the profile stays at its first value (the profile of an optical system is
+    even about the center). Beyond the last ring, which happens when the pixels at the frame edge
+    are invalid, the profile continues along the line that fits its last rings, so that a steep
+    vignetting does not stay flat in the corners.
+    """
+    values = np.asarray(np.interp(radius, profile.radius, profile.value), dtype=np.float64)
+    beyond = radius > profile.radius[-1]
+    rings = profile.radius.size
+    if beyond.any() and rings >= 8:
+        n = max(8, rings // 20)
+        slope = float(
+            np.polyfit(profile.radius[-n:], profile.value[-n:], 1, w=np.sqrt(profile.count[-n:]))[0]
+        )
+        extended = profile.value[-1] + slope * (radius - profile.radius[-1])
+        values = np.where(beyond, extended, values)
+    return values
 
 
 # --- The decomposition ----------------------------------------------------------------------
@@ -205,6 +226,27 @@ class Decomposition:
     fine: FloatArray
 
 
+def _plane_coefficients(
+    image: FloatArray, center_xy: tuple[float, float], valid: BoolArray | None
+) -> tuple[float, float, float]:
+    """The least-squares plane through the valid pixels: its level at the center and its slopes."""
+    height, width = image.shape
+    x = (np.arange(width, dtype=np.float64) - center_xy[0])[None, :] * np.ones((height, 1))
+    y = (np.arange(height, dtype=np.float64) - center_xy[1])[:, None] * np.ones((1, width))
+    w = np.ones(image.shape) if valid is None else valid.astype(np.float64)
+    v = np.where(w > 0, image, 0.0)
+    normal = np.array(
+        [
+            [w.sum(), (w * x).sum(), (w * y).sum()],
+            [(w * x).sum(), (w * x * x).sum(), (w * x * y).sum()],
+            [(w * y).sum(), (w * x * y).sum(), (w * y * y).sum()],
+        ]
+    )
+    rhs = np.array([v.sum(), (v * x).sum(), (v * y).sum()])
+    level, slope_x, slope_y = np.linalg.solve(normal, rhs)
+    return float(level), float(slope_x), float(slope_y)
+
+
 def decompose(
     image: FloatArray,
     *,
@@ -226,7 +268,14 @@ def decompose(
         raise ValueError("the image has no valid pixels to measure")
     radial_map = np.maximum(profile_map(profile, radius), _TINY)
     ratio = image / radial_map
-    rest = np.maximum(normalized_gaussian(ratio, valid, high_pass_px), _TINY)
+    # The plane goes first: a Gaussian that smooths a sloped image is biased at the edge, where
+    # it sees the image on one side only, and the bias would leave a tilt in the fine part.
+    level, slope_x, slope_y = _plane_coefficients(ratio, center_xy, valid)
+    x = (np.arange(image.shape[1], dtype=np.float64) - center_xy[0])[None, :]
+    y = (np.arange(image.shape[0], dtype=np.float64) - center_xy[1])[:, None]
+    plane = np.maximum(level + slope_x * x + slope_y * y, _TINY)
+    residual = ratio / plane
+    rest = np.maximum(plane * normalized_gaussian(residual, valid, high_pass_px), _TINY)
     fine = ratio / rest
     if valid is not None:
         fine = np.where(valid, fine, 1.0)
@@ -263,11 +312,18 @@ def vignetting_profile(
     `image` is binned by `factor`, `scale_arcsec_px` is the plate scale of the sensor pixels, and
     `center_xy` is the optical center in binned pixels. A radius whose ring holds fewer than 30
     valid pixels (a radius beyond the corners) gives `None`. The last point is the corners: the
-    pixels within 2 binned pixels of the farthest pixel center from the optical center.
+    valid pixels within 2 binned pixels of the farthest valid pixel from the optical center. The
+    value at the center is the mean of the disk within 3% of that distance (4 binned pixels at
+    least).
     """
     radius = radius_map(image.shape, center_xy)
     weight = np.ones(image.shape) if valid is None else valid.astype(np.float64)
-    inner = (radius <= _CENTER_RADIUS_BINS) & (weight > 0)
+    usable = weight > 0
+    if not usable.any():
+        raise ValueError("the image holds no valid pixel")
+    corner_bins = float(radius[usable].max())
+    center_bins = max(_CENTER_RADIUS_BINS, _CENTER_RADIUS_FRACTION * corner_bins)
+    inner = (radius <= center_bins) & usable
     if int(inner.sum()) < 4:
         raise ValueError("the center of the image holds no valid pixel")
     center_value = float(image[inner].mean())
@@ -277,13 +333,7 @@ def vignetting_profile(
         half_width = max(1.5, 0.02 * r_bins)
         ring = (np.abs(radius - r_bins) <= half_width) & (weight > 0)
         points.append(_ring_point(degrees, image, ring, center_value))
-    height, width = image.shape
-    corner_bins = max(
-        math.hypot(x - center_xy[0], y - center_xy[1])
-        for x in (0.0, width - 1.0)
-        for y in (0.0, height - 1.0)
-    )
-    corner_ring = (radius >= corner_bins - _CORNER_RING_BINS) & (weight > 0)
+    corner_ring = (radius >= corner_bins - _CORNER_RING_BINS) & usable
     corner_deg = corner_bins * factor * scale_arcsec_px / 3600.0
     corner = _ring_point(corner_deg, image, corner_ring, center_value, minimum=4)
     points.append(ProfilePoint(corner.radius_deg, corner.change_percent, corner=True))
@@ -321,25 +371,12 @@ def fit_tilt(
 ) -> Tilt:
     """Fit a plane to the image by least squares and give its slope as a change across the frame."""
     height, width = image.shape
-    x = (np.arange(width, dtype=np.float64) - center_xy[0])[None, :] * np.ones((height, 1))
-    y = (np.arange(height, dtype=np.float64) - center_xy[1])[:, None] * np.ones((1, width))
-    weight = np.ones(image.shape) if valid is None else valid.astype(np.float64)
-    v = np.where(weight > 0, image, 0.0)
-    w = weight
-    normal = np.array(
-        [
-            [w.sum(), (w * x).sum(), (w * y).sum()],
-            [(w * x).sum(), (w * x * x).sum(), (w * x * y).sum()],
-            [(w * y).sum(), (w * x * y).sum(), (w * y * y).sum()],
-        ]
-    )
-    rhs = np.array([v.sum(), (v * x).sum(), (v * y).sum()])
-    level, slope_x, slope_y = np.linalg.solve(normal, rhs)
+    level, slope_x, slope_y = _plane_coefficients(image, center_xy, valid)
     if level <= 0:
         raise ValueError("the image has no positive level")
     return Tilt(
-        width_percent=float(100.0 * slope_x * width / level),
-        height_percent=float(100.0 * slope_y * height / level),
+        width_percent=100.0 * slope_x * width / level,
+        height_percent=100.0 * slope_y * height / level,
     )
 
 
@@ -402,12 +439,27 @@ class Shadow:
     at_edge: bool = False
 
 
+def fine_noise(
+    fine: FloatArray, *, smooth_sigma: float = 1.0, valid: BoolArray | None = None
+) -> float:
+    """The noise of a fine part after the light smoothing, as a fraction (a robust sigma).
+
+    The median absolute deviation ignores the shadows, which fill a small part of the image.
+    """
+    deficit = 1.0 - _scipy.gaussian_filter(fine, smooth_sigma)
+    values = deficit[valid] if valid is not None else deficit.ravel()
+    if values.size == 0:
+        return 0.0
+    center = float(np.median(values))
+    return float(1.4826 * np.median(np.abs(values - center)))
+
+
 def find_shadows(
     fine: FloatArray,
     *,
     factor: int,
     sensor_shape: tuple[int, int],
-    min_depth: float = SHADOW_MIN_DEPTH,
+    min_depth: float | FloatArray = SHADOW_MIN_DEPTH,
     edge_margin_px: float = EDGE_MARGIN_PX,
     smooth_sigma: float = 1.0,
     valid: BoolArray | None = None,
@@ -416,13 +468,16 @@ def find_shadows(
 
     A light Gaussian of `smooth_sigma` binned pixels takes the noise down first. A dip is a
     connected region where the fine part lies below `1 - min_depth / 2`, and it counts when its
-    deepest point is below `1 - min_depth`. `sensor_shape` is the shape of the sensor in pixels,
+    deepest point is below `1 - min_depth`. `min_depth` is a fraction, or an image of fractions
+    when the noise differs across the frame. `sensor_shape` is the shape of the sensor in pixels,
     which tells how far a dip lies from an edge.
     """
     deficit = 1.0 - _scipy.gaussian_filter(fine, smooth_sigma)
     if valid is not None:
         deficit = np.where(valid, deficit, 0.0)
-    labels, count = _scipy.label(deficit > min_depth / 2.0)
+    depth = np.broadcast_to(np.asarray(min_depth, dtype=np.float64), deficit.shape)
+    relative = deficit / depth  # 1 where a dip has the depth that the search needs
+    labels, count = _scipy.label(relative > 0.5)
     if count == 0:
         return ()
     inside = labels > 0
@@ -430,6 +485,8 @@ def find_shadows(
     depth_values = deficit[inside]
     peak = np.zeros(count + 1)
     np.maximum.at(peak, label_ids, depth_values)
+    peak_relative = np.zeros(count + 1)
+    np.maximum.at(peak_relative, label_ids, relative[inside])
     half = depth_values >= 0.5 * peak[label_ids]
     ys, xs = np.nonzero(inside)
     kept_labels = label_ids[half]
@@ -441,7 +498,7 @@ def find_shadows(
     sensor_height, sensor_width = sensor_shape
     shadows: list[Shadow] = []
     for index in range(1, count + 1):
-        if peak[index] < min_depth or area[index] == 0 or weight[index] <= 0:
+        if peak_relative[index] < 1.0 or area[index] == 0 or weight[index] <= 0:
             continue
         x_sensor, y_sensor = sensor_position(
             (float(x_sum[index] / weight[index]), float(y_sum[index] / weight[index])), factor
@@ -464,12 +521,17 @@ def find_shadows(
 
 @dataclass(frozen=True, slots=True)
 class FlatSummary:
-    """The description of a flat: the vignetting, the tilt, the shadows, and the edge artifacts."""
+    """The description of a flat: the vignetting, the tilt, the shadows, and the edge artifacts.
+
+    `shadow_depth` is the depth that the search for shadows used, a fraction: 1% unless the noise
+    of the fine part is high enough to raise it.
+    """
 
     profile: tuple[ProfilePoint, ...]
     tilt: Tilt
     shadows: tuple[Shadow, ...]
     edge_artifacts: tuple[Shadow, ...]
+    shadow_depth: float = SHADOW_MIN_DEPTH
 
 
 def summarize_flat(
@@ -482,19 +544,28 @@ def summarize_flat(
     high_pass_px: float,
     edge_margin_px: float = EDGE_MARGIN_PX,
     smooth_sigma: float = 1.0,
+    noise_scale: FloatArray | None = None,
     valid: BoolArray | None = None,
 ) -> FlatSummary:
     """Describe a flat that is binned by `factor`. `center_xy` is in binned pixels.
 
     `smooth_sigma` is the width of the light smoothing that takes the noise out of the fine part
     before the shadow search. A flat with little noise can take a smaller one, which keeps more of
-    the depth of a narrow shadow.
+    the depth of a narrow shadow. `noise_scale` is the noise of each binned pixel in units of the
+    typical noise (1 where the flat is typical, more where fewer frames contribute), and the
+    search for shadows needs 5 times the local noise there.
     """
     parts = decompose(flat_binned, center_xy=center_xy, high_pass_px=high_pass_px, valid=valid)
+    noise = fine_noise(parts.fine, smooth_sigma=smooth_sigma, valid=valid)
+    depth = max(SHADOW_MIN_DEPTH, SHADOW_NOISE_SIGMAS * noise)
+    depth_map: float | FloatArray = depth
+    if noise_scale is not None:
+        depth_map = np.maximum(SHADOW_MIN_DEPTH, SHADOW_NOISE_SIGMAS * noise * noise_scale)
     found = find_shadows(
         parts.fine,
         factor=factor,
         sensor_shape=sensor_shape,
+        min_depth=depth_map,
         edge_margin_px=edge_margin_px,
         smooth_sigma=smooth_sigma,
         valid=valid,
@@ -510,6 +581,7 @@ def summarize_flat(
         tilt=tilt_after_radial(flat_binned, parts, center_xy=center_xy, valid=valid),
         shadows=tuple(shadow for shadow in found if not shadow.at_edge),
         edge_artifacts=tuple(shadow for shadow in found if shadow.at_edge),
+        shadow_depth=depth,
     )
 
 
@@ -599,13 +671,22 @@ def profile_lines(
 def shadow_lines(
     shadows: Sequence[Shadow],
     *,
-    title: str = "Shadows deeper than 1%:",
+    depth: float = SHADOW_MIN_DEPTH,
+    title: str = "Shadows",
+    qualifier: str = "",
     none: str = "none",
 ) -> list[str]:
-    """The lines that list the shadows (position, depth, and width), and count the ones left out."""
+    """The lines that list the shadows (position, depth, and width), and count the ones left out.
+
+    `depth` is the depth of the search. A depth above 1% means that the noise raised it, and the
+    heading says so. `qualifier` follows the depth in the heading.
+    """
+    heading = f"{title} deeper than {100 * depth:.3g}%{qualifier}"
+    if depth > SHADOW_MIN_DEPTH * 1.001:
+        heading += " (the noise raises the search above 1%)"
     if not shadows:
-        return [f"{title} {none}"]
-    lines = [f"{title} {len(shadows)}"]
+        return [f"{heading}: {none}"]
+    lines = [f"{heading}: {len(shadows)}"]
     lines.extend(
         f"  x {shadow.x_px}, y {shadow.y_px}: depth {100 * shadow.depth:.1f}%, "
         f"width {shadow.width_px:.0f} px"
@@ -617,12 +698,17 @@ def shadow_lines(
 
 
 def edge_artifact_lines(
-    shadows: Sequence[Shadow], *, margin_px: float = EDGE_MARGIN_PX
+    shadows: Sequence[Shadow],
+    *,
+    margin_px: float = EDGE_MARGIN_PX,
+    depth: float = SHADOW_MIN_DEPTH,
 ) -> list[str]:
     """The lines that list the dips whose center lies within `margin_px` pixels of an edge."""
     return shadow_lines(
         shadows,
-        title=f"Edge artifacts deeper than 1% (center within {margin_px:.0f} px of an edge):",
+        depth=depth,
+        title="Edge artifacts",
+        qualifier=f" (center within {margin_px:.0f} px of an edge)",
     )
 
 

@@ -19,6 +19,9 @@ from typing import TYPE_CHECKING
 from seeingmon.cli import CliError, Subparsers, add_command
 
 if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
+
     from seeingmon.config import Config
     from seeingmon.profile import Profile
     from seeingmon.survey.config import SurveyConfig
@@ -33,6 +36,7 @@ def register_flat(subparsers: Subparsers) -> None:
     )
     commands = parser.add_subparsers(dest="flat_command", metavar="<subcommand>", required=True)
     _register_make(commands)
+    _register_build(commands)
 
 
 def _missing_subcommand(args: argparse.Namespace) -> int:
@@ -156,6 +160,107 @@ def _register_make(commands: argparse._SubParsersAction[argparse.ArgumentParser]
     )
     _add_common(make)
     make.set_defaults(handler=_make)
+
+
+def _register_build(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    build = commands.add_parser(
+        "build",
+        help="Build a flat from the survey frames of the night sky.",
+        description=(
+            "Build a flat from the survey frames that core keeps as FITS files (under survey/ of "
+            "the data directory). The camera is fixed to the ground and points at the pole, so "
+            "the sky turns about the middle of the frame, and the mean of many star-masked frames "
+            "holds the vignetting and the shadows of the dust. The sky cannot give the tilt of "
+            "the flat, so the result has none. A frame counts when the Sun is below -18 degrees, "
+            "the Moon is down or under 25% lit, the cloud fraction is under 0.1, the "
+            "transparency is at least 0.95, and the sky level lies within 10% of the median. "
+            "The Sun and the Moon come from [site] in the configuration. --accumulator keeps the "
+            "sums in a file, so that a later run adds only the new frames. The command writes a "
+            "float32 image with a median of 1 and prints a report."
+        ),
+    )
+    build.add_argument(
+        "frames",
+        nargs="?",
+        type=Path,
+        help="the folder with the survey frames (searched for FITS files, also in subfolders)",
+    )
+    build.add_argument("--out", type=Path, help="the flat to write (.npy, or FITS: .fits)")
+    build.add_argument(
+        "--accumulator",
+        type=Path,
+        help="the file that keeps the running sums and the frames already added (default: none)",
+    )
+    build.add_argument(
+        "--min-frames",
+        type=int,
+        default=20,
+        help="warn when fewer frames than this went in (default 20)",
+    )
+    build.add_argument(
+        "--min-roll-deg",
+        type=float,
+        default=60.0,
+        help="warn when the frames cover less roll than this (default 60)",
+    )
+    build.add_argument(
+        "--polaris-mask-px",
+        type=float,
+        default=400.0,
+        help="the radius of the disk that hides Polaris and its halo, in pixels (default 400)",
+    )
+    build.add_argument(
+        "--max-sun-elevation",
+        type=float,
+        default=-18.0,
+        help="take only frames with the Sun below this elevation, in degrees (default -18)",
+    )
+    build.add_argument(
+        "--max-moon-illumination",
+        type=float,
+        default=0.25,
+        help="take a frame with the Moon up only when its lit fraction is at most this "
+        "(default 0.25)",
+    )
+    build.add_argument(
+        "--moon-min-elevation",
+        type=float,
+        default=0.0,
+        help="the Moon counts as up above this elevation, in degrees (default 0)",
+    )
+    build.add_argument(
+        "--max-cloud-fraction",
+        type=float,
+        default=0.1,
+        help="take only frames with a smaller cloud fraction (default 0.1)",
+    )
+    build.add_argument(
+        "--min-transparency",
+        type=float,
+        default=0.95,
+        help="take only frames with at least this transparency (default 0.95)",
+    )
+    build.add_argument(
+        "--sky-tolerance-percent",
+        type=float,
+        default=10.0,
+        help="take only frames whose sky level lies within this percentage of the median of the "
+        "frames (default 10)",
+    )
+    build.add_argument(
+        "--min-exposure-s",
+        type=float,
+        default=5.0,
+        help="leave out frames with a shorter exposure, in seconds (default 5)",
+    )
+    build.add_argument(
+        "--accept-unchecked",
+        action="store_true",
+        help="take a frame whose header lacks the cloud fraction or the transparency, or when "
+        "the configuration has no [site] to rule out the Sun and the Moon",
+    )
+    _add_common(build)
+    build.set_defaults(handler=_build)
 
 
 # --- Reading the configuration --------------------------------------------------------------
@@ -290,5 +395,92 @@ def _make(args: argparse.Namespace) -> int:
         if bias_frames is not None:
             bias_frames.close()
     for line in fm.format_make_report(result, name=out.name):
+        print(line)
+    return 0
+
+
+# --- flat build -----------------------------------------------------------------------------
+
+
+def _load_hot_pixels(survey: SurveyConfig) -> npt.NDArray[np.bool_] | None:
+    """The hot-pixel mask that `[survey] hot_pixel_file` names, or `None`."""
+    if not survey.hot_pixel_file:
+        return None
+    from seeingmon.survey.pipeline import load_hot_pixels
+
+    try:
+        return load_hot_pixels(survey.hot_pixel_file)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"cannot read the hot-pixel file: {type(exc).__name__}") from None
+
+
+def _build(args: argparse.Namespace) -> int:
+    from seeingmon.clock import SystemClock
+    from seeingmon.config import ConfigError
+    from seeingmon.scheduler.config import load_site
+    from seeingmon.survey import flat_sky as fs
+    from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary
+    from seeingmon.survey.flat_files import FlatFileError, write_flat
+
+    if args.out is None:
+        raise CliError("give --out, the flat to write", exit_code=2)
+    out = Path(args.out)
+    _check_output_name(out)
+    if args.frames is None and args.accumulator is None:
+        raise CliError(
+            "give the folder of frames, or an accumulator that holds frames", exit_code=2
+        )
+    center = _center(args)
+    try:
+        options = fs.BuildOptions(
+            bin_factor=args.bin,
+            high_pass_px=args.high_pass_px,
+            polaris_mask_px=args.polaris_mask_px,
+            center_xy=center,
+            min_frames=args.min_frames,
+            min_roll_deg=args.min_roll_deg,
+            max_sun_elevation_deg=args.max_sun_elevation,
+            max_moon_illumination=args.max_moon_illumination,
+            moon_min_elevation_deg=args.moon_min_elevation,
+            max_cloud_fraction=args.max_cloud_fraction,
+            min_transparency=args.min_transparency,
+            sky_tolerance=args.sky_tolerance_percent / 100.0,
+            min_exposure_s=args.min_exposure_s,
+            accept_unchecked=args.accept_unchecked,
+        )
+    except ValueError as exc:
+        raise CliError(str(exc), exit_code=2) from None
+    context = _load_context(args)
+    try:
+        site = load_site(context.config)
+    except ConfigError as exc:
+        raise CliError(str(exc)) from None
+    library = None
+    if context.calibration_dir is not None:
+        library = DarkLibrary(context.calibration_dir / DARKS_DIRNAME)
+
+    def progress(message: str) -> None:
+        print(message, flush=True)
+
+    try:
+        result = fs.build_sky_flat(
+            None if args.frames is None else Path(args.frames),
+            profile=context.profile,
+            survey=context.survey,
+            library=library,
+            site=site,
+            hot_mask=_load_hot_pixels(context.survey),
+            accumulator_path=None if args.accumulator is None else Path(args.accumulator),
+            options=options,
+            clock=SystemClock(),
+            progress=progress,
+        )
+        try:
+            write_flat(out, result.flat)
+        except FlatFileError as exc:
+            raise CliError(str(exc)) from None
+    except fs.SkyFlatError as exc:
+        raise CliError(str(exc)) from None
+    for line in fs.format_sky_report(result, name=out.name):
         print(line)
     return 0
