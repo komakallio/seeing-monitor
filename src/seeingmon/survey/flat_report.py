@@ -167,7 +167,8 @@ def azimuthal_profile(
     weight = np.ones(image.size) if valid is None else valid.astype(np.float64).ravel()
     flat_image = np.where(weight > 0, image.ravel(), 0.0)
     size = int(index.max()) + 1
-    count = np.bincount(index, weights=weight, minlength=size)
+    # With weights, `bincount` returns floats, though the stubs of some NumPy versions say integers.
+    count = np.asarray(np.bincount(index, weights=weight, minlength=size), dtype=np.float64)
     total = np.bincount(index, weights=flat_image, minlength=size)
     radius_total = np.bincount(index, weights=radius.ravel() * weight, minlength=size)
     keep = count > 0
