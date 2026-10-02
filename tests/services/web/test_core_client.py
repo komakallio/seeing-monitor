@@ -15,6 +15,7 @@ from seeingmon.scheduler.commands import (
     Command,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -30,6 +31,7 @@ from seeingmon.services.ipc.rpc import connect_rpc
 from seeingmon.services.ipc.server import IpcServer
 from seeingmon.services.web.config import CoreLinkSettings
 from seeingmon.services.web.contract import (
+    METHOD_DARK_LIBRARY,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
@@ -44,8 +46,9 @@ from seeingmon.services.web.core_client import (
     FakeCoreClient,
     RpcCoreClient,
 )
+from seeingmon.services.web.fake_dark import DarkScript
 from tests.services.conftest import wait_until
-from tests.services.web.helpers import ReferenceCore, alignment_state, tiny_jpeg
+from tests.services.web.helpers import ReferenceCore, alignment_state, dark_set, tiny_jpeg
 
 
 def run(coroutine: Any) -> Any:
@@ -334,6 +337,46 @@ def test_many_threads_can_call_at_once(
     assert client.connections == 1
 
 
+def test_the_client_reads_the_dark_library_and_queues_a_dark_task(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    backend = FakeCoreClient(instance="reference-core", dark_script=DarkScript(queued_s=3600.0))
+    backend.dark.sets = [dark_set("set-a", 12.0, 5.0)]
+    core = start_core(backend=backend)
+    client = make_client(clients, core.endpoint, key)
+    library = client.dark_library()
+    assert [item.name for item in library.sets] == ["set-a"]
+    assert library.task.state == "idle"
+    command = QueueDark(
+        exposure_s=20.0,
+        frames=5,
+        bias_frames=4,
+        wait_for_cover=False,
+        pause_after=False,
+        label="by hand",
+    )
+    queued = client.submit(command)
+    assert queued.accepted
+    assert queued.task_id == 1
+    assert core.backend.submitted == [command]  # the command crossed the wire unchanged
+    task = client.dark_library().task
+    assert (task.state, task.task_id) == ("queued", 1)
+    assert (task.exposure_s, task.frames, task.bias_frames) == (20.0, 5, 4)
+    assert (task.wait_for_cover, task.pause_after) == (False, False)
+    busy = client.submit(QueueDark())
+    assert not busy.accepted
+    assert busy.reason is RejectReason.BUSY
+
+
+def test_a_core_without_the_dark_method_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(lambda core: core.handlers.pop(METHOD_DARK_LIBRARY))
+    client = make_client(clients, core.endpoint, key)
+    with pytest.raises(CoreProtocolError, match="versions differ"):
+        client.dark_library()
+
+
 def test_a_core_that_is_not_running_is_unavailable(
     endpoint: Endpoint, key: ConnectionKey, clients: list[RpcCoreClient]
 ) -> None:
@@ -554,6 +597,7 @@ UNREADABLE = {
     "status": {"nonsense": True},
     "submit": {"accepted": "yes"},
     "alignment_state": {"active": "yes"},
+    "dark_library": {"mode": 5},
 }
 
 
@@ -573,6 +617,7 @@ def test_an_unreadable_answer_is_a_protocol_error(
         "status": client.status,
         "submit": lambda: client.submit(Pause()),
         "alignment_state": client.alignment_state,
+        "dark_library": client.dark_library,
     }
     with pytest.raises(CoreProtocolError):
         calls[method]()

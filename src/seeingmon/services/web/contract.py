@@ -15,10 +15,9 @@ value. A call that fails raises an exception that the connection layer sends bac
   `CommandResult` as JSON (`encode_result`).
 - `alignment_state` takes no parameters and answers with the `AlignmentState` as JSON, with
   `"active": false` outside alignment.
-- `dark_library` (`METHOD_DARK_LIBRARY`, in `METHODS` once `web` calls it) takes no parameters
-  and answers with the `DarkLibraryView` as JSON: the dark sets of the library, whether it is
-  due for a new set, the dark model, the sensor temperature, and the progress of the latest
-  dark session (`DarkTaskView`).
+- `dark_library` takes no parameters and answers with the `DarkLibraryView` as JSON: the dark
+  sets of the library, whether it is due for a new set, the dark model, the sensor temperature,
+  and the progress of the latest dark session (`DarkTaskView`).
 
 `submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
 normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
@@ -86,9 +85,13 @@ METHOD_STATUS = "status"
 METHOD_SUBMIT = "submit"
 METHOD_ALIGNMENT_STATE = "alignment_state"
 METHOD_DARK_LIBRARY = "dark_library"
-METHODS = (METHOD_PING, METHOD_STATUS, METHOD_SUBMIT, METHOD_ALIGNMENT_STATE)
-# `METHOD_DARK_LIBRARY` joins `METHODS` in the commit that makes `web` call it and the reference
-# core of the tests serve it, so that the test of `METHODS` stays true at every commit.
+METHODS = (
+    METHOD_PING,
+    METHOD_STATUS,
+    METHOD_SUBMIT,
+    METHOD_ALIGNMENT_STATE,
+    METHOD_DARK_LIBRARY,
+)
 
 FRAME_MAGIC = b"SMAF"
 MAX_STATE_BYTES = 64 * 1024

@@ -23,12 +23,14 @@ from seeingmon.services.ipc.stream import StreamSender, StreamService, StreamWin
 from seeingmon.services.web.contract import (
     ALIGNMENT_CHANNEL,
     METHOD_ALIGNMENT_STATE,
+    METHOD_DARK_LIBRARY,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
     RPC_CHANNEL,
     AlignmentFrameInfo,
     AlignmentState,
+    DarkSetView,
     FocusView,
     HistogramView,
     OffsetView,
@@ -89,6 +91,21 @@ def alignment_state(seq: int = 1, *, active: bool = True) -> AlignmentState:
     )
 
 
+def dark_set(name: str, temperature_c: float, age_days: float) -> DarkSetView:
+    return DarkSetView(
+        name=name,
+        t_utc="2026-09-01T00:00:00Z",
+        age_days=age_days,
+        temperature_c=temperature_c,
+        temperature_spread_c=0.3,
+        exposure_s=30.0,
+        n_frames=9,
+        n_bias_frames=9,
+        rate_e_per_s=0.05,
+        hot_pixels=150,
+    )
+
+
 class ReferenceCore:
     """The server side of the web contract, on the real connection layer.
 
@@ -112,6 +129,7 @@ class ReferenceCore:
             METHOD_STATUS: self._status,
             METHOD_SUBMIT: self._submit,
             METHOD_ALIGNMENT_STATE: self._alignment_state,
+            METHOD_DARK_LIBRARY: self._dark_library,
         }
         self.raw_payloads: list[bytes] = []  # sent before the frames, to test a bad message
         self.streams_started = 0
@@ -135,6 +153,9 @@ class ReferenceCore:
 
     def _alignment_state(self, params: Mapping[str, Any]) -> Any:
         return self.backend.alignment_state().model_dump(mode="json")
+
+    def _dark_library(self, params: Mapping[str, Any]) -> Any:
+        return self.backend.dark_library().model_dump(mode="json")
 
     def _on_sender(self, sender: StreamSender, params: Mapping[str, Any]) -> None:
         self.streams_started += 1

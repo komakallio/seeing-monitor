@@ -1,7 +1,8 @@
 """The seam between the web process and `core`: the `CoreClient` protocol and its two clients.
 
-The API needs four things from `core`: the status of the scheduler, a way to submit a scheduler
-command, the state of the alignment helper, and the live-view frames. `CoreClient` names them.
+The API needs five things from `core`: the status of the scheduler, a way to submit a scheduler
+command, the state of the alignment helper, the dark library with the progress of the dark task,
+and the live-view frames. `CoreClient` names them.
 
 - `RpcCoreClient` is the production client. It connects to `core` over the local connection layer
   and speaks the methods that `seeingmon.services.web.contract` documents. It connects when the
@@ -13,8 +14,9 @@ command, the state of the alignment helper, and the live-view frames. `CoreClien
 - `FakeCoreClient` answers in memory, for tests and for the demo. It follows the rules of the real
   scheduler for the commands, and it streams the frames of a source that you give it.
 
-The calls `status`, `submit`, and `alignment_state` block, so call them from a thread (FastAPI runs
-a plain `def` endpoint in its thread pool). `alignment_frames` is an async iterator.
+The calls `status`, `submit`, `alignment_state`, and `dark_library` block, so call them from a
+thread (FastAPI runs a plain `def` endpoint in its thread pool). `alignment_frames` is an async
+iterator.
 
 **Errors.** A call raises `CoreUnavailableError` when `core` cannot be reached or does not answer in
 time, and `CoreProtocolError` when `core` answers something that this client cannot use. Neither
@@ -36,6 +38,7 @@ from seeingmon.scheduler.commands import (
     CommandResult,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -62,6 +65,7 @@ from seeingmon.services.web.config import CoreLinkSettings
 from seeingmon.services.web.contract import (
     ALIGNMENT_CHANNEL,
     METHOD_ALIGNMENT_STATE,
+    METHOD_DARK_LIBRARY,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
@@ -69,14 +73,17 @@ from seeingmon.services.web.contract import (
     AlignmentFrame,
     AlignmentState,
     CoreStatus,
+    DarkLibraryView,
     SchedulerView,
     StreamView,
     decode_alignment_state,
+    decode_dark_library,
     decode_result,
     decode_status,
     encode_command,
     unpack_frame,
 )
+from seeingmon.services.web.fake_dark import DarkScript, DarkSimulator
 
 MIB = 1024 * 1024
 FrameSource = Callable[[], AsyncIterator[AlignmentFrame]]
@@ -110,6 +117,10 @@ class CoreClient(Protocol):
 
     def alignment_state(self) -> AlignmentState:
         """The state of the alignment helper, with `active` false outside alignment."""
+        ...
+
+    def dark_library(self) -> DarkLibraryView:
+        """The dark library, its status, and the latest dark task. Raises `CoreError`."""
         ...
 
     def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
@@ -296,6 +307,15 @@ class RpcCoreClient:
             _log.warning("core sent an unreadable alignment state: %s", error)
             raise CoreProtocolError("core sent an unreadable alignment state") from None
 
+    def dark_library(self) -> DarkLibraryView:
+        """The dark library and the dark task, from the `dark_library` method."""
+        answer = self._call(METHOD_DARK_LIBRARY, None, self._rpc_timeout_s)
+        try:
+            return decode_dark_library(answer)
+        except CodecError as error:
+            _log.warning("core sent an unreadable dark library: %s", error)
+            raise CoreProtocolError("core sent an unreadable dark library") from None
+
     def _open_stream(self) -> StreamReceiver:
         try:
             receiver, _ = connect_stream(
@@ -358,6 +378,10 @@ class FakeCoreClient:
     receives lands in `submitted`, in order. Set `fail_with` to make every call raise that error,
     and set it back to `None` to recover. Pass `frames` to give the live view a source: a function
     that returns an async iterator of `AlignmentFrame`.
+
+    The dark library lives in `dark`, a `DarkSimulator`: set its `sets`, `model`, and
+    `sensor_temperature_c`, and pass `dark_script` to set how long each part of a dark task lasts.
+    `QueueDark` starts a scripted task that follows the clock (see `fake_dark`).
     """
 
     def __init__(
@@ -369,13 +393,16 @@ class FakeCoreClient:
         instance: str = "fake-core",
         max_queued: int = 8,
         alignment_state: AlignmentState | None = None,
+        dark_script: DarkScript | None = None,
     ) -> None:
         self._clock = SystemClock() if clock is None else clock
+        self.dark = DarkSimulator(self._clock, script=dark_script)
         self._frames = frames
         self._instance = instance
         self._max_queued = max_queued
         self._lock = threading.Lock()
         self._state = state
+        self._reason = "a fake transition"
         self._since_ns = self._clock.utc_ns()
         self._queued = 0
         self._next_task_id = 1
@@ -405,13 +432,20 @@ class FakeCoreClient:
         if self.fail_with is not None:
             raise self.fail_with
 
-    def _transition(self, state: str) -> None:
+    def _transition(self, state: str, reason: str = "a fake transition") -> None:
         self._state = state
+        self._reason = reason
         self._since_ns = self._clock.utc_ns()
+
+    def _settle_dark(self) -> None:
+        """Let the dark task follow the clock, and apply what it does to the scheduler."""
+        for change in self.dark.settle(paused=self._state == "paused"):
+            self._transition(change.state, change.reason)
 
     def status(self) -> CoreStatus:
         self._check()
         with self._lock:
+            self._settle_dark()
             self.status_calls += 1
             now_ns = self._clock.utc_ns()
             return CoreStatus(
@@ -419,14 +453,14 @@ class FakeCoreClient:
                 scheduler=SchedulerView(
                     t_utc_ns=now_ns,
                     state=self._state,
-                    state_reason="a fake transition",
+                    state_reason=self._reason,
                     state_since_utc_ns=self._since_ns,
                     last_transition_utc_ns=self._since_ns,
                     degraded=self.degraded,
                     stream=StreamView(
                         stream_id=1, purpose="fast", mode="bin1", exposure_us=2000, gain=0
                     ),
-                    queued_tasks=self._queued,
+                    queued_tasks=self._queued + (1 if self.dark.queued else 0),
                     counters={
                         "commands_accepted": self._accepted,
                         "commands_rejected": self._rejected,
@@ -448,6 +482,7 @@ class FakeCoreClient:
         self._check()
         with self._lock:
             self.submitted.append(command)
+            self._settle_dark()
             return self._apply(command)
 
     def _apply(self, command: Command) -> CommandResult:
@@ -468,6 +503,7 @@ class FakeCoreClient:
         if isinstance(command, Pause):
             if self._state == "paused":
                 return self._reject(RejectReason.ALREADY_PAUSED, "the scheduler is already paused")
+            self.dark.abort()
             self._transition("paused")
             return self._result(True, "the scheduler paused, and nothing runs until you resume it")
         if isinstance(command, Resume):
@@ -486,7 +522,21 @@ class FakeCoreClient:
                 f"the {TASK_KINDS[type(command)]} is queued and runs at the next cycle boundary",
                 task_id=task_id,
             )
+        if isinstance(command, QueueDark):
+            accepted, reason, message = self.dark.submit(command, self._next_task_id)
+            if not accepted:
+                assert reason is not None
+                return self._reject(reason, message)
+            task_id = self._next_task_id
+            self._next_task_id += 1
+            return self._result(True, message, task_id=task_id)
         return self._reject(RejectReason.INVALID, "unknown command")
+
+    def dark_library(self) -> DarkLibraryView:
+        self._check()
+        with self._lock:
+            self._settle_dark()
+            return self.dark.library()
 
     def alignment_state(self) -> AlignmentState:
         self._check()

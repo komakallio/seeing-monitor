@@ -374,7 +374,7 @@ def test_unpack_refuses_what_is_not_a_frame() -> None:
 
 
 def test_the_methods_are_the_documented_ones() -> None:
-    assert METHODS == ("ping", "status", "submit", "alignment_state")
+    assert METHODS == ("ping", "status", "submit", "alignment_state", "dark_library")
 
 
 # --- The dark library ------------------------------------------------------------------------
