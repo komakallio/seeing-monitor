@@ -5,9 +5,11 @@ celestial pole, writes the cap catalog, and, when the astrometry.net tool
 `build-astrometry-index` is installed, builds the solver index files. `seeingmon catalog info
 PATH` prints the header of a catalog and checks the file.
 
-`seeingmon dark` records a dark set with the camera covered and adds it to the dark library.
-It takes the camera driver from the `[services.acquire]` configuration, so stop `acquire` first:
-one process at a time can open the camera.
+`seeingmon dark` records a dark set with the camera covered and adds it to the dark library. It
+queues the session in the running `core`, which owns the camera, and shows the progress (see
+`seeingmon.services.commands.run_dark_through_core`). With `--standalone` it opens the camera
+itself, with the driver of the `[services.acquire]` configuration, so stop `acquire` first: one
+process at a time can open the camera.
 """
 
 from __future__ import annotations
@@ -103,8 +105,10 @@ def register(subparsers: Subparsers) -> None:
     dark.description = (
         "The camera has no lens cap, so cover it. The command takes bias frames, waits until a "
         "test frame is dark (skip the wait with --no-wait), records dark frames at the survey "
-        "exposure, builds the master dark, and adds the set to the dark library. It reads the "
-        "camera driver from [services.acquire], so stop acquire first. Defaults come from "
+        "exposure, builds the master dark, and adds the set to the dark library. It asks the "
+        "running core to do this, shows the progress, and leaves the scheduler paused until "
+        "you uncover the camera and resume it. With --standalone, it opens the camera itself "
+        "with the driver in [services.acquire], so stop acquire first. Defaults come from "
         "[survey.dark]."
     )
     dark.add_argument(
@@ -113,16 +117,41 @@ def register(subparsers: Subparsers) -> None:
     dark.add_argument("--frames", type=int, help="dark frames in the set")
     dark.add_argument("--bias-frames", type=int, help="bias frames at the shortest exposure")
     dark.add_argument("--exposure-s", type=float, help="the exposure of a dark frame, in seconds")
-    dark.add_argument("--gain", type=int, help="the camera gain")
-    dark.add_argument("--mode", help="the readout mode")
+    dark.add_argument("--gain", type=int, help="the camera gain (with --standalone)")
+    dark.add_argument("--mode", help="the readout mode (with --standalone)")
     dark.add_argument(
-        "--wait-timeout", type=float, help="seconds to wait for the cover before giving up"
+        "--wait-timeout",
+        type=float,
+        help="seconds to wait for the cover before giving up (with --standalone)",
     )
-    dark.add_argument("--driver", help="the camera driver (default: driver in [services.acquire])")
+    dark.add_argument(
+        "--driver",
+        help="the camera driver (with --standalone; default: driver in [services.acquire])",
+    )
     dark.add_argument(
         "--library",
         type=Path,
-        help="the dark library folder (default: darks/ in calibration_dir or the data directory)",
+        help="the dark library folder (with --standalone; default: darks/ in calibration_dir "
+        "or the data directory)",
+    )
+    dark.add_argument(
+        "--standalone",
+        action="store_true",
+        help="run the session here, with the camera driver and without core. "
+        "Stop acquire first, because one process may hold the camera.",
+    )
+    dark.add_argument(
+        "--detach",
+        action="store_true",
+        help="queue the session in core and return, without following it",
+    )
+    dark.add_argument(
+        "--address", help="the address of core (default: [services] core_address, or the default)"
+    )
+    dark.add_argument(
+        "--local-config",
+        type=Path,
+        help="read this file instead of local/config.toml (an absent file is ignored)",
     )
 
 
@@ -281,6 +310,16 @@ def _dark_library_dir(args: argparse.Namespace, config: Config, survey: SurveyCo
 
 
 def _dark(args: argparse.Namespace) -> int:
+    if not args.standalone:
+        from seeingmon.services.commands import run_dark_through_core
+
+        return run_dark_through_core(args)
+    if args.detach or args.address:
+        raise CliError("--detach and --address belong to the run through core", exit_code=2)
+    return _dark_standalone(args)
+
+
+def _dark_standalone(args: argparse.Namespace) -> int:
     from seeingmon.config import ConfigError, load_config
     from seeingmon.drivers import create_driver
     from seeingmon.drivers.base import CameraError
@@ -291,7 +330,7 @@ def _dark(args: argparse.Namespace) -> int:
     from seeingmon.survey.dark_session import DarkSessionOptions, run_dark_session
 
     try:
-        config = load_config()
+        config = load_config(local_file=args.local_config)
         survey = config.section("survey", SurveyConfig)
         services = config.section("services", ServicesConfig)
         profile = config.profile

@@ -7,6 +7,9 @@
   through the RPC. They wait for the result and print it. With `--standalone`, they run the task
   in a private scheduler against the configured driver, for bench work (see
   `seeingmon.services.core.commissioning.standalone`).
+- `seeingmon dark` (registered with the survey commands) queues a dark session the same way, and
+  shows the progress that `core` reports (`run_dark_through_core`). With `--standalone`, it runs
+  the session on the camera driver here, and `acquire` must not run.
 - `seeingmon dev` starts the whole system on a simulated sky (see `seeingmon.services.dev`).
 
 Exit codes of the commissioning commands: 0 when the task finished with the status `ok`, 1 when it
@@ -24,6 +27,7 @@ from seeingmon.cli import CliError, Subparsers, add_command
 
 if TYPE_CHECKING:
     from seeingmon.scheduler.commands import Command
+    from seeingmon.services.core.commissioning.client import CoreCommandClient
 
 EXIT_FAILED = 1
 EXIT_REJECTED = 2
@@ -281,7 +285,8 @@ def _queue(args: argparse.Namespace, command: Command) -> int:
     return _run_through_core(args, services, command)
 
 
-def _run_through_core(args: argparse.Namespace, services: Any, command: Command) -> int:
+def _connect(args: argparse.Namespace, services: Any) -> CoreCommandClient:
+    """Connect to `core` at `--address`, or at the address of the configuration."""
     from seeingmon.services.core.commissioning.client import CoreCommandClient, CoreCommandError
     from seeingmon.services.ipc.endpoint import Endpoint
     from seeingmon.services.ipc.errors import IpcError
@@ -292,12 +297,18 @@ def _run_through_core(args: argparse.Namespace, services: Any, command: Command)
     except IpcError as error:
         raise CliError(str(error)) from None
     try:
-        client = CoreCommandClient(endpoint, key, connect_timeout_s=services.connect_timeout_s)
+        return CoreCommandClient(endpoint, key, connect_timeout_s=services.connect_timeout_s)
     except CoreCommandError as error:
         raise CliError(
             f"{error}. Start core with `seeingmon core`, or add --standalone to run on this "
             "machine without it."
         ) from None
+
+
+def _run_through_core(args: argparse.Namespace, services: Any, command: Command) -> int:
+    from seeingmon.services.core.commissioning.client import CoreCommandError
+
+    client = _connect(args, services)
     try:
         answer = client.submit(command)
         if not answer.accepted:
@@ -346,6 +357,78 @@ def _run_here(args: argparse.Namespace, config: Any, services: Any, command: Com
         print("the task did not finish")
         return EXIT_FAILED
     return _print_result(outcome.result.to_detail())
+
+
+# The options of `seeingmon dark` that the run through `core` cannot take, because `core` has its
+# own settings ([survey.dark]), its own camera, and its own data folder.
+DARK_STANDALONE_OPTIONS = (
+    ("--driver", "driver"),
+    ("--library", "library"),
+    ("--mode", "mode"),
+    ("--gain", "gain"),
+    ("--wait-timeout", "wait_timeout"),
+)
+
+
+def run_dark_through_core(args: argparse.Namespace) -> int:
+    """`seeingmon dark` without `--standalone`: queue the session in `core`, and follow it.
+
+    The command prints the progress that `core` reports, and then the result. It ends with the exit
+    codes of the other commissioning commands. Ctrl+C stops the display, and the session goes on.
+    """
+    from seeingmon.config import ConfigError, load_config
+    from seeingmon.scheduler.commands import QueueDark
+    from seeingmon.services.config import ServicesConfig
+    from seeingmon.services.core.commissioning.client import CoreCommandError
+
+    for flag, name in DARK_STANDALONE_OPTIONS:
+        if getattr(args, name, None) is not None:
+            raise CliError(
+                f"{flag} needs --standalone, because core runs the session with its own settings "
+                "([survey.dark]) and its own library",
+                exit_code=2,
+            )
+    try:
+        config = load_config(local_file=args.local_config)
+        services = config.section("services", ServicesConfig)
+    except (ConfigError, ValueError) as error:
+        raise CliError(str(error)) from None
+    command = QueueDark(
+        exposure_s=args.exposure_s,
+        frames=args.frames,
+        bias_frames=args.bias_frames,
+        wait_for_cover=not args.no_wait,
+    )
+    client = _connect(args, services)
+    try:
+        answer = client.submit(command)
+        if not answer.accepted:
+            print(f"core rejected the command: {answer.message}")
+            return EXIT_REJECTED
+        print(answer.message, flush=True)
+        if args.detach or answer.task_id is None:
+            return 0
+        print(
+            f"following task {answer.task_id}, which runs at the next cycle boundary. "
+            "Press Ctrl+C to stop following: the session goes on in core.",
+            flush=True,
+        )
+        outcome = client.follow_dark(answer.task_id, show=lambda line: print(line, flush=True))
+    except CoreCommandError as error:
+        raise CliError(str(error)) from None
+    except KeyboardInterrupt:
+        print("stopped following; the session goes on in core (Pause in the web UI stops it)")
+        return EXIT_FAILED
+    finally:
+        client.close()
+    if outcome.result is None:
+        print("the session did not finish; it still runs in core")
+        return EXIT_FAILED
+    code = _print_result(outcome.result)
+    data = outcome.result.get("data") or {}
+    if data.get("remove_cover"):
+        print("The scheduler waits in pause. Uncover the camera, then resume it from the web UI.")
+    return code
 
 
 def _print_result(result: Any) -> int:

@@ -14,6 +14,8 @@ in `paused`. The module carries the `slow` marker, so run it with `--slow`.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -35,7 +37,7 @@ from seeingmon.services.web.contract import (
     encode_command,
 )
 
-from .system import System
+from .system import System, clean_environment
 
 pytestmark = pytest.mark.slow
 
@@ -135,6 +137,7 @@ class TestTheFlow:
         assert before.sets == []
         assert before.status.due is True
         assert before.task.state == "idle"
+        system.wait_for(lambda: bool(system.records("health")), "the first health record")
         assert min(system.records("health"), key=lambda r: r.t_utc_ns).dark_due is True
 
         assert send(system, QueueDark()).accepted
@@ -267,5 +270,34 @@ class TestAStopInTheMiddle:
         assert "another command took the camera" in task.summary
         assert [item.name for item in library(system).sets] == before
         wait_for_pause(system)  # the pause that the owner pressed
+        system.uncover()
+        ensure_auto(system)
+
+
+class TestTheCommandLine:
+    def test_seeingmon_dark_queues_the_session_in_core_and_shows_it(self, system: System) -> None:
+        ensure_auto(system)
+        system.cover()  # the owner covered the camera before typing the command
+        sets_before = len(library(system).sets)
+        env = {**clean_environment(), "SEEINGMON_SERVICES__CONNECTION_KEY": system.plan.key}
+        command = [
+            sys.executable,
+            "-m",
+            "seeingmon",
+            "dark",
+            "--no-wait",
+            "--address",
+            system.plan.core_endpoint,
+            "--local-config",
+            str(system.directory / "no-owner-settings.toml"),
+        ]
+        done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=240.0)
+
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "Recording 3 dark frames of 10 s." in done.stdout  # a message that core reported
+        assert ": ok. Added dark-" in done.stdout
+        assert "The scheduler waits in pause. Uncover the camera" in done.stdout
+        assert len(library(system).sets) == sets_before + 1
+        wait_for_pause(system)
         system.uncover()
         ensure_auto(system)

@@ -416,7 +416,7 @@ sudo /opt/seeingmon/bin/seeingmon <command> --help
 |---|---|---|
 | `seeingmon burst` | Records frames to a SER file with a JSON sidecar. Pinned bursts are exempt from retention. | Also `POST /api/v1/commands/burst` (token required). The command line comes with the services lane. |
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | The services lane provides it. |
-| `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
+| `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set and shows the progress. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon replay` | Feeds a SER recording through `acquire` at the original rate, at the maximum rate, or at a speed factor. | The services lane provides it. |
 | `seeingmon recordings info <path>` | Prints the geometry, the frame count, and the timing of a recording. | Read-only. |
 | `seeingmon profile show` | Prints the hardware profile with its derived values. | Read-only. |

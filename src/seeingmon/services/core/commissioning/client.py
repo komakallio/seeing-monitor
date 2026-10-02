@@ -1,10 +1,11 @@
 """The client of the commissioning commands: queue a task in the running `core`, and wait for it.
 
-`seeingmon burst`, `sweep`, and `replay` connect to `core` over the local connection layer with the
-role `cli`, send the command with the `submit` method, and print the answer. With `--wait` they
-poll the `results` method (see `seeingmon.services.core.rpc`) until the result of their task
+`seeingmon burst`, `sweep`, `replay`, and `dark` connect to `core` over the local connection layer
+with the role `cli`, send the command with the `submit` method, and print the answer. With `--wait`
+they poll the `results` method (see `seeingmon.services.core.rpc`) until the result of their task
 appears. A task runs at the next cycle boundary of the scheduler, so it may start after a short
-wait, and a burst or replay may take minutes.
+wait, and a burst or replay may take minutes. `seeingmon dark` also polls `dark_library`, to show
+the progress of the session (`follow_dark`).
 
 `cells_from_result` rebuilds the cells of a sweep from the JSON of its result, so the command prints
 the same table as the scheduler's own formatter.
@@ -13,7 +14,7 @@ the same table as the scheduler's own formatter.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,8 +27,11 @@ from seeingmon.services.ipc.errors import IpcError, RpcError
 from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.ipc.rpc import RpcClient, connect_rpc
 from seeingmon.services.web.contract import (
+    METHOD_DARK_LIBRARY,
     METHOD_SUBMIT,
     RPC_CHANNEL,
+    DarkLibraryView,
+    decode_dark_library,
     decode_result,
     encode_command,
 )
@@ -110,6 +114,42 @@ class CoreCommandClient:
             if waited >= timeout_s:
                 return WaitOutcome(None, waited)
             self._clock.sleep(min(poll_s, max(timeout_s - waited, 0.0)))
+
+    def dark_library(self) -> DarkLibraryView:
+        """The dark library of `core` and the progress of its latest dark session."""
+        try:
+            return decode_dark_library(self._rpc.call(METHOD_DARK_LIBRARY))
+        except (IpcError, RpcError, CodecError) as error:
+            raise CoreCommandError(f"core did not give the dark library: {error}") from None
+
+    def follow_dark(
+        self,
+        task_id: int,
+        *,
+        show: Callable[[str], None],
+        timeout_s: float | None = None,
+        poll_s: float = 1.0,
+    ) -> WaitOutcome:
+        """Show the progress of a dark task until its result appears, and return the result.
+
+        `show` gets each new message of the session, such as `Dark frame 2 of 9.` A look every
+        `poll_s` can miss a short message. Without `timeout_s`, the call waits until the task
+        ends. The outcome holds no result when `timeout_s` runs out first.
+        """
+        started = self._clock.monotonic_ns()
+        last = ""
+        while True:
+            task = self.dark_library().task
+            if task.task_id == task_id and task.message and task.message != last:
+                last = task.message
+                show(task.message)
+            waited = (self._clock.monotonic_ns() - started) / NS_PER_S
+            for result in self.results():
+                if result.get("task_id") == task_id:
+                    return WaitOutcome(result, waited)
+            if timeout_s is not None and waited >= timeout_s:
+                return WaitOutcome(None, waited)
+            self._clock.sleep(poll_s)
 
     def close(self) -> None:
         self._rpc.close("the command is done")

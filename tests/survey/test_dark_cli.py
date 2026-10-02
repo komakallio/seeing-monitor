@@ -3,7 +3,9 @@
 The tests replace two things: the clock, so that no exposure and no wait takes real time, and
 the driver factory, so that the command gets a sim camera that the test builds (a covered one,
 or one with a cover that goes on after a few frames). The configuration comes from environment
-variables, as it does in a real run.
+variables, as it does in a real run. The tests run the command with `--standalone`, which opens the
+camera in this process. The run through `core` has its tests in
+`tests/services/core/test_dark_command.py`.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def test_the_command_records_a_set_with_the_configured_driver(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     setup = Setup(monkeypatch, tmp_path)
-    code = main(["dark", "--no-wait", "--frames", "3", "--bias-frames", "3"])
+    code = main(["dark", "--standalone", "--no-wait", "--frames", "3", "--bias-frames", "3"])
     out = capsys.readouterr().out
     assert code == 0
     assert setup.created == [{"name": "sim", "options": {}}]  # the driver of [services.acquire]
@@ -81,7 +83,7 @@ def test_the_command_waits_for_the_cover_by_default(
     setup.driver = simfx.CoverableDriver(
         uncovered, covered_driver(setup.clock, seed=5), cover_after_reads=3 + 2
     )
-    code = main(["dark", "--frames", "3", "--bias-frames", "3"])
+    code = main(["dark", "--standalone", "--frames", "3", "--bias-frames", "3"])
     out = capsys.readouterr().out
     assert code == 0
     assert "Cover the camera now. Waiting for a dark frame." in out
@@ -94,10 +96,22 @@ def test_options_on_the_command_line_override_the_configuration(
 ) -> None:
     setup = Setup(monkeypatch, tmp_path)
     monkeypatch.setenv("SEEINGMON_SURVEY__DARK__EXPOSURE_S", "20")
-    assert main(["dark", "--no-wait", "--frames", "3", "--bias-frames", "3"]) == 0
+    assert main(["dark", "--standalone", "--no-wait", "--frames", "3", "--bias-frames", "3"]) == 0
     assert setup.library().sets()[0].exposure_s == 20.0  # the configured exposure
     assert (
-        main(["dark", "--no-wait", "--frames", "4", "--bias-frames", "3", "--exposure-s", "10"])
+        main(
+            [
+                "dark",
+                "--standalone",
+                "--no-wait",
+                "--frames",
+                "4",
+                "--bias-frames",
+                "3",
+                "--exposure-s",
+                "10",
+            ]
+        )
         == 0
     )
     capsys.readouterr()
@@ -110,7 +124,7 @@ def test_a_failed_check_is_an_error_message_and_leaves_the_library_alone(
 ) -> None:
     setup = Setup(monkeypatch, tmp_path)
     setup.driver = simfx.make_driver(PROFILE, SimOptions(seed=5), setup.clock)  # uncovered
-    code = main(["dark", "--no-wait", "--frames", "3", "--bias-frames", "3"])
+    code = main(["dark", "--standalone", "--no-wait", "--frames", "3", "--bias-frames", "3"])
     captured = capsys.readouterr()
     assert code == 1
     assert "seeingmon: error: dark frame 1 of 3 is not dark" in captured.err
@@ -123,7 +137,9 @@ def test_the_wait_gives_up_after_the_timeout(
 ) -> None:
     setup = Setup(monkeypatch, tmp_path)
     setup.driver = simfx.make_driver(PROFILE, SimOptions(seed=5), setup.clock)
-    code = main(["dark", "--wait-timeout", "30", "--bias-frames", "3", "--frames", "3"])
+    code = main(
+        ["dark", "--standalone", "--wait-timeout", "30", "--bias-frames", "3", "--frames", "3"]
+    )
     assert code == 1
     assert "not dark after 30 s" in capsys.readouterr().err
 
@@ -141,7 +157,7 @@ def test_a_camera_fault_names_the_likely_cause(
             return None
 
     setup.driver = Gone()  # type: ignore[assignment]
-    code = main(["dark", "--no-wait"])
+    code = main(["dark", "--standalone", "--no-wait"])
     err = capsys.readouterr().err
     assert code == 1
     assert "the camera failed: no camera answers" in err
@@ -157,7 +173,7 @@ def test_a_driver_that_cannot_be_created_is_an_error_message(
         raise ImportError("the vendor library is missing")
 
     monkeypatch.setattr("seeingmon.drivers.create_driver", broken)
-    code = main(["dark", "--no-wait", "--driver", "asi"])
+    code = main(["dark", "--standalone", "--no-wait", "--driver", "asi"])
     err = capsys.readouterr().err
     assert code == 1
     assert "cannot create the driver 'asi': ImportError: the vendor library is missing" in err
@@ -172,6 +188,7 @@ def test_the_library_folder_comes_from_the_option_or_the_configuration(
         main(
             [
                 "dark",
+                "--standalone",
                 "--no-wait",
                 "--frames",
                 "3",
@@ -188,7 +205,7 @@ def test_the_library_folder_comes_from_the_option_or_the_configuration(
     # With no option and no calibration_dir, the data directory holds the library.
     monkeypatch.delenv("SEEINGMON_SURVEY__CALIBRATION_DIR")
     monkeypatch.setenv("SEEINGMON_PATHS__DATA_DIR", str(tmp_path / "data"))
-    assert main(["dark", "--no-wait", "--frames", "3", "--bias-frames", "3"]) == 0
+    assert main(["dark", "--standalone", "--no-wait", "--frames", "3", "--bias-frames", "3"]) == 0
     assert len(DarkLibrary(tmp_path / "data" / "calibration" / "darks").sets()) == 1
     capsys.readouterr()
 
@@ -198,7 +215,7 @@ def test_without_any_library_location_the_command_says_what_to_set(
 ) -> None:
     Setup(monkeypatch, tmp_path)
     monkeypatch.delenv("SEEINGMON_SURVEY__CALIBRATION_DIR")
-    code = main(["dark", "--no-wait"])
+    code = main(["dark", "--standalone", "--no-wait"])
     assert code == 1
     assert "pass --library, or set calibration_dir" in capsys.readouterr().err
 
@@ -207,9 +224,9 @@ def test_a_bad_mode_or_count_is_an_error_message(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     Setup(monkeypatch, tmp_path)
-    assert main(["dark", "--no-wait", "--frames", "1"]) == 1
+    assert main(["dark", "--standalone", "--no-wait", "--frames", "1"]) == 1
     assert "at least 3 dark frames" in capsys.readouterr().err
-    assert main(["dark", "--no-wait", "--mode", "bin9"]) == 1
+    assert main(["dark", "--standalone", "--no-wait", "--mode", "bin9"]) == 1
     assert "bin9" in capsys.readouterr().err
 
 
@@ -218,5 +235,14 @@ def test_the_help_lists_the_options(capsys: pytest.CaptureFixture[str]) -> None:
         main(["dark", "--help"])
     assert raised.value.code == 0
     text = capsys.readouterr().out
-    for option in ("--no-wait", "--frames", "--bias-frames", "--exposure-s", "--library"):
+    for option in (
+        "--no-wait",
+        "--frames",
+        "--bias-frames",
+        "--exposure-s",
+        "--library",
+        "--standalone",
+        "--detach",
+        "--address",
+    ):
         assert option in text

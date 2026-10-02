@@ -84,7 +84,8 @@ edge_px = 20.0
 min_expected = 8
 match_radius_px = 3.0
 
-# The dark library: how `seeingmon dark` records a set, and when `health` reports `dark_due`.
+# The dark library: how `seeingmon dark` and the dark task of the web UI record a set, and when
+# `health` reports `dark_due`.
 [survey.dark]
 mode = "bin2"                  # The readout mode and the gain of the survey frames.
 gain = 120
