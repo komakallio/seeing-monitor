@@ -4,35 +4,35 @@ The architecture sets a performance gate for a Raspberry Pi 4 (see [architecture
 
 ## Summary
 
-On the estimate, the per-frame analysis fits its budget with a wide margin. At commit `0a764af`, the transport between `acquire` and `core` did not. A whole-system run at commit `b2e1f93`, after the services lane batched the stream, puts the CPU time that `core` spends on the receive and the fast path within the budget. The memory is the open question: the peaks that the whole-system run measures put the estimate across the 1.4 GB budget.
+On the estimate, the per-frame analysis fits its budget with a wide margin, and so does the receive in `core` since the services lane batched the stream. `acquire` is the one row of the CPU budgets that fails in all six runs. The memory is the open question: the peaks that the whole-system run measures put the estimate across the 1.4 GB budget.
 
 | Budget | Limit | Dev machine | Pi 4 (estimate) | Verdict | Verdict in the six runs |
 |---|---|---|---|---|---|
-| `acquire`, the production code, bin1 at 98 fps | 10% of a core | 6.8% | 18 to 40% | fail | Fail in six |
-| `acquire`, what the fake camera of the tests adds | Not counted | 0.05% | | | |
-| Fast path, bin1 at 98 fps | 25% of a core | 0.35% | 1.8 to 3.8% | pass | Pass in six |
-| Fast path and receive, bin1 at 98 fps | 25% of a core | 4.3% | 19 to 35% | marginal | Fail in five, marginal in one |
-| Fast path, bin2 at 360 fps | 25% of a core | 1.1% | 5.5 to 12% | pass | Pass in three, marginal in three |
-| Fast path and receive, bin2 at 360 fps | 25% of a core | 14.4% | 99 to 158% | fail | Fail in six |
-| Survey frame, bin2 (derived, not a gate) | 180 s | 1.5 s | 7.3 to 16 s | pass | Pass in six |
-| Survey worker, peak memory | 550 MB | 454 MB | 318 to 590 MB | marginal | Marginal in six |
-| All processes, peak memory | 1.4 GB budget, 1.6 GB gate | 762 MB | 683 to 1,290 MB | pass | Pass in six |
+| `acquire`, the production code, bin1 at 98 fps | 10% of a core | 3.4% | 12 to 24% | fail | Fail in six |
+| `acquire`, what the fake camera of the tests adds | Not counted | 0.03% | | | |
+| Fast path, bin1 at 98 fps | 25% of a core | 0.28% | 1.4 to 3.1% | pass | Pass in six |
+| Fast path and receive, bin1 at 98 fps | 25% of a core | 1.2% | 7.5 to 13% | pass | Pass in six |
+| Fast path, bin2 at 360 fps | 25% of a core | 0.92% | 4.6 to 10% | pass | Pass in four, marginal in two |
+| Fast path and receive, bin2 at 360 fps | 25% of a core | 1.9% | 12 to 21% | pass | Pass in two, marginal in two, fail in two |
+| Survey frame, bin2 (derived, not a gate) | 180 s | 0.98 s | 4.9 to 11 s | pass | Pass in six |
+| Survey worker, peak memory | 550 MB | 452 MB | 317 to 588 MB | marginal | Marginal in six |
+| All processes, peak memory | 1.4 GB budget, 1.6 GB gate | 766 MB | 686 to 1,295 MB | pass | Pass in six |
 
-The table shows the least disturbed of three Linux runs at commit `0a764af`. The last column gives the verdicts of all six runs: three on Linux, and three on Windows, which is slower in the bin2 fast path. The Pi 4 column is an estimate: read [How the estimate works](#how-the-estimate-works) before you rely on it. The services lane has changed the stream since that commit, so the rows that come from the cases `fastpath`, `ipc`, `survey`, and `store` need a new run of the whole harness.
+The table shows the least disturbed of three Linux runs at commit `4afaca4`, after the services lane cut the work of the stream (see [Stream between `acquire` and `core`](#stream-between-acquire-and-core)). The last column gives the verdicts of all six runs: three on Linux, and three on Windows, which is slower in the bin2 fast path and swings by about 30% from run to run, because its CPU time ticks at 15.6 ms. The Pi 4 column is an estimate: read [How the estimate works](#how-the-estimate-works) before you rely on it. The first version of this page showed the figures of commit `0a764af`, before the change: `acquire` at 6.8% on the dev machine (18 to 40% on the estimate), the fast path with the receive at 4.3% in bin1 (19 to 35%, `marginal` or `fail`) and at 14.4% in bin2 (99 to 158%, `fail`).
 
-The `core-sim` case (see [The whole-system case](#the-whole-system-case)) measured three rows again at commit `b2e1f93`, once on Linux and once on Windows. Another system ran on the machine during both runs, and the host was about 40 to 50% busy, so these are runs with another system active. The verdicts in the table above stay until a run on a quiet machine replaces them. The table below shows what the new figures give. The Pi 4 column uses the Linux figure.
+The `core-sim` case (see [The whole-system case](#the-whole-system-case)) measures `core`, the survey worker, and `web` in the running system. It ran once on Linux and once on Windows at commit `b2e1f93`, which has the same code as `4afaca4`. Another system ran on the machine during both runs (see [The whole system](#the-whole-system)), so these are runs with another system active. The verdicts in the table above stay until a run on a quiet machine replaces them. The table below shows what the new figures give. The Pi 4 column uses the Linux figure.
 
 | Budget | Limit | Table above | Whole system, Linux / Windows | Pi 4 (estimate) | Verdict, Linux / Windows |
 |---|---|---|---|---|---|
-| Fast path and receive, bin1 at 98 fps, measured in `core` | 25% of a core | 4.3% | 1.9% / 2.5% | 13 to 21% | pass / marginal |
-| Survey worker, peak memory | 550 MB | 454 MB | 444 / 414 MB | 311 to 577 MB | marginal / pass |
-| All processes, peak memory, `acquire` from the `ipc` case | 1.4 GB budget, 1.6 GB gate | 762 MB | 904 / 775 MB | 783 to 1,475 MB | marginal, pass / pass, pass |
+| Fast path and receive, bin1 at 98 fps, measured in `core` | 25% of a core | 1.2% | 1.9% / 2.5% | 13 to 21% | pass / marginal |
+| Survey worker, peak memory | 550 MB | 452 MB | 444 / 414 MB | 311 to 577 MB | marginal / pass |
+| All processes, peak memory, `acquire` from the `ipc` case | 1.4 GB budget, 1.6 GB gate | 766 MB | 905 / 775 MB | 783 to 1,476 MB | marginal, pass / pass, pass |
 | All processes, sum of the peaks in the whole system, with the simulator in `acquire` | 1.4 GB budget, 1.6 GB gate | | 1,143 / 966 MB | 950 to 1,786 MB | marginal, marginal / marginal, pass |
 
-- **The fast path has room.** One bin1 frame takes 32 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 23 µs of that. The Pi 4 estimate for the kernel (0.11 to 0.25 ms) agrees with the architecture's 0.2 to 0.4 ms.
-- **The stream between the processes was the risk, and it has changed.** At commit `0a764af`, the production code of `acquire` spent 0.69 ms of CPU on a frame, and `core` spent 0.41 ms on receiving it. Over the three Linux runs, the figures range from 0.69 to 1.0 ms and from 0.41 to 0.60 ms. Both costs come from Python threads that move each frame, with no array computation. The work alone puts `acquire` at 13 to 20% of a Pi 4 core, over its 10% budget, even if wake-ups cost nothing. The camera is not the cause: the fake camera of the tests adds about 5 µs to a frame (see [What the camera adds](#what-the-camera-adds)). At 360 frames per second, the receive alone costs an estimated 93 to 146% of a Pi 4 core. The costs belong to each message and each frame, not to the bytes (see [Where the stream spends its CPU time](#where-the-stream-spends-its-cpu-time)). The services lane then cut the per-message work. In the whole system at commit `b2e1f93`, `core` spends 0.20 ms of CPU on a frame for the receive, the fast path, and the append together (0.25 ms on Windows). That is 1.9% of a core at 98 frames per second, and 13 to 21% on the Pi 4 estimate, within the 25% budget. The `ipc` case has not measured `acquire` again at that commit, so the `acquire` row and the bin2 row still show the figures of `0a764af`.
-- **The survey path has room in time and little in memory.** A bin2 frame takes 1.5 s on the dev machine (1.5 to 3.4 s over the three Linux runs), including 0.5 s for the sky quality step, and the worker peaks at 454 MB in the `survey` case and at 444 MB in the whole system.
-- **Two gigabytes of memory is not settled.** The earlier estimate used a stand-in of 197 MB for `core`. In the whole system, `core` peaks at 307 MB on Linux. The estimated peak of all processes is 783 to 1,475 MB, which straddles the 1.4 GB budget and stays under the 1.6 GB gate. The range crosses the gate too when `acquire` counts with the simulator inside it (950 to 1,786 MB), and the true figure for `acquire` lies between the two. A run on a Pi 4 decides it (see [Memory](#memory)).
+- **The fast path has room.** One bin1 frame takes 26 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 19 µs of that. The Pi 4 estimate for the kernel (0.10 to 0.21 ms) agrees with the architecture's 0.2 to 0.4 ms.
+- **The stream between the processes was the risk, and it has changed.** At commit `0a764af`, the production code of `acquire` spent 0.69 ms of CPU on a frame, and `core` spent 0.41 ms on receiving it. At 360 frames per second, the receive alone cost an estimated 93 to 146% of a Pi 4 core. The costs belonged to each message and each frame, not to the bytes. The services lane then cut the per-message work (commits `0db406c` to `80acdcc`): `core` asks for batches, and `acquire` holds a fast stream for 60 ms and sends its frames as one message, so a batch costs one wake-up. Now `acquire` spends 0.35 ms of CPU on a frame (0.32 to 0.37 ms over the three Linux runs), and `core` spends 0.09 ms on the receive (0.07 to 0.11 ms). The receive in bin2 at 360 frames per second takes 28 µs a frame, 1.0% of a core. The estimate for `acquire` is 12 to 24% of a Pi 4 core, still over its budget of 10%: the capture thread takes 235 of the 348 µs, and the work alone gives 10 to 16%. The receive with the fast path is within the 25% budget: 7.5 to 13% in bin1 and 12 to 21% in bin2 on the estimate, and 13 to 21% in bin1 in the whole system. The camera is not the cause of the `acquire` figure: the fake camera of the tests adds about 3 µs to a call (see [What the camera adds](#what-the-camera-adds)).
+- **The survey path has room in time and little in memory.** A bin2 frame takes 1.0 s on the dev machine (1.0 to 1.3 s over the three Linux runs), including 0.31 s for the sky quality step, and the worker peaks at 452 MB in the `survey` case and at 444 MB in the whole system.
+- **Two gigabytes of memory is not settled.** The estimate with a stand-in of 197 MB for `core` passes both limits. In the whole system, `core` peaks at 307 MB on Linux, and the estimated peak of all processes is 783 to 1,476 MB, which straddles the 1.4 GB budget and stays under the 1.6 GB gate. The range crosses the gate too when `acquire` counts with the simulator inside it (950 to 1,786 MB), and the true figure for `acquire` lies between the two. A run on a Pi 4 decides it (see [Memory](#memory)).
 - **Rust for the per-frame metrics is not indicated** (see [The Rust decision](#the-rust-decision)).
 
 ## What the harness measures
@@ -92,33 +92,35 @@ A figure is the median of its repeats, and the table also shows the minimum, the
 
 ## Results on the development machine
 
-The tables show two sets of runs on the same laptop, a recent x86-64 machine with performance and efficiency cores. One set ran Linux in a WSL 2 virtual machine (CPython 3.12.14, NumPy 2.5.3, SciPy 1.18.1), and the other ran Windows (CPython 3.13.13, the same libraries). Each set has three runs of the whole harness at commit `0a764af`, except the last subsection, which shows the whole-system case at commit `b2e1f93`. A cell that holds two numbers reads `Linux / Windows`. The Pi runs Linux, so the estimate uses the Linux run.
+The tables show two sets of runs on the same laptop, a recent x86-64 machine with performance and efficiency cores. One set ran Linux in a WSL 2 virtual machine (CPython 3.12.14, NumPy 2.5.3, SciPy 1.18.1), and the other ran Windows (CPython 3.13.13, the same libraries). Each set has three runs of the cases `calibration`, `kernel`, `fastpath`, `ipc`, `survey`, `store`, and `memory` at commit `4afaca4`, after the services lane cut the work of the stream. The runs alternated between the two systems, and each case waited up to 30 s for the machine to be at most 15% busy (`--quiet-wait 30`). The first version of this page had three runs of each set at commit `0a764af`, before that change, and the stream section keeps those figures as the "before". The last subsection shows the whole-system case at commit `b2e1f93`. A cell that holds two numbers reads `Linux / Windows`. The Pi runs Linux, so the estimate uses the Linux run.
 
-The laptop did other work during the runs, and the scheduler moves a process between fast and slow cores, so a figure changes from run to run. A disturbance only adds time. For that reason, each table shows the least disturbed run of each set, which is the run with the lowest sum of its key figures divided by the lowest figure of the three. The last table shows all three Linux runs.
+The laptop did other work during the runs, and the scheduler moves a process between fast and slow cores, so a figure changes from run to run. A disturbance only adds time. The reports of the Windows runs say `machine 10% busy` to `machine 13% busy`. The reports of the Linux runs say `0% busy`, because a virtual machine cannot see the load of its host. The host was about as busy during the Linux runs as during the Windows runs: the processor utility counter of Windows showed a mean of 45 to 52% during the first and 42 to 46% during the second, a figure that scales with the clock rate and reads higher than the time-based figure of a report. The CPU time of Windows ticks at 15.6 ms, so its figures swing by about 30% from run to run, and the Windows columns need the repeats. For these reasons, each table shows the least disturbed run of each set, which is the run with the lowest sum of its key figures divided by the lowest figure of the three. The last tables show all three runs of each set.
 
 ### Fast path, per frame
 
 | Mode | Kernel (µs) | Whole push (µs) | Close a 60 s window (ms) | Share of a core |
 |---|---|---|---|---|
-| bin1 128 × 128, 16 bit, 98 fps | 22.8 / 18.8 | 32.3 / 118 | 10.4 / 26.1 | 0.35% / 1.23% |
-| bin2 64 × 64, 16 bit, 360 fps | 18.7 / 17.0 | 27.9 / 84.8 | 28.7 / 94.5 | 1.08% / 3.27% |
-| bin2 320 × 240, 8 bit, 98 fps | 23.5 / 20.7 | 43.3 / 92.8 | 17.8 / 23.4 | 0.47% / 0.98% |
+| bin1 128 × 128, 16 bit, 98 fps | 19.1 / 21.7 | 26.1 / 33.8 | 8.06 / 23.0 | 0.28% / 0.39% |
+| bin2 64 × 64, 16 bit, 360 fps | 15.5 / 18.8 | 23.7 / 30.0 | 23.3 / 48.7 | 0.92% / 1.19% |
+| bin2 320 × 240, 8 bit, 98 fps | 18.8 / 22.1 | 26.7 / 30.2 | 8.25 / 7.86 | 0.29% / 0.33% |
 
-The push is one call of `FastPathAnalyzer.push`: the kernel, the metrics row, and the window bookkeeping. The share of a core adds the window close and the segment append to it, at the frame rate. The push is about 90% of the share. On Windows, the kernel looks small next to the push, probably because the two cases ran at different times, and the speed of the laptop changed between them.
+The push is one call of `FastPathAnalyzer.push`: the kernel, the metrics row, and the window bookkeeping. The share of a core adds the window close and the segment append to it, at the frame rate. The push is about 90% of the share.
 
 ### Stream between `acquire` and `core`
 
-| Figure | `acquire`, the production code | `core` receive |
-|---|---|---|
-| CPU per frame, paced at 98 fps (µs) | 691 / 1,076 | 405 / 604 |
-| CPU per frame, bursts of 10 frames (µs) | 238 / 924 | 239 / 576 |
-| Share of a core at 98 fps, work | 1.84% / 8.89% | 2.17% / 5.61% |
-| Share of a core at 98 fps, wake-ups | 4.94% / 1.66% | 1.80% / 0.31% |
-| Share of a core at 98 fps, total | 6.78% / 10.5% | 3.97% / 5.92% |
+The services lane changed the stream between the two processes in the commits `0db406c` to `80acdcc`: `core` asks for batches in the hello of the stream, `acquire` holds a fast stream for up to 60 ms and sends the frames as one message, the receiver reads several frames from one message, and the code on both sides does less for each message. The table shows the figures before (commit `0a764af`) and after (commit `4afaca4`).
 
-`acquire` runs with a camera that costs nothing per frame: it waits for the frame period and returns a frame that exists already. So the table counts the code of `acquire` and leaves the camera out. The case splits the work from the wake-ups with two runs: a paced stream costs the work plus a wake-up for each frame, and a stream in bursts of 10 frames costs the work plus a tenth of the wake-ups. The Linux virtual machine makes wake-ups expensive, and the Windows figures come from a coarse CPU clock, so the split is one of the least reliable figures on this page.
+| Figure | `acquire`, before | `acquire`, after | `core` receive, before | `core` receive, after |
+|---|---|---|---|---|
+| CPU per frame, paced at 98 fps (µs) | 691 / 1,076 | 348 / 514 | 405 / 604 | 89 / 173 |
+| CPU per frame, bursts of 10 frames (µs) | 238 / 924 | 169 / 241 | 239 / 576 | 100 / 81 |
+| Share of a core at 98 fps, work | 1.84% / 8.89% | 1.46% / 2.06% | 2.17% / 5.61% | 0.87% / 0.70% |
+| Share of a core at 98 fps, wake-ups | 4.94% / 1.66% | 1.95% / 2.97% | 1.80% / 0.31% | 0% / 1.00% |
+| Share of a core at 98 fps, total | 6.78% / 10.5% | 3.41% / 5.03% | 3.97% / 5.92% | 0.87% / 1.70% |
 
-On Linux, `acquire` spends 327 µs per frame in the capture thread, 334 µs in the sender thread, and 30 µs elsewhere, and it peaks at 58 MB. A bin2 stream at 360 fps costs `core` 369 µs per frame to receive (13.3% of a core on Linux, 26.1% on Windows).
+`acquire` runs with a camera that costs nothing per frame: it waits for the frame period and returns a frame that exists already. So the table counts the code of `acquire` and leaves the camera out. The case splits the work from the wake-ups with two runs: a paced stream costs the work plus a wake-up for each frame, and a stream in bursts of 10 frames costs the work plus a tenth of the wake-ups. The Linux virtual machine makes wake-ups expensive, and the Windows figures come from a coarse CPU clock, so the split is one of the least reliable figures on this page. After the change, the split shows that the receive no longer pays a wake-up for each frame on Linux: a paced stream costs `core` 89 µs a frame and a stream in bursts 100 µs, because `acquire` sends the frames of the last 60 ms as one message, and one message and one wake-up serve about six frames. The wake-up share of the receive is therefore zero in the Linux column.
+
+On Linux, `acquire` spends 235 µs per frame in the capture thread, 93 µs in the sender thread, and 21 µs elsewhere, and it peaks at 58 MB. Before the change, the threads took 327, 334, and 30 µs. The capture thread is now 68% of `acquire`. A bin2 stream at 360 fps costs `core` 28 µs per frame to receive (1.0% of a core on Linux, 2.7% on Windows), against 369 µs (13.3% on Linux, 26.1% on Windows) before.
 
 ### What the camera adds
 
@@ -126,23 +128,23 @@ The services tests use a fake camera that builds a `Frame` on every read, and th
 
 | Figure (µs per frame) | Linux / Windows |
 |---|---|
-| Capture thread, zero-cost camera | 327 / 428 |
-| Capture thread, fake camera as it is | 435 / 696 |
-| Sender thread, zero-cost camera (control) | 334 / 560 |
-| Sender thread, fake camera as it is (control) | 436 / 698 |
-| `acquire` as a whole, zero-cost camera | 691 / 1,076 |
-| `acquire` as a whole, fake camera as it is | 915 / 1,440 |
-| One `read_frame` call, fake camera | 5.0 / 4.4 |
-| One `read_frame` call, zero-cost camera | 0.16 / 0.17 |
-| One `read_frame` call, production ASI driver on a stub SDK | 18.7 / 15.5 |
+| Capture thread, zero-cost camera | 235 / 300 |
+| Capture thread, fake camera as it is | 268 / 258 |
+| Sender thread, zero-cost camera (control) | 93 / 171 |
+| Sender thread, fake camera as it is (control) | 93 / 128 |
+| `acquire` as a whole, zero-cost camera | 348 / 514 |
+| `acquire` as a whole, fake camera as it is | 387 / 468 |
+| One `read_frame` call, fake camera | 2.7 / 5.1 |
+| One `read_frame` call, zero-cost camera | 0.085 / 0.17 |
+| One `read_frame` call, production ASI driver on a stub SDK | 10.0 / 21.1 |
 
-The fake camera runs came after the zero-cost runs in the same case, and the laptop was slower during them: the sender thread cost 102 µs more on Linux, and the capture thread cost 108 µs more. The camera explains 6 µs of that difference. The three rows at the end of the table time one `read_frame` call in a loop with no waiting, so they have none of that noise. The fake camera costs 5 µs a call. The production ASI driver costs 16 to 19 µs a call with a stub SDK: it takes a lock, arms the call watchdog, copies the pixels, and builds a `Frame` with its checks, and a real driver adds the vendor library and the USB stack on top. A one-off run of eight alternating pairs on Linux agreed: the fake camera added a median of 35 µs to the capture thread and 32 µs to the sender thread, which leaves 3 µs for the camera.
+On Linux, the fake camera adds 33 µs to the capture thread in the paced run, and the control did not move (93 and 93 µs), so the difference is not drift. The call itself costs 2.7 µs in a loop with no waiting, which is where the three rows at the end of the table have none of the noise of a run. The harness does not break the other 30 µs down, and it does not hold against the production code, because the verdict on `acquire` rests on the zero-cost runs. On Windows, the fake runs came out lower than the zero-cost runs (258 against 300 µs in the capture thread, and 128 against 171 µs in the control), which shows the swing of the 15.6 ms tick. The production ASI driver costs 10 µs a call on Linux and 21 µs on Windows with a stub SDK: it takes a lock, arms the call watchdog, copies the pixels, and builds a `Frame` with its checks, and a real driver adds the vendor library and the USB stack on top. The services lane found that about 10 µs of each frame is the arm and disarm of the `CallWatchdog` around the SDK calls of the ASI driver. The hardware lane owns that driver.
 
-So the camera is a few percent of the 327 µs of the capture thread, whichever camera it is, and the capture code of `acquire` owns the rest: the gate, the guard, the time stamper, the queue, and the bookkeeping. The verdict on `acquire` rests on the zero-cost runs, which count what the code of `acquire` costs and leave the camera out. A real driver adds 0.15 to 0.18% of a core on the dev machine (16 to 19 µs at 98 fps), so the figure is a lower bound. The sender thread and the receive path of `core` do not depend on the camera, so their verdicts stand, and the services lane can profile them (see the next section).
+So the camera is a small part of the 235 µs of the capture thread: the stub-SDK read of the production driver is 4% of it. The capture code of `acquire` owns the rest: the gate, the guard, the time stamper, the queue, and the bookkeeping. The verdict on `acquire` rests on the zero-cost runs, which count what the code of `acquire` costs and leave the camera out. A real driver adds 0.10 to 0.21% of a core on the dev machine (10 to 21 µs at 98 fps), so the figure is a lower bound. The sender thread and the receive path of `core` do not depend on the camera, so their verdicts stand.
 
 ### Where the stream spends its CPU time
 
-The services lane needs a starting point for the work on the sender thread and the receive path, so here is a profile of 2,000 frames at 98 fps on Linux (CPython 3.12, commit `0a764af`). It uses `yappi` with the CPU clock, because `cProfile` of Python 3.12 and later allows one profile for the whole process and cannot tell the threads apart. `acquire` ran with the zero-cost camera, and `core` was a `RemoteCameraDriver` that reads the frames. The profile is one-off, and it is not part of the harness. A profiler adds overhead, so read the shares and not the microseconds. A share includes the functions that the function calls, so the rows of a table overlap.
+Before the services lane changed the stream, the harness profiled the sender thread and the receive path, so that the lane had a starting point. The profile below is the one of commit `0a764af`: 2,000 frames at 98 fps on Linux (CPython 3.12). It describes the code before the change, and the shares do not hold for the current code. It uses `yappi` with the CPU clock, because `cProfile` of Python 3.12 and later allows one profile for the whole process and cannot tell the threads apart. `acquire` ran with the zero-cost camera, and `core` was a `RemoteCameraDriver` that reads the frames. The profile is one-off, and it is not part of the harness. A profiler adds overhead, so read the shares and not the microseconds. A share includes the functions that the function calls, so the rows of a table overlap.
 
 **Sender thread of `acquire`**
 
@@ -184,23 +186,23 @@ The services lane needs a starting point for the work on the sender thread and t
 | `Wire.send`, the acknowledgement of each frame | 1 | 15% |
 | `Frame.__init__` | 1 | 7% |
 
-The costs belong to each message and each frame, not to the bytes. Three changes would cut them, and they are the first to try. Read the acknowledgements once per batch, and build the selector once. Acknowledge every few frames instead of every frame. Send several frames in one message. On the estimate, the 10% budget of `acquire` needs 1.8 to 4 times less CPU per frame than it takes now. The fast path with the receive needs up to 1.4 times less in bin1 (up to 2.5 times in the slower Linux runs) and 4 to 6 times less in bin2 at 360 fps.
+The costs belonged to each message and each frame, not to the bytes. The profile suggested three changes: read the acknowledgements once per batch and build the selector once, acknowledge every few frames instead of every frame, and send several frames in one message. The services lane made changes of that kind (see [Stream between `acquire` and `core`](#stream-between-acquire-and-core)). At commit `0a764af`, the estimate said that the 10% budget of `acquire` needed 1.8 to 4 times less CPU per frame than it took, and the fast path with the receive needed up to 1.4 times less in bin1 and 4 to 6 times less in bin2 at 360 fps. After the change, `acquire` needs 1.2 to 2.4 times less, and the fast path with the receive fits.
 
 ### Survey frame
 
 | Figure | Linux / Windows |
 |---|---|
-| Frame through the analyzer and the worker (s) | 1.46 / 2.13 |
-| Stage `detect` (s) | 0.784 / 2.16 |
-| Stage `solve`, by the tracker (s) | 0.0113 / 0.0159 |
-| Stage `match` (s) | 0.00187 / 0.00315 |
-| Stage `quality`, the sky quality step (s) | 0.459 / 0.651 |
-| Stage `records` (s) | 0.00109 / 0.00187 |
-| Process boundary, the job minus its stages (s) | 0.077 / 0.049 |
-| CPU time of the worker for a frame (s) | 1.44 / 2.03 |
-| Start of the worker: spawn, imports, catalog (s) | 1.83 / 2.78 |
-| Worker memory after the start (MB) | 89.6 / 86.9 |
-| Worker peak memory (MB) | 454 / 429 |
+| Frame through the analyzer and the worker (s) | 0.979 / 2.04 |
+| Stage `detect` (s) | 0.485 / 1.69 |
+| Stage `solve`, by the tracker (s) | 0.00667 / 0.0211 |
+| Stage `match` (s) | 0.00127 / 0.00319 |
+| Stage `quality`, the sky quality step (s) | 0.307 / 0.623 |
+| Stage `records` (s) | 0.00073 / 0.00141 |
+| Process boundary, the job minus its stages (s) | 0.038 / 0.046 |
+| CPU time of the worker for a frame (s) | 0.96 / 1.88 |
+| Start of the worker: spawn, imports, catalog (s) | 0.876 / 2.53 |
+| Worker memory after the start (MB) | 89.6 / 88.2 |
+| Worker peak memory (MB) | 452 / 430 |
 
 The frame has 4144 × 2822 pixels, 1,888 detections, and 1,394 stars that match the catalog, and the zero point uses 904 of them. The stages come from three separate jobs and the total from five frames, so on a noisy run they do not add up to the total. The peak of the worker was 444 MB on Linux before the case ran the sky quality step, so the step adds about 10 MB: the detection step already holds the largest arrays. The `solve` stage is the tracker, because the case gives the pipeline the solution of a previous frame.
 
@@ -208,38 +210,39 @@ The frame has 4144 × 2822 pixels, 1,888 detections, and 1,394 stars that match 
 
 | Figure | Linux / Windows |
 |---|---|
-| Result row, one transaction each (µs) | 100 / 220 |
-| Result row in a batch of 100 (µs) | 100 / 209 |
-| Metrics append, fsync every 60 s of frame time (µs per frame) | 0.109 / 1.50 |
+| Result row, one transaction each (µs) | 81 / 161 |
+| Result row in a batch of 100 (µs) | 81 / 133 |
+| Metrics append, fsync every 60 s of frame time (µs per frame) | 0.11 / 0.53 |
 
 | Calibration workload | Linux (ms) | Windows (ms) |
 |---|---|---|
-| `python_loop` | 84.0 | 118 |
-| `numpy_matmul` | 3.87 | 3.61 |
-| `numpy_fft` | 3.25 | 4.17 |
-| `sqlite_insert` | 15.3 | 24.2 |
-| `thread_handoff` | 181 | 102 |
+| `python_loop` | 69.0 | 119 |
+| `numpy_matmul` | 3.51 | 3.05 |
+| `numpy_fft` | 3.02 | 2.64 |
+| `sqlite_insert` | 16.1 | 21.7 |
+| `thread_handoff` | 238 | 43.5 |
 
-The segment append costs under 0.01% of a core at 98 fps, so the store does not matter for the budget. The `thread_handoff` row shows that wake-ups are expensive in the Linux virtual machine: the same hand-offs take 1.8 times longer there than on Windows, while most other workloads run at the same speed or faster on Linux.
+The segment append costs under 0.01% of a core at 98 fps, so the store does not matter for the budget. The `thread_handoff` row shows that wake-ups are expensive in the Linux virtual machine: a round of hand-offs takes 238 ms there in the least disturbed run, against 34 to 99 ms on Windows over three runs, while most other workloads run at the same speed or faster on Linux.
 
 ### Spread of three runs
 
-| Figure | Run 1 | Run 2 | Run 3 |
-|---|---|---|---|
-| Kernel, bin1 (µs) | 19.4 | 26.3 | 22.8 |
-| Whole push, bin1 (µs) | 56.2 | 38.3 | 32.3 |
-| `acquire` CPU per frame, paced (µs) | 997 | 958 | 691 |
-| `core` receive CPU per frame, paced (µs) | 567 | 603 | 405 |
-| Survey frame (s) | 3.36 | 1.91 | 1.46 |
-| Survey worker peak (MB) | 453 | 453 | 454 |
-| `python_loop` (ms) | 94.6 | 152 | 84.0 |
-| `thread_handoff` (ms) | 250 | 351 | 181 |
+| Figure | Linux, run 1 | Linux, run 2 | Linux, run 3 | Windows, run 1 | Windows, run 2 | Windows, run 3 |
+|---|---|---|---|---|---|---|
+| Kernel, bin1 (µs) | 21.4 | 24.0 | 19.1 | 21.7 | 20.3 | 18.5 |
+| Whole push, bin1 (µs) | 24.1 | 34.6 | 26.1 | 33.8 | 68.6 | 78.1 |
+| `acquire` CPU per frame, paced (µs) | 323 | 370 | 348 | 514 | 384 | 596 |
+| `core` receive CPU per frame, paced (µs) | 73 | 105 | 89 | 173 | 43 | 173 |
+| Survey frame (s) | 1.05 | 1.30 | 0.979 | 2.04 | 2.05 | 2.05 |
+| Survey worker peak (MB) | 454 | 451 | 452 | 430 | 429 | 430 |
+| `python_loop` (ms) | 79.6 | 93.1 | 69.0 | 119 | 105 | 70.4 |
+| `thread_handoff` (ms) | 239 | 330 | 238 | 43.5 | 99.0 | 33.5 |
+| Machine busy | 0% | 0% | 0% | 13% | 10% | 11% |
 
-The last column of the summary table gives the verdict of each of the six runs. Two verdicts depend on the run: the fast path with the receive in bin1 is `marginal` in the least disturbed Linux run and `fail` in the other five, and the bin2 fast path is `pass` in the three Linux runs and `marginal` in the three Windows runs.
+The last column of the summary table gives the verdict of each of the six runs. The verdict on `acquire`, the fast path in bin1, and the fast path with the receive in bin1 does not depend on the run. Two verdicts do: the bin2 fast path is `pass` in the three Linux runs and in the first Windows run, and `marginal` in the other two Windows runs, and the bin2 fast path with the receive is `pass` in the first and third Linux runs, `marginal` in the second Linux run and the first Windows run, and `fail` in the other two Windows runs. The Windows figures of the stream swing the most: the receive costs 43 to 173 µs a frame and `acquire` 384 to 596 µs, which is the 15.6 ms tick of the Windows clock.
 
 ### The whole system
 
-The `core-sim` case ran once on each system at commit `b2e1f93`, with the full sensor at speed 1 (see [The whole-system case](#the-whole-system-case) for the method). Another system ran on the machine during both runs, so these are runs with another system active. The host was about 46% busy during the Linux run and 41% during the Windows run (the load of all processors, from the performance counter of Windows). The report of the Linux run says `machine 2% busy`, because a virtual machine does not see the load of its host. The report of the Windows run says `machine 26% busy`. The case itself used 1.7% of the Linux virtual machine and 2.1% of the Windows machine.
+The `core-sim` case ran once on each system at commit `b2e1f93`, with the full sensor at speed 1 (see [The whole-system case](#the-whole-system-case) for the method). Another system ran on the machine during both runs, so these are runs with another system active. The report of the Linux run says `machine 2% busy`, because a virtual machine does not see the load of its host, and the host was about as busy as during the runs of the other cases (the processor utility counter of Windows showed a mean of 46%). The report of the Windows run says `machine 26% busy`. The case itself used 1.7% of the Linux virtual machine and 2.1% of the Windows machine.
 
 Each run sampled once per second for 303 s, after 8 s (Linux) or 13 s (Windows) for the processes to start. It had 98 s of the fast phase (8,652 frames at 88.3 frames per second on Linux, and 8,658 frames on Windows), 31 s with the scheduler paused, two survey steps, and four survey frames that the worker analyzed.
 
@@ -254,8 +257,8 @@ Each run sampled once per second for 303 s, after 8 s (Linux) or 13 s (Windows) 
 
 The fast phase excludes the first window and every interval in which the stream switches or a survey frame waits for its analysis. The last column covers the whole cycle of 3 minutes: the fast stream, the survey step, and the gap that waits for the next slot.
 
-- **`acquire` includes the simulator.** It renders every frame, and its CPU time and its memory are not those of the production code. The `ipc` case measures the production code with prebuilt frames: 6.8% of a core at 98 frames per second and a peak of 58 MB (commit `0a764af`). The budgets read those figures.
-- **The cost of a frame in `core`** is the CPU time of the fast phase minus the CPU time with the scheduler paused, divided by the frame rate: 195 µs on Linux (2.31% minus 0.58%, over 88.3 frames per second) and 251 µs on Windows. At 98 frames per second, that is 1.92% of a core on Linux and 2.46% on Windows, and 13 to 21% and 17 to 27% on the Pi 4 estimate. The cost covers the receive, the fast path, and the append of the segment. For comparison, the sum of the `fastpath` and `ipc` figures at commit `0a764af` was 4.3% (440 µs a frame), and a run of the whole-system case a few commits before `b2e1f93`, before the services lane batched the stream, measured 585 µs a frame (5.7%). The batching cut the cost of a frame to a third.
+- **`acquire` includes the simulator.** It renders every frame, and its CPU time and its memory are not those of the production code. The `ipc` case measures the production code with prebuilt frames: 3.4% of a core at 98 frames per second and a peak of 58 MB (commit `4afaca4`). The budgets read those figures.
+- **The cost of a frame in `core`** is the CPU time of the fast phase minus the CPU time with the scheduler paused, divided by the frame rate: 195 µs on Linux (2.31% minus 0.58%, over 88.3 frames per second) and 251 µs on Windows. At 98 frames per second, that is 1.92% of a core on Linux and 2.46% on Windows, and 13 to 21% and 17 to 27% on the Pi 4 estimate. The cost covers the receive, the fast path, and the append of the segment. For comparison, the sum of the `fastpath` and `ipc` figures was 4.3% (440 µs a frame) at commit `0a764af`, and it is 1.15% (117 µs) at commit `4afaca4`. A run of the whole-system case a few commits before `b2e1f93`, before the services lane batched the stream, measured 585 µs a frame (5.7%), so the batching cut the cost of a frame to a third. The whole system costs more than the sum of the two cases, 195 against 117 µs, and the case does not break the difference down. The scheduler of `core` does work around each frame that the `fastpath` and `ipc` cases leave out, such as noting the frame and checking the star.
 - **The paused scheduler costs 0.6% of a core.** That is the load that does not belong to the frames: the scheduler loop, the store, the health timer, and the answers to `web` and to the case, which asks for the status once per second.
 - **Linux gives the threads.** In the fast phase, `core` uses one thread with 1.5% of a core and one with 0.4%, and each of the others uses 0.1% or less. The threads have no names, because Python of this version sets none, so the case cannot say which is which. The capture thread of `acquire` uses 37.7%, which is the simulator.
 - **The survey worker** used 1.0 s of CPU for a frame on Linux and 1.7 s on Windows, which agrees with the 1.4 and 2.0 s of the `survey` case. Its peak is 444 and 414 MB.
@@ -279,14 +282,14 @@ The reference machine is a recent x86-64 laptop or desktop core. A Pi 4 run repl
 
 | Verdict | Confidence | Why |
 |---|---|---|
-| Fast path, bin1 | High for `pass` | The figure is 32 µs per frame of NumPy and bookkeeping. The limit holds up to a factor of 70 on the Linux run and 20 on the Windows run, against the 5 to 11 that the estimate assumes. |
-| Fast path, bin2 at 360 fps | Medium for `pass` | The limit holds up to a factor of 23 on the Linux run. The Windows run gives `marginal`, because its limit is a factor of 8. |
-| `acquire`, bin1 | Medium for `fail`, low for the percentages | The verdict is `fail` in all six runs, and the work alone fails (13 to 20%), so it does not depend on the wake-ups. The wake-up range is a guess, and the figure leaves the camera out, which a real driver adds (see [What the camera adds](#what-the-camera-adds)). |
-| Fast path and receive, bin1 | Low | The least disturbed run gives `marginal` and five runs give `fail`, because the receive costs 0.41 to 0.60 ms per frame on Linux, and a busy machine moves the figure. |
-| Receive, bin2 at 360 fps | Medium for `fail` | The case runs the stream once. The estimate is about a whole core or more in all six runs, so a different range does not change the verdict. |
-| Survey frame | High for `pass` | The estimate is 7 to 37 s in the six runs, against 180 s. |
+| Fast path, bin1 | High for `pass` | The figure is 26 µs per frame of NumPy and bookkeeping. The limit holds up to a factor of 89 on the Linux run and 65 on the Windows run (30 to 97 over the six runs), against the 5 to 11 that the estimate assumes. |
+| Fast path, bin2 at 360 fps | Medium for `pass` | The limit holds up to a factor of 27 on the Linux run (18 to 28 over the three Linux runs). Two Windows runs give `marginal`, because their limit is a factor of 7 and 10. |
+| `acquire`, bin1 | Medium for `fail`, low for the percentages | The verdict is `fail` in all six runs. The work alone gives 10 to 16% on the Linux run, which is at the limit, and the wake-ups add 2 to 8%, so the verdict leans on the wake-up range, which is a guess. The figure leaves the camera out, which a real driver adds (see [What the camera adds](#what-the-camera-adds)). |
+| Fast path and receive, bin1 | Medium for `pass` | The sum of the `fastpath` and `ipc` figures gives `pass` in all six runs (6 to 21%). The whole-system figure gives 13 to 21% on Linux, `pass`, and 17 to 27% on Windows, `marginal`, in runs with another system active. |
+| Fast path and receive, bin2 at 360 fps | Low | The case runs the stream once, and the verdict depends on the run: `pass` in two, `marginal` in two, and `fail` in two (12 to 61% over the six runs). The Linux runs are the better guide, and the three of them give 12 to 30%. |
+| Survey frame | High for `pass` | The estimate is 5 to 23 s in the six runs, against 180 s. |
 | Survey worker, peak memory | Low | The range of 0.7 to 1.3 times straddles the limit, so only a Pi 4 run settles it. |
-| All processes, peak memory | Medium for `pass` | The `core` row is a stand-in, the `web` row counts imports only, and the operating system's share is an assumption (see [Memory](#memory)). |
+| All processes, peak memory | Low | The sum with the stand-in for `core` passes (686 to 1,295 MB), and the measured peaks of the whole-system run give `marginal` (783 to 1,476 MB). The `acquire` row is a lower bound, and the operating system's share is an assumption (see [Memory](#memory)). |
 
 ### The kernel check
 
@@ -294,14 +297,14 @@ The architecture estimates 0.2 to 0.4 ms for the kernel on a 128 × 128 frame on
 
 | Run | Kernel (µs) | Factor that the architecture implies | Compared with the table's 5 to 11 | Estimate from the table (ms) |
 |---|---|---|---|---|
-| Linux, run 1 | 19.4 | 10.3 to 20.6 | Consistent | 0.10 to 0.21 |
-| Linux, run 2 | 26.3 | 7.6 to 15.2 | Consistent | 0.13 to 0.29 |
-| Linux, run 3 | 22.8 | 8.8 to 17.5 | Consistent | 0.11 to 0.25 |
-| Windows, run 1 | 29.8 | 6.7 to 13.4 | Consistent | 0.15 to 0.33 |
-| Windows, run 2 | 71.5 | 2.8 to 5.6 | Consistent | 0.36 to 0.79 |
-| Windows, run 3 | 18.8 | 10.6 to 21.3 | Consistent | 0.09 to 0.21 |
+| Linux, run 1 | 21.4 | 9.3 to 18.7 | Consistent | 0.11 to 0.24 |
+| Linux, run 2 | 24.0 | 8.3 to 16.7 | Consistent | 0.12 to 0.26 |
+| Linux, run 3 | 19.1 | 10.5 to 21.0 | Consistent | 0.10 to 0.21 |
+| Windows, run 1 | 21.7 | 9.2 to 18.4 | Consistent | 0.11 to 0.24 |
+| Windows, run 2 | 20.3 | 9.9 to 19.7 | Consistent | 0.10 to 0.22 |
+| Windows, run 3 | 18.5 | 10.8 to 21.6 | Consistent | 0.09 to 0.20 |
 
-In every run, the factor that the architecture implies overlaps the range of the table, although the runs differ by a factor of four in the kernel time. The estimate from the table brackets the architecture's 0.2 to 0.4 ms, so the estimate stays. The slowest Windows run is the only one that ends near the edge of the table: its implied factor starts at 2.8, below the 5 of the table, and the two ranges overlap from 5 to 5.6.
+In every run, the factor that the architecture implies overlaps the range of the table, but only at the top of it: the implied factors start at 8 to 11 and end at 17 to 22, against the 5 to 11 of the table. The kernel takes 18.5 to 24.0 µs over the six runs, so the runs agree within 30%. The estimate from the table (0.09 to 0.26 ms) sits below the architecture's 0.2 to 0.4 ms and meets it at the edge, so the architecture's estimate is the more cautious of the two. The table stays, and a Pi 4 run replaces it.
 
 ## Memory
 
@@ -309,15 +312,15 @@ The harness adds the peaks of the processes on the dev machine, multiplies the s
 
 | Process | Dev machine peak (MB) | Pi 4 estimate (MB) |
 |---|---|---|
-| `acquire` with the zero-cost camera, from the `ipc` case | 58 | 40 to 75 |
+| `acquire` with the zero-cost camera, from the `ipc` case | 58 | 41 to 76 |
 | `core`, measured in the system | 307 | 215 to 399 |
 | Survey worker, measured in the system | 444 | 311 to 577 |
 | `web`, measured with one client that polls it | 80 | 56 to 104 |
 | Children of `core` (the resource tracker), measured in the system | 15 | 11 to 20 |
 | Operating system, an assumption | | 150 to 300 |
-| Sum | 904 | 783 to 1,475 |
+| Sum | 905 | 783 to 1,476 |
 
-The estimated sum straddles the 1.4 GB budget, so its verdict is `marginal`, and it stays under the 1.6 GB gate that separates the 2 GB model from the 4 GB model, so it is `pass`. This evidence does not call for 4 GB, and it does not settle the 1.4 GB budget either. The earlier estimate of 762 MB (683 to 1,290 MB) was lower, because it used a stand-in of 197 MB for `core` and the imports of `web` alone. On Windows the same peaks sum to 775 MB (`core` 222, the worker 414, and `web` 85), and the estimate passes both limits, but the Pi runs Linux.
+The estimated sum straddles the 1.4 GB budget, so its verdict is `marginal`, and it stays under the 1.6 GB gate that separates the 2 GB model from the 4 GB model, so it is `pass`. This evidence does not call for 4 GB, and it does not settle the 1.4 GB budget either. The estimate with the stand-in for `core` is lower: 766 MB (686 to 1,295 MB), because it uses 197 MB for `core` and the imports of `web` alone. On Windows the same peaks sum to 775 MB (`core` 222, the worker 414, and `web` 85), and the estimate passes both limits, but the Pi runs Linux.
 
 The `acquire` row is the weak one. The `ipc` case streams 128 × 128 frames, and it never sends a survey frame, so its 58 MB leaves out the passage of the 23 MB survey frames through `acquire`. The whole-system case measures 297 MB for `acquire` on Linux (246 MB on Windows), but that figure includes the simulator, which holds several arrays of 47 MB while it renders a survey frame. A real `acquire` lies between the two. The sum of all the peaks in the whole system, with the simulator in `acquire`, is 1,143 MB on Linux (966 MB on Windows), and its estimate is 950 to 1,786 MB: `marginal` against both limits. Four limits apply:
 
@@ -331,20 +334,20 @@ The `memory` case reads the resident size of a fresh process after it imports ea
 | Set of imports | Resident size, Linux / Windows (MB) |
 |---|---|
 | Python and the memory reader | 19.5 / 22.9 |
-| NumPy | 33.9 / 31.9 |
-| Frame and record types (pydantic) | 34.4 / 33.4 |
-| Fast-path analyzer (SciPy) | 45.9 / 41.7 |
-| SQLite store and segment writer | 45.0 / 41.9 |
-| Survey analyzer (SEP, pyerfa) | 83.3 / 81.6 |
-| `astropy.coordinates` and `astropy.time` | 73.2 / 67.0 |
-| FastAPI, uvicorn, Pillow | 53.1 / 53.3 |
-| Everything that `core` imports | 88.7 / 87.9 |
+| NumPy | 33.9 / 32.0 |
+| Frame and record types (pydantic) | 34.5 / 33.4 |
+| Fast-path analyzer (SciPy) | 45.7 / 41.9 |
+| SQLite store and segment writer | 44.0 / 42.1 |
+| Survey analyzer (SEP, pyerfa) | 83.0 / 81.1 |
+| `astropy.coordinates` and `astropy.time` | 73.3 / 67.3 |
+| FastAPI, uvicorn, Pillow | 54.2 / 53.3 |
+| Everything that `core` imports | 88.6 / 87.7 |
 
 ## The Rust decision
 
-The architecture keeps Rust (PyO3) as the replacement for the per-frame metrics if the Pi 4 gate fails. On the estimate, the per-frame metrics do not fail the gate: the whole fast path takes 1.8 to 3.8% of a core in bin1, against 25%. Rust would replace the kernel, which is 23 of the 32 µs of a frame, and it would not touch the send and receive costs that fail the gate. Keep Python for the per-frame metrics.
+The architecture keeps Rust (PyO3) as the replacement for the per-frame metrics if the Pi 4 gate fails. On the estimate, the per-frame metrics do not fail the gate: the whole fast path takes 1.4 to 3.1% of a core in bin1, against 25%. Rust would replace the kernel, which is 19 of the 26 µs of a frame, and it would not touch the costs of the stream, where `acquire` still exceeds its budget. Keep Python for the per-frame metrics.
 
-The number that flips the decision is a Pi 4 run in which the fast path (the `fastpath` case, without the receive) takes more than 25% of a core. That is 2.55 ms per frame in bin1 at 98 fps, and 0.69 ms per frame in bin2 at 360 fps. It takes a Pi 4 that runs 20 to 70 times slower than the dev machine in bin1, and 6 to 23 times slower in bin2 (the ranges cover the six runs), against the 5 to 11 times that the estimate assumes. The `calibration` ratios of a Pi 4 run show which side to expect. Even then, bin2 at 360 fps fails on the receive first, so the stream is the first thing to change.
+The number that flips the decision is a Pi 4 run in which the fast path (the `fastpath` case, without the receive) takes more than 25% of a core. That is 2.55 ms per frame in bin1 at 98 fps, and 0.69 ms per frame in bin2 at 360 fps. It takes a Pi 4 that runs 30 to 97 times slower than the dev machine in bin1, and 7 to 28 times slower in bin2 (the ranges cover the six runs), against the 5 to 11 times that the estimate assumes. The `calibration` ratios of a Pi 4 run show which side to expect. With the receive, bin2 at 360 fps is the first row to reach the limit: it takes a Pi 4 that runs 5 to 13 times slower than the dev machine, and a slow Pi 4 or a busy one gets there.
 
 ## Measure on a Pi 4
 
@@ -386,7 +389,7 @@ The Pi 4 measurement stays blocked (blocker B2), because no Pi 4 was available w
 
 ## What the harness does not measure
 
-- **USB.** The camera, the SDK, and the USB transfer. The `ipc` case uses a camera that costs nothing per frame, so the cost of the vendor library and of the USB stack of the kernel is missing from the `acquire` figure. The Python of the production ASI driver (16 to 19 µs per frame on a stub SDK) is missing too, and the camera table shows it apart.
+- **USB.** The camera, the SDK, and the USB transfer. The `ipc` case uses a camera that costs nothing per frame, so the cost of the vendor library and of the USB stack of the kernel is missing from the `acquire` figure. The Python of the production ASI driver (10 to 21 µs per frame on a stub SDK) is missing too, and the camera table shows it apart. About 10 µs of it is the arm and disarm of the `CallWatchdog` around each SDK call, which belongs to the hardware lane.
 - **The SD card.** The `store` case writes to the disk of the machine. An SD card is slower, and its fsync can take tens of milliseconds. The segment writer calls fsync once per minute of frame time, so the effect is small, and the Pi 4 run shows it.
 - **Thermal throttling and the supply.** The harness records `vcgencmd get_throttled` on a Raspberry Pi, and it cannot make a board stay cool. A soak shows the effect.
 - **A real camera.** Jitter in the frame arrival, drops, and the recovery ladder.
