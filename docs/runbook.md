@@ -440,7 +440,7 @@ The analysis subtracts a master dark from every survey frame. The dark current o
 
 ### The wait for the cover
 
-After the bias frames, the session takes a short test frame every few seconds (`test_exposure_s` and `poll_s` in `[survey.dark]`) and checks whether it is dark. The page shows the latest check in words, such as "The frame is not dark yet: the median is 2400 counts above the expected level." Two dark test frames in a row (`stable_polls`) count as covered, and the dark frames start.
+After the bias frames, the session takes a short test frame every few seconds (`test_exposure_s` and `poll_s` in `[survey.dark]`) and checks whether it is dark. The page shows the latest check in words, such as "The frame is not dark yet: the level is 5.20 e-/s above the bias, over the limit of 1.41 (level 2412 DN). Cover the camera." Two dark test frames in a row (`stable_polls`) count as covered, and the dark frames start.
 
 The wait gives up after `wait_timeout_s` (30 minutes by default). The session then ends as `failed`, and the page says that the camera was not covered. Look for light around the cover, the lens, and the cable, and for light that passes through the cover itself, and press **Start** again. To skip the wait, clear "Wait until a test frame is dark" under **Advanced**. The first frame that is not dark then ends the session as `failed`.
 
