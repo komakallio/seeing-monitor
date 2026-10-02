@@ -379,6 +379,18 @@ def test_the_command_refuses_a_call_without_what_it_needs(
     assert "must be positive" in capsys.readouterr().err
 
 
+def test_an_optical_center_off_the_frame_fails_with_a_message_and_no_traceback(
+    night: test_flat_sky.Night, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = ["flat", "build", str(night.folder), "--out", str(tmp_path / "sky.npy")]
+    code = main([*args, "--center-x", "-5000", "--center-y", "-5000", *BUILD_OPTIONS])
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert "the optical center (-5000, -5000) lies off the frame of 512 x 352 pixels" in err
+    assert "frame 1 of" not in out  # nothing was processed
+    assert not (tmp_path / "sky.npy").exists()
+
+
 def test_the_help_of_build_names_the_options_of_the_brief(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

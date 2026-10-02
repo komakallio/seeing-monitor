@@ -740,6 +740,15 @@ def make_flat(
                 f"mode has {geometry.shape[1]} x {geometry.shape[0]}: take the frames in the "
                 "survey mode, with no region of interest"
             )
+    center = cfg.center_xy or ((geometry.shape[1] - 1) / 2.0, (geometry.shape[0] - 1) / 2.0)
+    if not (
+        0.0 <= center[0] <= geometry.shape[1] - 1 and 0.0 <= center[1] <= geometry.shape[0] - 1
+    ):
+        raise FlatError(
+            f"the optical center ({center[0]:g}, {center[1]:g}) lies off the frame of "
+            f"{geometry.shape[1]} x {geometry.shape[0]} pixels: give --center-x and --center-y "
+            "on the frame"
+        )
     declared = next((s.declared_bits for s in sets if s.declared_bits is not None), None)
     units = detect_units(
         sets[0].frame(0),
@@ -749,7 +758,6 @@ def make_flat(
     )
     choice = choose_bias(bias, units, cfg, geometry.shape)
     warnings: list[str] = list(choice.warnings)
-    center = cfg.center_xy or ((geometry.shape[1] - 1) / 2.0, (geometry.shape[0] - 1) / 2.0)
     center_binned = flat_report.binned_position(center, cfg.bin_factor)
 
     reports: list[SetResult] = []

@@ -1011,6 +1011,12 @@ def build_sky_flat(
             f"the base flat has {base_flat.shape[1]} x {base_flat.shape[0]} pixels, and the "
             f"survey mode has {shape[1]} x {shape[0]}: use a flat of this mode"
         )
+    center = cfg.center_xy or ((shape[1] - 1) / 2.0, (shape[0] - 1) / 2.0)
+    if not (0.0 <= center[0] <= shape[1] - 1 and 0.0 <= center[1] <= shape[0] - 1):
+        raise SkyFlatError(
+            f"the optical center ({center[0]:g}, {center[1]:g}) lies off the frame of "
+            f"{shape[1]} x {shape[0]} pixels: give --center-x and --center-y on the frame"
+        )
     settings = {"polaris_mask_px": cfg.polaris_mask_px, "edge_px": float(EDGE_PX)}
     if accumulator_path is not None and accumulator_path.exists():
         acc = Accumulator.load(accumulator_path)
@@ -1090,7 +1096,6 @@ def build_sky_flat(
             ) from None
     average = average_of(acc)
     scale = profile.plate_scale_arcsec_per_px(readout)
-    center = cfg.center_xy or ((shape[1] - 1) / 2.0, (shape[0] - 1) / 2.0)
     center_binned = flat_report.binned_position(center, cfg.bin_factor)
     sky_flat = flat_from_average(
         average, center_binned=center_binned, high_pass_px=cfg.high_pass_px

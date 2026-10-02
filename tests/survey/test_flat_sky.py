@@ -487,6 +487,16 @@ class TestTheHeaderTests:
         )
 
 
+class TestAnOpticalCenterOffTheFrame:
+    def test_the_command_refuses_it_before_it_reads_a_frame(self, small: Night) -> None:
+        options = dataclasses.replace(OPTIONS, center_xy=(-5000.0, -5000.0))
+        with pytest.raises(fs.SkyFlatError, match=r"optical center \(-5000, -5000\) lies off"):
+            build(small, options=options)
+        edge = dataclasses.replace(OPTIONS, center_xy=(float(SHAPE[1]), 100.0))
+        with pytest.raises(fs.SkyFlatError, match="lies off the frame of 512 x 352 pixels"):
+            build(small, options=edge)
+
+
 class TestNothingToUse:
     def test_a_folder_without_frames_says_so(self, small: Night) -> None:
         with pytest.raises(fs.SkyFlatError, match="holds no FITS file"):

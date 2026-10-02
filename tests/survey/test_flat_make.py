@@ -597,6 +597,15 @@ class TestWrongInputs:
         with pytest.raises(fm.FlatError, match="give --frames"):
             run([], turned=False)
 
+    def test_an_optical_center_off_the_frame_is_an_error_before_any_frame_is_read(self) -> None:
+        source = fx.panel_set(truth_of("owner", SMALL), (0.0, 0.0), frames=4, seed=1)
+        options = fm.MakeOptions(
+            bin_factor=2, high_pass_px=20.0, edge_margin_px=12.0, center_xy=(-5.0, 100.0)
+        )
+        with pytest.raises(fm.FlatError, match=r"optical center \(-5, 100\) lies off the frame"):
+            run([source], shape=SMALL, options=options, turned=False)
+        assert source.reads == 0
+
     def test_bad_options_are_rejected(self) -> None:
         with pytest.raises(ValueError, match="level limits"):
             fm.MakeOptions(min_level_percent=60.0, max_level_percent=40.0)
