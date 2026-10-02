@@ -215,8 +215,8 @@ The endpoint answers 200 for a healthy or degraded system and 503 otherwise. It 
 | Result | What it means | What to do |
 |---|---|---|
 | 200, healthy | Every component works. | Nothing. |
-| 200, degraded | A part works with a fault, for example the camera runs a recovery step, a sink lags, or time is not synchronized. | Read the `components` in the answer, and the log of the named service. |
-| 503 | `core` or `web` is down, or `core` wrote no health record for more than three minutes. | `systemctl status seeingmon.target`, then the log of `core`. |
+| 200, degraded | A part works with a fault, for example the camera runs a recovery step, a sink lags, or time is not synchronized. | Read the `reasons` and the `components` in the answer, and the log of the named service. |
+| 503 | A component failed (for example the camera failed repeatedly), the store cannot be read, `core` has written no health record yet, or its newest record is more than three minutes old because `core` stopped. | Read the `reasons` in the answer, then `systemctl status seeingmon.target` and the log of `core`. |
 | No answer | `web` is down, or it binds to another address. | `systemctl status seeingmon-web`, and check `bind_address`. |
 
 An external watchdog on your LAN can poll this endpoint (see [Remote power cycle](#remote-power-cycle)).
@@ -473,7 +473,7 @@ The dark rate depends on the sensor temperature, so a set serves only the temper
 | No camera appears. | The udev rule did not apply, or the SDK path is wrong. | `lsusb -d 03c3:`. `ls -l /dev/bus/usb/*/*` must show the service group. `cat <config-dir>/sdk.env` must name an existing library. |
 | Frames drop, or the stream breaks on large frames. | The USB buffer is too small. | `cat /sys/module/usbcore/parameters/usbfs_memory_mb`, and see [First start and checks](#first-start-and-checks). |
 | Records carry `time_invalid`. | chrony has no synchronized source. | See [Time sync](#time-sync). |
-| The health endpoint answers 503. | `core` or `web` is down, or `core` wrote no health record for three minutes. | `systemctl status seeingmon.target`, and the log of `core`. |
+| The health endpoint answers 503. | A component failed, or `core` wrote no health record for three minutes. | Read the `reasons` in the answer, then `systemctl status seeingmon.target` and the log of `core`. |
 | The UI is not reachable from the LAN. | `bind_address` is still the loopback address. | Set the LAN address in `[web]` of the local configuration, and run the installer again. |
 | Commands over the API are refused. | `web` has no token hash. | Run `seeingmon web hash-token`, and install the hash with `--token-hash-file`. |
 | The data directory warns about the root file system. | No data partition. | See [Create the data partition](#create-the-data-partition). |
