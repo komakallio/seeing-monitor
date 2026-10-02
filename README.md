@@ -17,7 +17,7 @@ A fixed camera points at Polaris, and a Raspberry Pi measures atmospheric seeing
 - [REST API](docs/openapi.json): the OpenAPI description of API v1.
 - [Hardware checks](docs/hardware-checks.md): the checks that need a camera or a Pi.
 - [Phase 2 kickoff](docs/phase2-kickoff.md): the instructions and the steps of the implementation phase.
-- [Phase 2 status](docs/phase2-status.md): the state of each implementation step.
+- [Phase 2 status](docs/phase2-status.md): the state of each implementation step, the blockers, and your next steps.
 - [Simulator demo](docs/demo/seeing-simulator.html): a page of rendered simulator output that you open in a browser.
 
 ## Try it
