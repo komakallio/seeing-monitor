@@ -148,6 +148,25 @@ class TestTheDescriptorPath:
         assert sum(calls) == 4 + 10
         assert len(calls) == 5
 
+    def test_a_message_goes_out_with_one_system_call_of_any_size(
+        self, pair: tuple[Wire, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wire, theirs = pair
+        calls: list[int] = []
+        real_writev = wire_module._WRITEV
+        assert real_writev is not None
+
+        def counting(fd: int, buffers: Sequence[Any]) -> int:
+            calls.append(1)
+            return real_writev(fd, buffers)
+
+        monkeypatch.setattr(wire_module, "_WRITEV", counting)
+        for size in (10, 20000, 100_000):  # `send_bytes` needs two calls above 16 KB
+            sender = in_thread(lambda size=size: wire.send(payload(size)))
+            assert theirs.recv_bytes() == payload(size)
+            sender.join(20.0)
+        assert calls == [1, 1, 1]
+
     def test_a_memoryview_of_another_format_is_sent_as_bytes(self, pair: tuple[Wire, Any]) -> None:
         wire, theirs = pair
         view = memoryview(bytearray(range(32))).cast("H")
