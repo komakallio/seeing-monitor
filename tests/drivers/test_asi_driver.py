@@ -35,6 +35,7 @@ from seeingmon.hardware.asi.fake import (
     FakeFrameInfo,
     default_pixels,
 )
+from seeingmon.profile import derived
 from tests.hardware.asi_support import FAST, TINY, Rig, make_rig, reference_profile
 
 RAW16, RAW8 = PixelFormat.RAW16, PixelFormat.RAW8
@@ -247,7 +248,8 @@ class TestControls:
         )
         assert rig.sdk.control(AsiControl.HIGH_SPEED_MODE) == 1
         assert active.adc_bits == 10
-        assert active.frame_period_s == pytest.approx(5.0e-3 + 8 * 30.1e-6)
+        fast = reference_profile().mode("bin1", high_speed=True)
+        assert active.frame_period_s == pytest.approx(derived.frame_period_s(fast, 8, 2000))
         rig.driver.start()
         assert rig.driver.read_frame(1.0).adc_bits == 10
 
@@ -825,7 +827,8 @@ class TestSnapshots:
                 roi=Roi(0, 0, 64, 64),
             )
         )
-        assert active.frame_period_s == pytest.approx(2.0 + 1.4e-3 + 64 * 21.3e-6)
+        survey = reference_profile().mode("bin2")
+        assert active.frame_period_s == pytest.approx(2.0 + derived.readout_time_s(survey, 64))
 
     def test_an_exposure_that_does_not_finish_in_time_times_out_and_can_be_awaited_again(
         self,

@@ -18,7 +18,7 @@ from seeingmon.drivers.base import CameraDisconnectedError
 from seeingmon.frames import PixelFormat, Roi, StreamConfig
 from seeingmon.hardware import rates
 from seeingmon.hardware.asi.api import AsiControl, AsiErrorCode, AsiLibraryError
-from seeingmon.hardware.asi.fake import FakeCameraState
+from seeingmon.hardware.asi.fake import DEFAULT_TIMING, FakeCameraState
 from seeingmon.hardware.rates import (
     BANDWIDTHS_PCT,
     GROUPS,
@@ -40,8 +40,15 @@ from seeingmon.hardware.rates import (
 from tests.hardware.asi_support import Rig, make_rig, reference_profile
 
 PROFILE = reference_profile()
-# The fake camera's timing for bin1 (the research notes): 6.5 ms and 37.6 us a row.
-BIN1_PERIOD_128_S = 6.5e-3 + 128 * 37.6e-6
+
+
+def period_s(mode: int, high_speed: bool, rows: int) -> float:
+    """The frame period of the fake camera for a ROI of `rows` rows, from its timing table."""
+    timing = DEFAULT_TIMING[(mode, high_speed)]
+    return timing.overhead_s + rows * timing.row_time_s
+
+
+BIN1_PERIOD_128_S = period_s(1, False, 128)
 
 
 @pytest.fixture(autouse=True)
@@ -189,7 +196,7 @@ class TestMeasure:
     def test_high_speed_mode_shows_in_the_rate_and_the_bit_depth(self) -> None:
         row = measure_row(make_rig().opened().driver, spec(high_speed=True), frames=20, settle=2)
         assert row.adc_bits == 10
-        assert row.fps == pytest.approx(1 / (5.0e-3 + 128 * 30.1e-6), rel=1e-6)
+        assert row.fps == pytest.approx(1 / period_s(1, True, 128), rel=1e-6)
         assert row.high_speed is True
 
     def test_the_row_reports_what_the_camera_applied(self) -> None:
@@ -332,20 +339,20 @@ class TestFit:
         report = table(make_rig(), groups=("roi", "speed", "bin2"))
         by_key = {(fit.mode, fit.high_speed): fit for fit in report.fits}
         assert set(by_key) == {("bin1", False), ("bin1", True), ("bin2", False), ("bin2", True)}
-        expected = {
-            ("bin1", False): (6.5, 37.6),
-            ("bin1", True): (5.0, 30.1),
-            ("bin2", False): (1.4, 21.3),
-            ("bin2", True): (1.2, 18.2),
-        }
-        for key, (overhead_ms, row_us) in expected.items():
-            fit = by_key[key]
-            assert fit.frame_overhead_ms == pytest.approx(overhead_ms, rel=1e-3)
-            assert fit.row_time_us == pytest.approx(row_us, rel=1e-3)
+        for (mode, high_speed), fit in by_key.items():
+            timing = DEFAULT_TIMING[(int(mode.removeprefix("bin")), high_speed)]
+            assert fit.frame_overhead_ms == pytest.approx(timing.overhead_s * 1e3, rel=1e-3)
+            assert fit.row_time_us == pytest.approx(timing.row_time_s * 1e6, rel=1e-3)
             assert fit.max_error_pct < 0.1
-            # The fake runs the profile's own numbers, so the profile values agree.
-            assert fit.profile_frame_overhead_ms == pytest.approx(overhead_ms)
-            assert fit.profile_row_time_us == pytest.approx(row_us)
+
+    def test_the_fake_camera_runs_the_numbers_of_the_profile(self) -> None:
+        """The fake and the profile state the same timing, so the fit of a fake run agrees with the
+        profile. A refit of the profile from a real camera changes the table of the fake with it."""
+        report = table(make_rig(), groups=("roi", "speed", "bin2"))
+        for fit in report.fits:
+            timing = DEFAULT_TIMING[(int(fit.mode.removeprefix("bin")), fit.high_speed)]
+            assert fit.profile_frame_overhead_ms == pytest.approx(timing.overhead_s * 1e3)
+            assert fit.profile_row_time_us == pytest.approx(timing.row_time_s * 1e6)
 
     def row(self, **changes: object) -> RateRow:
         values: dict[str, object] = {

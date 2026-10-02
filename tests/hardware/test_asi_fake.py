@@ -21,6 +21,7 @@ from seeingmon.hardware.asi.api import (
     AsiTimeoutError,
 )
 from seeingmon.hardware.asi.fake import (
+    DEFAULT_TIMING,
     FakeAsiSdk,
     FakeCameraState,
     FakeFrameInfo,
@@ -412,7 +413,8 @@ class TestVideo:
     ) -> None:
         sdk.set_control_value(camera, AsiControl.HIGH_SPEED_MODE, 1)
         stream(sdk, camera, width=16, height=8)
-        assert sdk.frame_period_s() == pytest.approx(5.0e-3 + 8 * 30.1e-6)
+        timing = DEFAULT_TIMING[(1, True)]
+        assert sdk.frame_period_s() == pytest.approx(timing.overhead_s + 8 * timing.row_time_s)
         buffer = frame_bytes(16, 8)
         sdk.get_video_data(camera, buffer, wait_ms=500)
         counts = default_pixels(FakeFrameInfo(0, 16, 8, 1, RAW16, 8, 4, 2000, 0, 10))
