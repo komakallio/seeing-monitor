@@ -161,7 +161,8 @@ class SurveyConfig(SectionModel):
     index_dir: str = ""  # the folder with the astrometry.net cap index files
     hot_pixel_file: str = ""  # a NumPy file with the boolean hot-pixel mask of the survey mode
     calibration_dir: str = ""  # the folder with the dark library (in `darks/`); empty: none
-    flat_file: str = ""  # a measured flat field of the survey mode (.npy or FITS); empty: unit flat
+    # A flat field of the survey mode, a .npy or FITS image (`seeingmon flat make` writes one).
+    flat_file: str = ""  # empty: a unit flat
     night_split_utc_hour: float = 12.0  # the UTC hour that ends a night; pick one in your daytime
     solve_field_command: str = "solve-field"
     astap_command: str = "astap"

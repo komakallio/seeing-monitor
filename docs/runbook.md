@@ -505,6 +505,7 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 | `seeingmon burst` | Records frames to a SER file with a JSON sidecar, and pins the burst. Pinned bursts are exempt from retention, so a burst stays until you remove the `PINNED` file in its folder. | Also `POST /api/v1/commands/burst` (token required). |
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
+| `seeingmon flat make` | Combines frames of a lit panel into the master flat for `[survey] flat_file`, and prints the vignetting, the tilt, the shadows, and how well the sets agree. | Offline: it needs no camera and no running service. See [Take a flat with a panel](#take-a-flat-with-a-panel). |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
 | `seeingmon hardware sqm` | Reads the SQM-LE once from the source that `[sqm]` names (the unit over TCP, or the readings in InfluxDB), and prints the magnitude, the temperature, and the age of the reading. | Read-only, and it needs no camera. It ignores `enabled`. The wrapper does not load `seeingmon.env`, so a variable that `token_env` names must be in the environment of the command (see [Check the settings](#check-the-settings)). |
 | `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
@@ -539,6 +540,104 @@ The scheduler pauses when the session ends, whatever the outcome, because the ca
 ### Why the temperature matters
 
 The dark rate depends on the sensor temperature, so a set serves only the temperatures near its own. The library counts a set that lies within 3 degrees C of the sensor temperature (`temperature_tolerance_c`) and is younger than about six months (`max_age_days`). When no such set exists, the status line says `Due`. The model of the dark current fits the doubling step once the sets span 4 degrees C or more, and until then it assumes 6 degrees C (`doubling_c` in `[survey.dark]`). A wider span fits it better, so take a set on a cold night and another on a warm one, and look at the chart for the gaps. The `[web.requests]` table caps the exposure that the page may ask for (`max_dark_exposure_s`, 120 s by default).
+
+## Take a flat with a panel
+
+A flat field corrects the vignetting of the lens and the shadows of the dust on the sensor window. The survey analysis divides every frame by the flat before it measures the sky, so a flat that you measure makes the sky brightness more accurate. The default is a unit flat, which corrects nothing, and it stays the default until you set `[survey] flat_file`. A panel flat takes about half an hour. Take it before the first clear night, with the camera on the lens as it will run.
+
+### What you need
+
+- **The optical train as it will run.** Keep the same spacing between the camera and the lens, the same focus, and the dew shield if the station has one. Do not turn the camera on the lens afterwards, because the shadows of dust turn with the sensor.
+- **A uniform, diffuse light.** The light must cover the whole 50 mm aperture and sit flush against the lens. An EL or LED panel works, and so does a tracing pad. A white cloth over the lens, in front of an evenly lit surface, works too. A phone screen works if you dim it and show a plain white page, but it has a gradient of its own (see [Turn the source](#turn-the-source)).
+- **The survey mode.** Set bin2, the survey gain (`[survey.dark] gain`, 120 by default), the survey offset, 16-bit output, no region of interest, and the normal readout (high-speed mode off). The command takes the frame size from the profile (4144 × 2822 pixels in bin2), and it refuses frames of another size.
+- **A recorder.** SharpCap or ASICap can record a SER file. A script can also write FITS files: one file for each frame, 16 bits (`BZERO` 32768), uncompressed.
+- **A dark set.** You need no bias frames. The command takes the bias level from the dark library, interpolated to the sensor temperature in the FITS headers, so record a dark set first (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)) at a temperature near the one of the flat.
+
+### Take the frames
+
+1. Set an exposure of 0.1 s or more that gives 30 to 50% of full scale. In a 16-bit file, that is a mean of about 20,000 to 33,000 counts. Dim the light or shorten the exposure to get there, and check that no pixel saturates.
+1. Record 24 frames into one SER file, or into one folder of FITS files. Keep the light steady: the command drops a frame whose mean level differs from the median of its set by more than 5%, and a frame outside 20 to 80% of full scale. The command warns when fewer than 15 frames of a set pass.
+1. Turn the source by 180 degrees, and record 24 more frames into a second file or folder (see the next section). You can skip this step.
+
+### Turn the source
+
+A light source has a gradient of its own. A phone screen shows up to about 1% across its width, and that gradient lands in the flat as a tilt. One set cannot tell the gradient of the source from the tilt of the optics and the sensor, which is the part that you want. A second set that you record after you turn the source by 180 degrees separates the two: the gradient of the source flips, and the tilt of the optics stays. The command averages the two sets, which cancels a gradient that turned (to first order), and it reports the tilt of each part.
+
+You can skip the second set. The flat then carries the gradient of the source in its tilt, up to about 1% across the frame for a phone screen, and the command warns about it. The night sky cannot correct that tilt later, because it cannot tell a tilt of the flat from a gradient of the sky itself.
+
+Pass `--source-turned` only when you did turn the source. The pixels cannot show whether you did, so the command takes your word. Without the option, it prints the same numbers under neutral names, and it warns when the two sets differ in tilt by more than 0.3%: the source drifted, or you turned it and did not say so.
+
+### Make the flat
+
+Run the command on any machine that has the project installed. It needs no camera and no running service. Copy the result to the Pi afterwards.
+
+```bash
+uv run seeingmon flat make --frames <set A> --frames <set B> --source-turned --out <flat file>.npy
+```
+
+`--frames` takes a SER file or a folder of FITS files, and you repeat it for each set. `--out` takes a `.npy` file or a FITS file (`.fits`). The command reads the configuration for the profile and the dark library (`[survey] calibration_dir`, or `calibration/` in the data directory), and `--calibration-dir` and `--local-config` name others. These options change what the command does:
+
+| Option | Meaning |
+|---|---|
+| `--bias-level N` | Use this bias level, in the counts of the frames, and not the one of the dark library. |
+| `--bias <path>` | Check bias frames (a SER file or a folder of FITS files) that you took with the lens covered, and use them when they pass. They fail when the noise of a pixel exceeds 3.5 counts, or the middle is more than 0.5 counts brighter than the corners, which means that light reached the sensor. The command then warns and uses the level of `--bias-level` or of the library. |
+| `--temperature-c T` and `--gain N` | Say the sensor temperature and the gain of the frames when the files do not (a SER file never does). The command needs them to look up the bias in the library. |
+| `--full-scale N` | Set the count where the ADC saturates. The command finds it from the frames: 65,535 for a 14-bit camera in a 16-bit container (every count a multiple of 4), and 16,383 for native 14-bit counts. |
+| `--min-level-percent`, `--max-level-percent`, `--flicker-percent`, `--min-frames` | The tests of a frame and the count that raises the warning. The defaults are 20, 80, 5, and 15. |
+| `--bin`, `--high-pass-px`, `--center-x`, `--center-y` | The binning (4), the width of the Gaussian that splits the smooth part from the fine part (40 binned pixels), and the optical center (the middle of the frame) for the report. |
+
+### Read the report
+
+The command prints plain text and no path. A report of two sets of frames looks like this. The numbers follow a real test of the development lens (a 50 mm f/5 guide scope):
+
+```text
+Flat from panel frames: 4144 x 2822 pixels, median 1.
+Set 1: 24 of 24 frames used. Mean level 30,066 counts, 45.9% of the full scale of 65,535 counts.
+  Noise per pixel: 1.22% in one frame, 0.25% in the mean. Saturated pixels: 0.000%.
+Set 2: 24 of 24 frames used. ...
+Bias: 133.9 native counts (535.6 in the counts of the frames), from the dark library (2 sets of bin2 at gain 120, interpolated to 29.5 C).
+Noise of the flat: 0.18% per pixel, 0.04% at 4 x 4 binning.
+Tilt of each set after the radial part:
+  set 1: -0.08% across the width, +0.34% across the height
+  set 2: +1.20% across the width, -1.02% across the height
+Tilt of the optics and the sensor (half the sum of sets 1 and 2, which stays when the source turns): +0.56% across the width, -0.34% across the height
+Gradient of the light source in set 1 (half the difference, which turns with the source): -0.64% across the width, +0.68% across the height
+Quotient of set 1 over set 2:
+  smooth part 0.54% rms, fine part 0.09% rms (the noise predicts 0.09% at this binning)
+  plane of the quotient: -1.28% across the width, +1.36% across the height
+Vignetting at each radius from the center, against the center:
+  0.5 degrees: -0.43%
+  1.0 degrees: -2.25%
+  1.5 degrees: -4.04%
+  2.0 degrees: -6.50%
+  2.5 degrees: -9.27%
+  corners (2.66 degrees): -9.89%
+Tilt of the flat after the radial part: +0.56% across the width, -0.34% across the height
+Shadows deeper than 1%: 3
+  x 2489, y 1994: depth 3.0%, width 71 px
+  ...
+Edge artifacts deeper than 1% (center within 20 px of an edge): 2
+  ...
+Wrote flat.npy. Set flat_file in the [survey] table to its path.
+```
+
+- **Frames.** Each set lists the frames that passed, the mean level in counts and in percent of full scale, and the noise of a pixel. Frames that dropped are listed with the reason. A level over 80% or under 20%, and a flicker above 5%, drop a frame. A warning follows when fewer than 15 frames pass, when more than 0.1% of the pixels saturate, or when the mean level lies outside 20 to 80%.
+- **Bias.** The line says which bias the command used: the dark library, `--bias-level`, or checked bias frames. A bias frame that holds light raises a warning, and the line then names the replacement.
+- **Agreement of the sets.** Two sets of a steady source agree to the noise on the fine part. The plane of the quotient is the difference of the two tilts. It shows the gradient of the source only if you turned or moved the source between the sets. If you did not, it shows how far the source drifted.
+- **Vignetting.** The flat at five radii from the optical center and in the corners, against the center. The development lens loses about 0.4% of the light 0.5 degrees from the middle, 2.3% at 1 degree, 4% at 1.5, 6.5% at 2, 9.3% at 2.5, and 9.9% in the corners. Another lens gives other numbers.
+- **Tilt.** The plane across the frame after the radial part is divided out, as a change across the width and across the height. A positive value means that the flat rises toward the right edge or the bottom edge. The optics and the sensor cause the tilt that stays in the flat, and the gradient of the light source adds to it unless you turned the source.
+- **Shadows.** The dips deeper than 1% in the fine part, with the position in sensor pixels, the depth, and the width (the diameter of the circle that has the area of the pixels deeper than half of the depth). A dip whose center lies within 20 pixels of an edge is an edge artifact, and the report lists it apart.
+
+The flat has a median of 1. The command floors a pixel that reads at or below zero at 0.05 and warns, so that the survey path can divide by every pixel.
+
+### Use the flat
+
+1. Copy the file to the Pi, and set `flat_file` in the `[survey]` table of `local/config.toml` to its path.
+1. Restart `core`, which loads the flat when it starts. The `sky_quality` records carry `provenance.flat` with the name of the flat (`flat-` and a hash of its pixels), so you can see from which record on the pipeline used it. A unit flat shows `unit`.
+
+### When to take it again
+
+Take a new flat when the camera comes off the lens, when you change the spacing or the focus, and when you clean the sensor window, because each of them moves the shadows of the dust or changes the vignetting.
 
 ## First light on the dev machine
 

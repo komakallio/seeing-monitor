@@ -67,3 +67,19 @@ def erf32(x: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
 def uniform_filter(image: npt.NDArray[np.float32], size: int) -> npt.NDArray[np.float32]:
     """The mean of each pixel's `size` x `size` neighborhood. The edges reflect."""
     return np.asarray(_ndimage.uniform_filter(image, size=size, mode="reflect"), dtype=np.float32)
+
+
+def gaussian_filter(
+    image: npt.NDArray[np.float64], sigma: float, *, mode: str = "nearest"
+) -> npt.NDArray[np.float64]:
+    """The image smoothed with a Gaussian of `sigma` pixels. `mode` says how the edges extend."""
+    return np.asarray(_ndimage.gaussian_filter(image, sigma=sigma, mode=mode), dtype=np.float64)
+
+
+def label(mask: npt.NDArray[np.bool_]) -> tuple[npt.NDArray[np.int32], int]:
+    """Number the connected regions of a mask (a pixel joins its four neighbors).
+
+    Returns the label image (0 for the background, 1 to `count` for the regions) and the count.
+    """
+    labels, count = _ndimage.label(mask)
+    return np.asarray(labels, dtype=np.int32), int(count)

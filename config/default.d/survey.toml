@@ -17,7 +17,9 @@ hot_pixel_file = ""
 # The folder with the calibration files. The dark library lives in its darks/ subfolder, where
 # `seeingmon dark` adds the sets. Empty means that the pipeline subtracts no dark level.
 calibration_dir = ""
-# A measured flat field of the survey mode (.npy or FITS). Empty means a unit flat: no correction.
+# A measured flat field of the survey mode: a 2-D image of the whole sensor with a median of 1 (.npy
+# or FITS). `seeingmon flat make` builds one from frames of a lit panel. Empty means a unit flat: no
+# correction.
 flat_file = ""
 # The UTC hour that ends one night and starts the next. Pick an hour when the Sun is up at your
 # site, so that no night splits in two. The star epochs and the transparency reference group by

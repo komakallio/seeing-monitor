@@ -1,4 +1,4 @@
-"""The survey commands: `seeingmon catalog` and `seeingmon dark`.
+"""The survey commands: `seeingmon catalog`, `seeingmon dark`, and `seeingmon flat`.
 
 `seeingmon catalog build` queries the Gaia archive and VizieR for the stars around the north
 celestial pole, writes the cap catalog, and, when the astrometry.net tool
@@ -10,6 +10,10 @@ queues the session in the running `core`, which owns the camera, and shows the p
 `seeingmon.services.commands.run_dark_through_core`). With `--standalone` it opens the camera
 itself, with the driver of the `[services.acquire]` configuration, so stop `acquire` first: one
 process at a time can open the camera.
+
+`seeingmon flat make` combines frames of a lit panel into the master flat for `[survey] flat_file`,
+and `seeingmon flat build` builds a flat from the survey frames of the night sky. Both run offline
+(see `seeingmon.survey.flat_cli`).
 """
 
 from __future__ import annotations
@@ -28,6 +32,9 @@ if TYPE_CHECKING:
 
 
 def register(subparsers: Subparsers) -> None:
+    from seeingmon.survey.flat_cli import register_flat
+
+    register_flat(subparsers)
     parser = add_command(
         subparsers,
         "catalog",
