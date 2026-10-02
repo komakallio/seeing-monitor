@@ -30,7 +30,7 @@ uv run seeingmon web --demo    # the UI on synthetic data, with a fake core
 uv run seeingmon dev           # acquire, core, and web on a simulated sky
 ```
 
-`seeingmon dev` prints a random API token for each run. Both commands read the `[web]` table of `local/config.toml`, so you can set the address and the allowed host names of your own network there. That file stays out of the repository.
+`seeingmon dev` prints a random API token for each run, unless the `[auth]` table of `local/config.toml` holds a token hash. Both commands read the `[web]` table of that file, so you can set the address and the allowed host names of your own network there. That file stays out of the repository.
 
 ## Develop
 
