@@ -40,6 +40,60 @@ SINK_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 SSL_MODES = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
 
 
+def check_endpoint(value: str) -> str:
+    """Check the address of an InfluxDB server, and return it without a trailing slash.
+
+    The address must use `http` or `https` and name a host, and it must hold no credentials, no
+    query, and no fragment. The error messages never repeat the value. The sinks and the SQM-LE
+    reader of `seeingmon.hardware.sqm` share this check.
+    """
+    parts = urllib.parse.urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("use an http:// or https:// address, such as https://influx.example.org")
+    if parts.username or parts.password:
+        raise ValueError("do not put credentials in the endpoint; use token or password")
+    if parts.query or parts.fragment:
+        raise ValueError("leave the query and the fragment out of the endpoint")
+    return value.rstrip("/")
+
+
+def check_influx_connection(
+    *,
+    version: int,
+    org: str | None,
+    bucket: str | None,
+    database: str | None,
+    token: SecretStr | None,
+    token_env: str | None,
+    username: str | None,
+    password: SecretStr | None,
+    password_env: str | None,
+) -> None:
+    """Check the keys that an InfluxDB connection needs for its version, and its secrets.
+
+    Version 1 needs a `database` and takes `username` and a password. Version 2 needs an `org`, a
+    `bucket`, and takes a token. A secret has one source: a direct value or an environment
+    variable. Raises `ValueError`. The messages never repeat a value. The sinks and the SQM-LE
+    reader of `seeingmon.hardware.sqm` share this check.
+    """
+    if version == 1:
+        if not database:
+            raise ValueError("version 1 needs a database")
+        if token is not None or token_env is not None:
+            raise ValueError("version 1 has no token; use username and password")
+    else:
+        if not (org and bucket):
+            raise ValueError("version 2 needs an org and a bucket")
+        if username is not None or password is not None or password_env:
+            raise ValueError("version 2 authenticates with a token, not a password")
+    if token is not None and token_env is not None:
+        raise ValueError("set token or token_env, not both")
+    if password is not None and password_env is not None:
+        raise ValueError("set password or password_env, not both")
+    if (password is not None or password_env) and not username:
+        raise ValueError("a password needs a username")
+
+
 class _SinkBase(SectionModel):
     """The keys that every sink has. A number that an environment variable gives becomes text."""
 
@@ -110,35 +164,21 @@ class InfluxSinkConfig(_SinkBase):
     @field_validator("endpoint")
     @classmethod
     def _check_endpoint(cls, value: str) -> str:
-        parts = urllib.parse.urlsplit(value)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ValueError(
-                "use an http:// or https:// address, such as https://influx.example.org"
-            )
-        if parts.username or parts.password:
-            raise ValueError("do not put credentials in the endpoint; use token or password")
-        if parts.query or parts.fragment:
-            raise ValueError("leave the query and the fragment out of the endpoint")
-        return value.rstrip("/")
+        return check_endpoint(value)
 
     @model_validator(mode="after")
     def _check_version(self) -> Self:
-        if self.version == 1:
-            if not self.database:
-                raise ValueError("version 1 needs a database")
-            if self.token is not None or self.token_env is not None:
-                raise ValueError("version 1 has no token; use username and password")
-        else:
-            if not (self.org and self.bucket):
-                raise ValueError("version 2 needs an org and a bucket")
-            if self.username is not None or self.password is not None or self.password_env:
-                raise ValueError("version 2 authenticates with a token, not a password")
-        if self.token is not None and self.token_env is not None:
-            raise ValueError("set token or token_env, not both")
-        if self.password is not None and self.password_env is not None:
-            raise ValueError("set password or password_env, not both")
-        if (self.password is not None or self.password_env) and not self.username:
-            raise ValueError("a password needs a username")
+        check_influx_connection(
+            version=self.version,
+            org=self.org,
+            bucket=self.bucket,
+            database=self.database,
+            token=self.token,
+            token_env=self.token_env,
+            username=self.username,
+            password=self.password,
+            password_env=self.password_env,
+        )
         return self
 
 

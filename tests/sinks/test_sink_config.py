@@ -13,6 +13,8 @@ from seeingmon.sinks.config import (
     InfluxSinkConfig,
     SinksSection,
     TimescaleSinkConfig,
+    check_endpoint,
+    check_influx_connection,
     resolve_credential,
 )
 
@@ -245,3 +247,40 @@ class TestResolveSecret:
     ) -> None:
         with pytest.raises(ConfigError, match="THE_VARIABLE"):
             resolve_credential(None, "THE_VARIABLE", env, "the token of sink lab")
+
+
+class TestSharedChecks:
+    """The checks of an InfluxDB connection that other readers of the system use too."""
+
+    def test_the_endpoint_check_returns_the_address_without_a_trailing_slash(self) -> None:
+        assert check_endpoint(ENDPOINT + "/") == ENDPOINT
+        assert check_endpoint("http://localhost:8086") == "http://localhost:8086"
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        ["private-marker.example.net", "ftp://private-marker.example.net", "https://"],
+    )
+    def test_a_bad_endpoint_raises_without_echoing_it(self, endpoint: str) -> None:
+        with pytest.raises(ValueError, match="http") as caught:
+            check_endpoint(endpoint)
+        assert "private-marker" not in str(caught.value)
+
+    def test_the_connection_check_asks_for_the_keys_of_the_version(self) -> None:
+        keys: dict[str, Any] = {
+            "org": None,
+            "bucket": None,
+            "database": None,
+            "token": None,
+            "token_env": None,
+            "username": None,
+            "password": None,
+            "password_env": None,
+        }
+        check_influx_connection(version=2, **{**keys, "org": "o", "bucket": "b"})
+        check_influx_connection(version=1, **{**keys, "database": "d"})
+        with pytest.raises(ValueError, match="org and a bucket"):
+            check_influx_connection(version=2, **keys)
+        with pytest.raises(ValueError, match="needs a database"):
+            check_influx_connection(version=1, **keys)
+        with pytest.raises(ValueError, match="needs a username"):
+            check_influx_connection(version=1, **{**keys, "database": "d", "password_env": "X"})

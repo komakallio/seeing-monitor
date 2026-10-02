@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import random
 import ssl
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from typing import Any
@@ -16,7 +18,7 @@ from seeingmon.clock import VirtualClock
 from seeingmon.sinks.base import Sink, SinkError, StoredRow
 from seeingmon.sinks.config import InfluxSinkConfig
 from seeingmon.sinks.forwarder import Forwarder
-from seeingmon.sinks.influx import InfluxSink, make_opener
+from seeingmon.sinks.influx import InfluxSink, error_reply_message, make_opener
 from seeingmon.store.config import ForwarderConfig
 from seeingmon.store.db import Store
 from tests.sinks.fake_influx import Drop, FakeInfluxServer, Hang, Reply
@@ -294,6 +296,32 @@ class TestSecretsStayOut:
             sink.send("health", health_rows(1))
         assert CODE not in str(caught.value)
         assert CODE not in repr(sink)
+
+
+class TestErrorReplyMessage:
+    """`error_reply_message` serves the other readers of InfluxDB, and the sink keeps its limit."""
+
+    @staticmethod
+    def failed_request(server: FakeInfluxServer) -> urllib.error.HTTPError:
+        opener = make_opener(use_environment_proxies=False)
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            opener.open(server.url + "/query", timeout=5)
+        return caught.value
+
+    def test_the_message_of_a_json_reply_is_short_by_default(
+        self, server: FakeInfluxServer
+    ) -> None:
+        server.script(Reply(400, json.dumps({"message": "word " * 300})))
+        message = error_reply_message(self.failed_request(server))
+        assert message == ("word " * 300).strip()[:200]
+
+    def test_a_caller_can_ask_for_more_characters(self, server: FakeInfluxServer) -> None:
+        server.script(Reply(400, json.dumps({"error": "x" * 900})))
+        assert error_reply_message(self.failed_request(server), limit=800) == "x" * 800
+
+    def test_a_reply_that_is_not_json_gives_its_start(self, server: FakeInfluxServer) -> None:
+        server.script(Reply(502, "  bad\n gateway  "))
+        assert error_reply_message(self.failed_request(server)) == "bad gateway"
 
 
 def handlers_of(opener: urllib.request.OpenerDirector) -> list[Any]:

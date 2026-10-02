@@ -171,22 +171,33 @@ def _read_reply(error: urllib.error.HTTPError) -> bytes:
         error.close()
 
 
-def _short(text: str) -> str:
-    return " ".join(text.split())[:_MESSAGE_CHARS]
+def _short(text: str, limit: int = _MESSAGE_CHARS) -> str:
+    return " ".join(text.split())[:limit]
 
 
-def _server_message(body: bytes) -> str:
+def _server_message(body: bytes, limit: int = _MESSAGE_CHARS) -> str:
     """Read the message of an InfluxDB error reply: JSON with `message` or `error`, or text."""
     text = body.decode("utf-8", errors="replace")
     try:
         parsed = json.loads(text)
     except ValueError:
-        return _short(text)
+        return _short(text, limit)
     if isinstance(parsed, dict):
         for key in ("message", "error"):
             if isinstance(parsed.get(key), str):
-                return _short(parsed[key])
-    return _short(text)
+                return _short(parsed[key], limit)
+    return _short(text, limit)
+
+
+def error_reply_message(error: urllib.error.HTTPError, *, limit: int = _MESSAGE_CHARS) -> str:
+    """Read an error reply of InfluxDB, close it, and return the message that the server gave.
+
+    The message is the `message` or `error` text of a JSON reply, or else the start of the body, on
+    one line and at most `limit` characters (200 by default). A broken connection gives an empty
+    message. The SQM-LE reader of `seeingmon.hardware.sqm_influx` uses this function for its own
+    error replies. It asks for a longer message, cleans it, and then shortens it.
+    """
+    return _server_message(_read_reply(error), limit)
 
 
 _HINTS = {
