@@ -151,7 +151,9 @@ def register(subparsers: Subparsers) -> None:
         "file that the command prints, and delete the file to uncover the camera. With "
         "--driver asi, the system runs on your ZWO camera in real time instead: the full sensor, "
         "the system clock, and the exposure of the profile. The sky stays simulated, so a camera "
-        "that sees a room or a dark reports no stars."
+        "that sees a room or a dark reports no stars. Add --real-sky (with --data-dir) for a real "
+        "night: the site, the star catalog, and the plate solvers come from your local "
+        "configuration, and the first pointing solution comes from the first survey frame."
     )
     dev.add_argument(
         "--driver",
@@ -172,6 +174,17 @@ def register(subparsers: Subparsers) -> None:
         metavar="PATH",
         help="keep the store, the dark library, and the images in this folder, which survives "
         "the run (default: a temporary folder that the run removes)",
+    )
+    dev.add_argument(
+        "--real-sky",
+        action="store_true",
+        help="run on the real sky: no simulated catalog and no seed solution, so core solves the "
+        "first survey frame with your plate solvers. It needs --driver asi and --data-dir. The "
+        "[site] table (latitude_deg, longitude_deg, and elevation_m), the [survey] table (a "
+        "catalog_path that exists, and the solvers), and the [alignment] table come from your "
+        "local configuration and the variables SEEINGMON_SITE__*, SEEINGMON_SURVEY__*, and "
+        "SEEINGMON_ALIGNMENT__*, and only core receives them. The children log at the level "
+        "info into the folder logs of your data folder",
     )
     dev.add_argument(
         "--speed",
@@ -202,7 +215,12 @@ def register(subparsers: Subparsers) -> None:
     dev.add_argument(
         "--keep-data", action="store_true", help="keep the temporary data folder when you stop"
     )
-    dev.add_argument("--log-level", choices=LOG_LEVELS, default="warning")
+    dev.add_argument(
+        "--log-level",
+        choices=LOG_LEVELS,
+        default=None,
+        help="the level of the logs of the children (default warning, and info with --real-sky)",
+    )
 
 
 def _core(args: argparse.Namespace) -> int:

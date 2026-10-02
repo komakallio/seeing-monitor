@@ -32,11 +32,29 @@ run. Without it, the run keeps its temporary folder. The sky catalog, the first 
 and the site stay synthetic, so a camera that sees a room or a dark reports no stars, and the
 seeing windows and the sky quality stay empty.
 
+**A real sky.** `--real-sky` (with `--driver asi` and `--data-dir`) drops the synthetic sky. The
+launcher writes no simulated catalog and no seed solution, so `core` starts with no pointing and
+solves the first survey frame and the alignment frames with your plate solvers, as a production
+start does. The site, the catalog, and the solvers come from your local configuration: the
+launcher layers the `[site]`, `[survey]`, and `[alignment]` tables of `local/config.toml` and the
+variables `SEEINGMON_SITE__*`, `SEEINGMON_SURVEY__*`, and `SEEINGMON_ALIGNMENT__*`, the way that it
+layers `[web]` and `[auth]`, and it gives them to `core` alone, in the environment of that child.
+`[site]` needs all three values, and `[survey]` needs a catalog file that exists. The launcher
+refuses to start without them, and its message names the table and the setting, never a value. The
+scheduler follows the real Sun at the real site. The survey cloud limits are the production
+defaults, because the simulated limits suit a synthetic star field only, and the windows (20 s) and
+the dark session (5 frames of each kind) stay short. The banner says what is real, names the
+solvers that run, and warns about a solver program or a folder that it does not find. It prints no
+coordinate and no path. The logs of the children go to the folder `logs/<start time>` of your data
+folder, so that they outlive the run, and the banner names that folder relative to your data
+folder. The level of the logs is `info`, so that they show each solver run.
+
 **Isolation.** A simulated run must never reach a real sink, device, or data directory. Each child
 gets a clean environment: no `SEEINGMON_*` variable of yours reaches it, and `--local-config`
 points the children that take it at a file that does not exist, so `local/config.toml` is not
 read. The launcher sets every key that matters (the data folder, the profile, the survey catalog,
-the services, and the clock) in the environment of the child.
+the services, and the clock) in the environment of the child. A real-sky run adds the three tables
+above, and nothing else of your file: no sink, heater, SQM-LE, or power setting.
 
 **The web settings are yours.** The `web` child is the only process that sees your `[web]` and
 `[auth]` sections. The launcher layers `local/config.toml` and the variables `SEEINGMON_WEB__*`
@@ -70,10 +88,18 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, TYPE_CHECKING, Any, TypeVar
 
 from seeingmon.cli import CliError
-from seeingmon.clock import NS_PER_S, SystemClock
+from seeingmon.clock import NS_PER_S, SystemClock, utc_ns_to_iso
+from seeingmon.config import Config, ConfigError
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+
+    from seeingmon.survey.config import SurveyConfig
+
+ModelT = TypeVar("ModelT", bound="BaseModel")
 
 SENSORS = ("small", "full")
 DEFAULT_START = "2026-01-01T19:00:00Z"
@@ -112,6 +138,17 @@ DEV_DARK_POLL_S = 2.0
 REAL_DRIVER = "asi"
 REAL_PROFILE = "asi294mm-gs250"
 ASI_LIBRARY_VARIABLE = "SEEINGMON_ASI__LIBRARY_PATH"
+# The real sky (`--real-sky`): the tables of your local configuration that `core` needs, the keys
+# of the site that all have to be there, and the folder of your data folder that holds the logs of
+# the children, in one subfolder for each run.
+REAL_SKY_SECTIONS = ("site", "survey", "alignment")
+SITE_KEYS = ("latitude_deg", "longitude_deg", "elevation_m")
+LOGS_DIRNAME = "logs"
+# What a real-sky run keeps of the shortcuts of a dev run: a short dark session. The cloud limits
+# of the survey stay at the production defaults, unless your `[survey]` table sets them.
+REAL_SKY_SURVEY_DEFAULTS: dict[str, Any] = {
+    "dark": {"frames": DEV_DARK_FRAMES, "bias_frames": DEV_DARK_FRAMES, "poll_s": DEV_DARK_POLL_S}
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +177,9 @@ class DevOptions:
     asi_library: str | None = None
     data_dir: Path | None = None
     sensor_given: bool = False
+    # The real sky: the site, the catalog, and the solvers come from your local configuration, and
+    # the run needs the real camera and a data folder that survives it.
+    real_sky: bool = False
 
 
 @dataclass(slots=True)
@@ -169,7 +209,12 @@ class DevPlan:
     acquire_endpoint: str = ""
     cover_file: Path | None = None  # the simulated camera is covered while this file exists
     real: bool = False  # the camera is the real one, and the clock is the system clock
+    real_sky: bool = False  # the site, the catalog, and the solvers are yours, and no sky is seeded
     notes: list[str] = field(default_factory=list)  # lines for the banner
+    # What the launcher found wrong with the setup of a real sky, for the banner.
+    warnings: list[str] = field(default_factory=list)
+    log_dir: Path | None = None  # a real-sky run keeps the logs of the children here
+    log_folder: str = ""  # the same folder, relative to the data folder, for the banner
 
     def urls(self) -> list[str]:
         """One URL for each bind address, with an IPv6 address in brackets."""
@@ -204,26 +249,37 @@ def flatten_env(table: Mapping[str, Any], prefix: str) -> dict[str, str]:
     return result
 
 
+def owner_tables(
+    local_file: Path | str | None, env: Mapping[str, str], sections: Sequence[str]
+) -> dict[str, dict[str, Any]]:
+    """The tables of the named sections that the owner set, and nothing else.
+
+    The layers are the local configuration file and the variables `SEEINGMON_<SECTION>__*` of the
+    named sections. The defaults of the repository are left out, so each table holds only what the
+    owner chose, and a section that the owner did not set is an empty table. Every other key of the
+    file and every other variable is ignored.
+    """
+    from seeingmon.config import load_config
+
+    prefixes = tuple(f"SEEINGMON_{name.upper()}__" for name in sections)
+    kept = {k: v for k, v in env.items() if k.startswith(prefixes)}
+    with tempfile.TemporaryDirectory(prefix="smon-cfg-") as empty:
+        Path(empty, "default.toml").write_text('profile = "none"\nstation_id = "none"\n')
+        config = load_config(config_dir=empty, local_file=local_file, env=kept)
+    data = config.effective(redact=False)
+    return {name: dict(data[name]) if isinstance(data.get(name), dict) else {} for name in sections}
+
+
 def owner_settings(
     local_file: Path | str | None, env: Mapping[str, str]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The `[web]` and `[auth]` tables that the owner set, and nothing else.
 
     The layers are the local configuration file and the variables `SEEINGMON_WEB__*` and
-    `SEEINGMON_AUTH__*`. The defaults of the repository are left out, so the result holds only
-    what the owner chose. Every other key of the file and every other variable is ignored.
+    `SEEINGMON_AUTH__*` (see `owner_tables`).
     """
-    from seeingmon.config import load_config
-
-    kept = {k: v for k, v in env.items() if k.startswith(("SEEINGMON_WEB__", "SEEINGMON_AUTH__"))}
-    with tempfile.TemporaryDirectory(prefix="smon-cfg-") as empty:
-        Path(empty, "default.toml").write_text('profile = "none"\nstation_id = "none"\n')
-        config = load_config(config_dir=empty, local_file=local_file, env=kept)
-    data = config.effective(redact=False)
-    web, auth = data.get("web", {}), data.get("auth", {})
-    return (dict(web) if isinstance(web, dict) else {}), (
-        dict(auth) if isinstance(auth, dict) else {}
-    )
+    tables = owner_tables(local_file, env, ("web", "auth"))
+    return tables["web"], tables["auth"]
 
 
 def url_for(address: str, port: int) -> str:
@@ -293,20 +349,18 @@ def build_plan(
     web_command: Sequence[str] | None = None,
     origin_real_ns: int | None = None,
 ) -> DevPlan:
-    """Decide the settings of every child, and write the files that they need to `directory`."""
-    from seeingmon.clock import iso_to_utc_ns
-    from seeingmon.drivers.sim.stars import Pointing
-    from seeingmon.profile import load_profile
-    from seeingmon.services.simsky import (
-        seed_solution,
-        sim_catalog,
-        write_seed,
-        write_small_profile,
-    )
-    from seeingmon.services.web.auth import hash_token
-    from seeingmon.survey.catalog import write_catalog
+    """Decide the settings of every child, and write the files that they need to `directory`.
 
+    A real-sky plan (`options.real_sky`) reads and checks your site, survey, and alignment tables
+    first, so that a missing value stops the launcher before it writes a file or starts a child.
+    """
+    from seeingmon.clock import iso_to_utc_ns
+    from seeingmon.services.web.auth import hash_token
+
+    _check_real_sky(options)
     parent_env = os.environ if env is None else env
+    data_dir = directory / "data" if options.data_dir is None else options.data_dir
+    real_sky = real_sky_settings(local_file, parent_env, data_dir) if options.real_sky else None
     interpreter = python or sys.executable
     token = uuid.uuid4().hex[:12]
     key = secrets.token_urlsafe(32)
@@ -318,19 +372,28 @@ def build_plan(
     else:
         start_utc_ns = iso_to_utc_ns(options.start) if options.start else default_start_utc_ns()
 
-    # The simulated sky: a profile, a catalog, a first solution, and the pointing of the camera.
-    if options.sensor == "small" and not real:
-        profile_path: Path | str = write_small_profile(directory)
+    # The sky: yours (the real sky), or a simulated one with a profile, a catalog, a first
+    # solution, and the pointing of the camera.
+    if real_sky is not None:
+        profile_path: Path | str = REAL_PROFILE
+        sky_tables = real_sky.core_tables
     else:
-        profile_path = REAL_PROFILE
-    profile = load_profile(str(profile_path))
-    catalog, field_ = sim_catalog(options.seed, polaris_mag=options.polaris_mag)
-    catalog_path = directory / "catalog.bin"
-    write_catalog(catalog_path, catalog)
-    pointing = Pointing(t_ref_utc_ns=start_utc_ns)
-    seed_path = directory / "seed.json"
-    write_seed(seed_path, seed_solution(profile, field_, pointing, start_utc_ns).solution)
+        if options.sensor == "small" and not real:
+            from seeingmon.services.simsky import write_small_profile
+
+            profile_path = write_small_profile(directory)
+        else:
+            profile_path = REAL_PROFILE
+        sky_tables = _simulated_sky_tables(options, directory, profile_path, start_utc_ns)
     nowhere = directory / "no-local-config.toml"  # does not exist, so no local file is read
+
+    # A real-sky run keeps the logs of the children in your data folder, where they outlive it.
+    log_root, log_folder = directory, ""
+    if real_sky is not None:
+        stamp = utc_ns_to_iso(origin_ns, digits=0).replace("-", "").replace(":", "")
+        log_folder = f"{LOGS_DIRNAME}/{stamp}"
+        log_root = data_dir / LOGS_DIRNAME / stamp
+        log_root.mkdir(parents=True, exist_ok=True)
 
     slow_reads: dict[str, Any] = (
         {}
@@ -340,7 +403,6 @@ def build_plan(
     acquire_address = _endpoint_text(directory, "acquire", token)
     core_address = _endpoint_text(directory, "core", token)
     cover_file = directory / COVER_FILE_NAME if options.acquire_driver == "sim" else None
-    data_dir = directory / "data" if options.data_dir is None else options.data_dir
     clock: dict[str, Any] = (
         {"kind": "system"}
         if real
@@ -395,27 +457,17 @@ def build_plan(
     core_settings = _merge(
         _merge(
             shared,
-            {
-                "site": {
-                    "latitude_deg": SIM_LATITUDE_DEG,
-                    "longitude_deg": SIM_LONGITUDE_DEG,
-                    "elevation_m": 0.0,
-                },
-                # Windows of 20 s, so that the UI has data half a minute after the start.
-                "fastpath": {"window_s": options.window_s, "min_window_s": options.window_s / 2},
-                "scheduler": {"fast": fast_table, "loop": dict(slow_reads)},
-                "survey": {
-                    "catalog_path": str(catalog_path),
-                    "solvers": [],
-                    "cloud": {"min_expected": 4, "expected_snr": 10.0, "mag_limit": 13.0},
-                    "dark": {
-                        "frames": DEV_DARK_FRAMES,
-                        "bias_frames": DEV_DARK_FRAMES,
-                        "poll_s": DEV_DARK_POLL_S,
+            _merge(
+                {
+                    # Windows of 20 s, so that the UI has data half a minute after the start.
+                    "fastpath": {
+                        "window_s": options.window_s,
+                        "min_window_s": options.window_s / 2,
                     },
+                    "scheduler": {"fast": fast_table, "loop": dict(slow_reads)},
                 },
-                "services": {"core": {"seed_solution_file": str(seed_path)}},
-            },
+                sky_tables,  # the site, the survey, and what else the sky brings
+            ),
         ),
         options.core_overrides,
     )
@@ -448,7 +500,7 @@ def build_plan(
             if isinstance(table, Mapping):
                 env.update(flatten_env(table, f"SEEINGMON_{section.upper()}"))
         env.update(extra_env or {})
-        return ChildSpec(name, argv, env, directory / f"{name}.log")
+        return ChildSpec(name, argv, env, log_root / f"{name}.log")
 
     # The one setting of the real camera that comes from the person: the vendor library. Only
     # `acquire` gets it, in its environment, and never on a command line.
@@ -483,8 +535,282 @@ def build_plan(
         acquire_endpoint=acquire_address,
         cover_file=cover_file,
         real=real,
-        notes=_real_notes(options) if real else [],
+        real_sky=real_sky is not None,
+        notes=(
+            _real_sky_notes(options, real_sky.solvers, log_folder)
+            if real_sky is not None
+            else _real_notes(options)
+            if real
+            else []
+        ),
+        warnings=[] if real_sky is None else list(real_sky.warnings),
+        log_dir=None if real_sky is None else log_root,
+        log_folder=log_folder,
     )
+
+
+def _simulated_sky_tables(
+    options: DevOptions, directory: Path, profile_path: Path | str, start_utc_ns: int
+) -> dict[str, Any]:
+    """The tables of the simulated sky for `core`, and the files that they name.
+
+    The simulated sky is a cap catalog, a first pointing solution (the seed), and a synthetic site,
+    all from one seed (`seeingmon.services.simsky`), so `core` follows the simulated Polaris with no
+    plate solver. The survey gets the cloud limits that suit a synthetic star field.
+    """
+    from seeingmon.drivers.sim.stars import Pointing
+    from seeingmon.profile import load_profile
+    from seeingmon.services.simsky import seed_solution, sim_catalog, write_seed
+    from seeingmon.survey.catalog import write_catalog
+
+    profile = load_profile(str(profile_path))
+    catalog, field_ = sim_catalog(options.seed, polaris_mag=options.polaris_mag)
+    catalog_path = directory / "catalog.bin"
+    write_catalog(catalog_path, catalog)
+    pointing = Pointing(t_ref_utc_ns=start_utc_ns)
+    seed_path = directory / "seed.json"
+    write_seed(seed_path, seed_solution(profile, field_, pointing, start_utc_ns).solution)
+    return {
+        "site": {
+            "latitude_deg": SIM_LATITUDE_DEG,
+            "longitude_deg": SIM_LONGITUDE_DEG,
+            "elevation_m": 0.0,
+        },
+        "survey": {
+            "catalog_path": str(catalog_path),
+            "solvers": [],
+            "cloud": {"min_expected": 4, "expected_snr": 10.0, "mag_limit": 13.0},
+            "dark": {
+                "frames": DEV_DARK_FRAMES,
+                "bias_frames": DEV_DARK_FRAMES,
+                "poll_s": DEV_DARK_POLL_S,
+            },
+        },
+        "services": {"core": {"seed_solution_file": str(seed_path)}},
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class RealSky:
+    """What a real-sky run takes from your local configuration, checked before anything starts.
+
+    `core_tables` are the tables that `core` receives: the `site`, the `survey` (your table, with
+    the shortcuts of a dev run under it, and the dark library of your data folder when you name
+    none), and your `alignment` table when you set one. `solvers` are the plate solvers that run,
+    in order. `warnings` say what the launcher found wrong with them. A warning names a setting and
+    never a value.
+    """
+
+    core_tables: dict[str, dict[str, Any]]
+    solvers: tuple[str, ...]
+    warnings: list[str]
+
+
+def real_sky_settings(
+    local_file: Path | str | None, env: Mapping[str, str], data_dir: Path
+) -> RealSky:
+    """Read the site, survey, and alignment settings of a real-sky run, and check them.
+
+    The layers are your local configuration and the variables `SEEINGMON_SITE__*`,
+    `SEEINGMON_SURVEY__*`, and `SEEINGMON_ALIGNMENT__*` (see `owner_tables`). Raises `CliError`
+    with the exit code 2 when the `[site]` table lacks one of its three values, when it still holds
+    the placeholders of the template, when `[survey]` names no catalog file, a file that does not
+    exist, or a file that is not a cap catalog (the check reads the header only), or when a table is
+    not valid. The message names the table and the setting, and it never shows a value. A solver
+    program or folder that the launcher does not find is a warning.
+    """
+    from seeingmon.scheduler.config import SiteConfig
+    from seeingmon.services.core.settings import AlignmentSettings
+    from seeingmon.survey.catalog import CatalogError, read_info
+    from seeingmon.survey.config import SurveyConfig
+    from seeingmon.survey.pipeline import solver_specs_from_config
+
+    tables = owner_tables(local_file, env, REAL_SKY_SECTIONS)
+    site_table, survey_table, alignment_table = (tables[name] for name in REAL_SKY_SECTIONS)
+
+    missing = [key for key in SITE_KEYS if key not in site_table]
+    if missing:
+        raise CliError(
+            f"the [site] table of your local configuration lacks {', '.join(missing)}. A real-sky "
+            f"run needs {', '.join(SITE_KEYS)}, so that the scheduler follows the Sun at the site "
+            "of your camera. Set them in the untracked local/config.toml, or in the variables "
+            "SEEINGMON_SITE__<KEY>. The values stay in your local configuration and never go "
+            "into the repository.",
+            exit_code=2,
+        )
+    site = _validated(Config({"site": site_table}), "site", SiteConfig)
+    if site.latitude_deg == 0.0 and site.longitude_deg == 0.0:
+        raise CliError(
+            "the [site] table of your local configuration still holds the placeholders of "
+            "config/local.example.toml (a latitude and a longitude of 0). Set the site of your "
+            "camera in the untracked local/config.toml.",
+            exit_code=2,
+        )
+
+    survey = _validated(Config({"survey": survey_table}), "survey", SurveyConfig)
+    if not survey.catalog_path:
+        raise CliError(
+            "the [survey] table of your local configuration has no catalog_path. A real-sky run "
+            "needs the cap catalog that `seeingmon catalog build` writes (see the runbook, "
+            '"First light on the dev machine").',
+            exit_code=2,
+        )
+    if not Path(survey.catalog_path).is_file():
+        raise CliError(
+            "the catalog file that [survey] catalog_path names does not exist. Build it with "
+            "`seeingmon catalog build`, or copy it there (see the runbook).",
+            exit_code=2,
+        )
+    try:
+        read_info(survey.catalog_path)  # the header only: it tells a catalog from any other file
+    except CatalogError as error:
+        raise CliError(
+            f"the file that [survey] catalog_path names is not a cap catalog ({error}). Build it "
+            "with `seeingmon catalog build`.",
+            exit_code=2,
+        ) from None
+    try:
+        solver_specs_from_config(survey)
+    except ValueError as error:
+        raise CliError(f"[survey] solvers is not valid: {error}", exit_code=2) from None
+    _validated(Config({"alignment": alignment_table}), "alignment", AlignmentSettings)
+
+    survey_settings = _merge(REAL_SKY_SURVEY_DEFAULTS, survey_table)
+    if not survey.calibration_dir:  # the dark library goes where `core` would put it anyway
+        survey_settings["calibration_dir"] = str(data_dir / "calibration")
+    core_tables: dict[str, dict[str, Any]] = {"site": site_table, "survey": survey_settings}
+    if alignment_table:
+        core_tables["alignment"] = alignment_table
+    return RealSky(core_tables, tuple(survey.solvers), _solver_warnings(survey))
+
+
+def _validated(config: Config, name: str, model: type[ModelT]) -> ModelT:
+    """Validate one table with the model of its owner, and turn a failure into a `CliError`."""
+    try:
+        return config.section(name, model)
+    except ConfigError as error:
+        raise CliError(
+            f"your local configuration is not valid for a real-sky run: {error}", exit_code=2
+        ) from None
+
+
+def _finds_program(command: str) -> bool:
+    """Whether the program of a solver command is on the PATH or at the path that the command gives.
+
+    The check splits the command as the solver adapters do (`split_command`), so a command that the
+    adapter cannot run does not pass here either.
+    """
+    from seeingmon.solvers.base import SolverError
+    from seeingmon.solvers.process import split_command
+
+    try:
+        program = split_command(command)[0]
+    except (SolverError, ValueError):
+        return False
+    return shutil.which(program) is not None or Path(program).is_file()
+
+
+def _split_hint(command: str) -> str:
+    """A sentence about how the adapters split a command, for a command that a split gets wrong.
+
+    The adapters split a command like a POSIX shell line. That drops the backslashes of a Windows
+    path and cuts a path at its spaces, which is the usual reason why a program that exists is not
+    found. A command without a backslash or a space needs no hint.
+    """
+    if "\\" not in command and " " not in command.strip():
+        return ""
+    return (
+        " The adapters split the command like a shell line, so write a Windows path with forward "
+        "slashes, and put a path that contains a space in double quotes."
+    )
+
+
+def _solver_warnings(survey: SurveyConfig) -> list[str]:
+    """What the launcher finds wrong with the solvers of `[survey]`: a missing program or folder.
+
+    A warning names the solver and the setting, and never the value of the setting.
+    """
+    if not survey.solvers:
+        return [
+            "[survey] solvers is empty, so no plate solver runs and nothing can find the first "
+            "pointing solution."
+        ]
+    found: list[str] = []
+    for name in survey.solvers:
+        if name == "astrometry.net":
+            setting, command = "solve_field_command", survey.solve_field_command
+        else:
+            setting, command = "astap_command", survey.astap_command
+        if not _finds_program(command):
+            found.append(
+                f"the solver {name} runs the program that [survey] {setting} names, and this "
+                f"machine finds no such program on the PATH or at that path.{_split_hint(command)}"
+            )
+        if name == "astrometry.net":
+            folder = Path(survey.index_dir) if survey.index_dir else None
+            if folder is None or not any(folder.glob("*.fits")):
+                found.append(
+                    "the solver astrometry.net needs its index files, and [survey] index_dir names "
+                    "no folder that holds *.fits files."
+                )
+        elif survey.astap_database_dir and not Path(survey.astap_database_dir).is_dir():
+            found.append(
+                "[survey] astap_database_dir is not a folder that exists, so the solver astap "
+                "cannot read its star database."
+            )
+    return found
+
+
+def _check_real_sky(options: DevOptions) -> None:
+    """Refuse what a real-sky run cannot do, before anything starts. A message names no path."""
+    if not options.real_sky:
+        return
+    if options.acquire_driver != REAL_DRIVER:
+        raise CliError(
+            "--real-sky needs --driver asi, because a real sky needs the real camera", exit_code=2
+        )
+    if options.data_dir is None:
+        raise CliError(
+            "--real-sky needs --data-dir, because a real-sky run keeps its data and its logs in "
+            "a folder that survives the run",
+            exit_code=2,
+        )
+
+
+def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str) -> list[str]:
+    """The lines that the banner adds for a real sky: what is real, and what is not."""
+    from seeingmon.scheduler.config import DaylightConfig
+
+    limit = DaylightConfig().sun_elevation_limit_deg
+    notes = []
+    if options.sensor_given:
+        notes.append("--sensor does not apply to the real camera, which has the full sensor.")
+    notes.append(
+        "Real: the camera, the system clock, and the star catalog, the plate solvers, and the "
+        "site of your local configuration. Nothing about the sky is simulated."
+    )
+    notes.append(
+        "No pointing solution is seeded. The first survey frame goes to the plate solvers, in this "
+        f"order: {', '.join(solvers) if solvers else 'none (the list is empty)'}."
+    )
+    notes.append(
+        "The scheduler follows the real Sun at your site (by the clock of this machine). It stays "
+        f"in safe while the Sun is above {limit:g} degrees, so by day it takes no survey frame and "
+        "records no seeing window. The Align page and a dark session run in safe too."
+    )
+    notes.append(
+        "Of your local configuration, only [site], [survey], [alignment], [web], and [auth] reach "
+        "the system: no sink, heater, SQM-LE, or power setting does. As in every dev run, the "
+        f"windows are {DEV_WINDOW_S:g} s and a dark session takes {DEV_DARK_FRAMES} frames of "
+        "each kind."
+    )
+    notes.append(
+        "No real star image has run through the detector and the plate solvers before, so read "
+        "the first results as a test of them."
+    )
+    notes.append(f"The logs of the children are in the folder {log_folder} of your data folder.")
+    notes.append("Cover the camera by hand for a dark session.")
+    return notes
 
 
 def _real_notes(options: DevOptions) -> list[str]:
@@ -629,7 +955,11 @@ def wait_for_web(plan: DevPlan, child: Child, timeout_s: float) -> bool:
 def banner(plan: DevPlan) -> list[str]:
     """The lines that tell you where the UI is. Nothing here is private except the token."""
     options = plan.options
-    if plan.real:
+    if plan.real_sky:
+        lines = [
+            f"Seeing monitor, real sky ({options.acquire_driver} driver): real time, full sensor."
+        ]
+    elif plan.real:
         lines = [
             f"Seeing monitor, real camera ({options.acquire_driver} driver): "
             "real time, full sensor."
@@ -640,6 +970,7 @@ def banner(plan: DevPlan) -> list[str]:
         ]
     lines.extend(f"Web UI: {url}" for url in plan.urls())
     lines.extend(plan.notes)
+    lines.extend(f"Warning: {text}" for text in plan.warnings)
     if plan.cover_file is not None:
         lines.append(
             f"To cover the simulated camera for a dark session, create the file {plan.cover_file}. "
@@ -649,6 +980,31 @@ def banner(plan: DevPlan) -> list[str]:
         lines.append(f"API token for this run (shown once, never stored): {plan.token}")
     lines.append("Press Ctrl+C to stop.")
     return lines
+
+
+def options_from_args(args: argparse.Namespace) -> DevOptions:
+    """The options of a run, from the command line. The data folder becomes an absolute path.
+
+    A real sky logs at the level `info` unless you pass `--log-level`, so that the logs of the
+    children show each solver run. Every other run logs at the level `warning`.
+    """
+    driver = getattr(args, "driver", None) or "sim"
+    data_dir = getattr(args, "data_dir", None)
+    real_sky = bool(getattr(args, "real_sky", False))
+    return DevOptions(
+        speed=args.speed,
+        port=args.port,
+        sensor=args.sensor or "small",
+        sensor_given=args.sensor is not None,
+        seed=args.seed,
+        start=args.start,
+        keep_data=args.keep_data,
+        log_level=getattr(args, "log_level", None) or ("info" if real_sky else "warning"),
+        acquire_driver=driver,
+        asi_library=getattr(args, "asi_library", None),
+        data_dir=None if not data_dir else Path(data_dir).expanduser().resolve(),
+        real_sky=real_sky,
+    )
 
 
 def run_dev(
@@ -667,26 +1023,14 @@ def run_dev(
     and returns. `directory` names the run folder, which a test wants to read, and the run removes
     it at the end unless `--keep-data` is set.
     """
-    driver = getattr(args, "driver", None) or "sim"
-    asi_library = getattr(args, "asi_library", None)
-    data_dir = getattr(args, "data_dir", None)
-    options = DevOptions(
-        speed=args.speed,
-        port=args.port,
-        sensor=args.sensor or "small",
-        sensor_given=args.sensor is not None,
-        seed=args.seed,
-        start=args.start,
-        keep_data=args.keep_data,
-        log_level=args.log_level,
-        acquire_driver=driver,
-        asi_library=asi_library,
-        data_dir=None if not data_dir else Path(data_dir).expanduser().resolve(),
-    )
+    options = options_from_args(args)
+    real_sky = options.real_sky
     if options.speed <= 0:
         raise CliError("--speed must be positive", exit_code=2)
+    _check_real_sky(options)
     _check_real_camera(options, os.environ if env is None else env)
     run_directory = directory or Path(tempfile.mkdtemp(prefix="smon-dev-"))
+    plan: DevPlan | None = None
     children: dict[str, Child] = {}
     try:
         try:
@@ -697,9 +1041,12 @@ def run_dev(
                 env=env,
                 web_command=web_command,
             )
+        except CliError:
+            raise  # a refusal that names the setting to fix
         except Exception as error:
             raise CliError(
-                f"cannot prepare the simulated run: {type(error).__name__}: {error}"
+                f"cannot prepare the {'real-sky' if real_sky else 'simulated'} run: "
+                f"{type(error).__name__}: {error}"
             ) from None
         for spec in plan.children:
             children[spec.name] = Child(spec)
@@ -722,7 +1069,11 @@ def run_dev(
         for name in ("web", "core", "acquire"):
             if name in children:
                 children[name].stop()
-        if options.keep_data and options.data_dir is not None:
+        if plan is not None and plan.real_sky:
+            # The data and the logs are in your data folder, and the run folder holds nothing.
+            out(f"The logs of this run stay in the folder {plan.log_folder} of your data folder.")
+            shutil.rmtree(run_directory, ignore_errors=True)
+        elif options.keep_data and options.data_dir is not None:
             out(f"The run folder stays: {run_directory}")  # the data is in your folder
         elif options.keep_data:
             out(f"The data folder stays: {run_directory}")
