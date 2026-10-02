@@ -40,6 +40,36 @@ The checks read the same local configuration as the system: `local/config.toml` 
 | SQM-LE | `host` under `[sqm]` | Sends the four requests (`ix`, `rx`, `ux`, `cx`) and parses the answers | A magnitude between 5 and 25 mag/arcsec², the protocol, model, and feature numbers, and a temperature |
 | Power-cycle dry run | A route under `[power]` | Expands the route from the environment and reports what it would run | The outcome is a dry run, and nothing runs |
 
+## Measure the frame rates
+
+The timing model of the profile (a frame overhead plus a row time) comes from published numbers, and the USB bandwidth control alone changes the rate by a factor of two. `seeingmon camera rates` measures the real camera in a table, one factor at a time around the fast stream of the profile, and it fits the frame overhead and the row time. Run it on the Raspberry Pi too, because the performance gate and the soak test need the table of the Pi.
+
+```bash
+seeingmon camera rates --json local/camera-rates.json
+```
+
+Close other camera programs first. The command reads the driver options from `[services.acquire.driver_options]`, so it needs the same configuration as the checks above (the path of the library). A run takes about two minutes. These options change it:
+
+- `--frames` and `--settle` set the frames that each row measures (default 150) and the frames that it reads and drops first (default 10).
+- `--gain` sets the gain of every row (default 120). The gain does not change the rate.
+- `--groups` runs a subset of `exposure,roi,format,bandwidth,speed,bin2`. The baseline always runs.
+- `--json` also writes the table as JSON. The file holds the conditions (the camera model, the SDK version, the sensor temperature, the platform), the rows, and the fits. It carries no host name, serial number, or path, and it belongs in `local/`.
+
+The baseline is the fast stream of the profile: bin1, 128 × 128 pixels, 2 ms, RAW16, bandwidth 100, normal speed. The groups change one factor of it, except for `speed` and `bin2`, which add the high-speed mode and the second readout mode:
+
+| Group | Rows |
+|---|---|
+| `exposure` | 0.1, 0.5, 1, 5, 10, and 20 ms |
+| `roi` | 32, 64, 256, and 512 pixels square |
+| `format` | RAW8 |
+| `bandwidth` | 40 to 90 percent in steps of 10 |
+| `speed` | the high-speed mode, at each ROI size |
+| `bin2` | bin2 at 0.5 ms (so the readout sets the period), the same at 2 ms, the high-speed mode, and the 320 × 240, 10 ms, RAW8 stream of a recording |
+
+Each row prints the measured rate, the rate of the model, the median, the standard deviation (jitter), and the maximum of the frame periods, the dropped frames, and the ADC depth of the readout mode. A rate far below the model on a bandwidth row shows the bandwidth limit, and a rate that follows the exposure shows an exposure limit. After the rows, the command prints `frame_overhead_ms` and `row_time_us` fitted to the rows at bandwidth 100, beside the values of the profile. Put the fitted values in the profile when they differ by more than a few percent, and keep a comment with the conditions.
+
+The command saves every writable control and the geometry of the camera before the first row, and it puts back what the rows changed, even when a row fails or you press Ctrl+C, because other programs such as SharpCap share the camera. It closes the camera at the end. A row that fails prints `FAILED` and the reason, and the table goes on. The exit code is 1 when a row failed or a control could not be restored.
+
 ## Send the SQM-LE sample to the maintainer
 
 The reader follows the protocol from documentation, and no real unit has confirmed it (blocker B5). To close the blocker, save the raw responses:
