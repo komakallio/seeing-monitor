@@ -202,7 +202,7 @@ Then confirm, one by one:
 - **Time.** See [Time sync](#time-sync).
 - **Health.** See [Check the health](#check-the-health).
 
-The first seeing record needs one analysis window (60 seconds by default). Records carry `time_invalid` until chrony synchronizes the clock.
+The first seeing record needs one analysis window (60 seconds by default). The scheduler stays in `safe` while the Sun is above -3 degrees at your `[site]`, or while the sky is bright, so a first start by day shows no seeing record until dusk. Records carry `time_invalid` until chrony synchronizes the clock.
 
 ## Check the health
 
