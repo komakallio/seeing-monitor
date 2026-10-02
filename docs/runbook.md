@@ -137,6 +137,7 @@ Remove `--dry-run` to install. To see what the installer itself would do on the 
 | Parameter | Meaning |
 |---|---|
 | `--host`, `--user` | The Pi and the account that you log in with over ssh. The installer needs root, so the script runs it through `sudo`, unless `--user` is `root`. |
+| `--port`, `--identity`, `--ssh-option` | The ssh port, the ssh key file, and an extra ssh option as `NAME=VALUE` (repeat `--ssh-option` for more). Use them when your ssh setup needs more than a host and a user. |
 | `--prefix` | Where the releases live. Each release gets its own virtual environment in `releases/`, and `current` points to the one that runs. |
 | `--service-user` | The account that runs the three services. The installer creates it as a system account without a login. |
 | `--data-dir` | The data directory. Only `core` writes to it. |
