@@ -415,6 +415,20 @@ class TestTheState:
         assert view.started_utc is None
         assert view.message
 
+    @pytest.mark.parametrize(
+        ("scheduler_state", "words"),
+        [
+            ("auto", "waits for the scheduler to start it"),
+            ("safe", "waits for the scheduler to start it"),
+            ("paused", "paused. The dark session starts after you resume it"),
+            ("align", "alignment helper runs. The dark session starts after it ends"),
+        ],
+    )
+    def test_a_queued_task_says_what_it_waits_for(self, scheduler_state: str, words: str) -> None:
+        state = self.state()
+        state.queued(7, QueueDark(), scheduler_state)
+        assert words in state.snapshot().message
+
     def test_a_task_that_started_before_the_call_that_queued_it_stays_running(self) -> None:
         state = self.state()
         command = QueueDark()

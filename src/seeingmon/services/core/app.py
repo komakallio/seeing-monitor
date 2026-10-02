@@ -594,7 +594,7 @@ class CoreApp:
     def _on_command_accepted(self, command: Command, result: CommandResult) -> None:
         """The scheduler accepted a command that came through the RPC."""
         if isinstance(command, QueueDark) and result.task_id is not None:
-            self.dark_state.queued(result.task_id, command)
+            self.dark_state.queued(result.task_id, command, result.state)
 
     def _on_result(self, result: CommissionResult) -> None:
         _log.info("%s %d finished: %s", result.kind, result.task_id, result.summary)

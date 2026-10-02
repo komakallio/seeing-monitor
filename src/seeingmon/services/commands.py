@@ -414,7 +414,7 @@ def run_dark_through_core(args: argparse.Namespace) -> int:
         if args.detach or answer.task_id is None:
             return 0
         print(
-            f"following task {answer.task_id}, which runs at the next cycle boundary. "
+            f"following task {answer.task_id}. "
             "Press Ctrl+C to stop following: the session goes on in core.",
             flush=True,
         )

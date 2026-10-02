@@ -85,6 +85,12 @@ _log = logging.getLogger(__name__)
 PHASE_EVENT = "scheduler.dark_phase"
 READ_MARGIN_S = 30.0  # a read waits this long beyond the exposure
 TaskState = Literal["idle", "queued", "running", "ok", "failed", "aborted"]
+WAITING_MESSAGE = "The dark session waits for the scheduler to start it."
+# A task starts in `safe` or `auto` only, so a session that you queue in another state waits.
+WAITING_MESSAGES = {
+    "paused": "The scheduler is paused. The dark session starts after you resume it.",
+    "align": "The alignment helper runs. The dark session starts after it ends.",
+}
 
 
 def _sentence(text: str) -> str:
@@ -141,15 +147,15 @@ class DarkTaskState:
     def _now_iso(self) -> str:
         return utc_ns_to_iso(self._clock.utc_ns(), digits=0)
 
-    def queued(self, task_id: int, command: QueueDark) -> None:
-        """The scheduler accepted a dark task."""
+    def queued(self, task_id: int, command: QueueDark, scheduler_state: str = "auto") -> None:
+        """The scheduler accepted a dark task. `scheduler_state` is its state at that moment."""
         with self._lock:
             if self._view.task_id == task_id and self._view.state != "idle":
                 return
             self._view = DarkTaskView(
                 state="queued",
                 task_id=task_id,
-                message="The dark session waits for the scheduler to start it.",
+                message=WAITING_MESSAGES.get(scheduler_state, WAITING_MESSAGE),
                 exposure_s=(
                     self._defaults.exposure_s if command.exposure_s is None else command.exposure_s
                 ),

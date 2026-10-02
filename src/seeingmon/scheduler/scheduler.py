@@ -596,9 +596,18 @@ class Scheduler:
         if not self._queue.push(task):
             return self._reject(RejectReason.QUEUE_FULL, "the commissioning queue is full")
         self._next_task_id += 1
-        return self._accept(
-            f"the {kind} is queued and runs at the next cycle boundary", task_id=task.task_id
-        )
+        return self._accept(self._queued_message(kind), task_id=task.task_id)
+
+    def _queued_message(self, kind: str) -> str:
+        """Say when a task that just joined the queue starts. The caller holds the lock."""
+        state = self._machine.state
+        if state is State.PAUSED:
+            return f"the {kind} is queued, and the scheduler is paused: it runs after you resume"
+        if state is State.ALIGN:
+            return f"the {kind} is queued: it runs after the alignment helper ends"
+        if self._faults.degraded:
+            return f"the {kind} is queued: it runs after the camera recovers"
+        return f"the {kind} is queued and runs at the next cycle boundary"
 
     def _dark_task_pending(self) -> bool:
         """Whether a dark task waits in the queue or runs. The caller holds the lock."""

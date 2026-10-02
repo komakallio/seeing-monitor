@@ -26,6 +26,8 @@ from seeingmon.scheduler import (
     RejectReason,
     Resume,
     Scheduler,
+    StartAlignment,
+    StopAlignment,
 )
 from seeingmon.scheduler.config import SchedulerConfig
 from tests.scheduler.scenario import PROFILE, World
@@ -180,6 +182,44 @@ class TestTheCommand:
         world2, _ = night_world()
         assert not world2.scheduler.submit(QueueDark(exposure_s=(high_us + 1e6) / 1e6)).accepted
         assert low_us > 0
+
+
+class TestWhenTheTaskStarts:
+    def test_the_answer_says_the_next_cycle_boundary_while_the_survey_runs(self) -> None:
+        world, _ = night_world()
+        queued = submit_at(world, 50, QueueDark())
+        world.run_until(60)
+        assert queued[0].state == "auto"
+        assert "runs at the next cycle boundary" in queued[0].message
+
+    def test_a_session_queued_while_paused_waits_for_the_resume(self) -> None:
+        world, stand_in = night_world()
+        submit_at(world, 10, Pause())
+        queued = submit_at(world, 20, QueueDark(pause_after=False))
+        submit_at(world, 300, Resume())
+        world.run_until(100)
+        assert queued[0].accepted
+        assert queued[0].state == "paused"
+        assert "the scheduler is paused" in queued[0].message
+        assert "runs after you resume" in queued[0].message
+        assert stand_in is not None
+        assert stand_in.tasks == []  # nothing runs while the scheduler is paused
+        world.run_until(900)
+        assert len(stand_in.tasks) == 1  # the resume starts it
+        assert "commission" in world.states_visited()
+
+    def test_a_session_queued_during_the_alignment_runs_after_it(self) -> None:
+        world, stand_in = night_world()
+        submit_at(world, 100, StartAlignment())
+        queued = submit_at(world, 150, QueueDark(pause_after=False))
+        submit_at(world, 300, StopAlignment())
+        world.run_until(200)
+        assert queued[0].state == "align"
+        assert "runs after the alignment helper ends" in queued[0].message
+        assert stand_in is not None
+        assert stand_in.tasks == []
+        world.run_until(900)
+        assert len(stand_in.tasks) == 1
 
 
 class TestOneAtATime:

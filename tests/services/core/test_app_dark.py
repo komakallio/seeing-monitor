@@ -141,6 +141,19 @@ class TestTheRpc:
         assert (view.task.state, view.task.task_id) == ("queued", result.task_id)
         assert (view.task.frames, view.task.bias_frames, view.task.exposure_s) == (3, 3, 30.0)
 
+    def test_a_task_queued_while_the_scheduler_is_paused_says_that_it_waits_for_the_resume(
+        self, rig: CoreRig
+    ) -> None:
+        assert send(rig, Pause()).accepted
+        send(rig, QueueDark(wait_for_cover=False))
+        rig.run_for(60.0)
+        view = library(rig)
+        assert view.task.state == "queued"  # nothing runs while the scheduler is paused
+        assert "paused" in view.task.message
+        assert "resume" in view.task.message
+        assert send(rig, Resume()).accepted
+        run_until(rig, lambda: library(rig).task.state == "ok")
+
     def test_a_command_that_the_scheduler_rejected_leaves_the_view_alone(
         self, rig: CoreRig
     ) -> None:
