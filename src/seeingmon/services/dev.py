@@ -8,7 +8,9 @@ the web UI, and stops every child when you press Ctrl+C.
 **What a simulated run is.** The star field of the simulator, the cap catalog, and the first
 pointing solution come from one seed (`seeingmon.services.simsky`), so `core` follows the simulated
 Polaris from the first second with no plate solver. The sensor is small by default (`--sensor full`
-makes the reference sensor). The fast stream uses a longer exposure and a dimmer Polaris than a
+makes the reference sensor). With the small sensor, Polaris leaves the field after about two
+hours of simulated time, because it drifts about 2.5 pixels a minute across 640 by 480 pixels, so a
+long run needs `--sensor full`. The fast stream uses a longer exposure and a dimmer Polaris than a
 real night, because a scaled clock multiplies the frame rate that the machine must sustain.
 
 **Isolation.** A simulated run must never reach a real sink, device, or data directory. Each child

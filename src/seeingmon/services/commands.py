@@ -156,7 +156,11 @@ def register(subparsers: Subparsers) -> None:
         "--sensor",
         choices=("small", "full"),
         default="small",
-        help="small keeps the simulation fast, and full is the reference sensor (default small)",
+        help=(
+            "small keeps the simulation fast, but Polaris leaves its field after about two hours "
+            "of simulated time. full is the reference sensor, and it keeps Polaris in view for "
+            "the whole run (default small)"
+        ),
     )
     dev.add_argument("--seed", type=int, default=1, help="the seed of the simulated sky")
     dev.add_argument(
