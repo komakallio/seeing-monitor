@@ -1149,6 +1149,7 @@ class Scheduler:
             pixel_format=self._fast_format,
             roi=roi,
             kind=StreamKind.VIDEO,
+            high_speed=fast.high_speed,
         )
         try:
             active = self._reconfigure(config, Purpose.FAST)
@@ -1626,6 +1627,7 @@ class Scheduler:
             pixel_format=self._fast_format,
             roi=roi,
             kind=StreamKind.VIDEO,
+            high_speed=fast.high_speed,
         )
 
     def _run_fast_window(self, config: StreamConfig, duration_s: float) -> FastWindowSample:
@@ -1729,8 +1731,9 @@ class Scheduler:
                 raise ValueError(
                     f"scheduler.{name} is {value}, outside the profile's {low_gain} to {high_gain}"
                 )
-        # Both lookups raise a `ProfileError` that names the missing readout mode.
-        self._profile.mode(self._fast_mode)
+        # The lookups raise a `ProfileError` that names the missing readout mode, or the missing
+        # high-speed values of the fast mode.
+        self._profile.mode(self._fast_mode, high_speed=config.fast.high_speed)
         self._profile.mode(self._survey_mode)
         self._profile.roi_size_px(self._fast_mode, config.fast.roi_arcmin)
 

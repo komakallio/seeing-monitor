@@ -13,7 +13,7 @@ import pytest
 
 from seeingmon.clock import NS_PER_S, iso_to_utc_ns
 from seeingmon.frames import StreamKind
-from tests.scheduler.scenario import World
+from tests.scheduler.scenario import TEST_CONFIG, World
 
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")  # the Sun is 40 degrees down, and the sky is dark
 CYCLE_S = 180.0
@@ -168,3 +168,27 @@ class TestRecordsAreWellFormed:
         """Windows are written as they close, so their start times never go backward."""
         starts = [w.t_utc_ns for w in steady_world.windows()]
         assert starts == sorted(starts)
+
+
+class TestHighSpeed:
+    """The fast stream runs in the high-speed mode of the camera when `[scheduler.fast]` says so."""
+
+    @staticmethod
+    def world(*, high_speed: bool) -> World:
+        fast = TEST_CONFIG.fast.model_copy(update={"high_speed": high_speed})
+        world = World(start_utc_ns=NIGHT, config=TEST_CONFIG.model_copy(update={"fast": fast}))
+        world.run_until(1200)
+        return world
+
+    def test_the_fast_stream_asks_for_it(self) -> None:
+        calls = self.world(high_speed=True).configures(mode="bin1", video=True)
+        assert len(calls) >= 3
+        assert all(call.config.high_speed for call in calls)
+
+    def test_the_survey_exposures_stay_at_normal_speed(self) -> None:
+        calls = self.world(high_speed=True).configures(mode="bin2", video=False)
+        assert len(calls) >= 3
+        assert not any(call.config.high_speed for call in calls)
+
+    def test_by_default_no_stream_asks_for_it(self, steady_world: World) -> None:
+        assert not any(call.config.high_speed for call in steady_world.configures())

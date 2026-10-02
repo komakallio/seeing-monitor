@@ -60,6 +60,7 @@ def test_the_defaults_follow_the_architecture() -> None:
     assert config.fast.window_s == 120.0
     assert config.fast.analysis_window_s == 60.0
     assert config.fast.exposure_us == 2000
+    assert config.fast.high_speed is False
     assert config.fast.roi_arcmin == 4.1
     assert config.survey.cadence_s == 180.0
     assert config.watch.exposure_us == 1000
@@ -111,6 +112,18 @@ def test_the_local_file_overrides_a_default(tmp_path: Path) -> None:
     config = load_config(local_file=local, env={}).section("scheduler", SchedulerConfig)
     assert config.survey.cadence_s == 240.0
     assert config.survey.long_gain == 120
+
+
+def test_the_local_file_and_the_environment_turn_the_high_speed_mode_on(tmp_path: Path) -> None:
+    local = tmp_path / "config.toml"
+    local.write_text("[scheduler.fast]\nhigh_speed = true\n", encoding="utf-8")
+    config = load_config(local_file=local, env={}).section("scheduler", SchedulerConfig)
+    assert config.fast.high_speed is True
+    env = {"SEEINGMON_SCHEDULER__FAST__HIGH_SPEED": "true"}
+    config = load_config(local_file=tmp_path / "none.toml", env=env).section(
+        "scheduler", SchedulerConfig
+    )
+    assert config.fast.high_speed is True
 
 
 @pytest.mark.parametrize(

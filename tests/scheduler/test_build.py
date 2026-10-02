@@ -11,6 +11,7 @@ import pytest
 
 from seeingmon.clock import NS_PER_S, ScaledClock, iso_to_utc_ns
 from seeingmon.config import ConfigError, load_config
+from seeingmon.profile import ProfileError
 from seeingmon.records import EventRecord
 from seeingmon.scheduler import Scheduler, SchedulerConfig, build_scheduler
 from seeingmon.scheduler.config import FastConfig, SurveyConfig
@@ -129,6 +130,24 @@ class TestProfileLimits:
         world = World(start_utc_ns=NIGHT)
         scheduler = Scheduler(profile=PROFILE, station_id="test", **collaborators(world))
         assert scheduler.config == SchedulerConfig()
+
+    def test_a_high_speed_fast_stream_needs_high_speed_values_in_the_profile(self) -> None:
+        no_high_speed = {
+            "adc_bits_high_speed": None,
+            "row_time_us_high_speed": None,
+            "frame_overhead_ms_high_speed": None,
+        }
+        profile = PROFILE.model_copy(
+            update={
+                "readout_modes": [m.model_copy(update=no_high_speed) for m in PROFILE.readout_modes]
+            }
+        )
+        config = SchedulerConfig(fast=FastConfig(high_speed=True))
+        world = World(start_utc_ns=NIGHT)
+        with pytest.raises(ProfileError, match="no high-speed variant"):
+            Scheduler(profile=profile, station_id="test", config=config, **collaborators(world))
+        # Without the key, the same profile is fine.
+        Scheduler(profile=profile, station_id="test", **collaborators(World(start_utc_ns=NIGHT)))
 
 
 class TestRealTime:

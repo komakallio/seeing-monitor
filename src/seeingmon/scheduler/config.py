@@ -53,6 +53,11 @@ class FastConfig(SectionModel):
 
     exposure_us: PositiveInt = 2000
     gain: NonNegativeInt = 0
+    high_speed: bool = False
+    """Read the fast stream in the high-speed mode of the camera. The frames come faster and the
+    ADC depth falls (bin1: 10 bits, not 12). The profile's fast readout mode must have high-speed
+    values."""
+
     roi_arcmin: Seconds = 4.1
     """The ROI width and height as an angle. The profile turns it into pixels."""
 
