@@ -21,7 +21,7 @@ Five rules shape the design. A profile describes the hardware, and everything el
 | License | MIT, copyright Lauri Kangas | | You |
 | Remote database | A sink interface with InfluxDB first and PostgreSQL with TimescaleDB second. Both can run at once. | Matches your migration plan. | You |
 | Hardware | Raspberry Pi 4 (with the owner's power HAT) or Raspberry Pi 5 (with the camera HAT), SD card only. The HAT choice is open. The design targets the Pi 4. | The weakest case sets the budget. | You |
-| RAM | Start with 2 GB, and move to 4 GB only if the phase 2 memory gate fails. | Peak memory is about 1.4 GB, and the step to 4 GB nearly doubles the price (April 2026). A bench swap is cheap. | Lead |
+| RAM | Start with 2 GB, and move to 4 GB only if the memory gate fails. | The design budget is about 1.4 GB at peak. The dev-machine harness estimates 0.8 to 1.5 GB for the whole system, under the 1.6 GB gate, so 2 GB holds on the estimate and a run on a Pi 4 decides it. The step to 4 GB nearly doubles the price (April 2026). A bench swap is cheap. | Lead |
 | Solver catalog | A 15 degree cap around the north celestial pole (NCP). No all-sky blind solve. | The mount never points far from the pole. | You |
 | Fast mode | Bin1 readout and a 2 ms exposure. The brief suggests about 10 ms, which stays selectable. | Bin1 needs no defocus. At 10 ms, Polaris saturates and seeing reads 2 to 27% low. | Lead |
 | Local store | SQLite (WAL) for results. FITS, SER, and binary segment files for survey frames, bursts, and per-frame metrics. | No administration and few writes, which suits an SD card. | Lead |
@@ -430,6 +430,7 @@ The device sits on a LAN, and the repository is public.
 | The closed SDK hangs or stalls the camera | Lost frames, or no camera for days | Process isolation, watchdog, the recovery ladder ending in a remote power cycle, a soak test, a pinned SDK version |
 | Uncooled sensor, dew, and heater plumes | Dark current and transparency drift. The heater can add local turbulence and bias seeing high. | Manual dark sets and a dark-rate model. A GPIO dew heater held a small margin above the dew point, with its duty logged and flagged on seeing windows. A dew flag from star width and transparency. |
 | No standard sky scale for an unfiltered sensor | 0.2 to 0.3 mag uncertainty in V | Report the camera band first, and fit against an SQM or TESS-W |
+| Capture work of `acquire` on a Pi 4 | The estimate puts `acquire` at 12 to 24% of a core, against its 10% budget. The receive and the fast path fit. | Batched frames (60 ms) and a trimmed capture thread cut the cost to half. A measurement on a Pi 4 decides. If `acquire` stays over, trim the stamping fit and the watchdog calls, or accept the cost, because the Pi 4 has four cores and the whole system uses a fraction of one. |
 | SD card wear and corruption | Data loss or a failed boot | Write budget, tmpfs, WAL, atomic writes, a high-endurance card, remote sinks as a second copy |
 
 Deferred by you: the InfluxDB version, field names, and history import (the InfluxDB adapter waits for them), and the web access rule (until you decide, the design keeps the default: anyone on the local network can view, a token is needed for actions that change something, and outside access goes through a VPN).
