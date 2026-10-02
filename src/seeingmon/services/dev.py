@@ -786,8 +786,8 @@ def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str
     if options.sensor_given:
         notes.append("--sensor does not apply to the real camera, which has the full sensor.")
     notes.append(
-        "Real: the camera, the system clock, and the star catalog, the plate solvers, and the "
-        "site of your local configuration. Nothing about the sky is simulated."
+        "Real: the camera, the system clock, the star catalog, the plate solvers, and the site "
+        "(the last three come from your local configuration). Nothing about the sky is simulated."
     )
     notes.append(
         "No pointing solution is seeded. The first survey frame goes to the plate solvers, in this "
