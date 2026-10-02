@@ -40,6 +40,20 @@ The checks read the same local configuration as the system: `local/config.toml` 
 | SQM-LE | `host` under `[sqm]` | Sends the four requests (`ix`, `rx`, `ux`, `cx`) and parses the answers | A magnitude between 5 and 25 mag/arcsec², the protocol, model, and feature numbers, and a temperature |
 | Power-cycle dry run | A route under `[power]` | Expands the route from the environment and reports what it would run | The outcome is a dry run, and nothing runs |
 
+## Windows
+
+A development machine with Windows runs the camera checks too. The library path never goes into a tracked file, so set it for the run.
+
+1. Extract the SDK archive for Windows (V1.41 or later) to a folder outside the repository. The folder `windows-sdk` holds `ASICamera2.dll`, `ASICamera2.h`, and the license.
+2. Point the driver at the library. In PowerShell, run `$env:SEEINGMON_ASI__LIBRARY_PATH = '<path>\ASICamera2.dll'` in the shell that runs the checks. The `library_path` option under `[services.acquire.driver_options]` in `local/config.toml` does the same.
+3. Close other camera software, such as SharpCap. One process at a time can open the camera.
+4. Run `python -m pytest tests/hardware --hardware -s -k camera`.
+
+Two things differ from Linux:
+
+- The SDK needs a call of the camera count before it describes a camera. A call of `ASIGetCameraProperty` first fails with `INVALID_INDEX`. The driver calls `ASIGetNumOfConnectedCameras` first, so the checks are not affected, but a script of your own must do the same.
+- The USB reset step (recovery step 3) is Linux-only, because it resets the device with a `usbfs` ioctl or through sysfs. The check of that step skips on Windows.
+
 ## Measure the frame rates
 
 The timing model of the profile (a frame overhead plus a row time) comes from published numbers, and the USB bandwidth control alone changes the rate by a factor of two. `seeingmon camera rates` measures the real camera in a table, one factor at a time around the fast stream of the profile, and it fits the frame overhead and the row time. Run it on the Raspberry Pi too, because the performance gate and the soak test need the table of the Pi.

@@ -8,6 +8,7 @@ reset check also needs `SEEINGMON_HARDWARE_USB_RESET=1`, because the reset inter
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -52,6 +53,12 @@ def test_recovery_step_one_restarts_capture(asi_driver: AsiDriver, local_config:
     print(checks.check_recovery_restart(asi_driver, local_config.profile))
 
 
+def not_linux() -> bool:
+    """Whether this is not Linux. A function, so mypy does not fold the platform test."""
+    return not sys.platform.startswith("linux")
+
+
+@pytest.mark.skipif(not_linux(), reason="the USB reset step is Linux-only")
 @pytest.mark.skipif(
     os.environ.get("SEEINGMON_HARDWARE_USB_RESET") != "1",
     reason="the USB reset interrupts the camera: set SEEINGMON_HARDWARE_USB_RESET=1",
