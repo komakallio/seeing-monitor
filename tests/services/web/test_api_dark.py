@@ -201,6 +201,7 @@ def test_an_empty_body_queues_a_session_with_the_defaults(
     assert dark_core.submitted == [QueueDark()]
     assert QueueDark().wait_for_cover is True
     assert QueueDark().pause_after is True
+    assert QueueDark().immediate is True  # someone stands at the camera with the cover on
 
 
 def test_every_field_reaches_core(dark_client: TestClient, dark_core: FakeCoreClient) -> None:
@@ -210,6 +211,8 @@ def test_every_field_reaches_core(dark_client: TestClient, dark_core: FakeCoreCl
         "bias_frames": 8,
         "wait_for_cover": False,
         "pause_after": False,
+        "wait_for_cover_timeout_s": 90.5,
+        "immediate": False,
         "label": "after-the-move",
     }
     assert post(dark_client, body).status_code == 200
@@ -221,6 +224,8 @@ def test_every_field_reaches_core(dark_client: TestClient, dark_core: FakeCoreCl
             wait_for_cover=False,
             pause_after=False,
             label="after-the-move",
+            wait_for_cover_timeout_s=90.5,
+            immediate=False,
         )
     ]
 
@@ -228,7 +233,12 @@ def test_every_field_reaches_core(dark_client: TestClient, dark_core: FakeCoreCl
 def test_a_null_means_the_configured_value(
     dark_client: TestClient, dark_core: FakeCoreClient
 ) -> None:
-    body = {"exposure_s": None, "frames": None, "bias_frames": None}
+    body = {
+        "exposure_s": None,
+        "frames": None,
+        "bias_frames": None,
+        "wait_for_cover_timeout_s": None,
+    }
     assert post(dark_client, body).status_code == 200
     assert dark_core.submitted == [QueueDark()]
 
@@ -242,6 +252,9 @@ def test_a_null_means_the_configured_value(
         ("frames", 50),
         ("bias_frames", 3),
         ("bias_frames", 50),
+        ("wait_for_cover_timeout_s", 0.5),
+        ("wait_for_cover_timeout_s", 7200),
+        ("immediate", False),
         ("label", "a" * 40),
     ],
 )

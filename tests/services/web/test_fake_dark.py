@@ -244,6 +244,9 @@ def test_a_second_task_is_refused_as_busy_until_the_first_one_ends(
         QueueDark(exposure_s=0.0),
         QueueDark(exposure_s=-1.0),
         QueueDark(exposure_s=601.0),
+        QueueDark(wait_for_cover_timeout_s=0.0),
+        QueueDark(wait_for_cover_timeout_s=-5.0),
+        QueueDark(wait_for_cover_timeout_s=7201.0),
         QueueDark(label="x" * 81),
     ],
 )
@@ -291,3 +294,26 @@ def test_the_model_counts_the_new_set(core: FakeCoreClient, clock: VirtualClock)
     assert library.model.n_sets == 1
     expected = 0.12 * 2 ** ((14.0 - 20.0) / 6.0)
     assert library.sets[0].rate_e_per_s == pytest.approx(expected, rel=1e-3)
+
+
+def test_a_wait_for_the_cover_that_runs_out_before_the_camera_is_covered_fails(
+    core: FakeCoreClient, clock: VirtualClock
+) -> None:
+    core.submit(
+        QueueDark(wait_for_cover_timeout_s=1.5)
+    )  # the camera is covered after 2 s of the wait
+    clock.advance(SCRIPT.queued_s + SCRIPT.bias_s + 1.4)
+    assert core.dark_library().task.state == "running"
+    clock.advance(0.2)
+    library = core.dark_library()
+    assert library.task.state == "failed"
+    assert "not covered within 1.5 seconds" in library.task.summary
+    assert library.sets == []
+
+
+def test_a_wait_for_the_cover_that_is_long_enough_does_not_fail(
+    core: FakeCoreClient, clock: VirtualClock
+) -> None:
+    core.submit(QueueDark(wait_for_cover_timeout_s=600.0))
+    clock.advance(60)
+    assert core.dark_library().task.state == "ok"

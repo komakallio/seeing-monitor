@@ -46,6 +46,7 @@ MIN_DARK_FRAMES = 3
 MAX_DARK_FRAMES = 50
 MAX_DARK_EXPOSURE_S = 600.0
 MAX_LABEL_CHARS = 80
+MAX_COVER_WAIT_S = 7200.0
 
 _Gain = Annotated[int, Field(ge=0, le=MAX_GAIN)]
 _ExposureUs = Annotated[int, Field(ge=1, le=MAX_EXPOSURE_US)]
@@ -215,6 +216,19 @@ class DarkRequest(_Request):
         description="Pause the scheduler when the task ends, so that nothing records data while "
         "the camera may still be covered. `Resume` continues.",
     )
+    wait_for_cover_timeout_s: float | None = Field(
+        None,
+        gt=0,
+        le=MAX_COVER_WAIT_S,
+        description="How long the session waits for the cover before it gives up, in seconds. "
+        "`null` takes the setting `wait_timeout_s` of `[survey.dark]`.",
+    )
+    immediate: bool = Field(
+        True,
+        description="Start at the next step of the scheduler, because someone stands at the "
+        "camera with the cover on. A survey exposure in progress finishes first. Without it, the "
+        "session waits for the next cycle boundary, as the other tasks do.",
+    )
     label: str = Field("", max_length=MAX_LABEL_CHARS, pattern=LABEL_PATTERN)
 
     def to_command(self) -> QueueDark:
@@ -225,6 +239,8 @@ class DarkRequest(_Request):
             wait_for_cover=self.wait_for_cover,
             pause_after=self.pause_after,
             label=self.label,
+            wait_for_cover_timeout_s=self.wait_for_cover_timeout_s,
+            immediate=self.immediate,
         )
 
 

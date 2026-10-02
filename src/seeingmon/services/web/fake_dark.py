@@ -36,6 +36,7 @@ MIN_FRAMES = 3
 MAX_FRAMES = 60
 MAX_LABEL_CHARS = 80
 MAX_EXPOSURE_S = 600.0
+MAX_COVER_WAIT_S = 7200.0
 DEFAULT_FRAMES = 9
 DEFAULT_BIAS_FRAMES = 9
 TOLERANCE_C = 3.0
@@ -66,6 +67,7 @@ class _Run:
     bias_frames: int
     wait_for_cover: bool
     pause_after: bool
+    cover_timeout_s: float | None
     submitted_ns: int
     submitted_utc_ns: int
     started: bool = False
@@ -192,6 +194,13 @@ class DarkSimulator:
         exposure = command.exposure_s
         if exposure is not None and not 0 < exposure <= MAX_EXPOSURE_S:
             return False, RejectReason.INVALID, "exposure_s must be positive and at most 600"
+        timeout = command.wait_for_cover_timeout_s
+        if timeout is not None and not 0 < timeout <= MAX_COVER_WAIT_S:
+            return (
+                False,
+                RejectReason.INVALID,
+                "wait_for_cover_timeout_s must be positive and at most 7200",
+            )
         if len(command.label) > MAX_LABEL_CHARS:
             return (
                 False,
@@ -205,6 +214,7 @@ class DarkSimulator:
             bias_frames=DEFAULT_BIAS_FRAMES if command.bias_frames is None else command.bias_frames,
             wait_for_cover=command.wait_for_cover,
             pause_after=command.pause_after,
+            cover_timeout_s=timeout,
             submitted_ns=self._clock.monotonic_ns(),
             submitted_utc_ns=self._clock.utc_ns(),
         )
@@ -289,6 +299,13 @@ class DarkSimulator:
         bias, _, _, end = self._bounds(run)
         if not run.wait_for_cover and seconds >= bias:
             return "failed"  # the first dark frame is not dark: nobody covered the camera
+        timeout = run.cover_timeout_s
+        if (
+            timeout is not None
+            and seconds >= bias + timeout
+            and timeout < self.script.cover_s * COVER_FRACTION
+        ):
+            return "failed"  # the camera is still uncovered when the wait runs out
         return "ok" if seconds >= end else None
 
     @staticmethod
@@ -361,6 +378,12 @@ class DarkSimulator:
         run.outcome = outcome
         run.finished_utc_ns = self._clock.utc_ns()
         if outcome == "failed":
+            if run.wait_for_cover:
+                run.summary = (
+                    f"The camera was not covered within {run.cover_timeout_s:g} seconds "
+                    f"({NOT_DARK_REASON}). Cover the camera, and start again."
+                )
+                return
             run.summary = (
                 "The first dark frame was not dark, so the camera is not covered "
                 f"({NOT_DARK_REASON}). Cover the camera, and start again."

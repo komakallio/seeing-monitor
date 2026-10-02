@@ -567,6 +567,12 @@
             "description": "The number of dark frames. `null` uses the configured number.",
             "title": "Frames"
           },
+          "immediate": {
+            "default": true,
+            "description": "Start at the next step of the scheduler, because someone stands at the camera with the cover on. A survey exposure in progress finishes first. Without it, the session waits for the next cycle boundary, as the other tasks do.",
+            "title": "Immediate",
+            "type": "boolean"
+          },
           "label": {
             "default": "",
             "maxLength": 80,
@@ -585,6 +591,20 @@
             "description": "Wait until a test frame is dark, which means that the camera is covered. Without it, the first frame that is not dark ends the task as failed.",
             "title": "Wait For Cover",
             "type": "boolean"
+          },
+          "wait_for_cover_timeout_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 7200.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long the session waits for the cover before it gives up, in seconds. `null` takes the setting `wait_timeout_s` of `[survey.dark]`.",
+            "title": "Wait For Cover Timeout S"
           }
         },
         "title": "DarkRequest",
