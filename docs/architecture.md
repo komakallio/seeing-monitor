@@ -124,8 +124,9 @@ The scheduler in `core` works against interfaces, not implementations. It drives
 | | 71 | A thread that the process cannot run without died |
 | `web` | 0 | A clean stop |
 | | 1 | The start failed: an invalid configuration, a missing package of the `web` extra, or an address that cannot bind |
+| | 3 | The server did not start after the configuration loaded, for example because the application failed its startup |
 | Commissioning commands | 0, 1, 2 | The task finished `ok`; it failed, was aborted, or timed out; `core` or the scheduler rejected it |
-| `heater-off` | 0, 1 | The outputs are off or no heater is configured; an output cannot be switched off |
+| `heater-off` | 0, 1 | The outputs are off or no heater is configured; an output cannot be switched off, the configuration cannot be read, or the 1 s limit passed |
 
 A usage error exits with 2, and an unhandled exception exits with 1. Under `Restart=always`, systemd starts a service again after any exit that it did not ask for, and the code tells the journal why the process ended.
 
