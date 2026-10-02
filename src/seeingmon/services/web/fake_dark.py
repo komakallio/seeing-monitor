@@ -208,7 +208,7 @@ class DarkSimulator:
             submitted_ns=self._clock.monotonic_ns(),
             submitted_utc_ns=self._clock.utc_ns(),
         )
-        return True, None, "the dark session is queued and starts at the next cycle boundary"
+        return True, None, "the dark session is queued and starts at the next step"
 
     def abort(self) -> bool:
         """End a queued or running task as `aborted`. Returns whether there was one."""
@@ -266,7 +266,9 @@ class DarkSimulator:
             )
         seconds = self._seconds_running(run)
         if seconds < 0:
-            return self._view(run, state="queued", message="Waiting for the next cycle boundary.")
+            return self._view(
+                run, state="queued", message="Waiting for the next step of the scheduler."
+            )
         return self._running(run, seconds)
 
     # --- Inside ----------------------------------------------------------------------------

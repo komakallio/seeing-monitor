@@ -14,6 +14,7 @@
     { id: "history", href: "history.html", label: "History" },
     { id: "images", href: "images.html", label: "Images" },
     { id: "align", href: "align.html", label: "Align" },
+    { id: "dark", href: "dark.html", label: "Dark" },
   ];
   const NIGHT_KEY = "seeingmon.night";
   const TOKEN_KEY = "seeingmon.token";
@@ -280,12 +281,13 @@
   // --- The API client ---------------------------------------------------------------------------
 
   class ApiError extends Error {
-    constructor(status, code, message, retryAfter) {
+    constructor(status, code, message, retryAfter, details) {
       super(message);
       this.name = "ApiError";
       this.status = status;
       this.code = code;
       this.retryAfter = retryAfter;
+      this.details = details || null; // one entry for each invalid field of a request
     }
   }
 
@@ -327,11 +329,13 @@
     }
     let code = "error";
     let message = "The request failed (" + response.status + ").";
+    let details = null;
     try {
       const data = await response.json();
       if (data && data.error) {
         code = data.error.code || code;
         message = data.error.message || message;
+        details = Array.isArray(data.error.details) ? data.error.details : null;
       }
     } catch (error) {
       /* The body was not JSON. The status text above is enough. */
@@ -340,7 +344,7 @@
     if (response.status === 401) {
       emit("seeing:auth-needed", { message });
     }
-    throw new ApiError(response.status, code, message, Number.isFinite(retry) && retry > 0 ? retry : null);
+    throw new ApiError(response.status, code, message, Number.isFinite(retry) && retry > 0 ? retry : null, details);
   }
 
   const api = {

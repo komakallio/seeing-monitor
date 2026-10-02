@@ -25,9 +25,10 @@ PAGES = {
     "history.html": "history",
     "images.html": "images",
     "align.html": "align",
+    "dark.html": "dark",
     "api.html": "api",
 }
-NAV_PAGES = ("now", "history", "images", "align")
+NAV_PAGES = ("now", "history", "images", "align", "dark")
 SVG_NAMESPACE = "http://www.w3.org/2000/svg"
 MAX_FILE_BYTES = 120_000
 MAX_TOTAL_BYTES = 450_000
@@ -169,15 +170,20 @@ def test_a_page_loads_the_shared_script_first_and_names_itself_to_it(name: str, 
     assert html.count("<script") == len(sources)  # no inline script
 
 
-def test_the_four_pages_of_the_brief_exist_and_are_linked_from_the_frame() -> None:
+def test_the_five_pages_exist_and_are_linked_from_the_frame_in_order() -> None:
     frame = text_of("js/common.js")
-    for page, href in (
-        ("Now", "./"),
-        ("History", "history.html"),
-        ("Images", "images.html"),
-        ("Align", "align.html"),
-    ):
-        assert f'href: "{href}", label: "{page}"' in frame
+    tabs = (
+        ("now", "./", "Now"),
+        ("history", "history.html", "History"),
+        ("images", "images.html", "Images"),
+        ("align", "align.html", "Align"),
+        ("dark", "dark.html", "Dark"),
+    )
+    for page, href, label in tabs:
+        assert f'{{ id: "{page}", href: "{href}", label: "{label}" }}' in frame
+    positions = [frame.index(f'label: "{label}"') for _, _, label in tabs]
+    assert positions == sorted(positions)
+    assert frame.count("href: ") >= 5
     for name in NAV_PAGES:
         assert any(page == name for page in PAGES.values())
 
@@ -405,6 +411,61 @@ def test_a_short_screen_lets_the_title_row_scroll_away_and_keeps_the_tab_row_at_
     tabs = rule_for(short, ".tabs {")
     assert "position: sticky" in tabs
     assert "top: 0" in tabs
+
+
+# --- The Dark page ---------------------------------------------------------------------------
+
+
+def test_the_dark_page_loads_the_logic_before_the_page_script() -> None:
+    html = text_of("dark.html")
+    sources = re.findall(r'<script src="(js/[a-z]+\.js)" defer></script>', html)
+    assert sources == ["js/common.js", "js/darktext.js", "js/dark.js"]
+
+
+def test_every_field_of_the_dark_form_has_a_label() -> None:
+    html = text_of("dark.html")
+    fields = re.findall(r'<input type="(?:text|checkbox)" id="([^"]+)"', html)
+    assert sorted(fields) == ["f-bias", "f-cover", "f-exposure", "f-frames", "f-pause"]
+    for field in fields:
+        assert f'for="{field}"' in html, field
+
+
+def test_the_dark_page_announces_progress_and_mistakes_to_a_screen_reader() -> None:
+    html = text_of("dark.html")
+    assert re.search(r'id="task-message" role="status" aria-live="polite"', html)
+    assert re.search(r'id="start-hint" aria-live="polite"', html)
+    assert re.search(r'id="command-note" aria-live="polite"', html)
+    assert re.search(r'id="dark-error" class="banner" hidden role="alert"', html)
+    for field in ("exposure", "frames", "bias"):
+        assert re.search(rf'id="e-{field}" hidden role="alert"', html), field
+
+
+def test_the_table_of_dark_sets_keeps_its_roles_where_a_phone_turns_it_into_a_list() -> None:
+    html = text_of("dark.html")
+    for role in ('role="table"', 'role="rowgroup"', 'role="row"', 'role="columnheader"'):
+        assert role in html, role
+    script = text_of("js/dark.js")
+    assert 'role: "row"' in script
+    assert 'role: "cell"' in script
+    phone = media_block(text_of("css/app.css"), "@media (max-width: 559px)")
+    assert "display: grid" in rule_for(phone, ".sets tr {")
+    assert "attr(data-label)" in rule_for(phone, ".sets td::before {")
+
+
+def test_a_phase_of_a_session_shows_its_state_in_words_and_not_in_color_alone() -> None:
+    script = text_of("js/dark.js")
+    assert '"aria-current": phase.state === "active" ? "step" : null' in script
+    assert 'class: "phase-name", text: phase.label' in script
+    assert 'class: "phase-detail", text: phase.detail' in script
+
+
+def test_the_dark_page_reads_the_library_with_the_poller_so_that_a_hidden_tab_waits() -> None:
+    script = text_of("js/dark.js")
+    assert "poller(read, () => DarkText.pollInterval(" in script
+    assert 'api.get("dark")' in script
+    assert 'command("commands/dark"' in script
+    assert '"mode", { mode: "paused" }' in script  # Cancel is the pause command
+    assert '"mode", { mode: "auto" }' in script  # Resume is the resume command
 
 
 # --- Contrast --------------------------------------------------------------------------------

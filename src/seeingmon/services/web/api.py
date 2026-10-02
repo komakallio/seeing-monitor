@@ -751,9 +751,10 @@ def post_dark(body: DarkRequest, ctx: Ctx) -> JSONResponse:
     test frames are dark, which proves that the camera is covered. The session adds a set to the
     dark library, and with `pause_after` it pauses the scheduler at the end, so that nothing
     records data while the camera may still be covered. `Resume` (`POST /mode`) continues, and
-    `Pause` ends a running session as `aborted`. The session starts at the next cycle boundary,
-    which can take minutes in `auto`. Only one session may be queued or running (`409` with the
-    reason `busy`). `GET /dark` shows its progress.
+    `Pause` ends a running session as `aborted`. The session starts at the next step of the
+    scheduler, after a survey exposure in progress, and a paused scheduler or a running alignment
+    holds it back until you resume or the alignment ends. Only one session may be queued or
+    running (`409` with the reason `busy`). `GET /dark` shows its progress.
     """
     limits = ctx.settings.requests
     problems = []
@@ -761,7 +762,7 @@ def post_dark(body: DarkRequest, ctx: Ctx) -> JSONResponse:
         problems.append(
             {
                 "field": "body.exposure_s",
-                "message": f"Input should be less than or equal to {limits.max_dark_exposure_s:g}",
+                "message": f"The exposure may be at most {limits.max_dark_exposure_s:g} seconds",
                 "type": "less_than_equal",
             }
         )
@@ -769,7 +770,7 @@ def post_dark(body: DarkRequest, ctx: Ctx) -> JSONResponse:
         problems.append(
             {
                 "field": "body.label",
-                "message": f"String should have at most {limits.max_label_chars} characters",
+                "message": f"The label may have at most {limits.max_label_chars} characters",
                 "type": "string_too_long",
             }
         )

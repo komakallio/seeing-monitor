@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Seeing monitor: Dark</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/common.js" defer></script>
+<script src="js/darktext.js" defer></script>
+<script src="js/dark.js" defer></script>
+</head>
+<body>
+<main id="main">
+  <div class="page-title">
+    <h1>Dark</h1>
+    <p class="page-note" id="dark-note" aria-live="polite">Loading the library.</p>
+  </div>
+  <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
+  <div id="dark-error" class="banner" hidden role="alert"></div>
+
+  <section class="panel" aria-labelledby="h-library">
+    <h2 id="h-library">Dark library</h2>
+    <div class="row">
+      <span class="pill" id="due-pill" data-level="warn">Loading</span>
+      <span id="temperature-line"></span>
+    </div>
+    <p class="note" id="due-reason"></p>
+  </section>
+
+  <div class="dark-grid">
+    <section class="panel" aria-labelledby="h-take">
+      <h2 id="h-take">Take a dark set</h2>
+      <ol class="steps">
+        <li>Cover the camera, so that no light reaches the sensor.</li>
+        <li>Press Start.</li>
+        <li>Wait. Then remove the cover and press Resume.</li>
+      </ol>
+      <form id="dark-form" novalidate>
+        <div class="row">
+          <button type="submit" class="primary" id="dark-start">Start</button>
+          <button type="button" id="dark-cancel" hidden>Cancel</button>
+          <button type="button" id="dark-resume" hidden>Resume</button>
+        </div>
+        <details class="advanced" id="advanced">
+          <summary>Advanced</summary>
+          <div class="form-grid">
+            <label for="f-exposure">Exposure of a dark frame, in seconds</label>
+            <input type="text" id="f-exposure" inputmode="decimal" autocomplete="off" aria-describedby="e-exposure">
+            <p class="field-error" id="e-exposure" hidden role="alert"></p>
+            <label for="f-frames">Dark frames</label>
+            <input type="text" id="f-frames" inputmode="numeric" autocomplete="off" placeholder="default" aria-describedby="e-frames">
+            <p class="field-error" id="e-frames" hidden role="alert"></p>
+            <label for="f-bias">Bias frames</label>
+            <input type="text" id="f-bias" inputmode="numeric" autocomplete="off" placeholder="default" aria-describedby="e-bias">
+            <p class="field-error" id="e-bias" hidden role="alert"></p>
+          </div>
+          <label class="field" for="f-cover"><input type="checkbox" id="f-cover" checked> Wait until a test frame is dark, which means that the camera is covered</label>
+          <label class="field" for="f-pause"><input type="checkbox" id="f-pause" checked> Pause the scheduler at the end, so that nothing records data while the camera is covered</label>
+          <p class="hint" id="survey-note"></p>
+        </details>
+      </form>
+      <p class="hint" id="start-hint" aria-live="polite"></p>
+      <p class="hint" id="command-note" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" id="progress-panel" aria-labelledby="h-progress">
+      <h2 id="h-progress">Progress</h2>
+      <p class="empty" id="progress-empty">No session has run since the server started.</p>
+      <ol class="phases" id="phases" hidden></ol>
+      <p id="task-message" role="status" aria-live="polite"></p>
+      <div class="banner" id="result" hidden>
+        <p><strong id="result-title"></strong></p>
+        <p id="result-text"></p>
+        <dl class="facts" id="result-facts" hidden></dl>
+      </div>
+      <div class="banner" id="resume-notice" data-level="warn" hidden>
+        <p><strong>Remove the cover, then press Resume.</strong></p>
+        <p>The scheduler is paused, so the station records nothing until you resume it.</p>
+        <p><button type="button" class="primary" id="notice-resume">Resume</button></p>
+      </div>
+    </section>
+  </div>
+
+  <div class="dark-grid">
+    <section class="panel" aria-labelledby="h-sets">
+      <h2 id="h-sets">Dark sets</h2>
+      <p class="empty" id="sets-empty" hidden>The library holds no dark set.</p>
+      <div class="table-wrap" id="sets-wrap" hidden>
+        <table class="sets" id="sets-table" role="table">
+          <thead role="rowgroup">
+            <tr role="row"><th scope="col" role="columnheader">Date</th><th scope="col" role="columnheader">Temperature</th><th scope="col" role="columnheader">Frames</th><th scope="col" role="columnheader">Exposure</th><th scope="col" role="columnheader">Dark rate</th><th scope="col" role="columnheader">Hot pixels</th></tr>
+          </thead>
+          <tbody id="sets-body" role="rowgroup"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel chart-card" aria-labelledby="h-chart">
+      <h2 id="h-chart">Dark rate and temperature</h2>
+      <div id="plot-dark"></div>
+      <div class="legend" id="legend-dark"></div>
+      <p class="note" id="model-note"></p>
+    </section>
+  </div>
+</main>
+</body>
+</html>

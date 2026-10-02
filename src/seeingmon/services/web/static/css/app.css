@@ -1089,6 +1089,181 @@ label {
   max-width: 100%;
 }
 
+/* --- Dark -------------------------------------------------------------------------------- */
+
+.dark-grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.dark-grid > .panel {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.dark-grid + .dark-grid {
+  margin-top: var(--gap);
+}
+
+.steps {
+  margin: 0 0 12px;
+  padding-left: 1.4rem;
+}
+
+.steps li {
+  margin: 2px 0;
+}
+
+.advanced {
+  margin-top: 12px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 8px 0;
+}
+
+.form-grid input[type="text"] {
+  width: 100%;
+  max-width: 12rem;
+}
+
+.field-error {
+  color: var(--bad);
+  font-size: 0.88rem;
+  margin: 0 0 6px;
+}
+
+.advanced .field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.phases {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.phase {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.phase .mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 5px;
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+}
+
+.phase[data-state="done"] .mark {
+  background: var(--good);
+  border-color: var(--good);
+}
+
+.phase[data-state="active"] .mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.phase[data-state="pending"] {
+  color: var(--muted);
+}
+
+.phase-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.phase-name {
+  font-weight: 600;
+}
+
+.phase-detail {
+  font-size: 0.9rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.phase[data-state="active"] .phase-detail {
+  color: var(--text);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.legend span[data-kind="line"]::before {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.legend span[data-kind="dash"]::before {
+  width: 16px;
+  height: 0;
+  border-radius: 0;
+  border-top: 2px dashed var(--swatch, var(--muted));
+  background: none;
+  vertical-align: middle;
+}
+
+.sets {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sets th,
+.sets td {
+  text-align: right;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.sets th {
+  color: var(--muted);
+  font-weight: 600;
+  border-top: 0;
+}
+
+.sets th:first-child,
+.sets td:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+
 /* --- The red night mode ------------------------------------------------------------------ */
 
 .night-overlay {
@@ -1106,6 +1281,10 @@ label {
   #card-image {
     grid-column: span 2;
   }
+
+  .dark-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 
 /* --- Phones ------------------------------------------------------------------------------ */
@@ -1121,6 +1300,51 @@ label {
 }
 
 @media (max-width: 559px) {
+  /* A table of dark sets becomes a list: each set is a block with the name of each value in front
+     of it, and the header row stays for a screen reader. The cells carry roles, so that the
+     table stays a table for assistive technology. */
+  .sets thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .sets,
+  .sets tbody {
+    display: block;
+  }
+
+  .sets tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 14px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .sets tr:first-child {
+    border-top: 0;
+  }
+
+  .sets td,
+  .sets td:first-child {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    border: 0;
+    padding: 1px 0;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .sets td::before {
+    content: attr(data-label);
+    color: var(--muted);
+  }
+
   /* The tools keep their icons and lose their words, so that the title row stays one row. The
      words stay in the page for a screen reader. */
   .tool {
@@ -1161,6 +1385,10 @@ label {
 
   .card {
     padding: 12px;
+  }
+
+  .sets tr {
+    grid-template-columns: 1fr;
   }
 
   .events li {

@@ -5107,7 +5107,7 @@
     },
     "/api/v1/commands/dark": {
       "post": {
-        "description": "Queue a dark session: record bias and dark frames with the camera covered.\n\nCover the camera before you send it. With `wait_for_cover`, the session waits until short\ntest frames are dark, which proves that the camera is covered. The session adds a set to the\ndark library, and with `pause_after` it pauses the scheduler at the end, so that nothing\nrecords data while the camera may still be covered. `Resume` (`POST /mode`) continues, and\n`Pause` ends a running session as `aborted`. The session starts at the next cycle boundary,\nwhich can take minutes in `auto`. Only one session may be queued or running (`409` with the\nreason `busy`). `GET /dark` shows its progress.",
+        "description": "Queue a dark session: record bias and dark frames with the camera covered.\n\nCover the camera before you send it. With `wait_for_cover`, the session waits until short\ntest frames are dark, which proves that the camera is covered. The session adds a set to the\ndark library, and with `pause_after` it pauses the scheduler at the end, so that nothing\nrecords data while the camera may still be covered. `Resume` (`POST /mode`) continues, and\n`Pause` ends a running session as `aborted`. The session starts at the next step of the\nscheduler, after a survey exposure in progress, and a paused scheduler or a running alignment\nholds it back until you resume or the alignment ends. Only one session may be queued or\nrunning (`409` with the reason `busy`). `GET /dark` shows its progress.",
         "operationId": "post_dark",
         "requestBody": {
           "content": {
