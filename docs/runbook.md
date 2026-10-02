@@ -417,12 +417,12 @@ The installer puts a wrapper at `<prefix>/bin/seeingmon`. It runs the command as
 sudo /opt/seeingmon/bin/seeingmon <command> --help
 ```
 
-| Command | What it does | Note |
-|---|---|---|
 The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit reads. A command that opens the camera (`seeingmon camera rates`, and the `--standalone` forms of `burst`, `sweep`, and `dark`) therefore needs the library path: copy it from `sdk.env` to `library_path` under `[services.acquire.driver_options]` in the local configuration.
 
 | `seeingmon burst` | Records frames to a SER file with a JSON sidecar, and pins the burst. Pinned bursts are exempt from retention, so a burst stays until you remove the `PINNED` file in its folder. | Also `POST /api/v1/commands/burst` (token required). |
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
+| Command | What it does | Note |
+|---|---|---|
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
 | `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
