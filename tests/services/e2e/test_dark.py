@@ -140,7 +140,11 @@ class TestTheFlow:
         system.wait_for(lambda: bool(system.records("health")), "the first health record")
         assert min(system.records("health"), key=lambda r: r.t_utc_ns).dark_due is True
 
-        assert send(system, QueueDark()).accepted
+        queued = send(system, QueueDark())
+        assert queued.accepted
+        first = library(system).task
+        assert first.task_id == queued.task_id  # the view follows the new task at once
+        assert first.state in ("queued", "running")
         seen: list[tuple[str, str | None, bool | None]] = []
         again: list[CommandResult] = []
 
