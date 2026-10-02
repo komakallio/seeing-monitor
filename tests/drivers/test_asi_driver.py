@@ -772,6 +772,18 @@ class TestHighSpeedLatch:
         assert rig.sdk.high_speed_regime is True
         assert rig.driver.read_frame(1.0).adc_bits == 10
 
+    def test_a_configure_that_fails_after_the_format_calls_forgets_the_flag(self) -> None:
+        """The format calls take the new flag up, and a later call fails. The next configure asks
+        for the old flag, which the camera no longer holds, so the driver must set the format."""
+        rig = make_rig().opened()
+        rig.driver.configure(self.request(False))
+        rig.sdk.fail_next("set_start_position", AsiErrorCode.GENERAL_ERROR)
+        with pytest.raises((CameraError, AsiLibraryError)):
+            rig.driver.configure(self.request(True))
+        assert rig.sdk.high_speed_regime is True
+        rig.driver.configure(self.request(False))
+        assert rig.sdk.high_speed_regime is False
+
     def test_the_driver_forgets_the_regime_when_it_restores_the_settings(self) -> None:
         """The restore writes the saved flag and the saved format back, and the format change makes
         the camera take that flag up. The next stream asks for the other flag in the format that the

@@ -750,6 +750,9 @@ class AsiDriver:
             int(AsiControl.HIGH_SPEED_MODE) in self._caps
             and self._latched_high_speed != wanted_flag
         ):
+            # The format calls below can take the new flag up and then fail, so until the geometry
+            # reads back right, the driver does not know which flag the camera holds.
+            self._latched_high_speed = None
             self._latch_high_speed(plan)
         for attempt in (1, 2):
             with self._guard("set_roi_format"):
