@@ -102,12 +102,14 @@ Keep these files outside the repository, or under `local/`, which Git ignores. N
 - **Local configuration.** Copy `config/local.example.toml` to `local/config.toml`. Set at least:
   - `station_id`, and the `[site]` table.
   - `driver = "asi"` in `[services.acquire]`. The default driver is the simulator.
-  - `bind_address` in `[web]`, the LAN address of the Pi. The default is the loopback address, so the UI is reachable from the Pi only.
+  - `bind_address` in `[web]`, the LAN address of the Pi. The default is the loopback address, so the UI is reachable from the Pi only. To open the UI by a host name, add the name to `allowed_hosts` (see [Reach the web UI through a VPN](#reach-the-web-ui-through-a-vpn)).
   - `catalog_path` and `index_dir` in `[survey]`, the cap catalog and the solver index (see **Cap catalog and solver index** below). `core` does not start without `catalog_path`.
   - The `[power]` route and the `[services.core.escalation]` `reboot_command` (see [The camera recovery ladder](#the-camera-recovery-ladder)).
   - The `[heater]` table, once you know the HAT.
 
   Do not write a path under `/home` into the file. The units hide `/home` from the services.
+
+  The template has three lines that are not commented out and hold placeholders: `data_dir` in `[paths]`, `recordings_dir` in `[replay]`, and `token_hash` in `[auth]`. Delete the ones that you do not use. A placeholder `token_hash` stops `web` at the start, because it takes precedence over the hash that you give with `--token-hash-file`.
 - **API token hash.** Run `seeingmon web hash-token --generate > <hash file>`. The command makes a random token, prints it once on the standard error, and writes the hash to the file. Keep the token in a password manager, and pass the file as `--token-hash-file`. To hash a token of your own, run the command without `--generate`: it reads the token from a hidden prompt or from the standard input.
 - **Cap catalog and solver index.** Build them on a machine with a network connection, with `seeingmon catalog build --output <catalog file>`. The command queries the Gaia archive (a job that can queue for many minutes) and VizieR, and it writes the catalog (about 4 MB). When `build-astrometry-index` is installed, it also writes the solver index files to an `index` folder next to the catalog. Copy the catalog file and the folder to a place that the service user can read, such as a folder under the data directory. The Pi never runs the build. A build of the standard 15 degree cap takes a few minutes: it gave 82,065 stars (4.1 MB) and five index files (3.2 MB). Windows has no `build-astrometry-index`, so run the build in WSL or on Linux (`sudo apt install astrometry.net`); the index files work on any machine. The Gaia archive of the European Space Agency sometimes ends a job in the phase `ERROR` with a database lock message (`canceling statement due to lock timeout`). Run the command again, or pass a mirror with the same table names, such as `--gaia-url https://gaia.ari.uni-heidelberg.de/tap`.
 - **Vendor SDK.** Download the archive from ZWO, compute its checksum once with `sha256sum`, and keep the checksum with your notes. The repository never holds the SDK.
@@ -479,6 +481,7 @@ The dark rate depends on the sensor temperature, so a set serves only the temper
 | The data directory warns about the root file system. | No data partition. | See [Create the data partition](#create-the-data-partition). |
 | A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts. |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
+| The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by the bind address. |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
 | Nothing runs after a reboot. | The units are not enabled. | `systemctl is-enabled seeingmon.target`, and run the installer again. |
 
