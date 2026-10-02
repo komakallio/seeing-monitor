@@ -168,3 +168,54 @@ class TestCoreSettings:
         config = load_config(local_file=local, env={})
         with pytest.raises(ConfigError, match="target_x"):
             config.section("alignment", AlignmentSettings)
+
+
+class TestSurveyFrameSettings:
+    """What `core` keeps of the survey frames (`[services.core.survey_frames]`)."""
+
+    def test_the_defaults_follow_the_architecture(self, tmp_path: Path) -> None:
+        settings = load(tmp_path).core.survey_frames
+        assert settings.enabled is True
+        assert settings.ram_frames == 3  # the newest three frames stay in RAM
+        assert settings.keep_every == 10  # every tenth long frame goes to disk
+        assert settings.preview_max_pixels == 1_000_000  # a preview of up to 1 megapixel
+        assert settings.fits_compression == "rice"
+        assert settings.event_min_interval_s == 3600.0
+        assert settings.event_cloud_fraction == 0.5  # the threshold of the scheduler
+        assert settings.event_background_fraction == 0.5  # the limit of the daylight gate
+
+    def test_an_environment_variable_changes_a_key(self, tmp_path: Path) -> None:
+        services = load(
+            tmp_path,
+            {
+                "SEEINGMON_SERVICES__CORE__SURVEY_FRAMES__KEEP_EVERY": "5",
+                "SEEINGMON_SERVICES__CORE__SURVEY_FRAMES__ENABLED": "false",
+            },
+        )
+        assert services.core.survey_frames.keep_every == 5
+        assert services.core.survey_frames.enabled is False
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("keep_every", "0"),
+            ("ram_frames", "0"),
+            ("ram_frames", "17"),
+            ("jpeg_quality", "5"),
+            ("jpeg_quality", "100"),
+            ("preview_max_pixels", "100"),
+            ("fits_compression", '"gzip"'),
+            ("event_min_interval_s", "-1"),
+            ("event_cloud_fraction", "1.5"),
+            ("event_background_fraction", "0"),
+            ("an_unknown_key", "1"),
+        ],
+    )
+    def test_a_value_out_of_range_or_an_unknown_key_fails_loudly(
+        self, tmp_path: Path, key: str, value: str
+    ) -> None:
+        local = tmp_path / "local.toml"
+        local.write_text(f"[services.core.survey_frames]\n{key} = {value}\n")
+        config = load_config(local_file=local, env={})
+        with pytest.raises(ConfigError, match=key):
+            config.section("services", ServicesConfig)

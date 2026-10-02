@@ -10,6 +10,8 @@ right order. The parts, and where they come from:
 - **Fast analysis:** `create_fast_analyzer(profile, [fastpath], station_id)`.
 - **Survey analysis:** the survey analyzer over an executor from `make_survey_executor`, which is a
   worker process at a low priority. The `PointingTracker` of the analyzer is the pointing provider.
+- **Survey frames:** `SurveyFrames` wraps the survey analyzer. It keeps the newest frames in RAM,
+  and it writes the previews and the FITS files (`seeingmon.services.core.survey_frames`).
 - **Scheduler:** `build_scheduler(...)`, with the store as the record writer and the segment writer
   as the metrics writer.
 - **Heater, SQM-LE, power:** the sections `[heater]`, `[sqm]`, and `[power]`. Each stays off until
@@ -20,11 +22,13 @@ right order. The parts, and where they come from:
 **Threads.** The scheduler thread runs the loop, and it is the only thread that touches the camera,
 the analyzers, and the writers of the scheduler. The housekeeping thread forwards rows to the sinks,
 closes idle segments, and runs retention. The heater and SQM-LE threads run when those parts are
-configured. The supervisor thread runs the periodic jobs: the `health` record, the collection of
-the events of `acquire`, and the heartbeat to systemd. The alignment helper has two threads, and
-the IPC server has its own. All of them stop in this order: new commands, the scheduler (which
-closes the camera), the alignment helper, the heater and the SQM-LE reader, the supervisor, the
-survey worker, and last the housekeeping and the storage, so that the final rows reach the disk.
+configured. The frame writer thread writes the previews and the FITS files of the survey frames.
+The supervisor thread runs the periodic jobs: the `health` record, the collection of the events of
+`acquire`, and the heartbeat to systemd. The alignment helper has two threads, and the IPC server
+has its own. All of them stop in this order: new commands, the scheduler (which closes the camera),
+the alignment helper, the heater and the SQM-LE reader, the supervisor, the survey worker, the
+frame writer (which writes the files that wait), and last the housekeeping and the storage, so that
+the final rows reach the disk.
 
 **A run that a test drives.** With `threads=False`, `start` starts no thread. The test steps the
 scheduler and calls `tick`, which does the periodic work and one pass of the housekeeping, on the
@@ -91,6 +95,7 @@ from seeingmon.services.core.periodic import PeriodicTasks
 from seeingmon.services.core.rpc import CoreRpc
 from seeingmon.services.core.settings import AlignmentSettings, ReplaySettings
 from seeingmon.services.core.skyflags import SkyFlagWriter
+from seeingmon.services.core.survey_frames import SurveyFrames
 from seeingmon.services.core.survey_worker import make_survey_executor
 from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey
@@ -348,6 +353,22 @@ class CoreApp:
             self.tracker = analyzer.tracker
             self._load_seed(self.tracker)
             self._log_pointing_start(self.tracker, [solver.kind for solver in spec.solvers])
+        # The frames of the survey path: a ring in RAM, the previews, and the FITS files.
+        self.frames: SurveyFrames | None = None
+        frame_settings = self.settings.survey_frames
+        if frame_settings.enabled:
+            self.frames = SurveyFrames(
+                analyzer,
+                layout=self.storage.layout,
+                profile=self.profile,
+                station_id=self.station_id,
+                clock=self.clock,
+                settings=frame_settings,
+                long_min_exposure_s=self.survey_config.sky.min_exposure_s,
+                capture_allowed=self.storage.capture_allowed,
+                on_event=self.events.emit,
+            )
+            analyzer = self.frames
         # An analyzer with a nightly summary gets its nights closed on time and at shutdown.
         self.nightly: NightlySummary | None = None
         if callable(getattr(analyzer, "flush_night", None)):
@@ -724,6 +745,8 @@ class CoreApp:
                 self._spawn("core-heater", lambda: self.heater.run(self._stop_event.is_set))
             if self.sqm is not None:
                 self._spawn("core-sqm", self._run_sqm)
+            if self.frames is not None:
+                self._spawn("core-frames", self.frames.run)
             self._spawn("core-supervisor", self._run_supervisor, fatal=True)
         else:
             self._add_stepped_tasks()
@@ -753,6 +776,13 @@ class CoreApp:
                 return sqm.delay_s
 
             self.tasks.add("sqm", sqm.delay_s, poll_sqm)
+        if self.frames is not None:
+            frames = self.frames
+
+            def write_frames() -> None:
+                frames.drain()
+
+            self.tasks.add("frames", 0.5, write_frames)
 
     def tick(self) -> int:
         """Do the periodic work that the supervisor thread does. Returns how many tasks ran."""
@@ -855,6 +885,7 @@ class CoreApp:
         if self.heater is not None:
             self.heater.close()
         self._shutdown_survey()
+        self._finish_frames(timeout_s)
         if self._started:
             self.events.emit(
                 "info",
@@ -875,6 +906,23 @@ class CoreApp:
                 self.nightly.flush()
             except Exception:
                 _log.exception("could not close the night at shutdown")
+
+    def _finish_frames(self, timeout_s: float) -> None:
+        """Write the files that wait for the writer. The scheduler has stopped by now."""
+        frames = getattr(self, "frames", None)
+        if frames is None:
+            return
+        frames.finish()
+        thread = self._threads.get("core-frames")
+        if thread is not None:
+            thread.join(timeout_s)
+            if thread.is_alive():
+                _log.error("the frame writer did not stop within %g s", timeout_s)
+        elif self._started:
+            try:
+                frames.drain()
+            except Exception:
+                _log.exception("could not write the last survey frames at shutdown")
 
     def _shutdown_survey(self) -> None:
         analyzer = getattr(self, "survey", None)

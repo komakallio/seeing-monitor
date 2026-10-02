@@ -85,6 +85,34 @@ class SkyFlagSettings(SectionModel):
     dew_margin_c: float = Field(1.0, ge=0.0, le=20.0)
 
 
+class SurveyFrameSettings(SectionModel):
+    """What `core` keeps of the survey frames: previews, FITS files, and the frames in RAM.
+
+    The newest `ram_frames` frames stay in the memory of `core`. A frame that is a long exposure
+    (at least `[survey.sky] min_exposure_s`) gets a preview. Every `keep_every`-th long frame, and
+    every event frame, also goes to disk as a FITS file. An event frame is a frame at the start of
+    one of these conditions: no pointing solution (`unsolved`), a pointing that moved (`moved`),
+    clouds (a cloud fraction of at least `event_cloud_fraction`), or a sky so bright that the
+    background reaches `event_background_fraction` of the saturation level. Each kind of frame
+    (long and short) gets at most one event frame in `event_min_interval_s`, so that a night of
+    flickering clouds cannot fill the card.
+
+    A preview is a JPEG of at most `preview_max_pixels` pixels. `fits_compression` is `rice`
+    (the files are about 40% of the frame, and the writer falls back to `none` with a warning when
+    the astropy compressor is missing) or `none`.
+    """
+
+    enabled: bool = True
+    ram_frames: int = Field(3, ge=1, le=16)
+    keep_every: int = Field(10, ge=1)
+    jpeg_quality: int = Field(80, ge=10, le=95)
+    preview_max_pixels: int = Field(1_000_000, ge=10_000)
+    fits_compression: Literal["rice", "none"] = "rice"
+    event_min_interval_s: float = Field(3600.0, ge=0)
+    event_cloud_fraction: float = Field(0.5, ge=0, le=1)
+    event_background_fraction: float = Field(0.5, gt=0, le=1)
+
+
 class CoreSettings(SectionModel):
     """The `[services.core]` table."""
 
@@ -116,6 +144,7 @@ class CoreSettings(SectionModel):
     seed_solution_file: str = ""
 
     survey_worker: SurveyWorkerSettings = Field(default_factory=SurveyWorkerSettings)
+    survey_frames: SurveyFrameSettings = Field(default_factory=SurveyFrameSettings)
     escalation: EscalationSettings = Field(default_factory=EscalationSettings)
     commissioning: CommissioningSettings = Field(default_factory=CommissioningSettings)
     sky_flags: SkyFlagSettings = Field(default_factory=SkyFlagSettings)

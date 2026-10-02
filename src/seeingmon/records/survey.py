@@ -68,10 +68,11 @@ class SurveyFrameRecord(Record):
     image_ref: str | None = quantity(
         default=None,
         min_length=1,
-        example="survey/2026-10-01/frame-0001.fits",
+        example="survey/2026/10/01/20261001T201500.123Z.fits",
         definition=(
-            "A reference to the stored image file, as a path relative to the data directory, "
-            "or `null` when the system did not store the frame."
+            "A reference to the stored image of the frame, as a path relative to the data "
+            "directory: the FITS file when the system kept the frame, else the JPEG preview, "
+            "or `null` when it stored neither."
         ),
     )
     n_detected: int | None = quantity(

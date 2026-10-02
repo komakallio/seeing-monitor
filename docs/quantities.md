@@ -129,7 +129,7 @@ Storage: a row of a SQLite table. Retention: kept forever.
 | `gain` | `int` | none | The camera gain setting, in the units of the camera driver. | No |
 | `readout_mode` | `str` | none | The name of the readout mode in the hardware profile, such as `bin2`. | No |
 | `sensor_temperature_c` | `float` | `degC` | The sensor temperature during the exposure, in degrees Celsius. | Yes |
-| `image_ref` | `str` | none | A reference to the stored image file, as a path relative to the data directory, or `null` when the system did not store the frame. | Yes |
+| `image_ref` | `str` | none | A reference to the stored image of the frame, as a path relative to the data directory: the FITS file when the system kept the frame, else the JPEG preview, or `null` when it stored neither. | Yes |
 | `n_detected` | `int` | none | The number of stars that detection found in the frame. | Yes |
 | `n_saturated` | `int` | none | The number of detected stars that have saturated pixels. | Yes |
 | `background_dn` | `float` | `DN` | The sigma-clipped median of the sky background, in digital numbers. | Yes |
