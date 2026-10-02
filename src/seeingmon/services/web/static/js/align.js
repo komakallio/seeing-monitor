@@ -436,6 +436,33 @@
       }
       drawLabel(ctx, labelFor("target") || { text: "target", x: target[0] + 20, y: target[1] - 26, align: "left" }, colors.target, colors.halo);
     }
+
+    // 7. The two moves of the mount, as a small compass in the lower left corner: where the camera
+    // looks when you raise it (alt +) and when you turn it toward the east (az +). The pole lies on
+    // the side of the aim in which the camera has to move, so the arrows read against the picture.
+    if (sky && sky.axes && show.pole) {
+      const width = frame.width_px * scale;
+      const height = frame.height_px * scale;
+      const reach = Math.min(26, Math.max(16, 0.07 * width));
+      const origin = [14 + reach + 36, height - 14 - reach - 14];
+      const arms = [
+        { text: "alt +", dx: sky.axes.altitude_dx, dy: sky.axes.altitude_dy },
+        { text: "az +", dx: sky.axes.azimuth_dx, dy: sky.axes.azimuth_dy },
+      ];
+      ctx.strokeStyle = colors.aim;
+      ctx.fillStyle = colors.aim;
+      ctx.lineWidth = 2;
+      for (const arm of arms) {
+        const tip = [origin[0] + arm.dx * reach, origin[1] + arm.dy * reach];
+        ctx.beginPath();
+        ctx.moveTo(origin[0], origin[1]);
+        ctx.lineTo(tip[0], tip[1]);
+        ctx.stroke();
+        arrowHead(ctx, tip[0], tip[1], Math.atan2(arm.dy, arm.dx), 8);
+        const side = arm.dx > 0.35 ? "left" : arm.dx < -0.35 ? "right" : "center";
+        drawLabel(ctx, { text: arm.text, x: tip[0] + arm.dx * 6, y: tip[1] + arm.dy * 10, align: side }, colors.aim, colors.halo);
+      }
+    }
     ctx.restore();
   }
 
