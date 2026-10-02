@@ -43,29 +43,54 @@ tick_s = 1.0
 # How long the controller keeps the log of switch times that mean_duty reads, in hours.
 history_h = 48.0
 
-# The SQM-LE reader (seeingmon.hardware.sqm). Set enabled and host in the local file.
+# The SQM-LE reader (seeingmon.hardware.sqm). Set enabled, source, and the keys of the source in the
+# local file. The source "tcp" polls the unit over the LAN and needs host. The source "influx" reads
+# the readings that another program wrote to InfluxDB, and it needs the table [sqm.influx], which
+# holds the details of one installation. That table never appears in this file: see the end of this
+# section, and config/local.example.toml.
 [sqm]
 enabled = false
+source = "tcp"
+
+# The source "tcp": the address of the unit, and its port.
 host = ""
 port = 10001
 
-# Seconds between polls. The reader backs off from backoff_initial_s to backoff_max_s after a
-# failure and returns to this cadence after a success.
+# Seconds between polls, for both sources. The reader backs off from backoff_initial_s to
+# backoff_max_s after a failure and returns to this cadence after a success.
 poll_interval_s = 60.0
-connect_timeout_s = 5.0
-read_timeout_s = 10.0
 backoff_initial_s = 5.0
 backoff_max_s = 300.0
 
-# Keep one connection open between polls. By default each poll opens its own, so another program on
-# the LAN can read the unit between polls.
+# The source "tcp": how long to wait for the connection and for the answer.
+connect_timeout_s = 5.0
+read_timeout_s = 10.0
+
+# The source "tcp": keep one connection open between polls. By default each poll opens its own, so
+# another program on the LAN can read the unit between polls.
 persistent = false
 
-# `rx` asks for the averaged reading and `ux` for the unaveraged one.
+# The source "tcp": `rx` asks for the averaged reading and `ux` for the unaveraged one.
 request = "rx"
 
-# The name that the records carry in `instrument`.
+# The name that the records carry in `instrument`, for both sources.
 instrument = "sqm_le"
+
+# [sqm.influx] holds the settings of the source "influx". Put it in the local file only. Its keys,
+# with the default of each key that has one:
+#   endpoint            the address of the server, such as https://influx.example.org:8086
+#   version = 2         1 reads with InfluxQL (GET /query), and 2 reads with Flux
+#   org, bucket         the organization and the bucket (version 2)
+#   database            the database (version 1), and retention_policy for its retention policy
+#   token, token_env    the token (version 2), or the name of the environment variable that has it
+#   username            the user name (version 1), with password or password_env
+#   timeout_s = 10.0    how long to wait for the server, in seconds
+#   verify_tls = true   whether to check the certificate of the server
+#   measurement, field  the series with the magnitude in mag/arcsec^2
+#   temperature_field   the field with the temperature in degrees Celsius (optional)
+#   tags                a table of tag names and values that selects the unit (optional)
+#   max_age_s = 600.0   a reading older than this is stale, and it counts as a failed poll
+#   lookback_s = 3600.0 how far back the query looks, at least max_age_s
 
 # The remote power cycle (seeingmon.hardware.power). Choose a route in the local file.
 [power]

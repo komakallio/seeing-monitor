@@ -183,12 +183,31 @@ token_hash = "<hash of the API token>"
 # kind = "sysfs"
 # temperature_file = "<path to the temperature file of the dew shield sensor>"
 #
-# The SQM-LE. The pointing is optional. The values below are examples.
+# The SQM-LE. The source says where the readings come from. The source "tcp" (the default) polls the
+# unit over the LAN, and it needs the address of the unit in host. The source "influx", shown below,
+# reads the readings that another program wrote to InfluxDB. The pointing is optional. The values
+# below are examples. Give the token with token_env, the name of an environment variable (for
+# example in a systemd EnvironmentFile), or for version 1 give username and password_env. The
+# version is 2 (Flux) or 1 (InfluxQL, with database instead of org and bucket). The tags select the
+# unit when the measurement holds more than one. A reading older than max_age_s is stale. Try the
+# settings with `seeingmon hardware sqm`.
 # [sqm]
 # enabled = true
-# host = "<address of the SQM-LE>"
+# source = "influx"
 # altitude_deg = 45.0
 # azimuth_deg = 0.0
+# [sqm.influx]
+# endpoint = "https://influx.example.org:8086"
+# version = 2
+# org = "<organization>"
+# bucket = "<bucket>"
+# token_env = "<name of the environment variable that holds the token>"
+# measurement = "<measurement>"
+# field = "<field with the magnitude>"
+# temperature_field = "<field with the temperature>"
+# tags = { "<tag name>" = "<tag value>" }
+# max_age_s = 600.0
+# lookback_s = 3600.0
 #
 # The remote power cycle. Choose one route, `http` or `command`. A ${NAME} in an argument, the URL, a
 # header, or the body expands from the environment when the cycle runs, so no secret needs to sit

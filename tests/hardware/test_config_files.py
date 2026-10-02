@@ -57,16 +57,24 @@ class TestDefaultsFile:
         assert defaults["heater"]["enabled"] is False
         assert defaults["sqm"]["enabled"] is False
         assert defaults["sqm"]["host"] == ""
+        assert defaults["sqm"]["source"] == "tcp"
+        # The table describes one installation, so it stays in the local file.
+        assert "influx" not in defaults["sqm"]
         assert defaults["power"]["route"] == "none"
         assert "pins" not in defaults["heater"]
 
     def test_an_environment_variable_overrides_a_default(self, tmp_path: Path) -> None:
         config = load_config(
             local_file=tmp_path / "none.toml",
-            env={"SEEINGMON_HEATER__MARGIN_C": "2.5", "SEEINGMON_SQM__PORT": "10002"},
+            env={
+                "SEEINGMON_HEATER__MARGIN_C": "2.5",
+                "SEEINGMON_SQM__PORT": "10002",
+                "SEEINGMON_SQM__SOURCE": "influx",
+            },
         )
         assert config.section("heater", HeaterConfig).margin_c == 2.5
         assert config.section("sqm", SqmConfig).port == 10002
+        assert config.section("sqm", SqmConfig).source == "influx"
 
 
 class TestTemplate:
@@ -79,7 +87,11 @@ class TestTemplate:
         assert heater.ambient.kind == "sysfs"
         assert heater.optics.kind == "sysfs"
         sqm = SqmConfig.model_validate(values["sqm"])
-        assert sqm.host.startswith("<")
+        assert sqm.source == "influx"
+        assert sqm.influx is not None
+        assert sqm.influx.org is not None
+        assert sqm.influx.org.startswith("<")
+        assert sqm.influx.tags
         power = PowerConfig.model_validate(values["power"])
         assert power.route == "http"
         assert power.http.headers == {"Authorization": "Bearer ${PLUG_TOKEN}"}
@@ -99,7 +111,14 @@ class TestTemplate:
             values["heater"]["pins"]["heater"]["chip"],
             values["heater"]["ambient"]["temperature_file"],
             values["heater"]["optics"]["temperature_file"],
-            values["sqm"]["host"],
+            values["sqm"]["influx"]["org"],
+            values["sqm"]["influx"]["bucket"],
+            values["sqm"]["influx"]["token_env"],
+            values["sqm"]["influx"]["measurement"],
+            values["sqm"]["influx"]["field"],
+            values["sqm"]["influx"]["temperature_field"],
+            *values["sqm"]["influx"]["tags"],
+            *values["sqm"]["influx"]["tags"].values(),
             values["power"]["state_file"],
             values["power"]["command"]["argv"][0],
             values["services"]["acquire"]["driver_options"]["library_path"],
@@ -107,5 +126,6 @@ class TestTemplate:
         for value in placeholders:
             assert value.startswith("<")
             assert value.endswith(">")
+        assert values["sqm"]["influx"]["endpoint"] == "https://influx.example.org:8086"
         assert "<" in values["power"]["http"]["url"]
         assert "${PLUG_TOKEN}" in values["power"]["http"]["headers"]["Authorization"]
