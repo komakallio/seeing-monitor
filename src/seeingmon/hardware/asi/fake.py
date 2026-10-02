@@ -21,6 +21,13 @@ notes (`docs/research-notes.md`, "Camera access options") report about the real 
   `FakeAsiSdk` instances share models that: each instance is a new process that opens the same
   camera, and it finds the controls that the last one left. `disconnect` and `reconnect` model a
   power cycle, which resets every control to its default.
+- **The high-speed regime latches late.** The `HighSpeedMode` control does not change the camera
+  at once. The camera runs in a regime (normal or high-speed: the ADC depth and the readout
+  timing), and it takes the value of the control only at the first `set_roi_format` after
+  `init_camera` and at a `set_roi_format` that changes the image type (RAW8 to RAW16 or back). A
+  change of the control alone, or a change of the size, leaves the regime as it is, and the
+  camera reports no error. A new open starts in the normal regime. Measured on the ASI294MM with
+  SDK 1.41 (see `docs/hardware-checks.md`). `high_speed_regime` shows the regime.
 - **Faults.** Reads that time out (`stall_reads`), a call that hangs (`hang_next`), errors for any
   call (`fail_next`), and a camera that disconnects and returns (`disconnect`, `reconnect`).
 
@@ -320,6 +327,12 @@ class FakeAsiSdk:
         return self._state
 
     @property
+    def high_speed_regime(self) -> bool:
+        """Whether the camera runs in the high-speed regime. The `HighSpeedMode` control sets it
+        only at a latch (see the module text), so it can differ from `control`."""
+        return self._regime
+
+    @property
     def video_active(self) -> bool:
         """Whether video capture runs."""
         return self._video
@@ -359,6 +372,8 @@ class FakeAsiSdk:
         for logical, caps in self._logical_caps().items():
             self._state.controls.setdefault(logical, caps.default_value)
         self._controls = self._state.controls
+        self._regime = False  # a new process starts in the normal regime
+        self._latch_pending = False
         self._bin = 1
         self._image_type = AsiImageType.RAW8
         self._width = self._max_width
@@ -415,7 +430,13 @@ class FakeAsiSdk:
         return list(self._logical_caps().values())
 
     def _high_speed(self) -> bool:
-        return bool(self._controls.get(AsiControl.HIGH_SPEED_MODE, 0))  # an older camera lacks it
+        """The regime that the camera runs, which is not always the value of the control."""
+        return self._regime
+
+    def _latch_high_speed(self) -> None:
+        """Take the value of the `HighSpeedMode` control as the regime. An older camera lacks it."""
+        self._regime = bool(self._controls.get(AsiControl.HIGH_SPEED_MODE, 0))
+        self._latch_pending = False
 
     def _frame_adc_bits(self) -> int:
         return self._adc_bits[(self._bin, self._high_speed())]
@@ -549,6 +570,10 @@ class FakeAsiSdk:
             self._require_camera("init_camera", camera_id, need="opened")
             self._initialized = True
             self._init_ns = self._clock.monotonic_ns()
+            # The camera starts in the normal regime, whatever the control holds, and the first
+            # set_roi_format takes the value of the control.
+            self._regime = False
+            self._latch_pending = True
 
     def close_camera(self, camera_id: int) -> None:
         self._enter("close_camera", camera_id)
@@ -644,10 +669,13 @@ class FakeAsiSdk:
             if self._video:
                 # The real SDK can accept this call during capture and keep the old size.
                 width, height, binning = self._width, self._height, self._bin
-            elif self._corrupt_roi is not None:
-                width, height, always = self._corrupt_roi
-                if not always:
-                    self._corrupt_roi = None
+            else:
+                if self._latch_pending or image_type is not self._image_type:
+                    self._latch_high_speed()
+                if self._corrupt_roi is not None:
+                    width, height, always = self._corrupt_roi
+                    if not always:
+                        self._corrupt_roi = None
             self._bin, self._image_type = binning, image_type
             self._width, self._height = width, height
             full_width, full_height = self._binned_size(self._bin)

@@ -25,11 +25,26 @@ from seeingmon.hardware.asi.fake import (
     FakeAsiSdk,
     FakeCameraState,
     FakeFrameInfo,
+    FakeTiming,
     default_pixels,
     pixel_bytes,
 )
 
 RAW8, RAW16 = AsiImageType.RAW8, AsiImageType.RAW16
+
+# What the bench measured on the ASI294MM in bin1 at bandwidth 100 (SDK 1.41): the frame period is
+# 7.37 ms plus 37.6 us a row in the normal regime, and 5.88 ms plus 30.0 us a row in the high-speed
+# regime.
+BENCH_TIMING = {
+    **DEFAULT_TIMING,
+    (1, False): FakeTiming(37.6e-6, 7.37e-3),
+    (1, True): FakeTiming(30.0e-6, 5.88e-3),
+}
+
+
+def bench_period_s(high_speed: bool, rows: int = 128) -> float:
+    timing = BENCH_TIMING[(1, high_speed)]
+    return timing.overhead_s + rows * timing.row_time_s
 
 
 @pytest.fixture
@@ -278,6 +293,127 @@ class TestPersistentControls:
         sdk.keep_auto(AsiControl.GAIN)
         sdk.set_control_value(camera, AsiControl.GAIN, 100, auto=False)
         assert sdk.get_control_value(camera, AsiControl.GAIN) == (100, True)
+
+
+class TestHighSpeedLatch:
+    """The camera takes the high-speed flag into its regime only at the first ROI format after it
+    opens and when the image type changes. The ASI294MM does this with SDK 1.41, and it reports no
+    error for a change of the flag alone."""
+
+    @staticmethod
+    def apply(
+        sdk: FakeAsiSdk,
+        camera: int,
+        *,
+        high_speed: bool,
+        image_type: AsiImageType = RAW16,
+        size: int = 128,
+    ) -> None:
+        """What a mode change does: set the flag, and then the ROI format."""
+        sdk.set_control_value(camera, AsiControl.HIGH_SPEED_MODE, int(high_speed))
+        sdk.set_roi_format(camera, size, size, 1, image_type)
+
+    @pytest.fixture
+    def bench(self, clock: VirtualClock) -> tuple[FakeAsiSdk, int]:
+        sdk = FakeAsiSdk(clock, timing=BENCH_TIMING)
+        camera = open_camera(sdk)
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 2000)  # the readout sets the period
+        return sdk, camera
+
+    def test_a_new_open_starts_in_the_normal_regime_whatever_the_control_holds(
+        self, clock: VirtualClock
+    ) -> None:
+        sdk = FakeAsiSdk(clock, state=FakeCameraState({AsiControl.HIGH_SPEED_MODE: 1}))
+        open_camera(sdk)
+        assert sdk.control(AsiControl.HIGH_SPEED_MODE) == 1
+        assert sdk.high_speed_regime is False
+
+    def test_the_first_roi_format_takes_the_flag_even_without_a_change_of_type(
+        self, bench: tuple[FakeAsiSdk, int]
+    ) -> None:
+        sdk, camera = bench
+        self.apply(sdk, camera, high_speed=True, image_type=RAW8)  # RAW8 is the type at the start
+        assert sdk.high_speed_regime is True
+        assert sdk.frame_period_s() == pytest.approx(bench_period_s(True))
+
+    def test_a_change_of_the_flag_alone_leaves_the_regime(
+        self, bench: tuple[FakeAsiSdk, int]
+    ) -> None:
+        sdk, camera = bench
+        self.apply(sdk, camera, high_speed=False)  # the first call takes the flag
+        sdk.set_control_value(camera, AsiControl.HIGH_SPEED_MODE, 1)
+        sdk.set_roi_format(camera, 128, 128, 1, RAW16)  # the same type and size
+        sdk.set_roi_format(camera, 64, 64, 1, RAW16)  # a smaller size
+        sdk.set_roi_format(camera, 64, 64, 2, RAW16)  # another binning
+        assert sdk.high_speed_regime is False
+        assert sdk.control(AsiControl.HIGH_SPEED_MODE) == 1  # the control holds the request
+        assert sdk.get_control_value(camera, AsiControl.HIGH_SPEED_MODE) == (1, False)
+
+    def test_a_change_of_the_image_type_takes_the_flag_in_both_directions(
+        self, bench: tuple[FakeAsiSdk, int]
+    ) -> None:
+        sdk, camera = bench
+        self.apply(sdk, camera, high_speed=False)
+        self.apply(sdk, camera, high_speed=True, image_type=RAW8)
+        assert sdk.high_speed_regime is True
+        self.apply(sdk, camera, high_speed=False)  # RAW8 to RAW16 takes the flag again
+        assert sdk.high_speed_regime is False
+
+    def test_the_period_and_the_adc_depth_follow_the_regime_and_not_the_control(
+        self, bench: tuple[FakeAsiSdk, int]
+    ) -> None:
+        sdk, camera = bench
+        self.apply(sdk, camera, high_speed=False)
+        sdk.set_control_value(camera, AsiControl.HIGH_SPEED_MODE, 1)  # no latch
+        assert sdk.frame_period_s() == pytest.approx(bench_period_s(False))
+        sdk.start_video_capture(camera)
+        buffer = frame_bytes(128, 128)
+        sdk.get_video_data(camera, buffer, wait_ms=500)
+        x, y, _, _ = sdk.roi
+        counts = default_pixels(FakeFrameInfo(0, 128, 128, 1, RAW16, x, y, 2000, 0, 12))
+        words = np.frombuffer(buffer, dtype="<u2").reshape(128, 128)
+        np.testing.assert_array_equal(
+            words, counts << 4
+        )  # 12 bits, not the 10 that the control asks
+
+    def test_the_sequence_that_the_bench_ran(self, bench: tuple[FakeAsiSdk, int]) -> None:
+        """n128 / h128 / h8_128 / h128 / n128 / n8_128 / n128 gave 82.1, 82.1, 102.9, 102.9, 102.9,
+        82.1, and 82.1 frames a second (n is the normal flag, h is high-speed, and 8 is RAW8)."""
+        sdk, camera = bench
+        steps = [
+            (False, RAW16),
+            (True, RAW16),
+            (True, RAW8),
+            (True, RAW16),
+            (False, RAW16),
+            (False, RAW8),
+            (False, RAW16),
+        ]
+        rates = []
+        for high_speed, image_type in steps:
+            self.apply(sdk, camera, high_speed=high_speed, image_type=image_type)
+            rates.append(round(1 / sdk.frame_period_s(), 1))
+        assert rates == [82.1, 82.1, 102.9, 102.9, 102.9, 82.1, 82.1]
+
+    def test_a_new_open_forgets_the_regime(self, bench: tuple[FakeAsiSdk, int]) -> None:
+        sdk, camera = bench
+        self.apply(sdk, camera, high_speed=True)
+        regimes = [sdk.high_speed_regime]
+        sdk.close_camera(camera)
+        open_camera(sdk)
+        regimes.append(sdk.high_speed_regime)
+        assert regimes == [True, False]
+        assert sdk.control(AsiControl.HIGH_SPEED_MODE) == 1  # the camera keeps the control
+
+    def test_a_power_cycle_resets_the_regime_and_the_control(
+        self, bench: tuple[FakeAsiSdk, int]
+    ) -> None:
+        sdk, camera = bench
+        self.apply(sdk, camera, high_speed=True)
+        sdk.disconnect()
+        sdk.reconnect()
+        open_camera(sdk)
+        assert (sdk.high_speed_regime, sdk.control(AsiControl.HIGH_SPEED_MODE)) == (False, 0)
 
 
 class TestRoiRules:

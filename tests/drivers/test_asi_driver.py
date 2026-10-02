@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from seeingmon.clock import NS_PER_S, ClockStatus, VirtualClock
@@ -30,6 +31,7 @@ from seeingmon.frames import (
 )
 from seeingmon.hardware.asi.api import AsiControl, AsiErrorCode, AsiImageType, AsiLibraryError
 from seeingmon.hardware.asi.fake import (
+    DEFAULT_ADC_BITS,
     FakeAsiSdk,
     FakeCameraState,
     FakeFrameInfo,
@@ -713,6 +715,104 @@ class TestGeometry:
         rig.driver.start()
         assert rig.driver.move_roi(203, 306) == Roi(200, 304, 16, 8)
         assert rig.driver.read_frame(1.0).roi == Roi(200, 304, 16, 8)
+
+
+class TestHighSpeedLatch:
+    """The effect of the latch. The camera takes up the high-speed flag only when the image format
+    changes, and the first time after `init`, and the fake SDK does the same. What the driver
+    reports (the ADC depth and the frame period) must be what the camera runs. `TestGeometry`
+    checks the calls that the driver makes for it."""
+
+    # The sequence of the bench: n128 / h128 / h8_128 / h128 / n128 / n8_128 / n128, with the flag
+    # and the format of each step. The second and the fifth step change the flag alone.
+    BENCH = (
+        (False, RAW16),
+        (True, RAW16),
+        (True, RAW8),
+        (True, RAW16),
+        (False, RAW16),
+        (False, RAW8),
+        (False, RAW16),
+    )
+
+    @staticmethod
+    def request(high_speed: bool, pixel_format: PixelFormat = RAW16) -> StreamConfig:
+        return replace(FAST, high_speed=high_speed, pixel_format=pixel_format)
+
+    @staticmethod
+    def depth_of(data: npt.NDArray[Any]) -> int:
+        """The ADC depth of a RAW16 frame: the values sit in the high bits, and the low bits of a
+        frame that holds odd counts show where they start."""
+        ored = int(np.bitwise_or.reduce(data, axis=None))
+        return 16 - ((ored & -ored).bit_length() - 1)
+
+    def test_a_change_of_the_flag_alone_gives_the_requested_regime(self) -> None:
+        rig = make_rig().opened()
+        for high_speed in (False, True, False, True, True, False):
+            rig.driver.configure(self.request(high_speed))
+            assert rig.sdk.high_speed_regime is high_speed
+
+    @pytest.mark.parametrize("high_speed", [False, True])
+    def test_the_first_configure_gives_the_requested_regime_over_a_stale_flag(
+        self, high_speed: bool
+    ) -> None:
+        state = FakeCameraState({AsiControl.HIGH_SPEED_MODE: int(not high_speed)})
+        rig = make_rig(sdk={"state": state}).opened()  # another program left the other flag
+        rig.driver.configure(self.request(high_speed))
+        assert rig.sdk.high_speed_regime is high_speed
+
+    @pytest.mark.parametrize("level", [RecoveryLevel.REOPEN, RecoveryLevel.USB_RESET])
+    def test_a_recovery_that_reopens_the_camera_restores_the_regime(
+        self, level: RecoveryLevel
+    ) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(self.request(True))
+        rig.driver.start()
+        rig.driver.recover(level)  # a new open starts in the normal regime
+        assert rig.sdk.high_speed_regime is True
+        assert rig.driver.read_frame(1.0).adc_bits == 10
+
+    def test_the_driver_forgets_the_regime_when_it_restores_the_settings(self) -> None:
+        """The restore writes the saved flag and the saved format back, and the format change makes
+        the camera take that flag up. The next stream asks for the other flag in the format that the
+        camera has now (RAW8, as it starts), so only a driver that forgot the regime sets the
+        other format first."""
+        rig = make_rig().opened()
+        saved = rig.driver.save_settings()
+        rig.driver.configure(self.request(True))
+        rig.driver.restore_settings(saved)
+        assert rig.sdk.high_speed_regime is False  # the camera took up the flag that went back
+        rig.driver.configure(self.request(True, RAW8))
+        assert rig.sdk.high_speed_regime is True
+
+    def test_what_the_driver_reports_is_what_the_camera_runs(self) -> None:
+        rig = make_rig(discard_frames=0).opened()
+        for step, (high_speed, pixel_format) in enumerate(self.BENCH, start=1):
+            active = rig.driver.configure(self.request(high_speed, pixel_format))
+            rig.driver.start()
+            first, second = rig.driver.read_frame(1.0), rig.driver.read_frame(1.0)
+            rig.driver.stop()
+            camera_bits = DEFAULT_ADC_BITS[(1, rig.sdk.high_speed_regime)]
+            context = f"step {step}, flag {high_speed}, {pixel_format.name}"
+            assert active.adc_bits == first.adc_bits == camera_bits, context
+            period_s = active.frame_period_s
+            assert period_s == pytest.approx(rig.sdk.frame_period_s()), context
+            assert period_s is not None
+            assert second.t_arrival_ns - first.t_arrival_ns == round(period_s * NS_PER_S), context
+            if pixel_format is RAW16:  # the data itself holds the depth that the camera runs
+                assert self.depth_of(first.data) == first.adc_bits, context
+
+    def test_the_bench_sequence_runs_every_step_in_its_regime(self) -> None:
+        """The camera gave 82.1, 102.9, 102.9, 102.9, 82.1, 82.1, and 82.1 fps with the fix. A
+        driver that sets the flag alone would give 82.1, 82.1, 102.9, 102.9, 102.9, 82.1, 82.1."""
+        rig = make_rig().opened()
+        periods_s = []
+        for high_speed, pixel_format in self.BENCH:
+            rig.driver.configure(self.request(high_speed, pixel_format))
+            periods_s.append(rig.sdk.frame_period_s())
+        normal, fast = periods_s[0], periods_s[2]
+        assert fast < 0.9 * normal  # the regimes differ by more than the noise of a measurement
+        assert periods_s == [normal, fast, fast, fast, normal, normal, normal]
 
 
 class TestDiscards:
