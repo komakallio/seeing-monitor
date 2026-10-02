@@ -8,10 +8,12 @@ on:
 permissions:
   contents: read
 
-# On main, every push keeps its own run, because the group is unique per run. Only superseded
-# pull request runs cancel.
+# On main, one run goes at a time, and at most one waits behind it. A newer push replaces the run
+# that waits, so a burst of pushes from several lanes tests the newest commit instead of queuing a
+# run (six jobs) for each commit, which outran the runners. A run in progress always finishes.
+# Superseded pull request runs cancel.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
