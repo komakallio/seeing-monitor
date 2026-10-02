@@ -486,7 +486,7 @@ The dark rate depends on the sensor temperature, so a set serves only the temper
 
 - Use ssh keys only. Set `PasswordAuthentication no` for sshd.
 - Reads of the API are open on the LAN by default, and commands need the bearer token. Reach the Pi from outside through a VPN (see [Reach the web UI through a VPN](#reach-the-web-ui-through-a-vpn)).
-- The connection key, the token hash, the environment file, and the local configuration have the mode 0600 or live in a folder that only root and the service group enter. The installer checks the modes at every run. The units read the credentials through systemd. They hide `/home` from the services and mount the rest of the file system read-only, except the data directory for `core`.
+- The connection key, the token hash, the environment file, and the local configuration have the mode 0600 or live in a folder that only root and the service group enter. The installer checks the modes at every run. The units read the credentials through systemd. They hide `/home` from the services and mount the rest of the file system read-only. The exceptions are the data directory and `/var/lib/seeingmon` for `core`, the runtime directory `/run/seeingmon` for each service, and a private `/tmp`.
 - The repository never holds a host name, an address, a user name, a key, a token, or the SDK.
 
 ## Check the deploy files without a Pi
