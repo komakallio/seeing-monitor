@@ -317,7 +317,7 @@ A ZWO camera on a Raspberry Pi can stall after hours or days. The system answers
 
 Each step gets two attempts. Once the system is `degraded`, the scheduler retries slowly (every 600 seconds). A reboot or a power cycle happens at most once in six hours (`[scheduler.ladder] destructive_interval_s`), and the power hook adds its own limits.
 
-Steps 5 and 6 do nothing until you configure them, and then they write an event and stop. For the reboot, the service user cannot use `sudo`, because the units set `NoNewPrivileges`. The `--supervisor-actions` option installs a polkit rule that lets the service user, and nobody else, restart the `seeingmon-*` units and reboot the Pi. Then name the command in the local configuration:
+Until you configure them, steps 5 and 6 write an event and change nothing: `escalation.reboot_unavailable` for the reboot, and `power.cycle_unavailable` for a power route of `none`. Once you configure them, each writes its event and then runs your command or request. For the reboot, the service user cannot use `sudo`, because the units set `NoNewPrivileges`. The `--supervisor-actions` option installs a polkit rule that lets the service user, and nobody else, manage the three services (`seeingmon-acquire`, `seeingmon-core`, and `seeingmon-web`) and reboot the Pi. Then name the command in the local configuration:
 
 ```toml
 [services.core.escalation]
