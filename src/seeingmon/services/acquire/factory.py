@@ -11,6 +11,11 @@ call block for good, so that a test can show that a hung driver call ends the pr
 The `sim` driver takes three options beyond its own: `pointing`, `polaris`, and `polaris_mag`, which
 let a simulated run agree with the survey code (see `seeingmon.services.simsky`).
 
+The `asi` driver takes one option beyond its own: `fake_sdk`. With it, the driver runs on the
+`FakeAsiSdk` of `seeingmon.hardware.asi.fake`, with no vendor library and no camera, so that a test
+can run the real-camera setup of `seeingmon dev --driver asi` (the profile, the clock, and the
+settings) as processes. A real run never sets it.
+
 A driver whose `create` takes an `on_event` argument (the `asi` driver does) gets the callback, so
 that its hardware events reach the log of `acquire`. This module imports the fakes, so import it
 only when you create a driver.
@@ -85,6 +90,8 @@ def create_camera_driver(
     """Build the driver `name`. Raises `CameraConfigError` for an option it does not know."""
     if name == "fake":
         return _create_fake(clock, options)
+    if name == "asi" and options.get("fake_sdk"):
+        return _create_asi_on_fake_sdk(profile, clock, options, on_event)
     if on_event is not None and accepts_events(name):
         module = importlib.import_module(f"seeingmon.drivers.{name}")
         driver: CameraDriver = module.create(
@@ -96,6 +103,33 @@ def create_camera_driver(
     from seeingmon.drivers import create_driver
 
     return create_driver(name, profile=profile, clock=clock, options=dict(options))
+
+
+def _create_asi_on_fake_sdk(
+    profile: Any,
+    clock: Clock,
+    options: Mapping[str, Any],
+    on_event: Callable[[HardwareEvent], None] | None,
+) -> CameraDriver:
+    """Build the `asi` driver on the fake SDK. The other options are those of `AsiOptions`.
+
+    There is no USB resetter and no watchdog thread, because nothing real can hang or reset.
+    """
+    from seeingmon.drivers.asi.driver import AsiDriver
+    from seeingmon.drivers.asi.options import AsiOptions
+    from seeingmon.hardware.asi.fake import FakeAsiSdk
+
+    rest = {key: value for key, value in options.items() if key != "fake_sdk"}
+    return AsiDriver(
+        api=FakeAsiSdk(clock),
+        profile=profile,
+        clock=clock,
+        options=AsiOptions.from_mapping(rest),
+        usb_resetter=None,
+        watchdog=None,
+        watchdog_thread=False,
+        on_event=on_event,
+    )
 
 
 def _create_sim(profile: Any, clock: Clock, options: Mapping[str, Any]) -> CameraDriver:
