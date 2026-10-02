@@ -65,6 +65,26 @@ DEPLOYMENT_WORDS = frozenset(
     }
 )
 
+# Keys whose values name the data of one installation, although the key is no secret and no
+# deployment word. They are listed by the path of their table, so a key with the same name in
+# another table (the `bucket` of a sink, for example) stays as it is. The names in `[sqm.influx]`
+# say where the readings of the SQM-LE live and which unit made them.
+INSTALLATION_KEYS: Mapping[tuple[str, ...], frozenset[str]] = {
+    ("sqm", "influx"): frozenset(
+        {
+            "org",
+            "bucket",
+            "database",
+            "retention_policy",
+            "username",
+            "measurement",
+            "field",
+            "temperature_field",
+            "tags",
+        }
+    ),
+}
+
 _ENV_SEGMENT = re.compile(r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 
 
@@ -164,23 +184,25 @@ def is_deployment_key(key: str) -> bool:
     return any(part in DEPLOYMENT_WORDS for part in re.split(r"[^a-z0-9]+", key.lower()) if part)
 
 
-def redact(value: Any) -> Any:
+def redact(value: Any, _path: tuple[str, ...] = ()) -> Any:
     """A copy of `value` with the value of every secret or deployment key replaced by `REDACTED`.
 
     A key is secret when its name contains token, password, secret, credential, or key, in any
     case. A key is a deployment key when a part of its name is a host, URL, address, command,
     path, folder, socket, pipe, or file word. The rule applies at any depth, and it replaces a
-    table or an array under such a key as a whole.
+    table or an array under such a key as a whole. The keys of `INSTALLATION_KEYS` go too, in the
+    table at their path. `_path` is the path of `value`, for the recursion.
     """
     if isinstance(value, Mapping):
+        installation = INSTALLATION_KEYS.get(_path, frozenset())
         return {
             key: REDACTED
-            if is_secret_key(str(key)) or is_deployment_key(str(key))
-            else redact(item)
+            if is_secret_key(str(key)) or is_deployment_key(str(key)) or key in installation
+            else redact(item, (*_path, str(key)))
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact(item) for item in value]
+        return [redact(item, _path) for item in value]
     return value
 
 

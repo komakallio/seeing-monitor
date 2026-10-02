@@ -127,7 +127,7 @@ class TestWiring:
         finally:
             rig.app.stop()
 
-    def test_the_run_record_hides_the_token_and_the_endpoint(
+    def test_the_run_record_hides_the_secrets_the_endpoint_and_the_names_of_the_data(
         self, tmp_path: Path, server: FakeInfluxServer
     ) -> None:
         rig = build_rig(tmp_path, config_extra=influx_text(server))
@@ -136,9 +136,13 @@ class TestWiring:
             rig.app.start()
             rig.app.scheduler.step()  # the first step opens the camera, and the run record follows
             (run,) = rig.records("run")
-            text = str(run.effective_config)  # type: ignore[attr-defined]
-            assert TOKEN not in text
-            assert server.url not in text
+            config = run.effective_config  # type: ignore[attr-defined]
+            text = str(config)
+            for value in (TOKEN, server.url, "example-org", "example-bucket", "roof"):
+                assert value not in text
+            assert config["sqm"]["influx"]["measurement"] == "<redacted>"
+            assert config["sqm"]["influx"]["tags"] == "<redacted>"
+            assert config["sqm"]["source"] == "influx"
         finally:
             rig.app.stop()
 

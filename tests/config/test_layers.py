@@ -266,6 +266,53 @@ def test_the_marker_is_fixed() -> None:
     assert REDACTED == "<redacted>"
 
 
+# --- The keys that name the data of one installation ------------------------------------------
+
+
+INFLUX_TABLE = {
+    "endpoint": "https://influx.example.org:8086",
+    "version": 2,
+    "org": "an-org",
+    "bucket": "a-bucket",
+    "database": "a-database",
+    "retention_policy": "a-policy",
+    "username": "a-user",
+    "measurement": "a-measurement",
+    "field": "a-field",
+    "temperature_field": "a-temperature-field",
+    "tags": {"unit": "a-unit"},
+    "timeout_s": 10.0,
+    "max_age_s": 600.0,
+}
+
+
+def test_the_names_of_the_data_in_the_sqm_influx_table_are_redacted() -> None:
+    hidden = {"endpoint", "org", "bucket", "database", "retention_policy", "username"}
+    hidden |= {"measurement", "field", "temperature_field", "tags"}
+    result = redact({"sqm": {"enabled": True, "influx": INFLUX_TABLE}})["sqm"]
+    assert result["enabled"] is True
+    for key, value in result["influx"].items():
+        assert value == (REDACTED if key in hidden else INFLUX_TABLE[key]), key
+    assert "a-unit" not in str(result)  # a table under a listed key goes as a whole
+
+
+def test_the_same_key_names_in_other_tables_stay_as_they_are() -> None:
+    data = {
+        "sinks": {"lab": {"org": "an-org", "bucket": "a-bucket", "database": "a-database"}},
+        "sqm": {"field": "not-in-the-influx-table", "tags": ["x"]},
+        "influx": {"bucket": "a-bucket"},  # a table that is not at the path
+        "survey": {"sqm": {"influx": {"bucket": "deeper-than-the-path"}}},
+    }
+    assert redact(data) == data
+
+
+def test_an_array_of_tables_keeps_the_path_of_its_table() -> None:
+    data = {"sqm": {"influx": INFLUX_TABLE, "other": [{"bucket": "kept"}]}}
+    result = redact(data)["sqm"]
+    assert result["other"] == [{"bucket": "kept"}]
+    assert result["influx"]["bucket"] == REDACTED
+
+
 # --- Plain JSON types -----------------------------------------------------------------------------
 
 

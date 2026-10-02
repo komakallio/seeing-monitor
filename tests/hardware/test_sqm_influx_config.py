@@ -281,4 +281,23 @@ class TestFromConfigFiles:
         text = str(effective)
         for value in (TOKEN, CODE, ENDPOINT, "ENV_NAME_OF_TOKEN", "ENV_NAME_OF_CODE"):
             assert value not in text
-        assert table["measurement"] == "sqm"  # the key names of the data are not secrets
+
+    def test_the_effective_configuration_hides_the_names_of_the_data_and_keeps_the_limits(
+        self, tmp_path: Path
+    ) -> None:
+        """The names say where the readings live and which unit made them, so the run record
+        shows a marker for each. The numbers that shape the reads stay."""
+        config = self.load(
+            tmp_path,
+            f'[sqm]\nenabled = true\nsource = "influx"\n[sqm.influx]\nendpoint = "{ENDPOINT}"\n'
+            'org = "an-organization"\nbucket = "a-bucket"\nmeasurement = "a-measurement"\n'
+            'field = "a-field"\ntemperature_field = "a-temperature-field"\nmax_age_s = 300.0\n'
+            'timeout_s = 4.0\n[sqm.influx.tags]\nunit = "a-unit"\n',
+        )
+        table = config.effective()["sqm"]["influx"]
+        for key in ("org", "bucket", "measurement", "field", "temperature_field", "tags"):
+            assert table[key] == "<redacted>", key
+        assert (table["max_age_s"], table["timeout_s"]) == (300.0, 4.0)
+        text = str(config.effective())
+        for value in ("an-organization", "a-bucket", "a-measurement", "a-field", "a-unit"):
+            assert value not in text
