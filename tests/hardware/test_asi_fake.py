@@ -20,7 +20,13 @@ from seeingmon.hardware.asi.api import (
     AsiStateError,
     AsiTimeoutError,
 )
-from seeingmon.hardware.asi.fake import FakeAsiSdk, FakeFrameInfo, default_pixels, pixel_bytes
+from seeingmon.hardware.asi.fake import (
+    FakeAsiSdk,
+    FakeCameraState,
+    FakeFrameInfo,
+    default_pixels,
+    pixel_bytes,
+)
 
 RAW8, RAW16 = AsiImageType.RAW8, AsiImageType.RAW16
 
@@ -176,6 +182,101 @@ class TestControls:
         limited.init_camera(0)
         limited.set_control_value(0, AsiControl.GAIN, 450)
         assert limited.get_control_value(0, AsiControl.GAIN)[0] == 300
+
+
+def open_camera(sdk: FakeAsiSdk) -> int:
+    """Open and initialize the camera, as a new process does."""
+    camera_id = sdk.get_camera_property(0).camera_id
+    sdk.open_camera(camera_id)
+    sdk.init_camera(camera_id)
+    return camera_id
+
+
+class TestPersistentControls:
+    """The camera keeps its controls until it loses power, as the real one does. A process that
+    does not set a control finds the value that the last process or program left."""
+
+    def test_controls_survive_a_close_and_an_open(self, sdk: FakeAsiSdk, camera: int) -> None:
+        sdk.set_control_value(camera, AsiControl.BANDWIDTH_OVERLOAD, 80)
+        sdk.set_control_value(camera, AsiControl.FLIP, 2)
+        sdk.close_camera(camera)
+        camera = open_camera(sdk)
+        assert sdk.get_control_value(camera, AsiControl.BANDWIDTH_OVERLOAD) == (80, False)
+        assert sdk.get_control_value(camera, AsiControl.FLIP) == (2, False)
+
+    def test_a_new_instance_that_shares_the_state_finds_what_the_last_one_left(
+        self, clock: VirtualClock
+    ) -> None:
+        state = FakeCameraState()
+        first = FakeAsiSdk(clock, state=state)
+        camera = open_camera(first)
+        first.set_control_value(camera, AsiControl.BANDWIDTH_OVERLOAD, 90)
+        first.set_control_value(camera, AsiControl.OFFSET, 33)
+        first.close_camera(camera)
+        second = FakeAsiSdk(clock, state=state)  # a new process opens the same camera
+        camera = open_camera(second)
+        assert second.get_control_value(camera, AsiControl.BANDWIDTH_OVERLOAD) == (90, False)
+        assert second.get_control_value(camera, AsiControl.OFFSET) == (33, False)
+        assert second.state is first.state
+
+    def test_an_instance_without_a_shared_state_starts_from_the_defaults(
+        self, clock: VirtualClock
+    ) -> None:
+        first = FakeAsiSdk(clock)
+        camera = open_camera(first)
+        first.set_control_value(camera, AsiControl.BANDWIDTH_OVERLOAD, 90)
+        other = FakeAsiSdk(clock)
+        camera = open_camera(other)
+        assert other.get_control_value(camera, AsiControl.BANDWIDTH_OVERLOAD) == (50, False)
+
+    def test_a_stale_state_keeps_the_values_that_it_lists_and_defaults_the_rest(
+        self, clock: VirtualClock
+    ) -> None:
+        stale = FakeCameraState(
+            {AsiControl.BANDWIDTH_OVERLOAD: 50, AsiControl.FLIP: 3, AsiControl.OFFSET: 20}
+        )
+        sdk = FakeAsiSdk(clock, state=stale)
+        camera = open_camera(sdk)
+        assert sdk.get_control_value(camera, AsiControl.FLIP) == (3, False)
+        assert sdk.get_control_value(camera, AsiControl.OFFSET) == (20, False)
+        assert sdk.get_control_value(camera, AsiControl.GAIN) == (0, False)  # not listed: default
+        assert sdk.control(AsiControl.FLIP) == 3
+
+    def test_a_power_cycle_resets_the_shared_state(self, clock: VirtualClock) -> None:
+        state = FakeCameraState({AsiControl.FLIP: 3})
+        sdk = FakeAsiSdk(clock, state=state)
+        camera = open_camera(sdk)
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 2000, auto=True)
+        sdk.disconnect()
+        sdk.reconnect()
+        camera = open_camera(sdk)
+        assert sdk.get_control_value(camera, AsiControl.FLIP) == (0, False)
+        assert sdk.get_control_value(camera, AsiControl.EXPOSURE) == (10_000, False)
+        assert state.automatic == set()
+
+    def test_the_automatic_flag_persists_until_a_manual_write_clears_it(
+        self, sdk: FakeAsiSdk, camera: int
+    ) -> None:
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 5000, auto=True)
+        assert sdk.get_control_value(camera, AsiControl.EXPOSURE) == (5000, True)
+        sdk.close_camera(camera)
+        camera = open_camera(sdk)
+        assert sdk.get_control_value(camera, AsiControl.EXPOSURE)[1] is True
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 5000)
+        assert sdk.get_control_value(camera, AsiControl.EXPOSURE) == (5000, False)
+
+    def test_a_control_without_automatic_support_ignores_the_flag(
+        self, sdk: FakeAsiSdk, camera: int
+    ) -> None:
+        sdk.set_control_value(camera, AsiControl.FLIP, 1, auto=True)
+        assert sdk.get_control_value(camera, AsiControl.FLIP) == (1, False)
+
+    def test_a_camera_can_keep_a_control_automatic_whatever_a_write_asks(
+        self, sdk: FakeAsiSdk, camera: int
+    ) -> None:
+        sdk.keep_auto(AsiControl.GAIN)
+        sdk.set_control_value(camera, AsiControl.GAIN, 100, auto=False)
+        assert sdk.get_control_value(camera, AsiControl.GAIN) == (100, True)
 
 
 class TestRoiRules:

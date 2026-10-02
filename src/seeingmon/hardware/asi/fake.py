@@ -16,6 +16,11 @@ notes (`docs/research-notes.md`, "Camera access options") report about the real 
   middle of a stream (`change_geometry`).
 - **The first temperature read.** The temperature control returns 0 for the first 250 ms after
   `init_camera`.
+- **Persistent controls.** The camera keeps its controls (and the automatic flag of each) when you
+  close it, and between processes, until it loses power. A `FakeCameraState` that several
+  `FakeAsiSdk` instances share models that: each instance is a new process that opens the same
+  camera, and it finds the controls that the last one left. `disconnect` and `reconnect` model a
+  power cycle, which resets every control to its default.
 - **Faults.** Reads that time out (`stall_reads`), a call that hangs (`hang_next`), errors for any
   call (`fail_next`), and a camera that disconnects and returns (`disconnect`, `reconnect`).
 
@@ -29,7 +34,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -74,6 +79,26 @@ DEFAULT_ADC_BITS: Mapping[tuple[int, bool], int] = {
     (2, False): 14,
     (2, True): 12,
 }
+# The controls that the reference camera lets you set to automatic mode.
+_AUTO_CONTROLS = frozenset({AsiControl.GAIN, AsiControl.EXPOSURE, AsiControl.BANDWIDTH_OVERLOAD})
+
+
+@dataclass(slots=True)
+class FakeCameraState:
+    """The settings that a camera keeps by itself, until it loses power.
+
+    A real camera keeps its controls between opens and between processes: the next process finds
+    the gain, the USB bandwidth, the offset, and the flip that the last process set, or that
+    another program such as SharpCap left. Pass one object to several `FakeAsiSdk` instances to
+    model that.
+
+    `controls` maps a control (the binding's enumeration `AsiControl`) to its value. A control that
+    the dictionary lacks starts at its default. `automatic` holds the controls that the camera
+    keeps in automatic mode. A power cycle (`FakeAsiSdk.disconnect` or `reconnect`) clears both.
+    """
+
+    controls: dict[int, int] = field(default_factory=dict)
+    automatic: set[int] = field(default_factory=set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +173,9 @@ class FakeAsiSdk:
             to test a driver that finds controls by name when the numbers differ.
         control_names: Reports a control under another name, to test a driver that finds controls
             by number.
+        state: The settings that the camera keeps. Share one `FakeCameraState` between instances
+            to model a camera that one process leaves in some state for the next. The default is a
+            new camera in its power-on state.
     """
 
     def __init__(
@@ -169,8 +197,10 @@ class FakeAsiSdk:
         sdk_version: str = "1, 41, 0, 0",
         control_numbers: Mapping[AsiControl, int] | None = None,
         control_names: Mapping[AsiControl, str] | None = None,
+        state: FakeCameraState | None = None,
     ) -> None:
         self._clock = clock
+        self._state = FakeCameraState() if state is None else state
         self._model = model
         self._max_width = max_width
         self._max_height = max_height
@@ -196,9 +226,10 @@ class FakeAsiSdk:
         self._lose_next = 0
         self._corrupt_roi: tuple[int, int, bool] | None = None
         self._exposure_failure = False
+        self._sticky_auto: set[int] = set()
         self._present = True
         self._reappear_ns = 0
-        self._reset_camera()
+        self._reset_camera(power_on=False)
 
     # --- Scripting ---
 
@@ -253,11 +284,17 @@ class FakeAsiSdk:
         with self._lock:
             self._exposure_failure = True
 
+    def keep_auto(self, *controls: AsiControl) -> None:
+        """Make the camera keep these controls in automatic mode, whatever a write asks for."""
+        with self._lock:
+            self._sticky_auto.update(int(control) for control in controls)
+
     def disconnect(self) -> None:
-        """Unplug the camera. Calls fail with `CAMERA_REMOVED` until `reconnect`."""
+        """Unplug the camera. Calls fail with `CAMERA_REMOVED` until `reconnect`. The camera
+        loses its power, so every control returns to its default."""
         with self._lock:
             self._present = False
-            self._reset_camera()
+            self._reset_camera(power_on=True)
 
     def reconnect(self, after_s: float = 0.0) -> None:
         """Plug the camera in again, `after_s` seconds from now. It starts with power-on state,
@@ -265,7 +302,7 @@ class FakeAsiSdk:
         with self._lock:
             self._present = True
             self._reappear_ns = self._clock.monotonic_ns() + round(after_s * NS_PER_S)
-            self._reset_camera()
+            self._reset_camera(power_on=True)
 
     # --- Inspection ---
 
@@ -273,6 +310,11 @@ class FakeAsiSdk:
     def clock(self) -> Clock:
         """The clock that the fake waits on."""
         return self._clock
+
+    @property
+    def state(self) -> FakeCameraState:
+        """The settings that the camera keeps. Change them to model another program."""
+        return self._state
 
     @property
     def video_active(self) -> bool:
@@ -298,14 +340,22 @@ class FakeAsiSdk:
 
     # --- The camera state ---
 
-    def _reset_camera(self) -> None:
+    def _reset_camera(self, *, power_on: bool) -> None:
+        """Reset what a process cannot keep, and the controls when the camera loses power.
+
+        The controls live in the shared state, keyed by the binding's enumeration and not by the
+        reported number. A new instance keeps the values that the state holds, and it fills in the
+        defaults of the controls that the state lacks.
+        """
         self._opened = False
         self._initialized = False
         self._init_ns = 0
-        # Values by control, keyed by the binding's enumeration and not by the reported number.
-        self._controls: dict[int, int] = {
-            logical: caps.default_value for logical, caps in self._logical_caps().items()
-        }
+        if power_on:
+            self._state.controls.clear()
+            self._state.automatic.clear()
+        for logical, caps in self._logical_caps().items():
+            self._state.controls.setdefault(logical, caps.default_value)
+        self._controls = self._state.controls
         self._bin = 1
         self._image_type = AsiImageType.RAW8
         self._width = self._max_width
@@ -339,8 +389,9 @@ class FakeAsiSdk:
         ) -> tuple[int, AsiControlCaps]:
             writable = control is not AsiControl.TEMPERATURE
             shown = self._names.get(int(control), name)
+            automatic = control in _AUTO_CONTROLS
             entry = AsiControlCaps(
-                shown, shown, self._number(int(control)), low, high, default, False, writable
+                shown, shown, self._number(int(control)), low, high, default, automatic, writable
             )
             return int(control), entry
 
@@ -536,7 +587,7 @@ class FakeAsiSdk:
                     return 0, False
                 assert self.temperature_c is not None  # the control exists only with a sensor
                 return round(self.temperature_c * 10), False
-            return self._controls[logical], False
+            return self._controls[logical], logical in self._state.automatic
 
     def set_control_value(
         self, camera_id: int, control: int, value: int, *, auto: bool = False
@@ -554,6 +605,11 @@ class FakeAsiSdk:
                 applied = min(applied, self._silent_gain_limit)
             self._advance(self._clock.monotonic_ns())
             self._controls[logical] = applied
+            if limits.is_auto_supported:
+                if auto or logical in self._sticky_auto:
+                    self._state.automatic.add(logical)
+                else:
+                    self._state.automatic.discard(logical)
             self._reschedule()
 
     # --- AsiApi: geometry ---
@@ -761,6 +817,7 @@ __all__ = [
     "DEFAULT_ADC_BITS",
     "DEFAULT_TIMING",
     "FakeAsiSdk",
+    "FakeCameraState",
     "FakeFrameInfo",
     "FakeTiming",
     "FakeUsbResetter",
