@@ -287,7 +287,7 @@ def _dark(args: argparse.Namespace) -> int:
     from seeingmon.profile import ProfileError
     from seeingmon.services.config import ServicesConfig
     from seeingmon.survey.config import SurveyConfig
-    from seeingmon.survey.dark import DarkCheckOptions, DarkError, DarkLibrary
+    from seeingmon.survey.dark import DarkError, DarkLibrary
     from seeingmon.survey.dark_session import DarkSessionOptions, run_dark_session
 
     try:
@@ -300,29 +300,15 @@ def _dark(args: argparse.Namespace) -> int:
     cfg = survey.dark
     library = DarkLibrary(_dark_library_dir(args, config, survey))
     try:
-        options = DarkSessionOptions(
-            mode=args.mode or cfg.mode,
-            gain=cfg.gain if args.gain is None else args.gain,
-            exposure_s=cfg.exposure_s if args.exposure_s is None else args.exposure_s,
-            frames=cfg.frames if args.frames is None else args.frames,
-            bias_frames=cfg.bias_frames if args.bias_frames is None else args.bias_frames,
+        options = DarkSessionOptions.from_config(
+            cfg,
+            mode=args.mode,
+            gain=args.gain,
+            exposure_s=args.exposure_s,
+            frames=args.frames,
+            bias_frames=args.bias_frames,
             wait=not args.no_wait,
-            test_exposure_s=cfg.test_exposure_s,
-            poll_s=cfg.poll_s,
-            stable_polls=cfg.stable_polls,
-            wait_timeout_s=cfg.wait_timeout_s if args.wait_timeout is None else args.wait_timeout,
-            max_temperature_spread_c=cfg.max_temperature_spread_c,
-            check=DarkCheckOptions(
-                rate_factor=cfg.rate_factor,
-                min_rate_e_per_s=cfg.min_rate_e_per_s,
-                noise_factor=cfg.noise_factor,
-                max_tail_fraction=cfg.max_tail_fraction,
-            ),
-            hot_sigma=cfg.hot_sigma,
-            hot_min_excess_dn=cfg.hot_min_excess_dn,
-            prior_doubling_c=cfg.doubling_c,
-            tolerance_c=cfg.temperature_tolerance_c,
-            max_age_days=cfg.max_age_days,
+            wait_timeout_s=args.wait_timeout,
         )
         profile.mode(options.mode)
     except (ValueError, ProfileError) as exc:
