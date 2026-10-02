@@ -251,6 +251,19 @@ class TestTheIsolationOfTheRun:
         assert Path(json.loads(core["SEEINGMON_SURVEY__CATALOG_PATH"])).is_file()
         assert Path(json.loads(core["SEEINGMON_SERVICES__CORE__SEED_SOLUTION_FILE"])).is_file()
 
+    def test_the_full_sensor_waits_longer_for_the_camera_than_the_small_one(
+        self, tmp_path: Path
+    ) -> None:
+        small = plan_for(tmp_path, name="small")
+        full = plan_for(tmp_path, name="full", sensor="full")
+        margin = "SEEINGMON_SERVICES__ACQUIRE__READ_TIMEOUT_MARGIN_S"
+        assert margin not in seeingmon_env(child(small, "acquire"))
+        assert float(seeingmon_env(child(full, "acquire"))[margin]) == 20.0
+        absent = tmp_path / "absent.toml"
+        for plan, expected in ((small, 0.5), (full, 20.0)):
+            core = load_config(local_file=absent, env=seeingmon_env(child(plan, "core")))
+            assert core.section("scheduler", SchedulerConfig).loop.read_timeout_margin_s == expected
+
     def test_each_child_loads_its_environment_as_a_valid_configuration(
         self, owner_plan: DevPlan, tmp_path: Path
     ) -> None:

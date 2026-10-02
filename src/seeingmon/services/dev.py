@@ -76,6 +76,9 @@ DEV_FAST_EXPOSURE_US = 50_000
 DEV_WINDOW_S = 20.0
 DEFAULT_SPEED = 1.0
 DEV_POLARIS_MAG = 6.0
+# The simulator of the full sensor renders a survey frame inside the camera read, which takes
+# seconds, so the reads of that run wait longer than the default half second.
+FULL_SENSOR_READ_MARGIN_S = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +286,9 @@ def build_plan(
     write_seed(seed_path, seed_solution(profile, field_, pointing, start_utc_ns).solution)
     nowhere = directory / "no-local-config.toml"  # does not exist, so no local file is read
 
+    slow_reads: dict[str, Any] = (
+        {} if options.sensor == "small" else {"read_timeout_margin_s": FULL_SENSOR_READ_MARGIN_S}
+    )
     acquire_address = _endpoint_text(directory, "acquire", token)
     core_address = _endpoint_text(directory, "core", token)
     shared: dict[str, Any] = {
@@ -319,6 +325,7 @@ def build_plan(
                         "gap_factor": 1000.0,
                         "raise_priority": False,
                         "driver_options": sim_options if options.acquire_driver == "sim" else {},
+                        **slow_reads,
                     }
                 }
             },
@@ -341,7 +348,8 @@ def build_plan(
                         "exposure_us": options.fast_exposure_us,
                         "analysis_window_s": options.window_s,
                         "window_s": options.window_s * 3,
-                    }
+                    },
+                    "loop": dict(slow_reads),
                 },
                 "survey": {
                     "catalog_path": str(catalog_path),
