@@ -15,7 +15,8 @@ right order. The parts, and where they come from:
 - **Scheduler:** `build_scheduler(...)`, with the store as the record writer and the segment writer
   as the metrics writer.
 - **Heater, SQM-LE, power:** the sections `[heater]`, `[sqm]`, and `[power]`. Each stays off until
-  you configure it.
+  you configure it. `[sqm] source` picks the SQM-LE reader: `tcp` polls the unit over the LAN, and
+  `influx` reads the readings that another program wrote to InfluxDB (`create_sqm_reader`).
 - **Alignment helper:** the live view and the quick solve (`seeingmon.services.core.alignment`).
 - **RPC and streams:** an `IpcServer` at the core address with the channels `rpc` and `alignment`.
 
@@ -61,7 +62,8 @@ from seeingmon.drivers.base import CameraDriver, CameraInfo
 from seeingmon.fastpath import FastPathConfig, create_fast_analyzer
 from seeingmon.hardware.heater import HeaterConfig, HeaterController, create_heater
 from seeingmon.hardware.power import CommandRunner, PowerConfig, PowerCycle
-from seeingmon.hardware.sqm import SqmConfig, SqmLeReader
+from seeingmon.hardware.sqm import SqmConfig, SqmReader
+from seeingmon.hardware.sqm_factory import create_sqm_reader
 from seeingmon.records import ReferenceRecord
 from seeingmon.scheduler import (
     Command,
@@ -105,6 +107,7 @@ from seeingmon.services.notify import SystemdNotifier
 from seeingmon.services.remote import RemoteCameraDriver
 from seeingmon.services.web.contract import ALIGNMENT_CHANNEL, RPC_CHANNEL
 from seeingmon.sinks.base import Sink
+from seeingmon.store.db import DuplicateRecordError
 from seeingmon.store.retention import DiskProbe
 from seeingmon.store.wiring import Storage, open_storage
 
@@ -145,7 +148,7 @@ class CoreParts:
     disk_usage: DiskProbe | None = None
     storage_clock: Clock | None = None
     heater: HeaterController | None = None
-    sqm: SqmLeReader | None = None
+    sqm: SqmReader | None = None
     power: PowerCycle | None = None
     notifier: SystemdNotifier | None = None
     runner: CommandRunner | None = None
@@ -440,9 +443,12 @@ class CoreApp:
             config.section("heater", HeaterConfig), clock=clock, on_event=self.events
         )
         sqm_config = config.section("sqm", SqmConfig)
-        self.sqm: SqmLeReader | None = parts.sqm
+        self.sqm: SqmReader | None = parts.sqm
         if self.sqm is None and sqm_config.enabled:
-            self.sqm = SqmLeReader(
+            # `[sqm] source` picks the class: the TCP reader or the reader of InfluxDB. A secret
+            # that the Influx source takes from an environment variable is read here, so a variable
+            # that is not set stops the start with a message that names it.
+            self.sqm = create_sqm_reader(
                 sqm_config,
                 clock=clock,
                 station_id=self.station_id,
@@ -772,7 +778,7 @@ class CoreApp:
             def poll_sqm() -> float:
                 record = sqm.poll()
                 if record is not None:
-                    storage.store.write(record)
+                    self._store_reading(record)
                 return sqm.delay_s
 
             self.tasks.add("sqm", sqm.delay_s, poll_sqm)
@@ -821,14 +827,25 @@ class CoreApp:
         assert self.storage is not None
         self.storage.run_housekeeping(self._stop_event.is_set)
 
+    def _store_reading(self, record: ReferenceRecord) -> None:
+        """Store a reading of the SQM-LE.
+
+        A reading of the Influx source has the time stamp of its point. After a restart of `core`,
+        the first poll can find the point that the store already holds, and the store refuses a
+        second record with the same key. The reading is there then, so the refusal is no error.
+        """
+        assert self.storage is not None
+        try:
+            self.storage.store.write(record)
+        except DuplicateRecordError:
+            _log.debug("the store already holds the reading of this time stamp")
+
     def _run_sqm(self) -> None:
         assert self.sqm is not None
-        assert self.storage is not None
-        store = self.storage.store
 
         def keep(record: ReferenceRecord) -> None:
             try:
-                store.write(record)
+                self._store_reading(record)
             except Exception:
                 _log.exception("could not store a reference reading")
 

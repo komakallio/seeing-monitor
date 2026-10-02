@@ -12,6 +12,8 @@ import the package, so the package imports on every platform.
 - `seeingmon.hardware.sqm`: the SQM-LE reader of the TCP source, the `[sqm]` configuration, and the
   interface of both readers.
 - `seeingmon.hardware.sqm_influx`: the SQM-LE reader of the InfluxDB source.
+- `seeingmon.hardware.sqm_factory`: builds the SQM-LE reader that `[sqm] source` names, and reads
+  one sample to try the settings.
 - `seeingmon.hardware.events`: the event type that these components report.
 """
 
