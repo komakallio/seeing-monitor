@@ -39,12 +39,15 @@ class TestFigures:
             "core.fast_share",
             "core.idle_share",
             "core.rss_fast",
+            "core.run_share",
             "acquire.fast_share",
             "acquire.idle_share",
             "acquire.rss_fast",
+            "acquire.run_share",
             "web.fast_share",
             "web.idle_share",
             "web.rss_fast",
+            "web.run_share",
             "core.frame_cost",
             "core.fastpath_receive_share",
             "survey_worker.cpu",
@@ -73,6 +76,15 @@ class TestFigures:
             assert (item.value, item.unit, item.scale) == (size * MB, "bytes", "memory")
             assert item.detail["largest_in_fast_phase"] == f"{size} MB"
         assert found["acquire.rss_fast"].detail["includes"] == "the simulator"
+
+    def test_the_run_share_covers_the_samples_up_to_the_pause(self) -> None:
+        found = figures(fabricated_run())
+        # The fast ticks take 50 ms of core and 400 ms of acquire in each second, over 4 s. The
+        # paused ticks come after the first paused sample, so they do not count.
+        assert found["core.run_share"].value == pytest.approx(5.0)
+        assert found["acquire.run_share"].value == pytest.approx(40.0)
+        assert found["acquire.run_share"].detail["includes"] == "the simulator"
+        assert "includes" not in found["core.run_share"].detail
 
     def test_the_sum_of_the_peaks_adds_every_process_and_names_the_parts(self) -> None:
         item = figures(fabricated_run())["all.peak_rss_sum"]

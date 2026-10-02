@@ -46,6 +46,7 @@ from seeingmon.perf.sysrun import (
     SMOKE_PLAN,
     SystemRun,
     cost_per_frame_us,
+    run_share,
     run_system,
 )
 
@@ -133,6 +134,18 @@ def measurements_from(run: SystemRun) -> list[Measurement]:
                 {"largest_in_fast_phase": f"{largest / 1e6:.0f} MB", **including},
             )
 
+    for role in ("core", "acquire", "web"):
+        average = run_share(run.snapshots, role)
+        if average is not None:
+            including = {"includes": "the simulator"} if role == "acquire" else {}
+            add(
+                f"{role}.run_share",
+                "percent",
+                average,
+                "interpreter",
+                {"covers": "the whole cycle: fast stream, survey steps, and gaps", **including},
+            )
+
     cost = cost_per_frame_us(fast, idle, "core")
     if cost is not None:
         facts: dict[str, float | int | str] = {
@@ -209,6 +222,8 @@ def measure_core(ctx: CaseContext) -> list[Measurement]:
         "The simulator renders inside acquire, so the CPU time and the peak memory of acquire "
         "include it, and the budgets read acquire from the ipc case.",
         f"One client polled web every {plan.poll_interval_s:g} s.",
+        f"The camera reads wait {plan.read_timeout_margin_s:g} s beyond the frame period, because "
+        "the simulator renders a survey frame inside the read.",
     ]
     if run.machine_busy_percent is not None:
         sentences.append(

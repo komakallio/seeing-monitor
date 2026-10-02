@@ -44,7 +44,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
@@ -70,6 +70,12 @@ class RunPlan:
     come every 3 minutes at speed 1. A fast interval counts only when the frame rate reaches
     `min_fast_fps`, so a stall does not enter the figures. `max_run_s` ends the sampling when the
     system does not get there, and a note says so.
+
+    `read_timeout_margin_s` is the time that a camera read waits beyond its frame period, in the
+    scheduler and in `acquire`. The simulator renders a survey frame inside the read, which takes
+    seconds on a slow or busy machine, and the default margin of 0.5 s then turns the frame into a
+    camera error: the scheduler never completes a survey step. A longer margin changes no work that
+    the system does.
     """
 
     sensor: str = "full"
@@ -83,6 +89,7 @@ class RunPlan:
     idle_seconds: float = 30.0
     survey_steps: int = 2
     min_fast_fps: float = MIN_FAST_FPS
+    read_timeout_margin_s: float = 20.0
     max_run_s: float = 720.0
     ready_timeout_s: float = 120.0
 
@@ -213,6 +220,25 @@ def split_phases(
         elif is_idle(first, second):
             idle.add(first, second)
     return fast, idle
+
+
+def run_share(snapshots: Sequence[Snapshot], role: str) -> float | None:
+    """The CPU time of a role as a percentage of one core, from the first sample to the pause.
+
+    It covers the whole cycle of the scheduler: the fast stream, the survey steps, and the gaps
+    between them. It ends at the first sample with the scheduler paused. Returns `None` when the
+    role has no reading or the samples span no time.
+    """
+    active: list[Snapshot] = []
+    for snapshot in snapshots:
+        if snapshot.state == "paused":
+            break
+        active.append(snapshot)
+    if len(active) < 2 or role not in active[-1].cpu_ns or role not in active[0].cpu_ns:
+        return None
+    seconds = active[-1].t - active[0].t
+    used = active[-1].cpu_ns[role] - active[0].cpu_ns[role]
+    return None if seconds <= 0 else 100.0 * max(used, 0) / 1e9 / seconds
 
 
 def cost_per_frame_us(fast: Phase, idle: Phase, role: str) -> float | None:
@@ -432,12 +458,15 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
     say = log or (lambda text: None)
     with tempfile.TemporaryDirectory(prefix="smon-perf-core-", ignore_cleanup_errors=True) as name:
         folder = Path(name)
+        margin = plan.read_timeout_margin_s
         options = DevOptions(
             speed=plan.speed,
             port=free_port(),
             sensor=plan.sensor,
             fast_exposure_us=plan.fast_exposure_us,
             polaris_mag=plan.polaris_mag,
+            core_overrides={"scheduler": {"loop": {"read_timeout_margin_s": margin}}},
+            acquire_overrides={"services": {"acquire": {"read_timeout_margin_s": margin}}},
         )
         dev_plan = build_plan(
             options,

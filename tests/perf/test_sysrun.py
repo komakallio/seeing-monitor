@@ -27,6 +27,7 @@ from seeingmon.perf.sysrun import (
     free_port,
     is_clean_fast,
     is_idle,
+    run_share,
     split_phases,
 )
 
@@ -180,6 +181,35 @@ class TestPhases:
         assert [tid for tid, _ in top] == [12, 13, 11]
         assert top[0][1] == pytest.approx(3.0)  # 90 ms in 3 s
         assert [tid for tid, _ in fast.top_threads("core", count=10)] == [12, 13, 11, 14]
+
+
+class TestRunShare:
+    def test_it_covers_the_cycle_up_to_the_first_paused_sample(self) -> None:
+        clock = Timeline()
+        clock.tick(frames=90, core_ms=50)  # fast
+        clock.tick(purpose="survey", stream_id=2, core_ms=10)  # a survey step
+        clock.tick(purpose="survey", stream_id=2, core_ms=10)  # a gap
+        clock.tick(state="paused", purpose=None, stream_id=None, core_ms=900)  # not counted
+        clock.tick(state="paused", purpose=None, stream_id=None, core_ms=900)
+        # 70 ms of core in 3 s
+        assert run_share(clock.samples, "core") == pytest.approx(100 * 0.07 / 3)
+
+    def test_a_role_without_a_reading_gives_none(self) -> None:
+        clock = Timeline().repeat(3, frames=90, core_ms=50)
+        assert run_share(clock.samples, "survey_worker") is None
+
+    def test_a_run_that_pauses_at_once_has_no_share(self) -> None:
+        clock = Timeline().tick(frames=90, core_ms=5).tick(state="paused", purpose=None, core_ms=5)
+        assert run_share(clock.samples, "core") == pytest.approx(0.5)  # 5 ms in 1 s
+        paused_first = [replace(clock.samples[0], state="paused"), *clock.samples[1:]]
+        assert run_share(paused_first, "core") is None
+        assert run_share(clock.samples[:1], "core") is None  # one sample spans no time
+        assert run_share([], "core") is None
+
+    def test_a_cpu_time_that_falls_counts_as_zero(self) -> None:
+        clock = Timeline().tick(frames=90, core_ms=50)
+        low = replace(clock.samples[1], cpu_ns={"core": 0})
+        assert run_share([clock.samples[0], low], "core") == 0.0
 
 
 class TestCostPerFrame:
