@@ -284,8 +284,7 @@ class TestWhenToHold:
         self, build: RigFactory
     ) -> None:
         service = build().service
-        delay_s = 0.05
-        service._frame_rate_hz = (MIN_FRAMES_TO_HOLD - 0.1) / delay_s
+        service._frame_rate_hz = (MIN_FRAMES_TO_HOLD - 0.1) / service._cfg.batch_delay_s
         assert service._next_flush_ns() == 0
 
     def test_a_fast_stream_holds_its_frames_for_the_delay(self, build: RigFactory) -> None:

@@ -97,7 +97,7 @@ class AcquireSettings(SectionModel):
     # Batches. A receiver that asks for it gets the frames of the last `batch_delay_s` in one
     # message, up to `stream_batch_frames` frames and `batch_bytes` bytes (see
     # `seeingmon.services.acquire.service`). A delay of 0 sends each frame at once.
-    batch_delay_s: float = Field(0.05, ge=0, le=1.0)
+    batch_delay_s: float = Field(0.06, ge=0, le=1.0)
     batch_bytes: int = Field(256 * 1024, ge=1024)
 
     # Waits. A frame read waits `read_timeout_factor` frame periods plus `read_timeout_margin_s`.
