@@ -663,3 +663,144 @@ class TestRealDisk:
         report = RetentionManager(layout, RetentionConfig(), clock, emitter).run_once()
         assert report.deletions == ()
         assert report.quota_bytes > 0
+
+
+class TestPreviewsOfSurvivingFrames:
+    """A preview stays while the survey frame of the same time stays.
+
+    `core` names a frame `survey/YYYY/MM/DD/<stamp>.fits` and its preview
+    `previews/YYYY/MM/DD/<kind>-<stamp>.jpg`, and a night runs from 12:00 UTC to 12:00 UTC. NOW is
+    00:00 UTC, so the middle of the night `n` is exactly `n` days before NOW.
+    """
+
+    def frame(
+        self,
+        layout: DataLayout,
+        t_utc_ns: int,
+        *,
+        kind: str = "survey",
+        fits: bool = True,
+        preview: bool = True,
+    ) -> tuple[Path, Path]:
+        """The FITS file and the preview of a frame, and they last changed at the frame time."""
+        age_s = (NOW - t_utc_ns) / NS_PER_S
+        fits_path = layout.survey_path(t_utc_ns)
+        preview_path = layout.preview_path(t_utc_ns, kind=kind)
+        if fits:
+            make_file(fits_path, 100, age_s)
+        if preview:
+            make_file(preview_path, 10, age_s)
+        return fits_path, preview_path
+
+    def night(self, n: int) -> list[int]:
+        """The times of three frames of the night `n` days ago: 8 hours before the middle, the
+        middle, and 8 hours after it."""
+        middle = NOW - n * DAY_NS
+        return [middle - 8 * 3600 * NS_PER_S, middle, middle + 8 * 3600 * NS_PER_S]
+
+    def test_the_preview_of_the_frame_that_thinning_keeps_stays_and_the_others_go(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        early, middle, late = self.night(10)
+        early_files = self.frame(layout, early)
+        kept_fits, kept_preview = self.frame(layout, middle, kind="event")  # the kind may differ
+        late_files = self.frame(layout, late)
+        report = make_manager().run_once()
+        assert kept_fits.exists()
+        assert kept_preview.exists()  # 10 days old, and its frame stays
+        assert not any(path.exists() for path in early_files + late_files)
+        assert sorted((d.tier, d.reason, d.files) for d in report.deletions) == [
+            ("previews", "expired", 2),
+            ("survey", "expired", 2),
+        ]
+
+    def test_every_old_night_keeps_one_frame_with_its_preview(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        kept: list[Path] = []
+        for n in (8, 15, 40, 66):
+            early, middle, late = self.night(n)
+            self.frame(layout, early)
+            kept += self.frame(layout, middle)
+            self.frame(layout, late)
+        make_manager().run_once()
+        assert names(layout.survey_dir) == sorted(
+            path.relative_to(layout.survey_dir).as_posix()
+            for path in kept
+            if path.suffix == ".fits"
+        )
+        assert names(layout.previews_dir) == sorted(
+            path.relative_to(layout.previews_dir).as_posix()
+            for path in kept
+            if path.suffix == ".jpg"
+        )
+
+    def test_a_preview_without_a_frame_ages_out_by_the_seven_day_rule(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        old = NOW - 9 * DAY_NS
+        recent = NOW - 6 * DAY_NS
+        _, old_preview = self.frame(layout, old, fits=False)  # a frame that `core` never kept
+        _, recent_preview = self.frame(layout, recent, fits=False)
+        make_manager().run_once()
+        assert not old_preview.exists()
+        assert recent_preview.exists()
+
+    def test_a_preview_that_outlives_its_frame_goes_in_the_pass_that_deletes_the_frame(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        # The frame is 70 days old, so thinning ends its life, and its preview goes with it.
+        fits, preview = self.frame(layout, self.night(70)[1])
+        report = make_manager().run_once()
+        assert not fits.exists()
+        assert not preview.exists()
+        assert sorted(d.tier for d in report.deletions) == ["previews", "survey"]
+
+    def test_a_preview_whose_frame_was_deleted_earlier_ages_out_at_once(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        _, preview = self.frame(layout, self.night(20)[1], fits=False)  # the frame is already gone
+        make_manager().run_once()
+        assert not preview.exists()
+
+    def test_the_stamp_decides_and_not_the_kind_or_the_folder(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        middle = self.night(12)[1]
+        fits, same_time = self.frame(layout, middle)
+        _, other_time = self.frame(layout, middle + 1_000_000, fits=False)  # one millisecond later
+        make_manager().run_once()
+        assert fits.exists()
+        assert same_time.exists()
+        assert not other_time.exists()  # no frame has this stamp
+
+    def test_a_preview_that_is_not_named_like_a_preview_pairs_with_nothing(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        odd = make_file(layout.previews_dir / "2026/07/08/notes.jpg", 10, days(12))
+        make_file(layout.survey_dir / "2026/07/08/notes.fits", 100, days(12))
+        make_manager().run_once()
+        assert not odd.exists()
+
+    def test_the_limit_of_the_previews_still_decides_when_a_frame_stays_inside_its_window(
+        self, layout: DataLayout, make_manager: Manager
+    ) -> None:
+        # A frame of 5 days ago is inside the 7 days of the survey frames. With a limit of 3 days
+        # for the previews, its preview still stays, and a plain preview of the same age goes.
+        kept = self.frame(layout, NOW - 5 * DAY_NS)
+        _, plain = self.frame(layout, NOW - 5 * DAY_NS + 7_000_000, fits=False)
+        make_manager(previews_days=3).run_once()
+        assert all(path.exists() for path in kept)
+        assert not plain.exists()
+
+    def test_a_second_pass_changes_nothing(self, layout: DataLayout, make_manager: Manager) -> None:
+        for n in (9, 30):
+            for t in self.night(n):
+                self.frame(layout, t)
+        self.frame(layout, NOW - 8 * DAY_NS, fits=False)
+        manager = make_manager()
+        manager.run_once()
+        survivors = names(layout.survey_dir), names(layout.previews_dir)
+        second = manager.run_once()
+        assert (names(layout.survey_dir), names(layout.previews_dir)) == survivors
+        assert second.deletions == ()

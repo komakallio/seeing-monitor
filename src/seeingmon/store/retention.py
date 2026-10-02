@@ -10,7 +10,11 @@ that a writer holds open is safe.
   365 days) loses its rows after that time.
 - Per-frame metrics (`segments/`) stay for `metrics_days` or up to `metrics_max_gb`, whichever
   limit comes first.
-- Previews (`previews/`) stay for `previews_days`.
+- Previews (`previews/`) stay for `previews_days`. A preview also stays while the survey frame of
+  the same time stays, whatever its age, so the frame that thinning keeps for a night keeps its
+  preview. The two files share the time stamp in their names (`<kind>-<stamp>.jpg` and
+  `<stamp>.fits`). A preview that outlives its frame ages out by the age limit in the same pass
+  that deletes the frame.
 - Survey frames (`survey/`): every frame stays for `survey_full_days`. Then one frame for each
   night stays for `survey_thinned_days`, the frame nearest to the middle of the night.
 - Raw bursts (`bursts/`) have a quota of `bursts_max_gb` for unpinned bursts. A pinned burst (a
@@ -227,6 +231,11 @@ def _scan_bursts(root: Path) -> list[_Unit]:
     return units
 
 
+def _preview_stamp(path: Path) -> str:
+    """The time stamp in the name of a preview, `<kind>-<stamp>.jpg`, or an empty text."""
+    return path.stem.partition("-")[2]
+
+
 def _tree_size(root: Path) -> int:
     """The size of every file under `root`, in bytes."""
     total = 0
@@ -334,12 +343,20 @@ class RetentionManager:
                 gone = {unit.path for unit in outcome.done}
                 units[tier] = [unit for unit in units[tier] if unit.path not in gone]
 
-        # 1. Routine expiry by age. It writes no event.
+        # 1. Routine expiry by age. It writes no event. Thinning comes before the previews,
+        #    because a preview stays while the survey frame of its time stays.
         apply("metrics", self._expire("metrics", units["metrics"], self._config.metrics_days, now))
-        apply(
-            "previews", self._expire("previews", units["previews"], self._config.previews_days, now)
-        )
         apply("survey", self._thin_survey(units["survey"], now))
+        apply(
+            "previews",
+            self._expire(
+                "previews",
+                units["previews"],
+                self._config.previews_days,
+                now,
+                spare=self._paired(units["previews"], units["survey"]),
+            ),
+        )
         rows_expired, row_errors = self._expire_rows(now)
         errors += row_errors
 
@@ -440,18 +457,31 @@ class RetentionManager:
     def _deletable(self, unit: _Unit, now: int) -> bool:
         return not unit.pinned and now - unit.mtime_ns >= self._protect_ns
 
-    def _expire(self, tier: str, units: list[_Unit], days: float, now: int) -> _Outcome:
+    def _expire(
+        self,
+        tier: str,
+        units: list[_Unit],
+        days: float,
+        now: int,
+        spare: frozenset[Path] = frozenset(),
+    ) -> _Outcome:
+        """Delete the units past `days`, except the `spare` ones, which stay whatever their age."""
         limit = now - round(days * DAY_NS)
         victims = [
             unit
             for unit in sorted(units, key=_order)
-            if unit.mtime_ns < limit and self._deletable(unit, now)
+            if unit.mtime_ns < limit and unit.path not in spare and self._deletable(unit, now)
         ]
         return self._delete_all(tier, EXPIRED, victims)
 
     def _night(self, mtime_ns: int) -> int:
         """The index of the observing night that a time falls in."""
         return (mtime_ns - self._boundary_ns) // DAY_NS
+
+    def _keeper(self, night: int, members: list[_Unit]) -> _Unit:
+        """The frame of a night that thinning keeps: the one nearest to the middle of the night."""
+        middle = self._boundary_ns + night * DAY_NS + DAY_NS // 2
+        return min(members, key=lambda unit: (abs(unit.mtime_ns - middle), _order(unit)))
 
     def _thin_survey(self, units: list[_Unit], now: int) -> _Outcome:
         """Delete survey frames past their age, and thin old nights to one frame each."""
@@ -466,11 +496,16 @@ class RetentionManager:
             night_start = self._boundary_ns + night * DAY_NS
             if night_start + DAY_NS > now - full_ns:
                 continue  # part of this night is still inside the full-rate window
-            middle = night_start + DAY_NS // 2
-            keeper = min(members, key=lambda unit: (abs(unit.mtime_ns - middle), _order(unit)))
+            keeper = self._keeper(night, members)
             victims += [unit for unit in members if unit is not keeper]
         victims = [unit for unit in sorted(victims, key=_order) if self._deletable(unit, now)]
         return self._delete_all("survey", EXPIRED, victims)
+
+    @staticmethod
+    def _paired(previews: list[_Unit], frames: list[_Unit]) -> frozenset[Path]:
+        """The previews whose survey frame is still there. The two share the time stamp."""
+        stamps = {unit.path.stem for unit in frames}
+        return frozenset(unit.path for unit in previews if _preview_stamp(unit.path) in stamps)
 
     def _shrink(
         self, tier: str, units: list[_Unit], need_bytes: int, reason: str, now: int

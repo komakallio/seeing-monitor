@@ -109,7 +109,7 @@ class TestTheAgeLimits:
         assert len(station.files(station.layout.survey_dir)) == 3
         assert len(station.files(station.layout.previews_dir)) == 3
 
-    def test_previews_go_after_seven_days_and_the_fits_files_stay_but_one_a_night(
+    def test_previews_go_after_seven_days_but_the_nightly_frame_keeps_its_preview(
         self, station: Station
     ) -> None:
         recent = [t for day in (1, 3, 6) for t in night_frames(day)]
@@ -125,13 +125,15 @@ class TestTheAgeLimits:
         for t in recent:
             assert station.layout.survey_path(t).is_file()
             assert station.layout.preview_path(t, kind="survey").is_file()
-        # An older night keeps the frame nearest to the middle of the night, and no preview.
+        # An older night keeps the frame nearest to the middle of the night and the preview of that
+        # frame, so the Images page can still list it. The other frames and previews go.
         for night in old_nights.values():
             evening, midnight, morning = night
             assert station.layout.survey_path(midnight).is_file()
-            assert not station.layout.survey_path(evening).exists()
-            assert not station.layout.survey_path(morning).exists()
-            assert not any(station.layout.preview_path(t, kind="survey").exists() for t in night)
+            assert station.layout.preview_path(midnight, kind="survey").is_file()
+            for t in (evening, morning):
+                assert not station.layout.survey_path(t).exists()
+                assert not station.layout.preview_path(t, kind="survey").exists()
 
     def test_a_night_older_than_sixty_seven_days_goes_altogether(self, station: Station) -> None:
         old = night_frames(70)
