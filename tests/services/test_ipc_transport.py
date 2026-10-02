@@ -303,7 +303,17 @@ class TestServerLifecycle:
         first.stop()
         assert not first.running
         second = IpcServer(native, key, {"echo": EchoChannel()})
-        second.start()
+
+        def started() -> bool:
+            # On Windows, the server end of the connection that the client closed can outlive
+            # `stop` by a few milliseconds, and the pipe name stays taken until it is gone.
+            try:
+                second.start()
+            except IpcAddressInUseError:
+                return False
+            return True
+
+        assert wait_until(started, timeout_s=10.0, interval_s=0.05)
         try:
             wire, _ = connect_channel(native, key, "echo")
             wire.close()
