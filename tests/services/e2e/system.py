@@ -6,8 +6,9 @@ children. A killed process is a hard kill (`Popen.kill`), as a crash or the out-
 does it, and a restart starts the same command with the same settings, so the process takes the
 same address and finds the same data folder and the same simulated timeline.
 
-The tests read the results from the store of `core` through a read-only connection, and they ask
-`web` over HTTP on the loopback interface, as a browser does.
+The tests read the results from the store of `core` through a read-only connection, they ask
+`web` over HTTP on the loopback interface, as a browser does, and they call the RPC of `core`, as
+`web` and the command line do.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ from seeingmon.services.dev import (
     wait_for_web,
     wait_until_ready,
 )
+from seeingmon.services.ipc.endpoint import Endpoint
+from seeingmon.services.ipc.keys import ConnectionKey
+from seeingmon.services.ipc.rpc import connect_rpc
+from seeingmon.services.web.contract import RPC_CHANNEL
 from seeingmon.store.db import StoreReader
 
 from ..conftest import wait_until
@@ -142,6 +147,21 @@ class System:
         """Poll until the condition holds. The message names what never happened, with the logs."""
         if not wait_until(condition, timeout_s, interval_s=0.5):
             raise AssertionError(f"timed out waiting for {what}\n{self.logs()}")
+
+    # --- Asking core -----------------------------------------------------------------------
+
+    def core_call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        """Call a method of the RPC of `core` on a fresh connection, and return its result."""
+        client, _ = connect_rpc(
+            Endpoint.parse(self.plan.core_endpoint),
+            ConnectionKey.from_text(self.plan.key),
+            {"role": "cli"},
+            channel=RPC_CHANNEL,
+        )
+        try:
+            return client.call(method, params)
+        finally:
+            client.close()
 
     # --- Asking web ------------------------------------------------------------------------
 
