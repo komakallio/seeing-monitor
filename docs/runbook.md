@@ -389,7 +389,7 @@ The SQM-LE does not have to be reachable over TCP. When another computer polls i
 
 1. Collect the details: the version of the server, the bucket (version 2) or the database (version 1), the measurement, the field with the magnitude in mag/arcsec², the field with the temperature (optional), and the tags that select the unit when the measurement holds more than one.
 2. Make a token that can read that one bucket and nothing else. On InfluxDB 2.x, create a custom API token with read access to the bucket. On 1.x, create a user that has `READ` on the database only. The reader never writes.
-3. Put the token in the environment file that you pass with `--env-file`. The installer installs the file as `<config-dir>/seeingmon.env` (mode 0600, owner root), and the `core` unit reads it as its `EnvironmentFile`:
+3. Put the token in the environment file that you pass to `push.sh` with `--env-file`. The installer installs the file as `<config-dir>/seeingmon.env` (mode 0600, owner root), and the `core` unit reads it as its `EnvironmentFile`:
 
    ```text
    SQM_INFLUX_TOKEN=<token>
@@ -429,7 +429,7 @@ The SQM-LE does not have to be reachable over TCP. When another computer polls i
 magnitude 21.37 mag/arcsec^2, temperature 3.5 C, age 12.3 s (source influx)
 ```
 
-A failure prints one line on the standard error and exits with 1, for example `seeingmon: error: InfluxDB answered HTTP 401: unauthorized access (check the token or the credentials)`. The command prints no endpoint and no name from your configuration, and so does every message of the reader: where a server repeats a name, the reader replaces it with `<redacted>`.
+A failure prints one line on the standard error and exits with 1, for example `seeingmon: error: InfluxDB answered HTTP 401: unauthorized access (check the token or the credentials)`. The command prints no endpoint and no name from your configuration, and no message of the reader holds one: where a server repeats a name, the reader replaces it with `<redacted>`.
 
 The command needs the variable that `token_env` names. On a development machine, set it in the shell and run the command with the same `local/config.toml`. On the Pi, only root reads `seeingmon.env`, so load it for one command. This line is untested on a Pi:
 
@@ -456,7 +456,7 @@ The age of a point is the difference between the clock of the Pi and the time st
 | `BadRequest` | The server answered another 4xx, or a redirect, or it reported an error. The message holds the words of the server. | Check the endpoint, the version, and the organization, the bucket, or the database. |
 | `Parse` | The reply is not a reading: the field holds no number, or the magnitude lies outside -5 to 30. | Check that `field` names a numeric field, and `temperature_field` too. |
 
-The `run` record shows the endpoint, the token, the password, and the names of the data (organization, bucket, database, measurement, fields, and tags) as `<redacted>`.
+The `run` record shows the endpoint, the token, the password, and the names of the data (organization, bucket, database, retention policy, user name, measurement, fields, and tags) as `<redacted>`.
 
 ## SD card care
 
