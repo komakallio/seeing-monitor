@@ -56,7 +56,7 @@ from typing import TextIO, TypeAlias
 from pydantic import ConfigDict, Field
 
 from seeingmon.config import ConfigError, SectionModel, load_config
-from seeingmon.hardware.io import Io, IoError, LibgpiodIo, PinSpec
+from seeingmon.hardware.io import GpiodLibraryError, Io, IoError, LibgpiodIo, PinSpec
 
 DEADLINE_S = 1.0
 EXIT_OFF = 0
@@ -150,13 +150,16 @@ def _drive_off(
 
     The function asks for all lines at once. When that fails and the group has more than one
     output, it asks for each output by itself, so that one line that cannot be had neither stops
-    the others nor hides its name.
+    the others nor hides its name. A library that fails (`GpiodLibraryError`) fails for every
+    output, so the function gives each output that reason and does not ask again: each new request
+    would look for the library once more, and the lookup can spawn programs.
     """
     try:
         io = open_io(group)
     except Exception as error:
-        if len(group) == 1:
-            return [(next(iter(group)), _reason(error))]
+        if len(group) == 1 or isinstance(error, GpiodLibraryError):
+            reason = _reason(error)
+            return [(name, reason) for name in group]
         failures: list[Failure] = []
         for name, spec in group.items():
             failures += _drive_off({name: spec}, open_io, progress)

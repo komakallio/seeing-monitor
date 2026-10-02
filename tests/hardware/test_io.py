@@ -16,6 +16,7 @@ from seeingmon.hardware.io import (
     EnvSensor,
     FakeEnvSensor,
     FakeIo,
+    GpiodLibraryError,
     Io,
     IoError,
     LibgpiodIo,
@@ -317,6 +318,14 @@ class TestFailureReasons:
         with pytest.raises(IoError, match="could not read the line: input/output error"):
             io.read_input("fault")
 
+    def test_a_line_that_fails_is_not_a_library_failure(self) -> None:
+        library = FakeGpiodV2()
+        library.fail.add("gpiod_chip_request_lines")
+        library.errno = errno.EBUSY
+        with pytest.raises(IoError) as error:
+            LibgpiodIo({"heater": HEATER}, library=library)
+        assert not isinstance(error.value, GpiodLibraryError)
+
     def test_a_call_that_leaves_no_errno_gives_the_message_alone(self) -> None:
         library = FakeGpiodV2()
         library.fail.add("gpiod_chip_request_lines")
@@ -356,12 +365,12 @@ class TestLoading:
     def test_a_library_without_a_needed_function_is_refused(self) -> None:
         library = FakeGpiodV2()
         del library.gpiod_line_request_get_value  # type: ignore[attr-defined]
-        with pytest.raises(IoError, match="gpiod_line_request_get_value"):
+        with pytest.raises(GpiodLibraryError, match="gpiod_line_request_get_value"):
             load_libgpiod(library)
 
     def test_a_platform_other_than_linux_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("seeingmon.hardware.io._is_linux", lambda: False)
-        with pytest.raises(IoError, match="needs Linux"):
+        with pytest.raises(GpiodLibraryError, match="needs Linux"):
             LibgpiodIo({"heater": HEATER})
 
     def test_the_loader_tries_the_system_library_and_then_the_usual_names(
@@ -399,7 +408,7 @@ class TestLoading:
         def loader(name: str) -> object:
             raise OSError(name)
 
-        with pytest.raises(IoError, match="not installed"):
+        with pytest.raises(GpiodLibraryError, match="not installed"):
             load_libgpiod(loader=loader, find_library=lambda _: None)
 
 

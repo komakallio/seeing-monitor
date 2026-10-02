@@ -58,6 +58,13 @@ class IoError(Exception):
     """A GPIO call failed, or a name does not exist."""
 
 
+class GpiodLibraryError(IoError):
+    """The libgpiod library is missing, is not for this platform, or lacks a function.
+
+    Every line fails the same way, so a caller that would try the lines one by one need not.
+    """
+
+
 class SensorError(Exception):
     """A sensor read failed or returned nothing usable."""
 
@@ -398,11 +405,11 @@ def load_libgpiod(
 
     Pass `library` to use a loaded library (a test passes a stand-in). Otherwise the function
     loads `path`, then the system's `gpiod` library, then the usual file names. It raises
-    `IoError` on a platform other than Linux, or when no library loads.
+    `GpiodLibraryError` on a platform other than Linux, or when no library loads.
     """
     if library is None:
         if not _is_linux():
-            raise IoError("libgpiod needs Linux")
+            raise GpiodLibraryError("libgpiod needs Linux")
         candidates = [path] if path else [find_library("gpiod"), *LIBGPIOD_NAMES]
         for candidate in candidates:
             if not candidate:
@@ -413,13 +420,15 @@ def load_libgpiod(
             except OSError:
                 continue
         if library is None:
-            raise IoError("libgpiod is not installed; install the libgpiod package of the OS")
+            raise GpiodLibraryError(
+                "libgpiod is not installed; install the libgpiod package of the OS"
+            )
     try:
         if hasattr(library, "gpiod_line_settings_new"):
             return _GpiodV2(library)
         return _GpiodV1(library)
     except AttributeError as error:
-        raise IoError(f"the libgpiod library lacks a function ({error.name})") from None
+        raise GpiodLibraryError(f"the libgpiod library lacks a function ({error.name})") from None
 
 
 class LibgpiodIo:

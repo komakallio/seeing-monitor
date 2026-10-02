@@ -26,7 +26,7 @@ from seeingmon.hardware.heater_off import (
     read_plan,
     run_heater_off,
 )
-from seeingmon.hardware.io import FakeIo, Io, IoError, LibgpiodIo, PinSpec
+from seeingmon.hardware.io import FakeIo, GpiodLibraryError, Io, IoError, LibgpiodIo, PinSpec
 from tests.hardware.gpiod_fakes import FakeGpiodV1, FakeGpiodV2
 
 CHIP = "gpiochip-test"  # a chip that no board has, so a real libgpiod finds nothing to drive
@@ -254,6 +254,23 @@ class TestFailures:
         assert farm.requests == [("heater", "watchdog"), ("heater",), ("watchdog",)]
         assert farm.ios[0].values == {"watchdog": False}
         assert farm.ios[0].closed
+
+    def test_a_failing_library_is_reported_for_every_output_without_asking_line_by_line(
+        self, config_file: Path
+    ) -> None:
+        # The lookup of the library can spawn programs, so a failure of the library must not
+        # repeat it for each output.
+        farm = IoFarm()
+        reason = "libgpiod is not installed; install the libgpiod package of the OS"
+        farm.refuse["heater"] = GpiodLibraryError(reason)
+        code, out, err = run(config_file, farm)
+        assert code == 1
+        assert out == ""
+        assert lines(err) == [
+            f"{PREFIX}cannot switch off heater: {reason}",
+            f"{PREFIX}cannot switch off watchdog: {reason}",
+        ]
+        assert farm.requests == [("heater", "watchdog")]
 
     def test_a_failing_write_fails_and_the_other_output_still_goes_off(
         self, config_file: Path
@@ -564,8 +581,24 @@ def hang(pins):
     raise SystemExit(0)  # not reached: the timer ends the process first
 
 
+print("ready", flush=True)  # the parent times the run from here, not from the start of Python
 sys.exit(run_heater_off(local_config=Path(sys.argv[1]), open_io=hang, deadline_s=0.5))
 """
+
+# The real library lookup with a limit that a slow runner cannot use up. With the library missing,
+# the lookup spawns up to three programs, and on a loaded arm64 runner that took longer than the
+# 1 s limit of the command once. The limit itself is the subject of `HANG_SCRIPT`.
+FAIL_SCRIPT = """import sys
+from pathlib import Path
+
+from seeingmon.hardware.heater_off import run_heater_off
+
+sys.exit(run_heater_off(local_config=Path(sys.argv[1]), deadline_s=60.0))
+"""
+
+# How long after its first line the hanging child may take to end, besides its own 0.5 s limit.
+# The slack covers a slow runner, and it stays far below the 600 s that the child would hang.
+HANG_SLACK_S = 5.0
 
 
 def process_environment() -> dict[str, str]:
@@ -602,7 +635,15 @@ class TestProcess:
     ) -> None:
         # The pin map names a chip that no board has, so every machine fails to drive it, each with
         # its own reason: not Linux, no libgpiod, or no such device.
-        done = run_process(tmp_path, config_file)
+        done = subprocess.run(
+            [sys.executable, "-c", FAIL_SCRIPT, str(config_file)],
+            cwd=tmp_path,
+            env=process_environment(),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
         assert done.returncode == 1
         assert done.stdout == ""
         error_lines = lines(done.stderr)
@@ -616,22 +657,30 @@ class TestProcess:
         self, config_file: Path, tmp_path: Path
     ) -> None:
         # No stand-in ends the process here: the real `os._exit` does, from the timer thread,
-        # while the main thread waits in a call that never returns. Without it, the run would end
-        # only at the timeout of `subprocess.run`, and the test would fail.
-        started = time.perf_counter()
-        done = subprocess.run(
+        # while the main thread waits in a call that never returns. The test times the child from
+        # its first line, so the start of Python and the import of the libraries do not count. The
+        # child must take at least its own limit (its message says so) and end within the slack.
+        process = subprocess.Popen(
             [sys.executable, "-c", HANG_SCRIPT, str(config_file)],
             cwd=tmp_path,
             env=process_environment(),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
-            check=False,
         )
-        assert done.returncode == 1
-        assert done.stdout == ""
-        assert lines(done.stderr) == [
+        try:
+            first_line = process.stdout.readline() if process.stdout else ""
+            ready_s = time.monotonic()
+            rest, error_text = process.communicate(timeout=60)
+            elapsed_s = time.monotonic() - ready_s
+        finally:
+            if process.poll() is None:
+                process.kill()
+        assert first_line == "ready\n"
+        assert process.returncode == 1
+        assert rest == ""
+        assert lines(error_text) == [
             f"{PREFIX}the GPIO calls did not finish within 0.5 s; "
             "not confirmed off: heater, watchdog"
         ]
-        assert time.perf_counter() - started < 100
+        assert 0.45 <= elapsed_s < 0.5 + HANG_SLACK_S
