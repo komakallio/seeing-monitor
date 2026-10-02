@@ -122,6 +122,10 @@ def test_the_session_waits_for_the_cover_without_waiting_in_real_time(tmp_path: 
     assert wrapper.reads == 5 + 5 + 3
     assert lines.count("Cover the camera now. Waiting for a dark frame.") == 1
     assert "The camera is dark." in lines
+    # The lit polls say why the frame is not dark: once at first, then every 30 s of waiting.
+    reasons = [line for line in lines if line.startswith("The camera is not dark yet: ")]
+    assert len(reasons) == 1
+    assert "above the bias" in reasons[0]
     assert (clock.utc_ns() - started) / 1e9 > 3 * 30.0  # the three dark exposures happened too
     assert len(library.sets()) == 1
 

@@ -63,6 +63,7 @@ log = logging.getLogger("seeingmon.survey")
 _READ_MARGIN_S = 30.0  # a read waits this long beyond the exposure
 _FALLBACK_TEMPERATURE_C = 20.0  # for the check of a frame that carries no temperature
 _STOP_CHECK_S = 0.25  # the wait for the cover looks at `should_stop` this often
+_COVER_NEWS_S = 30.0  # the wait for the cover says why the frame is not dark this often
 
 DarkPhase = Literal["bias", "cover", "dark", "build", "done"]
 
@@ -351,6 +352,7 @@ class _Recorder:
         started_ns = self.clock.monotonic_ns()
         stable = 0
         last_reason = "no frame yet"
+        last_news_s = -_COVER_NEWS_S  # the first frame that is not dark gets its reason at once
         while True:
             waited_s = (self.clock.monotonic_ns() - started_ns) / NS_PER_S
             if waited_s > cfg.wait_timeout_s:
@@ -378,6 +380,9 @@ class _Recorder:
             else:
                 stable = 0
                 last_reason = check.reason
+                if waited_s - last_news_s >= _COVER_NEWS_S:
+                    last_news_s = waited_s
+                    self.say(f"The camera is not dark yet: {check.reason}.")
                 self.report(
                     "cover",
                     0,
