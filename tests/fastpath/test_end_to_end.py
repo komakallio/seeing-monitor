@@ -190,7 +190,7 @@ class TestRecords:
             assert window.valid_fraction == 1.0
             assert window.flags == []
             assert window.duration_s == pytest.approx(6.0, abs=0.02)
-            assert window.frame_rate_hz == pytest.approx(112.4, rel=0.01)  # 8.9 ms per frame
+            assert window.frame_rate_hz == pytest.approx(102.3, rel=0.01)  # 9.8 ms per frame
             # Scintillation lifts Polaris to the saturation level in 0.3% of the frames.
             assert window.saturated_fraction is not None
             assert window.saturated_fraction < 0.01

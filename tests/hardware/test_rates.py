@@ -421,7 +421,7 @@ class TestOutput:
             assert title in header
         for title in ("med ms", "jit ms", "max ms", "drops", "bits"):
             assert title in header
-        for text in ("128x128", "RAW16", "88.4"):
+        for text in ("128x128", "RAW16", "82.1"):
             assert text in line
         assert len(line) == len(header)  # the columns line up
 

@@ -45,9 +45,12 @@ mode = "bin2"
 pixel_format = "RAW16"
 
 # Research notes, "Read modes of the IMX492 cameras": bin1 is the native readout.
-# Gain 0 values: "Gain, full well, and read noise". Timing: "Frame rates and row timing" (the
-# row time and the frame overhead come from a straight-line fit of ZWO's USB 3.0 frame rates).
-# The high-speed values are the 10-bit row of that timing table.
+# Gain 0 values: "Gain, full well, and read noise". Timing: a straight-line fit of the frame period
+# against the ROI height, measured on the real camera at USB bandwidth 100 with
+# `seeingmon camera rates` (October 2026, SDK 1.41). The vendor chart that the research notes
+# quote gave 6.5 ms and 37.6 us for bin1 and 1.4 ms and 21.3 us for bin2. The high-speed values
+# are those of the 10-bit readout. The camera takes up the high-speed flag only at an image format
+# change, and the driver handles that.
 [[readout_modes]]
 name = "bin1"
 sdk_bin = 1
@@ -60,9 +63,9 @@ full_well_gain0_e = 14417
 read_noise_gain0_e = 2.65
 e_per_adu_gain0 = 3.5
 row_time_us = 37.6
-frame_overhead_ms = 6.5
-row_time_us_high_speed = 30.1
-frame_overhead_ms_high_speed = 5.0
+frame_overhead_ms = 7.37
+row_time_us_high_speed = 30.0
+frame_overhead_ms_high_speed = 5.88
 
 # Gain rows from "Gain, full well, and read noise": gain 108 is unity gain, and gain 270 is the
 # maximum analog gain. The charts are for the Pro, and commissioning checks them on this camera.
@@ -77,7 +80,7 @@ e_per_adu = 0.17
 read_noise_e = 1.38
 
 # Research notes, "Read modes of the IMX492 cameras": bin2 sums 2 x 2 pixels on the sensor.
-# The 12-bit values are the high-speed row of the timing table.
+# The high-speed flag changes no timing in bin2, so both pairs are the measured one.
 [[readout_modes]]
 name = "bin2"
 sdk_bin = 2
@@ -89,10 +92,10 @@ adc_bits_high_speed = 12
 full_well_gain0_e = 66387
 read_noise_gain0_e = 8.0
 e_per_adu_gain0 = 4.05
-row_time_us = 21.3
-frame_overhead_ms = 1.4
-row_time_us_high_speed = 18.2
-frame_overhead_ms_high_speed = 1.2
+row_time_us = 18.5
+frame_overhead_ms = 1.22
+row_time_us_high_speed = 18.5
+frame_overhead_ms_high_speed = 1.22
 
 # Gain rows: gain 119 is the last gain below the high-conversion-gain (HCG) step, and gain 120
 # is the first gain with HCG on. The values jump there, so the second row sets step = true.

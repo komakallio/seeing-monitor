@@ -140,7 +140,7 @@ The reference camera is the uncooled, USB-powered ZWO ASI294MM (Sony IMX492, 4/3
 | ADC | 12 bit (10 in high-speed mode) | 14 bit (12 in high-speed mode) |
 | Full well, read noise at gain 0 | 14.4 ke⁻, 2.65 e⁻ | 66.4 ke⁻, 8.0 e⁻ (1.85 e⁻ at gain 120) |
 | Plate scale at 250 mm | 1.91 arcsec/pixel | 3.82 arcsec/pixel |
-| Row time (fitted from vendor frame rates) | 37.6 µs | 21.3 µs |
+| Row time (fitted to the frame rates of the real camera) | 37.6 µs | 18.5 µs |
 
 The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and a planar apochromatic triplet with a field flattener. The field of view is 4.40 × 2.99 degrees. ToupTek designs for a 1-inch image circle (16 mm, against the sensor's 23.2 mm diagonal), but your test shows good quality to the sensor edges, so the profile uses the full sensor.
 
@@ -166,8 +166,8 @@ The ToupTek GS-250 scope has a 50 mm aperture, a 250 mm focal length (f/5), and 
 
 | Stream | Size | Rate | Notes |
 |---|---|---|---|
-| Fast frames, bin1, 128 × 128 ROI (4.1 arcmin) | 32 KB | About 90 fps, 2.9 MB/s | Limited by readout, not by the exposure |
-| Fast frames, bin2, 64 × 64 ROI | 8 KB | Up to about 360 fps at 2 ms | Needs about 3 pixels of defocus |
+| Fast frames, bin1, 128 × 128 ROI (4.1 arcmin) | 32 KB | About 82 fps (103 in high-speed mode), 2.7 MB/s | Limited by readout, not by the exposure |
+| Fast frames, bin2, 64 × 64 ROI | 8 KB | Up to about 420 fps (417 measured at 0.5 ms, 465 at 2 ms) | Needs about 3 pixels of defocus |
 | Survey frame, bin2 | 23 MB | 1 per 3 minutes | A bin1 frame is 94 MB, too heavy for a Pi 4 |
 | Per-frame metrics | 44 bytes | 4 KB/s at 90 fps | 0.3 GB per 24 hours |
 | Star list rows | 24 bytes a star, about 8 KB for each survey step | 1 per 3 minutes while the sky is dark | About 0.45 GB per year |

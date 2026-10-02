@@ -88,7 +88,7 @@ class SimParams:
     pixel_size_um: float = 2.315
     binning: int = 1
     row_time_s: float = 37.6e-6
-    frame_overhead_s: float = 6.5e-3
+    frame_overhead_s: float = 7.37e-3
     adc_bits: int = 12
     e_per_adu_gain0: float = 3.5
     read_noise_gain0_e: float = 2.65
@@ -255,8 +255,8 @@ class SimParams:
             fast = replace(
                 normal,
                 adc_bits=10,
-                row_time_s=30.1e-6,
-                frame_overhead_s=5.0e-3,
+                row_time_s=30.0e-6,
+                frame_overhead_s=5.88e-3,
                 e_per_adu_gain0=3.5 * 4,
                 gain_points=tuple(
                     replace(point, e_per_adu=point.e_per_adu * 4) for point in BIN1_GAIN_POINTS
@@ -269,8 +269,8 @@ class SimParams:
                 height=2822,
                 pixel_size_um=4.63,
                 binning=2,
-                row_time_s=21.3e-6,
-                frame_overhead_s=1.4e-3,
+                row_time_s=18.5e-6,
+                frame_overhead_s=1.22e-3,
                 adc_bits=14,
                 e_per_adu_gain0=4.05,
                 read_noise_gain0_e=8.0,
@@ -280,8 +280,8 @@ class SimParams:
             fast = replace(
                 normal,
                 adc_bits=12,
-                row_time_s=18.2e-6,
-                frame_overhead_s=1.2e-3,
+                row_time_s=18.5e-6,
+                frame_overhead_s=1.22e-3,
                 e_per_adu_gain0=4.05 * 4,
                 gain_points=tuple(
                     replace(point, e_per_adu=point.e_per_adu * 4) for point in BIN2_GAIN_POINTS

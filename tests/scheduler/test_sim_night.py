@@ -179,7 +179,7 @@ def test_the_windows_are_fast_bin1_windows_of_the_simulated_star(evening: Evenin
     full = [w for w in windows if w.n_frames > 15]
     assert full
     for window in full:
-        assert window.frame_rate_hz == pytest.approx(88.4, rel=0.03)  # 11.3 ms a frame
+        assert window.frame_rate_hz == pytest.approx(82.1, rel=0.03)  # 12.2 ms a frame
 
 
 def test_only_the_window_after_the_stall_reports_dropped_frames(evening: Evening) -> None:

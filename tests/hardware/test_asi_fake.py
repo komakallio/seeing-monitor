@@ -498,7 +498,7 @@ class TestVideo:
     ) -> None:
         stream(sdk, camera, width=128, height=128)
         period_ns = round(sdk.frame_period_s() * NS_PER_S)
-        assert period_ns == 6_500_000 + 128 * 37_600  # readout is longer than the 2 ms exposure
+        assert period_ns == 7_370_000 + 128 * 37_600  # readout is longer than the 2 ms exposure
         buffer = frame_bytes(128, 128)
         started = clock.monotonic_ns()
         for count in range(1, 5):

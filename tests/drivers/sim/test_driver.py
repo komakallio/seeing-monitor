@@ -271,13 +271,13 @@ class TestTiming:
     def test_the_frame_period_is_the_larger_of_the_exposure_and_the_readout(
         self, driver: SimDriver
     ) -> None:
-        # Bin1, 128 rows: 6.5 ms + 128 x 37.6 us = 11.3 ms, so a 2 ms exposure runs at 88 fps.
-        assert driver.configure(FAST).frame_period_s == pytest.approx(11.3128e-3, rel=1e-6)
+        # Bin1, 128 rows: 7.37 ms + 128 x 37.6 us = 12.1828 ms, so a 2 ms exposure runs at 82 fps.
+        assert driver.configure(FAST).frame_period_s == pytest.approx(12.1828e-3, rel=1e-6)
         slow = StreamConfig(mode="bin1", exposure_us=20_000, gain=0, roi=FAST.roi)
         assert driver.configure(slow).frame_period_s == pytest.approx(20e-3)
-        # Bin2, 64 rows at 2 ms: 1.4 ms + 64 x 21.3 us = 2.76 ms, so the readout sets the rate.
+        # Bin2, 64 rows at 1 ms: 1.22 ms + 64 x 18.5 us = 2.404 ms, so the readout sets the rate.
         bin2 = StreamConfig(mode="bin2", exposure_us=1000, gain=0, roi=Roi(2000, 1400, 64, 64))
-        assert 1 / (driver.configure(bin2).frame_period_s or 1.0) == pytest.approx(362, rel=0.01)
+        assert 1 / (driver.configure(bin2).frame_period_s or 1.0) == pytest.approx(416, rel=0.01)
 
     def test_a_snapshot_period_adds_the_readout(self, driver: SimDriver) -> None:
         config = StreamConfig(
@@ -288,7 +288,7 @@ class TestTiming:
             roi=Roi(0, 0, 64, 64),
         )
         period = driver.configure(config).frame_period_s
-        assert period == pytest.approx(1.0 + 1.4e-3 + 64 * 21.3e-6)
+        assert period == pytest.approx(1.0 + 1.22e-3 + 64 * 18.5e-6)
 
     def test_timestamps_follow_the_definition_in_frame(
         self, driver: SimDriver, clock: VirtualClock
@@ -430,7 +430,7 @@ class TestFaults:
         assert [f.dropped_before for f in frames] == [0, 0, 3, 0, 0]
         assert camera.dropped_frames() == 3
         # The lost frames took time: frame 2 arrives 3 periods late.
-        period = round(11.3128e-3 * NS_PER_S)
+        period = round(12.1828e-3 * NS_PER_S)
         assert frames[2].t_arrival_ns - frames[1].t_arrival_ns == 4 * period
 
     def test_random_drops_repeat_for_a_seed_and_follow_the_probability(self) -> None:
@@ -461,9 +461,9 @@ class TestFaults:
         first = camera.read_frame(1.0)
         slow = camera.read_frame(1.0)
         assert slow.t_arrival_ns - first.t_arrival_ns == pytest.approx(
-            (11.3128e-3 + 0.050) * NS_PER_S, abs=2
+            (12.1828e-3 + 0.050) * NS_PER_S, abs=2
         )
-        assert slow.t_utc_ns - first.t_utc_ns == pytest.approx(11.3128e-3 * NS_PER_S, abs=2)
+        assert slow.t_utc_ns - first.t_utc_ns == pytest.approx(12.1828e-3 * NS_PER_S, abs=2)
 
     def test_a_disconnect_persists_until_a_strong_enough_recovery(self) -> None:
         camera = self.faulty(

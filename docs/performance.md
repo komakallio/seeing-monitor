@@ -405,7 +405,7 @@ The `core-sim` case runs the system and reads it from outside. It starts `acquir
 
 - The sensor is the reference sensor (`full`), so the survey frames have the bin2 size of the real camera, 4144 × 2822 pixels, and the survey worker peaks where it peaks on a real night.
 - The clock runs at speed 1, in real time.
-- The fast stream uses the fast mode of the architecture (bin1, a 128 × 128 region, an exposure of 2 ms), which the readout of the sensor stretches to about 88 frames per second, and the real Polaris. The windows are those of the dev launcher, 20 s long. In production they are 60 s long.
+- The fast stream uses the fast mode of the architecture (bin1, a 128 × 128 region, an exposure of 2 ms), which the readout of the sensor stretches to about 82 frames per second, and the real Polaris. The windows are those of the dev launcher, 20 s long. In production they are 60 s long.
 - The scheduler runs a fast stream, then a survey step (a short and a long exposure), then waits for the next slot, which comes every 3 minutes. The run waits for two survey steps and for the results of their four frames. It takes about 6 minutes.
 - One client polls `web` every 5 s with three requests (status, the latest seeing, and health), as an open page would.
 - The scheduler and `acquire` wait up to 20 s beyond the frame period for a frame. The simulator renders a survey frame inside the read, which takes longer than the default margin of 0.5 s on a slow or busy machine. The scheduler then counts a camera error, and it never completes a survey step: a run on Windows ended after one step in 12 minutes. The longer margin changes no work that the system does.

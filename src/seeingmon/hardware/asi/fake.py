@@ -72,13 +72,13 @@ class FakeTiming:
     overhead_s: float
 
 
-# The reference camera, from the research notes ("Frame rates and row timing"). The key is
-# (SDK binning, high-speed mode).
+# The reference camera, as `seeingmon camera rates` measured it at USB bandwidth 100 (the same
+# numbers as `profiles/asi294mm-gs250.toml`). The key is (SDK binning, high-speed mode).
 DEFAULT_TIMING: Mapping[tuple[int, bool], FakeTiming] = {
-    (1, False): FakeTiming(37.6e-6, 6.5e-3),
-    (1, True): FakeTiming(30.1e-6, 5.0e-3),
-    (2, False): FakeTiming(21.3e-6, 1.4e-3),
-    (2, True): FakeTiming(18.2e-6, 1.2e-3),
+    (1, False): FakeTiming(37.6e-6, 7.37e-3),
+    (1, True): FakeTiming(30.0e-6, 5.88e-3),
+    (2, False): FakeTiming(18.5e-6, 1.22e-3),
+    (2, True): FakeTiming(18.5e-6, 1.22e-3),
 }
 DEFAULT_ADC_BITS: Mapping[tuple[int, bool], int] = {
     (1, False): 12,

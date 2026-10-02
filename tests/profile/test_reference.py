@@ -82,8 +82,8 @@ def test_the_readout_modes_carry_the_documented_values(reference: Profile) -> No
         4.05,
         8.0,
     )
-    assert (bin1.row_time_us, bin1.frame_overhead_ms) == (37.6, 6.5)
-    assert (bin2.row_time_us, bin2.frame_overhead_ms) == (21.3, 1.4)
+    assert (bin1.row_time_us, bin1.frame_overhead_ms) == (37.6, 7.37)
+    assert (bin2.row_time_us, bin2.frame_overhead_ms) == (18.5, 1.22)
 
 
 def test_the_hcg_step_is_marked_at_gain_120_in_bin2_only(reference: Profile) -> None:
@@ -179,20 +179,20 @@ def test_only_bin1_samples_below_the_centroid_phase_criterion(reference: Profile
 # --- Frame rates ---------------------------------------------------------------------------
 
 
-def test_a_bin1_roi_of_128_rows_takes_11_3_ms_and_runs_at_88_fps(reference: Profile) -> None:
+def test_a_bin1_roi_of_128_rows_takes_12_2_ms_and_runs_at_82_fps(reference: Profile) -> None:
     period = reference.frame_period_s("bin1", 128, exposure_us=2000)
-    assert period == pytest.approx(11.3e-3, abs=0.05e-3)  # 6.5 ms + 128 x 37.6 us
-    assert reference.max_frame_rate_hz("bin1", 128, exposure_us=2000) == pytest.approx(88, abs=0.5)
+    assert period == pytest.approx(12.18e-3, abs=0.05e-3)  # 7.37 ms + 128 x 37.6 us
+    assert reference.max_frame_rate_hz("bin1", 128, exposure_us=2000) == pytest.approx(82, abs=0.5)
 
 
-def test_a_bin2_roi_of_64_rows_takes_2_8_ms(reference: Profile) -> None:
+def test_a_bin2_roi_of_64_rows_takes_2_4_ms(reference: Profile) -> None:
     period = reference.frame_period_s("bin2", 64, exposure_us=1000)
-    assert period == pytest.approx(2.8e-3, abs=0.05e-3)  # 1.4 ms + 64 x 21.3 us
+    assert period == pytest.approx(2.4e-3, abs=0.05e-3)  # 1.22 ms + 64 x 18.5 us
 
 
-def test_a_bin2_roi_of_64_rows_runs_at_360_fps_for_short_exposures(reference: Profile) -> None:
+def test_a_bin2_roi_of_64_rows_runs_at_416_fps_for_short_exposures(reference: Profile) -> None:
     rate = reference.max_frame_rate_hz("bin2", 64, exposure_us=1000)
-    assert rate == pytest.approx(360, abs=3)  # 361.9: the notes round down
+    assert rate == pytest.approx(416, abs=3)  # the camera measured 417 at 0.5 ms
 
 
 def test_a_bin2_roi_of_64_rows_runs_at_100_fps_for_a_10_ms_exposure(reference: Profile) -> None:
@@ -201,40 +201,49 @@ def test_a_bin2_roi_of_64_rows_runs_at_100_fps_for_a_10_ms_exposure(reference: P
 
 def test_the_row_time_in_nanoseconds(reference: Profile) -> None:
     assert reference.row_time_ns("bin1") == 37_600
-    assert reference.row_time_ns("bin2") == 21_300
+    assert reference.row_time_ns("bin2") == 18_500
 
 
-# ZWO's USB 3.0 frame rates (research notes, "Frame rates and row timing"): (rows, bin1 12-bit,
-# bin1 10-bit, bin2 14-bit, bin2 12-bit). The notes say the line model fits within 1 to 2%.
-ZWO_FRAME_RATES = [
-    (5644, 4.6, 5.7, None, None),
-    (2822, None, None, 16.3, 19.0),
-    (1080, 21.2, 26.6, 41.0, 47.9),
-    (480, 40.8, 51.1, 86.0, 100.5),
-    (240, 64.6, 80.9, 153.4, 179.3),
+# The frame rates of the real camera (`seeingmon camera rates` at USB bandwidth 100, October 2026,
+# SDK 1.41, 150 frames per row): (mode, high speed, ROI rows, frames per second). The profile is a
+# straight-line fit to these rows, so it must reproduce them. ZWO's published table, which the
+# research notes quote, is slower by about 0.9 ms of overhead in the small ROIs of the fast
+# streams, and in bin2 it has a larger row time for the 14-bit readout.
+MEASURED_FRAME_RATES = [
+    ("bin1", False, 32, 116.7),
+    ("bin1", False, 64, 102.3),
+    ("bin1", False, 128, 82.1),
+    ("bin1", False, 256, 58.8),
+    ("bin1", False, 512, 37.6),
+    ("bin1", True, 32, 146.2),
+    ("bin1", True, 64, 128.2),
+    ("bin1", True, 128, 102.9),
+    ("bin1", True, 256, 73.7),
+    ("bin1", True, 512, 47.1),
+    ("bin2", False, 64, 417.1),
+    ("bin2", False, 128, 278.6),
+    ("bin2", False, 256, 167.9),
+    ("bin2", False, 512, 93.5),
 ]
 
 
 @pytest.mark.parametrize(
-    ("mode", "high_speed", "column"),
-    [("bin1", False, 1), ("bin1", True, 2), ("bin2", False, 3), ("bin2", True, 4)],
-    ids=["bin1-12bit", "bin1-10bit", "bin2-14bit", "bin2-12bit"],
+    ("mode", "high_speed", "rows", "measured"),
+    MEASURED_FRAME_RATES,
+    ids=[f"{m}-{'hs' if h else 'normal'}-{r}" for m, h, r, _ in MEASURED_FRAME_RATES],
 )
-def test_frame_rates_match_zwos_published_table_within_2_percent(
-    reference: Profile, mode: str, high_speed: bool, column: int
+def test_frame_rates_match_the_measured_table_within_2_percent(
+    reference: Profile, mode: str, high_speed: bool, rows: int, measured: float
 ) -> None:
     readout = reference.mode(mode, high_speed=high_speed)
-    for row in ZWO_FRAME_RATES:
-        published = row[column]
-        if published is None or row[0] > readout.height_px:
-            continue
-        rate = reference.max_frame_rate_hz(readout, row[0], exposure_us=100)
-        assert rate == pytest.approx(published, rel=0.02)
+    assert reference.max_frame_rate_hz(readout, rows, exposure_us=500) == pytest.approx(
+        measured, rel=0.02
+    )
 
 
 def test_the_data_rate_of_a_fast_bin1_stream(reference: Profile) -> None:
     rate = reference.data_rate_bytes_per_s("bin1", 128, 128, exposure_us=2000)
-    assert rate == pytest.approx(2.9e6, rel=0.01)  # 32 KB x 88 fps: "2.9 MB/s" in the architecture
+    assert rate == pytest.approx(2.69e6, rel=0.01)  # 32 KB x 82 fps
     raw8 = reference.data_rate_bytes_per_s("bin1", 128, 128, 2000, pixel_format=PixelFormat.RAW8)
     assert raw8 == pytest.approx(rate / 2)
 
@@ -254,9 +263,9 @@ def test_the_high_speed_modes_have_fewer_adc_bits(reference: Profile) -> None:
 
 def test_the_high_speed_variant_changes_the_timing(reference: Profile) -> None:
     fast = reference.mode("bin1", high_speed=True)
-    assert (fast.row_time_us, fast.frame_overhead_ms) == (30.1, 5.0)
+    assert (fast.row_time_us, fast.frame_overhead_ms) == (30.0, 5.88)
     assert reference.frame_period_s(fast, 128, exposure_us=2000) == pytest.approx(
-        5.0e-3 + 128 * 30.1e-6
+        5.88e-3 + 128 * 30.0e-6
     )
 
 

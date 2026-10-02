@@ -22,13 +22,14 @@ def test_plate_scales_match_the_research_notes() -> None:
     assert SimParams.reference("bin2").plate_scale_arcsec_per_px == pytest.approx(3.820, abs=0.001)
 
 
-def test_frame_periods_match_the_research_notes() -> None:
-    # "Bin1, 128 rows: 6.5 ms + 128 x 37.6 us = 11.3 ms, or 88 fps."
+def test_frame_periods_match_the_measured_camera() -> None:
+    # The real camera at USB bandwidth 100: bin1, 128 rows: 7.37 ms + 128 x 37.6 us = 12.2 ms, or
+    # 82 fps.
     bin1 = SimParams.reference("bin1")
-    assert bin1.readout_time_s(128) == pytest.approx(11.3e-3, abs=0.02e-3)
-    # "Bin2, 64 rows: 1.4 ms + 64 x 21.3 us = 2.8 ms, or 360 fps."
+    assert bin1.readout_time_s(128) == pytest.approx(12.18e-3, abs=0.02e-3)
+    # Bin2, 64 rows: 1.22 ms + 64 x 18.5 us = 2.4 ms, or 416 fps (417 measured at 0.5 ms).
     bin2 = SimParams.reference("bin2")
-    assert 1 / bin2.readout_time_s(64) == pytest.approx(360, rel=0.02)
+    assert 1 / bin2.readout_time_s(64) == pytest.approx(416, rel=0.02)
 
 
 def test_the_reference_equals_the_reference_profile(profile: Profile) -> None:
@@ -109,7 +110,7 @@ def test_roi_rounding_follows_the_vendor_rules() -> None:
 def test_the_high_speed_variant_is_separate() -> None:
     params = SimParams.reference("bin1")
     fast = params.effective(high_speed=True)
-    assert (fast.adc_bits, fast.row_time_s, fast.frame_overhead_s) == (10, 30.1e-6, 5.0e-3)
+    assert (fast.adc_bits, fast.row_time_s, fast.frame_overhead_s) == (10, 30.0e-6, 5.88e-3)
     assert params.effective(high_speed=False) is params
     with pytest.raises(ValueError, match="no high-speed"):
         SimParams().effective(high_speed=True)

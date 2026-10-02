@@ -10,9 +10,11 @@ rate that the budget uses:
 | `bin2_320x240_u8` | The owner's recordings: bin2, 320 x 240, 8-bit container. | 98 fps |
 
 The frames come from `seeingmon.fastpath.benchmark.star_frames`, which draws a Polaris-like star
-with photon and read noise. The profile's frame period for the first mode is 11.3 ms (88 fps), and
-the budget uses the 98 fps of the owner's recordings, which is the harder figure. A smoke run uses
-a smaller ROI for the largest mode, so that drawing its frames takes a fraction of a second.
+with photon and read noise. The profile's frame period for the first mode is 12.2 ms (82 fps, or
+103 in high-speed mode), and the budget uses the 98 fps of the owner's recordings, which is the
+harder figure. The bin2 64 x 64 row keeps the budget of 360 fps, and the camera measured 417 to
+465 fps. A smoke run uses a smaller ROI for the largest mode, so that drawing its frames takes a
+fraction of a second.
 """
 
 from __future__ import annotations
