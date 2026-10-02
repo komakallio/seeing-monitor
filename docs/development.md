@@ -31,6 +31,8 @@ The secret scan reads every tracked file, and one false positive turns `main` re
 
 CI runs every check on Windows, Linux x64, and Linux arm64 with Python 3.11 and 3.13, so write code that runs on 3.11. Do not use syntax or library features that appeared in 3.12 or later. Python 3.11 is not installed on the dev machine, so CI is the first place a 3.11 problem shows.
 
+On `main`, one CI run goes at a time, and at most one waits behind it. A newer push replaces the waiting run, so a burst of pushes tests the newest commit, and the commits in between get no run of their own. A nightly workflow (`.github/workflows/nightly.yml`) runs the slow tests (`pytest --slow -m slow`) on Windows, Linux x64, and Linux arm64. Start it by hand with `gh workflow run nightly.yml`. The JavaScript scenarios of the web UI (`tests/services/web/js/`) run under Node when it is installed and skip otherwise, so a machine without Node finds a failure of them in CI.
+
 ## Commit routine
 
 Run these steps for every commit.
