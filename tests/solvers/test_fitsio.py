@@ -246,3 +246,38 @@ def test_a_table_with_no_rows_round_trips(tmp_path: Path) -> None:
     table = fitsio.read_table(path)
     assert table["X"].shape == (0,)
     assert table["EXCESS"].dtype == np.float32
+
+
+class TestTheStreamingWriter:
+    """`write_image_stream` writes the bytes of `image_bytes`, a few rows at a time."""
+
+    @pytest.mark.parametrize("dtype", [np.uint16, np.uint8, np.float32])
+    @pytest.mark.parametrize("chunk_rows", [1, 3, 128])
+    def test_the_bytes_equal_image_bytes(
+        self, tmp_path: Path, dtype: type, chunk_rows: int
+    ) -> None:
+        rng = np.random.default_rng(3)
+        image: np.ndarray = (rng.uniform(0, 200, (10, 7)) * 100).astype(dtype)
+        header: fitsio.Header = {"EXPTIME": 30.0, "MODE": "bin2", "NFRAMES": 9}
+        path = tmp_path / "image.fits"
+        with path.open("wb") as handle:
+            written = fitsio.write_image_stream(handle, image, header=header, chunk_rows=chunk_rows)
+        assert path.read_bytes() == fitsio.image_bytes(image, header=header)
+        assert written == path.stat().st_size
+        assert written % fitsio.BLOCK == 0
+
+    def test_astropy_reads_the_file(self, tmp_path: Path) -> None:
+        image = np.arange(60, dtype=np.uint16).reshape(6, 10) * 1000
+        path = tmp_path / "image.fits"
+        with path.open("wb") as handle:
+            fitsio.write_image_stream(handle, image, header={"GAIN": 120})
+        with fits.open(path) as hdus:
+            assert hdus[0].header["GAIN"] == 120
+            np.testing.assert_array_equal(hdus[0].data, image)
+
+    def test_a_three_dimensional_array_is_refused(self, tmp_path: Path) -> None:
+        with (
+            (tmp_path / "x.fits").open("wb") as handle,
+            pytest.raises(fitsio.FitsError, match="2-D"),
+        ):
+            fitsio.write_image_stream(handle, np.zeros((2, 2, 2), np.uint16))

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, TypeAlias
@@ -175,32 +176,81 @@ def write_image(
     Path(path).write_bytes(image_bytes(image, header=header))
 
 
+def _stored_i2_with_bzero(rows: npt.NDArray[Any]) -> npt.NDArray[Any]:
+    return (rows.astype(np.int32) - 32768).astype(">i2")
+
+
+def _stored_u1(rows: npt.NDArray[Any]) -> npt.NDArray[Any]:
+    return rows.astype("u1")
+
+
+def _stored_f4(rows: npt.NDArray[Any]) -> npt.NDArray[Any]:
+    return rows.astype(">f4")
+
+
+def _image_layout(
+    array: npt.NDArray[Any],
+) -> tuple[list[tuple[str, HeaderValue]], Callable[[npt.NDArray[Any]], npt.NDArray[Any]]]:
+    """The cards that describe an image, and the conversion of rows to the stored type."""
+    if array.ndim != 2:
+        raise FitsError("an image must be 2-D")
+    cards: list[tuple[str, HeaderValue]] = [("SIMPLE", True)]
+    if array.dtype == np.uint16:
+        convert = _stored_i2_with_bzero
+        cards += [("BITPIX", 16)]
+        extra: list[tuple[str, HeaderValue]] = [("BZERO", 32768), ("BSCALE", 1)]
+    elif array.dtype == np.uint8:
+        convert = _stored_u1
+        cards += [("BITPIX", 8)]
+        extra = []
+    elif array.dtype.kind == "f":
+        convert = _stored_f4
+        cards += [("BITPIX", -32)]
+        extra = []
+    else:
+        raise FitsError(f"unsupported image type {array.dtype}")
+    cards += [("NAXIS", 2), ("NAXIS1", array.shape[1]), ("NAXIS2", array.shape[0])]
+    return cards + extra, convert
+
+
 def image_bytes(image: npt.NDArray[Any], *, header: Header | None = None) -> bytes:
     """The bytes of a FITS file with a 2-D image as the primary HDU.
 
     Use it to write the file in one atomic step, for example with `DataLayout.write_atomic`.
     """
     array = np.asarray(image)
-    if array.ndim != 2:
-        raise FitsError("an image must be 2-D")
-    cards: list[tuple[str, HeaderValue]] = [("SIMPLE", True)]
-    if array.dtype == np.uint16:
-        stored = (array.astype(np.int32) - 32768).astype(">i2")
-        cards += [("BITPIX", 16)]
-        extra: list[tuple[str, HeaderValue]] = [("BZERO", 32768), ("BSCALE", 1)]
-    elif array.dtype == np.uint8:
-        stored = array.astype("u1")
-        cards += [("BITPIX", 8)]
-        extra = []
-    elif array.dtype.kind == "f":
-        stored = array.astype(">f4")
-        cards += [("BITPIX", -32)]
-        extra = []
-    else:
-        raise FitsError(f"unsupported image type {array.dtype}")
-    cards += [("NAXIS", 2), ("NAXIS1", array.shape[1]), ("NAXIS2", array.shape[0])]
-    cards += extra + list((header or {}).items())
-    return _header_bytes(cards) + _pad(stored.tobytes())
+    cards, convert = _image_layout(array)
+    cards += list((header or {}).items())
+    return _header_bytes(cards) + _pad(convert(array).tobytes())
+
+
+def write_image_stream(
+    handle: BinaryIO,
+    image: npt.NDArray[Any],
+    *,
+    header: Header | None = None,
+    chunk_rows: int = 128,
+) -> int:
+    """Write a FITS file with a 2-D image as the primary HDU to an open binary file.
+
+    The bytes equal `image_bytes`, but the function converts and writes `chunk_rows` rows at a time,
+    so a large frame (a 12 megapixel `uint16` image is 23 MB) needs only a small buffer and not
+    several copies of itself. Returns the number of bytes written.
+    """
+    array = np.asarray(image)
+    cards, convert = _image_layout(array)
+    cards += list((header or {}).items())
+    head = _header_bytes(cards)
+    handle.write(head)
+    data_bytes = 0
+    step = max(1, chunk_rows)
+    for start in range(0, array.shape[0], step):
+        chunk = convert(array[start : start + step]).tobytes()
+        handle.write(chunk)
+        data_bytes += len(chunk)
+    padding = -data_bytes % BLOCK
+    handle.write(b"\0" * padding)
+    return len(head) + data_bytes + padding
 
 
 # --- Reading -----------------------------------------------------------------------------
