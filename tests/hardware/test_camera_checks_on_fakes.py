@@ -87,3 +87,19 @@ def test_every_check_works_through_the_driver_protocol(rig: Rig) -> None:
     driver: CameraDriver = rig.driver
     rig.driver.open()
     checks.check_recovery_restart(driver, reference_profile())
+
+
+def test_stale_controls_are_overridden_and_the_camera_comes_back(rig: Rig) -> None:
+    state = rig.sdk.state
+    before = (dict(state.controls), set(state.automatic))
+    report = checks.check_stale_controls_are_overridden(rig.sdk, rig.driver, reference_profile())
+    assert "applied bandwidth 100, flip 0" in report
+    assert "camera is back as it was" in report
+    assert (dict(state.controls), set(state.automatic)) == before
+
+
+def test_the_stale_controls_check_fails_for_a_driver_that_leaves_the_bandwidth_alone() -> None:
+    rig = make_rig(bandwidth_pct=None)  # the option that leaves the control: the old behavior
+    with pytest.raises(AssertionError, match="bandwidth_overload"):
+        checks.check_stale_controls_are_overridden(rig.sdk, rig.driver, reference_profile())
+    assert rig.sdk.state.controls[6] == 50  # the check still put the camera back

@@ -12,9 +12,10 @@ from __future__ import annotations
 import statistics
 from itertools import pairwise
 
+from seeingmon.drivers.asi import AsiDriver
 from seeingmon.drivers.base import CameraDriver, RecoveryLevel
 from seeingmon.frames import FrameFlag, PixelFormat, Roi, StreamConfig
-from seeingmon.hardware.asi.api import AsiApi
+from seeingmon.hardware.asi.api import AsiApi, AsiControl
 from seeingmon.profile import Profile
 
 FRAME_TIMEOUT_S = 5.0
@@ -180,3 +181,61 @@ def check_usb_reset(driver: CameraDriver, profile: Profile) -> str:
     assert frame.flags & FrameFlag.RECOVERED
     driver.stop()
     return "the camera reappeared and streamed again"
+
+
+def check_stale_controls_are_overridden(api: AsiApi, driver: AsiDriver, profile: Profile) -> str:
+    """The driver sets the controls that the camera keeps, over a camera that another program left
+    in another state, and the camera is back as it was at the end.
+
+    The camera keeps its USB bandwidth, flip, offset, and high-speed mode between processes. The
+    check makes them stale (half the bandwidth, a flip, another offset, high-speed mode), configures
+    the fast stream, and reads the controls back through the SDK. It also streams, because a stale
+    bandwidth halves the frame rate.
+    """
+    driver.open()
+    saved = driver.save_settings()
+    try:
+        camera_id = api.get_camera_property(0).camera_id
+        offset_range = driver.capabilities().offset_range
+        stale_offset = 20 if offset_range is None else min(20, offset_range[1])
+        for control, value in (
+            (AsiControl.BANDWIDTH_OVERLOAD, 50),
+            (AsiControl.FLIP, 3),
+            (AsiControl.OFFSET, stale_offset),
+            (AsiControl.HIGH_SPEED_MODE, 1),
+        ):
+            api.set_control_value(camera_id, control, value)
+        active = driver.configure(fast_config(profile))
+        applied = {
+            control.name.lower(): api.get_control_value(camera_id, control)
+            for control in (
+                AsiControl.BANDWIDTH_OVERLOAD,
+                AsiControl.FLIP,
+                AsiControl.OFFSET,
+                AsiControl.HIGH_SPEED_MODE,
+            )
+        }
+        assert applied["bandwidth_overload"] == (100, False), applied
+        assert applied["flip"] == (0, False), applied
+        assert applied["high_speed_mode"] == (0, False), applied
+        assert applied["offset"][0] == active.config.offset, applied
+        assert not applied["offset"][1], applied
+        driver.start()
+        arrivals = [driver.read_frame(FRAME_TIMEOUT_S).t_arrival_ns for _ in range(41)]
+        driver.stop()
+        fps = 40 / ((arrivals[-1] - arrivals[0]) / 1e9)
+        expected_s = active.frame_period_s
+        assert expected_s is not None
+        assert fps > 0.7 / expected_s, (
+            f"the stream runs at {fps:.1f} fps and the profile predicts {1 / expected_s:.1f}: a "
+            "bandwidth that the driver left as it found it would give about half"
+        )
+    finally:
+        problems = driver.restore_settings(saved)
+    assert not problems, f"the camera could not be restored: {problems}"
+    return (
+        f"over a stale camera (bandwidth 50, flip 3, offset {stale_offset}, high-speed on) the "
+        f"driver applied bandwidth 100, flip 0, offset {active.config.offset}, and normal speed, "
+        f"and the stream ran at {fps:.1f} fps (the profile predicts {1 / expected_s:.1f}); the "
+        "camera is back as it was"
+    )
