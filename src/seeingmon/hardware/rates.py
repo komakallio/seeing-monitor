@@ -475,14 +475,19 @@ def format_row(row: RateRow) -> str:
 
 
 def format_fits(fits: Sequence[TimingFit]) -> list[str]:
-    """The fitted timing beside the profile's values, one line for each readout mode and speed."""
+    """The fitted timing beside the profile's values, one line for each readout mode and speed.
+
+    A line names the keys of the profile (`frame_overhead_ms_high_speed` for the high-speed mode),
+    so that you can copy the values into the readout mode.
+    """
     lines = []
     for fit in fits:
         speed = "high-speed" if fit.high_speed else "normal"
+        suffix = "_high_speed" if fit.high_speed else ""
         lines.append(
-            f"{fit.mode} {speed}: frame_overhead_ms = {fit.frame_overhead_ms:.2f} "
-            f"(profile {fit.profile_frame_overhead_ms:.2f}), row_time_us = {fit.row_time_us:.1f} "
-            f"(profile {fit.profile_row_time_us:.1f}), {fit.points} sizes, "
+            f"{fit.mode} {speed}: frame_overhead_ms{suffix} = {fit.frame_overhead_ms:.2f} "
+            f"(profile {fit.profile_frame_overhead_ms:.2f}), row_time_us{suffix} = "
+            f"{fit.row_time_us:.1f} (profile {fit.profile_row_time_us:.1f}), {fit.points} sizes, "
             f"largest error {fit.max_error_pct:.1f}%"
         )
     return lines
