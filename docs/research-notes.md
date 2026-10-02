@@ -209,7 +209,7 @@ Verdict, from the seeing-theory comparison: keep the GS-250. The GS-300 is neutr
 
 | Topic | Finding | Tag | Source |
 |---|---|---|---|
-| License | MIT (Expat), copyright ZWO Company 2015, in the copy that INDI and Debian vendor. Debian files libasi under non-free because the binaries ship without source. The file inside ZWO's own archive was not checked. | V; archive U | https://raw.githubusercontent.com/indilib/indi-3rdparty/master/libasi/license.txt, https://sources.debian.org/src/libasi/1.27%2B20221218230335-2/debian/copyright/ |
+| License | MIT (Expat), copyright ZWO Company 2015, in the copy that INDI and Debian vendor. Debian files libasi under non-free because the binaries ship without source. ZWO's own V1.41 archives, for Windows and for Linux and macOS, each carry the MIT license text with the notice "Copyright (c) 2015, ZWO Company" (checked on October 2, 2026, after this research ran). | V | https://raw.githubusercontent.com/indilib/indi-3rdparty/master/libasi/license.txt, https://sources.debian.org/src/libasi/1.27%2B20221218230335-2/debian/copyright/, Z13 |
 | Platforms | Linux armv8 and x64, Windows x64 (needs ZWO driver V3.28), macOS. Several projects report Pi 3, 4, and 5 working. | V, S | https://github.com/indilib/indi-3rdparty/tree/master/libasi, https://www.zwoastro.com/software/camera-driver/ |
 | Frame timestamps | None. Only GPS camera variants return time (`ASI_GPS_DATA`). | V | Z11 |
 | Video mode | `ASIGetVideoData` waits `wait_ms` (vendor advice: twice the exposure plus 500 ms). The internal buffer is small, and a late read discards frames. | V | Z11 |
