@@ -45,7 +45,6 @@ States are not started, in progress, blocked, and done.
 | B6 | The InfluxDB version and field names | Owner (deferred) | Nothing | A configurable adapter |
 | B7 | The web access rule | Owner (deferred) | Nothing | The default rule in the architecture |
 | B8 | Your approval of the look of the Align overlay | Owner | The "How to align" text on the page, the three switch labels, the demo (it has no aim ring or arrows yet), the Node scenarios for the new model, and the Align sections of `docs/architecture.md` and the runbook | The overlay on `main` as it is |
-| B9 | Your consent to build the real cap catalog (`seeingmon catalog build`): about an hour of read-only queries to the public Gaia archive, with the files under your data directory, outside the repository | Owner | The first real plate solution and the zero point (step 7, with B1 and B2) | The synthetic catalog and the fake solver |
 
 ## Not a step
 
@@ -53,4 +52,4 @@ States are not started, in progress, blocked, and done.
 
 ## Next unblocked work
 
-Close B8 and B9 when you answer. Then check the CI runs and the nightly run, take the quiet measurement of the running system, read `docs/architecture.md` once more for stale text, and send the owner one message that lists the remaining blockers. The software does not need more work before the hardware arrives. The next real steps are the commissioning steps in `docs/runbook.md`, which need B1 and B2.
+Finish the real cap catalog (the build runs, with your consent of October 2) and copy it to the data folder. Let the hardware lane finish its refit and the docs lane its pass. Then check the CI runs and the nightly run, and send the owner one message that lists the remaining blockers. B8 closes when you give your feedback on the UI. The quiet measurement of the whole system belongs on the Pi 4 (`seeingmon perf run --quiet-wait 120`, with B2), because a dev-machine run only tightens an estimate, so it is not on this list. The software does not need more work before the hardware arrives. The next real steps are the commissioning steps in `docs/runbook.md`, which need B1 and B2.
