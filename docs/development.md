@@ -100,13 +100,14 @@ scheduler = config.section("scheduler", SchedulerConfig)
 
 ## Records
 
-Declare each record type once, in the module of the lane that owns it (`records/seeing.py`, `survey.py`, `reference.py`, or `system.py`). To add a field, append it to your class with `quantity(...)`, and make it optional or give it a default, so an existing database migrates by adding a column. Then regenerate the quantity reference and commit it with your change:
+Declare each record type once, in the module of the lane that owns it (`records/seeing.py`, `survey.py`, `reference.py`, or `system.py`). To add a field, append it to your class with `quantity(...)`, and make it optional or give it a default, so an existing database migrates by adding a column. Then regenerate the quantity reference and the API description, which carries the record schemas, and commit both with your change:
 
 ```bash
 <py> -m seeingmon records reference --output <clone>/docs/quantities.md
+<py> -m seeingmon web openapi --output <clone>/docs/openapi.json
 ```
 
-A test fails when `docs/quantities.md` is stale. After a rebase conflict in that file, regenerate it instead of merging it by hand. A new unit needs a line in `UNIT_SUFFIXES` in `tests/records/test_declarations.py`. Two events can share a timestamp, so the store moves a colliding event by one nanosecond. Producers do not handle that themselves.
+A test fails when `docs/quantities.md` or `docs/openapi.json` is stale. After a rebase conflict in either file, regenerate it instead of merging it by hand. A new unit needs a line in `UNIT_SUFFIXES` in `tests/records/test_declarations.py`. Two events can share a timestamp, so the store moves a colliding event by one nanosecond. Producers do not handle that themselves.
 
 ## Dependencies and the lock
 
