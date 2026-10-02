@@ -1,6 +1,6 @@
 # Runbook
 
-This runbook covers how to install, upgrade, roll back, check, and look after the seeing monitor on a Raspberry Pi. It follows the Deployment section of [architecture.md](architecture.md). The scripts and files that it names live in `deploy/`.
+This runbook covers how to install, upgrade, roll back, check, and look after the seeing monitor on a Raspberry Pi. It follows the Deployment section of [architecture.md](architecture.md). The scripts and files that it names live in `deploy/`. One section, [First light on the dev machine](#first-light-on-the-dev-machine), covers the first run on the real sky without a Pi.
 
 Paths such as `/opt/seeingmon` and `/etc/seeingmon` are examples. The installer has no default for any path, host, or user name: you pass every value. Angle brackets, such as `<pi-host>`, mark a value that you supply.
 
