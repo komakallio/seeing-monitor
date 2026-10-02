@@ -192,7 +192,7 @@ Every result is an immutable record keyed by `(station_id, record_type, t_utc_ns
 
 | Record | Content |
 |---|---|
-| `frame` (local files; optional sink) | Sequence, UTC time and error, stream ID, centroid, width, peak, flux, background, flags (44 bytes a row) |
+| `frame` (segment files only: no sink takes it) | Sequence, UTC time and error, centroid, width, peak, flux, background, flags, and the frames lost before it (44 bytes a row, and the segment header holds the stream ID) |
 | `seeing_window` (each 60 s window) | Frame and drop counts, image-motion RMS, seeing, r0, scintillation, spectrum bins, vibration lines, heater duty, flags |
 | `survey_frame`, `sky_quality`, `pointing` (each survey step) | Exposure, gain, mode, temperature. Sky brightness, zero point, transparency, cloud fraction. Attitude, center, roll, scale, residual, offset, focus. |
 | `star_list` (each survey step), `star_epoch` (each night) | Matched stars brighter than G = 11 and all unmatched detections. Per star and night: mean position offset, mean magnitude, scatter, frame count. |
