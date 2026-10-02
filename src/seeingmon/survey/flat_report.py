@@ -19,8 +19,9 @@ pixels, where the center of the first pixel is (0, 0), as everywhere else in the
 - the *fine part*, the image over the radial part and the rest, which holds the shadows of dust
   and the pixel pattern.
 
-The radial part is the azimuthal mean of the image itself, not of a smoothed copy, so the
-smoothing cannot bias it at the frame edge, where the vignetting is steepest.
+The radial part is the azimuthal mean of the image itself (with its plane divided out), not of a
+smoothed copy, so the smoothing cannot bias it at the frame edge, where the vignetting is
+steepest.
 
 **Reading the numbers.** A frame is point-symmetric about its center, and a plane is odd, so the
 azimuthal mean of a plane is zero when the optical center is the center of the frame. The radial
@@ -258,21 +259,30 @@ def decompose(
 
     `center_xy` is the optical center in the pixels of `image`, and `high_pass_px` the width of
     the Gaussian (in the same pixels) that separates the smooth rest from the fine part. The
-    image must be positive where it is valid.
+    image must be positive where it is valid. The radial part is the azimuthal mean of the image
+    with its plane divided out.
     """
     if high_pass_px <= 0:
         raise ValueError("the high-pass width must be positive")
     radius = radius_map(image.shape, center_xy)
+    x = (np.arange(image.shape[1], dtype=np.float64) - center_xy[0])[None, :]
+    y = (np.arange(image.shape[0], dtype=np.float64) - center_xy[1])[:, None]
     profile = azimuthal_profile(image, radius, valid=valid)
     if profile.radius.size < 2:
         raise ValueError("the image has no valid pixels to measure")
     radial_map = np.maximum(profile_map(profile, radius), _TINY)
-    ratio = image / radial_map
     # The plane goes first: a Gaussian that smooths a sloped image is biased at the edge, where
     # it sees the image on one side only, and the bias would leave a tilt in the fine part.
+    level, slope_x, slope_y = _plane_coefficients(image / radial_map, center_xy, valid)
+    plane = np.maximum(level + slope_x * x + slope_y * y, _TINY)
+    # The rings come second, from the image with its plane divided out. A ring at the frame edge
+    # holds a few pixels, and when they are not symmetric about the center (a binned frame that
+    # drops a row, or an optical center that you moved), a steep plane would leave its slope in
+    # the mean of the ring, and so in the fine part at the corners.
+    profile = azimuthal_profile(image / plane, radius, valid=valid)
+    radial_map = np.maximum(profile_map(profile, radius), _TINY)
+    ratio = image / radial_map
     level, slope_x, slope_y = _plane_coefficients(ratio, center_xy, valid)
-    x = (np.arange(image.shape[1], dtype=np.float64) - center_xy[0])[None, :]
-    y = (np.arange(image.shape[0], dtype=np.float64) - center_xy[1])[:, None]
     plane = np.maximum(level + slope_x * x + slope_y * y, _TINY)
     residual = ratio / plane
     rest = np.maximum(plane * normalized_gaussian(residual, valid, high_pass_px), _TINY)

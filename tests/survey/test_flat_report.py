@@ -87,6 +87,17 @@ class TestTheDecomposition:
         assert rest.width_percent == pytest.approx(1.0, abs=0.05)
         assert rest.height_percent == pytest.approx(-0.4, abs=0.05)
 
+    def test_a_plane_leaves_no_slope_in_the_rings_at_the_frame_edge(self) -> None:
+        # The optical center lies a quarter pixel off the middle of the frame, as it does when a
+        # binned frame drops a row, and the frame has a plane of 4.5% across its height. A ring at
+        # the corner holds few pixels, and when they are not symmetric about the center, a plane
+        # that stays in the image leaves its slope in the mean of the ring.
+        x, y = grid()
+        radius = np.hypot(x - CENTER[0], y - CENTER[1])
+        image = (1.0 - 0.00001 * radius**2) * (1.0 + 0.045 * (y - CENTER[1]) / SHAPE[0])
+        parts = fr.decompose(image, center_xy=(CENTER[0], CENTER[1] + 0.25), high_pass_px=10.0)
+        assert float(np.abs(parts.fine - 1.0).max()) < 0.001  # 1.6% when the plane stays in
+
     def test_invalid_pixels_do_not_count_and_their_fine_part_is_one(self) -> None:
         image = self.make()
         valid = np.ones(SHAPE, dtype=np.bool_)

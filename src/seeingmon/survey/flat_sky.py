@@ -38,12 +38,13 @@ new frames. A frame that expires from the folder stays in the sum. The file is w
 temporary name and renamed, so a crash cannot corrupt it.
 
 **The flat.** The mean `M` is the sum over the count, scaled to a median of 1. The radial part is
-the azimuthal mean of `M` about the optical center. The smooth rest of `M` over the radial part, a
-Gaussian of 40 binned pixels, holds the tilt and the sky gradients, and the flat leaves it out. The
-fine part is `M` over the radial part and the rest. The flat is the radial part times the fine part,
-scaled to a median of 1 and spread over the sensor with bilinear interpolation. This is the
-recipe of the sky average with a better edge: the radial part comes from `M` itself, so the Gaussian
-cannot bias it where the vignetting is steepest.
+the azimuthal mean of `M` about the optical center, with the plane of `M` divided out first (a
+steep gradient of the sky would leave its slope in the rings at the corners otherwise). The smooth
+rest of `M` over the radial part, a Gaussian of 40 binned pixels, holds the tilt and the sky
+gradients, and the flat leaves it out. The fine part is `M` over the radial part and the rest. The
+flat is the radial part times the fine part, scaled to a median of 1 and spread over the sensor
+with bilinear interpolation. This is the recipe of the sky average with a better edge: the radial
+part comes from `M` itself, so the Gaussian cannot bias it where the vignetting is steepest.
 
 **Checks.** The roll of a frame is the Earth rotation angle at its time. The report gives the
 coverage: 360 degrees minus the largest gap between the rolls. A flat from fewer than 20 frames or
