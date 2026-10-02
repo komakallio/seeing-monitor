@@ -223,7 +223,7 @@ An external watchdog on your LAN can poll this endpoint (see [Remote power cycle
 
 ## Reach the web UI through a VPN
 
-`web` listens on `bind_address` and on every address of `extra_bind_addresses`, and it never listens on all interfaces. It answers a request only when the `Host` header names an allowed host: the loopback names, every bind address, and the entries of `allowed_hosts`. A WebSocket handshake (the live view of the Align page) also needs an `Origin` header that names an allowed host, so a page from another site cannot open it. The server answers any other request with 400.
+`web` listens on `bind_address` and on every address of `extra_bind_addresses`, and it never listens on all interfaces. It answers a request only when the `Host` header names an allowed host: the loopback names, every bind address, and the entries of `allowed_hosts`. A WebSocket handshake (the live view of the Align page) that carries an `Origin` header must name an allowed host there too, so a page from another site cannot open it. The server answers a request with another `Host` with 400, and a handshake with another `Origin` with 403.
 
 To reach the UI through a VPN, such as a tailnet:
 
