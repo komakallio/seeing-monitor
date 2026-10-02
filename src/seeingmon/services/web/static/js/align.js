@@ -270,10 +270,10 @@
       ? SkyGrid.plan(sky.camera, { width: frame.width_px, height: frame.height_px }, scale, {
           colatitudeDeg: sky.polaris_colatitude_deg === undefined ? null : sky.polaris_colatitude_deg,
           grid: show.grid,
-          orbitText: show.pole ? AlignText.orbitLabel(orbitState) : "",
+          orbitText: show.pole ? "Polaris’ circle" : "",
           poleText: show.pole ? "pole" : "",
           poleArrowText: show.pole ? (side) => AlignText.poleArrowText(sky, side) : null,
-          aimText: showAim ? "aim" : "",
+          aimText: "",
           markers,
           fontPx: FONT_PX,
         })
@@ -303,18 +303,62 @@
       }
     }
 
-    // 2. The orbit of Polaris, dashed and in the color of its state.
+    // 2. The orbit of Polaris in the sky: a solid ring that moves with the stars.
     if (plan && show.pole && plan.orbit) {
       ctx.strokeStyle = colors.orbit;
-      ctx.lineWidth = orbitState === "bad" ? 2.6 : 2;
-      ctx.setLineDash([7, 5]);
+      ctx.lineWidth = orbitState === "bad" ? 2.8 : 2.4;
       for (const points of plan.orbit.polylines) {
         polyline(ctx, points);
       }
-      ctx.setLineDash([]);
       const label = labelFor("orbit");
       if (label) {
         drawLabel(ctx, label, colors.orbit, colors.halo);
+      }
+    }
+
+    // 2b. The reticle: a dashed circle fixed at the aim (the middle of the frame) with the radius of
+    // the orbit of Polaris, and the aim ring on it, where Polaris belongs for this frame. Alt-az moves
+    // translate the image, so the ring sits at the angle of (Polaris - pole) around the aim.
+    let aimRing = null;
+    if (sky && show.pole && sky.polaris_colatitude_deg !== null && sky.polaris_colatitude_deg !== undefined) {
+      const camera = sky.camera;
+      const radiusFrame = Math.tan((sky.polaris_colatitude_deg * Math.PI) / 180) / ((camera.scale_arcsec_px * Math.PI) / 648000);
+      const middle = at(camera.center_x_px, camera.center_y_px);
+      const radius = radiusFrame * scale;
+      const aligned = sky.pole && sky.pole.distance_arcmin !== null && sky.pole.distance_arcmin !== undefined && sky.pole.distance_arcmin < 2;
+      const reticle = aligned ? colors.target : colors.aim;
+      ctx.strokeStyle = reticle;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      ctx.arc(middle[0], middle[1], radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (state.solved && sky.pole && sky.pole.x_px !== null && sky.pole.x_px !== undefined) {
+        const angle = Math.atan2(state.solved.y_px - sky.pole.y_px, state.solved.x_px - sky.pole.x_px);
+        aimRing = [middle[0] + Math.cos(angle) * radius, middle[1] + Math.sin(angle) * radius];
+        ctx.strokeStyle = colors.target;
+        ctx.fillStyle = colors.target;
+        ctx.lineWidth = 2.2;
+        ring(ctx, aimRing[0], aimRing[1], 16);
+        ctx.beginPath();
+        ctx.arc(aimRing[0], aimRing[1], 2, 0, Math.PI * 2);
+        ctx.fill();
+        drawLabel(ctx, { text: "aim", x: aimRing[0] + 20, y: aimRing[1] - 24, align: "left" }, colors.target, colors.halo);
+        if (solved && !aligned) {
+          const distance = Math.hypot(solved[0] - aimRing[0], solved[1] - aimRing[1]);
+          if (distance > 34) {
+            const heading = Math.atan2(aimRing[1] - solved[1], aimRing[0] - solved[0]);
+            ctx.strokeStyle = colors.solved;
+            ctx.fillStyle = colors.solved;
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(solved[0] + Math.cos(heading) * 13, solved[1] + Math.sin(heading) * 13);
+            ctx.lineTo(aimRing[0] - Math.cos(heading) * 20, aimRing[1] - Math.sin(heading) * 20);
+            ctx.stroke();
+            arrowHead(ctx, aimRing[0] - Math.cos(heading) * 20, aimRing[1] - Math.sin(heading) * 20, heading, 9);
+          }
+        }
       }
     }
 
