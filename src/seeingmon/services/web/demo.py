@@ -10,10 +10,12 @@ sources, so that you can look at the UI on a laptop:
   measurement. The records carry no zenith angle, and the station is `demo-station`.
 - **A fake `core`.** `DemoCore` is a `FakeCoreClient` whose live view streams the frames of a
   synthetic star field (`StarField`) while the fake scheduler aligns. Start and stop the alignment
-  in the UI with the demo token (`DEMO_TOKEN`). The mount drifts around the target, so the
-  overlays move, and the saturation warning comes and goes. The fake `core` also holds a dark
-  library of six sets with a model, and it plays a dark session on a short timeline (see
-  `DEMO_DARK_SCRIPT`): queued, bias frames, the wait for the cover, dark frames, and the
+  in the UI with the demo token (`DEMO_TOKEN`). The pole starts 0.9 degrees right of and 0.4
+  degrees above the field center, drifts through the center and back (`pole_offset_px`), and
+  Polaris follows on its orbit, so the numbers and the lines of the overlay move, and the orbit
+  is green, amber, and red in turn. The saturation warning comes and goes. The fake `core` also
+  holds a dark library of six sets with a model, and it plays a dark session on a short timeline
+  (see `DEMO_DARK_SCRIPT`): queued, bias frames, the wait for the cover, dark frames, and the
   build. The camera counts as covered a few seconds into the wait, so the session ends
   `ok`, adds a set at the sensor temperature, and pauses the fake scheduler, so that
   Resume works. A session without the wait for the cover fails, and Pause aborts one.
@@ -57,6 +59,7 @@ from seeingmon.services.web.contract import (
     HistogramView,
     OffsetView,
     SaturationView,
+    SkyView,
     SolvedView,
     TargetView,
 )
@@ -102,6 +105,18 @@ DEMO_DARK_SETS = (
     (20.2, 12.0),
     (23.8, 3.0),
 )
+
+# The sky of the live view. The pole starts `POLE_START_DEG` right of and above the field center,
+# and it swings through the center and back once in `POLE_DRIFT_PERIOD_S`. Polaris moves on a
+# circle of `SKY_COLATITUDE_DEG` around it.
+FRAME_CENTER_X = (FRAME_WIDTH_PX - 1) / 2
+FRAME_CENTER_Y = (FRAME_HEIGHT_PX - 1) / 2
+SKY_COLATITUDE_DEG = 0.62
+POLE_START_DEG = (0.9, 0.4)
+POLE_DRIFT_PERIOD_S = 150.0
+ORBIT_RADIUS_PX = SKY_COLATITUDE_DEG * 3600.0 / PLATE_SCALE_ARCSEC_PX
+# The right ascension of Polaris in the demo, which only decides where the labels of the grid fall.
+POLARIS_RA_DEG = 45.0
 
 
 class DemoClock:
@@ -424,23 +439,86 @@ def demo_records(now_ns: int = DEMO_NOW_NS, *, seed: int = 2026) -> list[Record]
 # --- Images ------------------------------------------------------------------------------------
 
 
-class StarField:
-    """A synthetic star field with Polaris near the target, as the alignment helper sees it.
+def pole_offset_px(t_s: float) -> tuple[float, float]:
+    """The offset of the pole from the frame center at demo time `t_s`, in pixels (right, down).
 
-    The field has a fixed set of stars. `image` draws them with a Gaussian profile, shifted by the
-    offset of the mount and turned about Polaris by the roll offset, on a sky with noise, and
-    stretches the result like the alignment helper does. Positions are in pixels of the frame
-    (`FRAME_WIDTH_PX` by `FRAME_HEIGHT_PX`), and the picture has the size that you ask for.
+    At `t_s` = 0 the pole is `POLE_START_DEG` right of and above the center. It swings through
+    the center and back once in `POLE_DRIFT_PERIOD_S`, with a little wobble, as if a hand moved
+    the mount. The orbit of Polaris is red while the pole is far out, amber while the circle just
+    fits, and green near the center.
+    """
+    phase = 0.5 * (1.0 + math.cos(2.0 * math.pi * t_s / POLE_DRIFT_PERIOD_S))
+    px_per_deg = 3600.0 / PLATE_SCALE_ARCSEC_PX
+    right = POLE_START_DEG[0] * px_per_deg * phase + 30.0 * math.sin(t_s / 9.0)
+    down = -POLE_START_DEG[1] * px_per_deg * phase + 20.0 * math.sin(t_s / 7.0)
+    return right, down
+
+
+def demo_sky(pole_right_px: float, pole_down_px: float, polaris_angle_deg: float) -> SkyView | None:
+    """The sky view for a camera whose pole lies at an offset from the frame center.
+
+    Polaris lies on its orbit, in the image direction `polaris_angle_deg` from straight down.
+    The view comes from `build_sky_view` through a synthetic camera attitude, so the numbers are
+    the ones that `core` computes for a real solution. The attitude needs the survey extra (the
+    model of the camera lives there), and a demo without it shows no sky view.
+    """
+    try:
+        from seeingmon.survey.skyview import build_sky_view
+        from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
+    except ImportError:
+        return None
+    scale_rad = PLATE_SCALE_ARCSEC_PX * RAD_PER_ARCSEC
+    # The camera-frame direction of the pole, from where it falls in the image.
+    pole = np.array([pole_right_px * scale_rad, pole_down_px * scale_rad, 1.0])
+    pole /= np.linalg.norm(pole)
+    # Polaris is SKY_COLATITUDE_DEG from the pole, toward the image direction given by the angle.
+    angle = math.radians(polaris_angle_deg)
+    toward = np.array([math.sin(angle), math.cos(angle), 0.0])
+    toward -= pole * float(toward @ pole)
+    toward /= np.linalg.norm(toward)
+    # The rotation takes the CIRS pole to `pole`, and the CIRS direction of Polaris to `toward`.
+    ra = math.radians(POLARIS_RA_DEG)
+    cirs_z = np.array([0.0, 0.0, 1.0])
+    cirs_polaris = np.array([math.cos(ra), math.sin(ra), 0.0])
+    cirs = np.stack([cirs_z, cirs_polaris, np.cross(cirs_z, cirs_polaris)], axis=1)
+    camera = np.stack([pole, toward, np.cross(pole, toward)], axis=1)
+    attitude = CameraAttitude(
+        rotation=camera @ cirs.T,
+        scale_rad_px=scale_rad,
+        parity=1,
+        center_px=pixel_center(FRAME_WIDTH_PX, FRAME_HEIGHT_PX),
+    )
+    geometry = build_sky_view(attitude, FRAME_WIDTH_PX, FRAME_HEIGHT_PX, SKY_COLATITUDE_DEG)
+    return SkyView.from_geometry(geometry)
+
+
+class StarField:
+    """A synthetic star field with Polaris on its orbit, as the alignment helper sees it.
+
+    The target is where Polaris belongs when the pole sits at the center of the frame: straight
+    below the center, on the orbit. The field has a fixed set of stars, spread over a wider area
+    than the frame at the same density, because the mount drifts by up to a degree. `image` draws
+    them with a Gaussian profile, shifted by the offset of the mount and turned about Polaris by
+    the roll offset, on a sky with noise, and stretches the result like the alignment helper
+    does. Positions are in pixels of the frame (`FRAME_WIDTH_PX` by `FRAME_HEIGHT_PX`), and the
+    picture has the size that you ask for.
     """
 
     def __init__(self, seed: int = 11, stars: int = 140) -> None:
         rng = np.random.default_rng(seed)
-        self.target_x = FRAME_WIDTH_PX / 2 + 12.0
-        self.target_y = FRAME_HEIGHT_PX / 2 - 20.0
-        magnitude = 5.0 + rng.exponential(1.7, stars).clip(0, 7.5)
+        self.target_x = FRAME_CENTER_X
+        self.target_y = round(FRAME_CENTER_Y + ORBIT_RADIUS_PX, 2)
+        margin_x, margin_y = 1000.0, 500.0
+        area = (FRAME_WIDTH_PX + 2 * margin_x) * (FRAME_HEIGHT_PX + 2 * margin_y)
+        count = round(stars * area / (FRAME_WIDTH_PX * FRAME_HEIGHT_PX))
+        magnitude = 5.0 + rng.exponential(1.7, count).clip(0, 7.5)
         flux = 10 ** (-0.4 * (magnitude - 5.0))
-        x = np.concatenate(([self.target_x], rng.uniform(20, FRAME_WIDTH_PX - 20, stars)))
-        y = np.concatenate(([self.target_y], rng.uniform(20, FRAME_HEIGHT_PX - 20, stars)))
+        x = np.concatenate(
+            ([self.target_x], rng.uniform(20 - margin_x, FRAME_WIDTH_PX + margin_x - 20, count))
+        )
+        y = np.concatenate(
+            ([self.target_y], rng.uniform(20 - margin_y, FRAME_HEIGHT_PX + margin_y - 20, count))
+        )
         self._x = x
         self._y = y
         self._flux = np.concatenate(([6.0], flux))
@@ -490,9 +568,12 @@ class StarField:
     def frame(self, seq: int, now_ns: int = DEMO_NOW_NS) -> AlignmentFrame:
         """The live-view frame with this sequence number: the JPEG and the state beside it."""
         t = seq * FRAME_PERIOD_S
-        dx = 22 * math.sin(t / 41) + 7 * math.sin(t / 6.7)
-        dy = -15 * math.sin(t / 33 + 0.6) + 5 * math.sin(t / 5.3)
+        pole_right, pole_down = pole_offset_px(t)
         roll = 0.9 * math.sin(t / 57)
+        # Polaris sits on its orbit around the pole, straight below it when the roll is zero.
+        angle = math.radians(roll)
+        dx = pole_right + ORBIT_RADIUS_PX * math.sin(angle)
+        dy = pole_down + ORBIT_RADIUS_PX * (math.cos(angle) - 1.0)
         saturation = 0.0003 + 0.0016 * max(0.0, math.sin(t / 90))
         jpeg = self.image(
             seq,
@@ -541,6 +622,7 @@ class StarField:
             ),
             histogram=HistogramView(counts=counts, min_dn=0.0, max_dn=65535.0),
             saturation=SaturationView(fraction=round(saturation, 5), warning=saturation > 0.001),
+            sky=demo_sky(pole_right, pole_down, roll),
         )
         return AlignmentFrame(state, jpeg)
 
