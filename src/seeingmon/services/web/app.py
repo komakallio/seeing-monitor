@@ -99,6 +99,10 @@ TAGS = [
     {"name": "images", "description": "The preview images and the FITS frames."},
     {"name": "commands", "description": "Commands for the scheduler. Each needs the token."},
     {"name": "alignment", "description": "The alignment helper and its live view."},
+    {
+        "name": "dark",
+        "description": "The dark library, and the dark session that adds a set to it.",
+    },
     {"name": "reference", "description": "The hardware profile and the configuration."},
 ]
 

@@ -398,6 +398,480 @@
         "title": "CoreLink",
         "type": "object"
       },
+      "DarkLibraryResponse": {
+        "description": "The dark library, whether it is due for a new set, and the latest dark session.\n\n`mode`, `gain`, and `exposure_s` are the settings of the survey, which a new set should match.\n`sets` holds the newest sets first. A value that `core` does not report is `null`, and\n`quality` says why.",
+        "properties": {
+          "exposure_s": {
+            "title": "Exposure S",
+            "type": "number"
+          },
+          "gain": {
+            "title": "Gain",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DarkModelResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "sensor_temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensor Temperature C"
+          },
+          "sets": {
+            "items": {
+              "$ref": "#/components/schemas/DarkSetResponse"
+            },
+            "title": "Sets",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DarkStatusResponse"
+          },
+          "task": {
+            "$ref": "#/components/schemas/DarkTaskResponse"
+          }
+        },
+        "required": [
+          "mode",
+          "gain",
+          "exposure_s",
+          "sensor_temperature_c",
+          "status",
+          "model",
+          "sets",
+          "task"
+        ],
+        "title": "DarkLibraryResponse",
+        "type": "object"
+      },
+      "DarkModelResponse": {
+        "description": "The dark current as a function of temperature: the rate at the reference and the doubling.\n\n`doubling_fitted` is false while the library holds too few sets for a fit, and the doubling\nis then a default.",
+        "properties": {
+          "doubling_c": {
+            "description": "The temperature step that doubles the dark current.",
+            "title": "Doubling C",
+            "type": "number"
+          },
+          "doubling_fitted": {
+            "title": "Doubling Fitted",
+            "type": "boolean"
+          },
+          "n_sets": {
+            "title": "N Sets",
+            "type": "integer"
+          },
+          "rate_ref_e_per_s": {
+            "title": "Rate Ref E Per S",
+            "type": "number"
+          },
+          "reference_c": {
+            "title": "Reference C",
+            "type": "number"
+          },
+          "rms_log2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rms Log2"
+          }
+        },
+        "required": [
+          "reference_c",
+          "rate_ref_e_per_s",
+          "doubling_c",
+          "doubling_fitted",
+          "n_sets"
+        ],
+        "title": "DarkModelResponse",
+        "type": "object"
+      },
+      "DarkRequest": {
+        "additionalProperties": false,
+        "description": "Record a dark set with the camera covered. Leave a field out to use the configured value.\n\nThe server also holds `exposure_s` to `[web.requests] max_dark_exposure_s` and `label` to\n`max_label_chars`, which are settings of the installation.",
+        "properties": {
+          "bias_frames": {
+            "anyOf": [
+              {
+                "maximum": 50.0,
+                "minimum": 3.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The number of bias frames. `null` uses the configured number.",
+            "title": "Bias Frames"
+          },
+          "exposure_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 600.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exposure of a dark frame, in seconds. `null` uses the survey exposure.",
+            "title": "Exposure S"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "maximum": 50.0,
+                "minimum": 3.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The number of dark frames. `null` uses the configured number.",
+            "title": "Frames"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9 _.-]*$",
+            "title": "Label",
+            "type": "string"
+          },
+          "pause_after": {
+            "default": true,
+            "description": "Pause the scheduler when the task ends, so that nothing records data while the camera may still be covered. `Resume` continues.",
+            "title": "Pause After",
+            "type": "boolean"
+          },
+          "wait_for_cover": {
+            "default": true,
+            "description": "Wait until a test frame is dark, which means that the camera is covered. Without it, the first frame that is not dark ends the task as failed.",
+            "title": "Wait For Cover",
+            "type": "boolean"
+          }
+        },
+        "title": "DarkRequest",
+        "type": "object"
+      },
+      "DarkSetResponse": {
+        "description": "One dark set of the library.",
+        "properties": {
+          "age_days": {
+            "title": "Age Days",
+            "type": "number"
+          },
+          "exposure_s": {
+            "title": "Exposure S",
+            "type": "number"
+          },
+          "hot_pixels": {
+            "title": "Hot Pixels",
+            "type": "integer"
+          },
+          "n_bias_frames": {
+            "title": "N Bias Frames",
+            "type": "integer"
+          },
+          "n_frames": {
+            "title": "N Frames",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rate_e_per_s": {
+            "description": "The dark current, in electrons per second per pixel.",
+            "title": "Rate E Per S",
+            "type": "number"
+          },
+          "t_utc": {
+            "title": "T Utc",
+            "type": "string"
+          },
+          "temperature_c": {
+            "description": "The mean sensor temperature during the set.",
+            "title": "Temperature C",
+            "type": "number"
+          },
+          "temperature_spread_c": {
+            "title": "Temperature Spread C",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "t_utc",
+          "age_days",
+          "temperature_c",
+          "temperature_spread_c",
+          "exposure_s",
+          "n_frames",
+          "n_bias_frames",
+          "rate_e_per_s",
+          "hot_pixels"
+        ],
+        "title": "DarkSetResponse",
+        "type": "object"
+      },
+      "DarkStatusResponse": {
+        "description": "Whether the library needs a new set, and why. `reason` is a sentence.",
+        "properties": {
+          "due": {
+            "title": "Due",
+            "type": "boolean"
+          },
+          "gap_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gap C"
+          },
+          "max_age_days": {
+            "title": "Max Age Days",
+            "type": "number"
+          },
+          "nearest_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nearest Name"
+          },
+          "newest_age_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Age Days"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "tolerance_c": {
+            "title": "Tolerance C",
+            "type": "number"
+          }
+        },
+        "required": [
+          "due",
+          "reason",
+          "tolerance_c",
+          "max_age_days"
+        ],
+        "title": "DarkStatusResponse",
+        "type": "object"
+      },
+      "DarkTaskResponse": {
+        "description": "The latest dark session of this `core` process.\n\n`state` is `idle` (none yet), `queued`, `running`, `ok`, `failed`, or `aborted`. While it\nruns, `phase` is `bias`, `cover` (waiting for dark frames), `dark`, or `build` (the master\ndark and the library), with `step` of `steps` in that phase. `covered` and `level_dn` describe\nthe latest check of a frame, and `reason` says why a frame was not dark. A finished session\nkeeps its `summary` (one sentence) and the `set_name` that it added.",
+        "properties": {
+          "bias_frames": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bias Frames"
+          },
+          "covered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Covered"
+          },
+          "exposure_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "finished_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished Utc"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames"
+          },
+          "level_dn": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level Dn"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "pause_after": {
+            "title": "Pause After",
+            "type": "boolean"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "set_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set Name"
+          },
+          "started_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started Utc"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "steps": {
+            "title": "Steps",
+            "type": "integer"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "wait_for_cover": {
+            "title": "Wait For Cover",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "step",
+          "steps",
+          "message",
+          "reason",
+          "wait_for_cover",
+          "pause_after",
+          "summary"
+        ],
+        "title": "DarkTaskResponse",
+        "type": "object"
+      },
       "ErrorDetail": {
         "description": "What went wrong. `code` is a short word, and `message` is one sentence.",
         "properties": {
@@ -4631,6 +5105,124 @@
         ]
       }
     },
+    "/api/v1/commands/dark": {
+      "post": {
+        "description": "Queue a dark session: record bias and dark frames with the camera covered.\n\nCover the camera before you send it. With `wait_for_cover`, the session waits until short\ntest frames are dark, which proves that the camera is covered. The session adds a set to the\ndark library, and with `pause_after` it pauses the scheduler at the end, so that nothing\nrecords data while the camera may still be covered. `Resume` (`POST /mode`) continues, and\n`Pause` ends a running session as `aborted`. The session starts at the next cycle boundary,\nwhich can take minutes in `auto`. Only one session may be queued or running (`409` with the\nreason `busy`). `GET /dark` shows its progress.",
+        "operationId": "post_dark",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Queue a dark session",
+        "tags": [
+          "commands",
+          "dark"
+        ]
+      }
+    },
     "/api/v1/commands/replay": {
       "post": {
         "description": "Queue a replay of a recording through the production analysis.",
@@ -4916,6 +5508,68 @@
         "summary": "Get the effective configuration",
         "tags": [
           "reference"
+        ]
+      }
+    },
+    "/api/v1/dark": {
+      "get": {
+        "description": "Return the dark sets, whether the library is due for a new set, the dark model, the sensor\ntemperature, and the progress of the latest dark session.\n\nPoll it while a session is queued or running. It answers `503 core_unavailable` when `core`\ndoes not answer, because the library lives there.",
+        "operationId": "get_dark",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DarkLibraryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the dark library and the dark session",
+        "tags": [
+          "dark"
         ]
       }
     },
@@ -6358,6 +7012,10 @@
     {
       "description": "The alignment helper and its live view.",
       "name": "alignment"
+    },
+    {
+      "description": "The dark library, and the dark session that adds a set to it.",
+      "name": "dark"
     },
     {
       "description": "The hardware profile and the configuration.",

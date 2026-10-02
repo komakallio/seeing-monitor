@@ -114,6 +114,18 @@ class CoreLinkSettings(SectionModel):
     probe_timeout_s: float = Field(0.25, gt=0, le=60)
 
 
+class RequestSettings(SectionModel):
+    """Limits on what a command may ask for, beyond the bounds that the API holds for every value.
+
+    `max_dark_exposure_s` caps the exposure of a dark frame that a client asks for. A longer
+    exposure keeps the camera covered and the station paused for longer. `max_label_chars` caps the
+    note that a command carries.
+    """
+
+    max_dark_exposure_s: float = Field(120.0, gt=0, le=600)
+    max_label_chars: int = Field(40, ge=1, le=80)
+
+
 def _interface_address(value: str, setting: str) -> str:
     """The canonical form of an address that names one interface of this device."""
     text = value.strip()
@@ -171,6 +183,7 @@ class WebSettings(SectionModel):
     images: ImageSettings = Field(default_factory=ImageSettings)
     live: LiveSettings = Field(default_factory=LiveSettings)
     core: CoreLinkSettings = Field(default_factory=CoreLinkSettings)
+    requests: RequestSettings = Field(default_factory=RequestSettings)
 
     @field_validator("bind_address")
     @classmethod

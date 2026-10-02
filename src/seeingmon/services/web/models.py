@@ -21,6 +21,7 @@ from seeingmon.scheduler.commands import (
     Command,
     Pause,
     QueueBurst,
+    QueueDark,
     QueueReplay,
     QueueSweep,
     Resume,
@@ -41,6 +42,10 @@ MAX_ROI_PX = 100_000
 MAX_ROI_ARCMIN = 60.0
 MAX_OPTIONS = 8
 MAX_PRIORITY = 10
+MIN_DARK_FRAMES = 3
+MAX_DARK_FRAMES = 50
+MAX_DARK_EXPOSURE_S = 600.0
+MAX_LABEL_CHARS = 80
 
 _Gain = Annotated[int, Field(ge=0, le=MAX_GAIN)]
 _ExposureUs = Annotated[int, Field(ge=1, le=MAX_EXPOSURE_US)]
@@ -175,6 +180,54 @@ class ReplayRequest(_Request):
         )
 
 
+class DarkRequest(_Request):
+    """Record a dark set with the camera covered. Leave a field out to use the configured value.
+
+    The server also holds `exposure_s` to `[web.requests] max_dark_exposure_s` and `label` to
+    `max_label_chars`, which are settings of the installation.
+    """
+
+    exposure_s: float | None = Field(
+        None,
+        gt=0,
+        le=MAX_DARK_EXPOSURE_S,
+        description="The exposure of a dark frame, in seconds. `null` uses the survey exposure.",
+    )
+    frames: int | None = Field(
+        None,
+        ge=MIN_DARK_FRAMES,
+        le=MAX_DARK_FRAMES,
+        description="The number of dark frames. `null` uses the configured number.",
+    )
+    bias_frames: int | None = Field(
+        None,
+        ge=MIN_DARK_FRAMES,
+        le=MAX_DARK_FRAMES,
+        description="The number of bias frames. `null` uses the configured number.",
+    )
+    wait_for_cover: bool = Field(
+        True,
+        description="Wait until a test frame is dark, which means that the camera is covered. "
+        "Without it, the first frame that is not dark ends the task as failed.",
+    )
+    pause_after: bool = Field(
+        True,
+        description="Pause the scheduler when the task ends, so that nothing records data while "
+        "the camera may still be covered. `Resume` continues.",
+    )
+    label: str = Field("", max_length=MAX_LABEL_CHARS, pattern=LABEL_PATTERN)
+
+    def to_command(self) -> QueueDark:
+        return QueueDark(
+            exposure_s=self.exposure_s,
+            frames=self.frames,
+            bias_frames=self.bias_frames,
+            wait_for_cover=self.wait_for_cover,
+            pause_after=self.pause_after,
+            label=self.label,
+        )
+
+
 class ModeRequest(_Request):
     """Pause the scheduler, or resume it."""
 
@@ -204,6 +257,100 @@ class CommandResponse(_Response):
     state: str = Field(description="The state of the scheduler right after the command.")
     reason: str | None = Field(None, description="The code of a rejection, or `null`.")
     task_id: int | None = Field(None, description="The ID of a queued task, or `null`.")
+
+
+# --- Dark ------------------------------------------------------------------------------------
+
+
+class DarkSetResponse(_Response):
+    """One dark set of the library."""
+
+    name: str
+    t_utc: str
+    age_days: float
+    temperature_c: float = Field(description="The mean sensor temperature during the set.")
+    temperature_spread_c: float
+    exposure_s: float
+    n_frames: int
+    n_bias_frames: int
+    rate_e_per_s: float = Field(description="The dark current, in electrons per second per pixel.")
+    hot_pixels: int
+
+
+class DarkModelResponse(_Response):
+    """The dark current as a function of temperature: the rate at the reference and the doubling.
+
+    `doubling_fitted` is false while the library holds too few sets for a fit, and the doubling
+    is then a default.
+    """
+
+    reference_c: float
+    rate_ref_e_per_s: float
+    doubling_c: float = Field(description="The temperature step that doubles the dark current.")
+    doubling_fitted: bool
+    rms_log2: float | None = None
+    n_sets: int
+
+
+class DarkStatusResponse(_Response):
+    """Whether the library needs a new set, and why. `reason` is a sentence."""
+
+    due: bool
+    reason: str
+    tolerance_c: float
+    max_age_days: float
+    gap_c: float | None = None
+    nearest_name: str | None = None
+    newest_age_days: float | None = None
+
+
+class DarkTaskResponse(_Response):
+    """The latest dark session of this `core` process.
+
+    `state` is `idle` (none yet), `queued`, `running`, `ok`, `failed`, or `aborted`. While it
+    runs, `phase` is `bias`, `cover` (waiting for dark frames), `dark`, or `build` (the master
+    dark and the library), with `step` of `steps` in that phase. `covered` and `level_dn` describe
+    the latest check of a frame, and `reason` says why a frame was not dark. A finished session
+    keeps its `summary` (one sentence) and the `set_name` that it added.
+    """
+
+    state: str
+    task_id: int | None = None
+    phase: str | None = None
+    step: int
+    steps: int
+    message: str
+    covered: bool | None = None
+    level_dn: float | None = None
+    reason: str
+    exposure_s: float | None = None
+    frames: int | None = None
+    bias_frames: int | None = None
+    wait_for_cover: bool
+    pause_after: bool
+    started_utc: str | None = None
+    finished_utc: str | None = None
+    summary: str
+    set_name: str | None = None
+
+
+class DarkLibraryResponse(_Response):
+    """The dark library, whether it is due for a new set, and the latest dark session.
+
+    `mode`, `gain`, and `exposure_s` are the settings of the survey, which a new set should match.
+    `sets` holds the newest sets first. A value that `core` does not report is `null`, and
+    `quality` says why.
+    """
+
+    mode: str
+    gain: int
+    exposure_s: float
+    sensor_temperature_c: float | None
+    status: DarkStatusResponse
+    model: DarkModelResponse | None
+    sets: list[DarkSetResponse]
+    task: DarkTaskResponse
+    quality: dict[str, str] | None = None
 
 
 # --- Errors ----------------------------------------------------------------------------------

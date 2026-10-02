@@ -4,19 +4,27 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
+from seeingmon.clock import VirtualClock
 from seeingmon.records.api_schema import api_schema, schema_name
+from seeingmon.scheduler.commands import QueueDark
 from seeingmon.services.web.api import router
+from seeingmon.services.web.contract import DarkModelView
+from seeingmon.services.web.core_client import FakeCoreClient
+from seeingmon.services.web.fake_dark import DarkScript
 from seeingmon.services.web.openapi import COMMAND, render_openapi
 from seeingmon.services.web.schemas import SERVED_RECORD_TYPES
+from seeingmon.store.db import Store
 from tests.records.jsonschema_lite import InvalidError, validate
 from tests.services.web.client import TestClient
-from tests.services.web.helpers import bearer
+from tests.services.web.helpers import bearer, dark_set
 from tests.services.web.seed import write_fits, write_preview
 
 API = "/api/v1"
@@ -111,7 +119,7 @@ def test_every_operation_has_an_id_a_summary_a_description_and_a_tag(
 
 def test_every_post_names_the_token_and_the_documented_failures(document: dict[str, Any]) -> None:
     posts = [(path, op) for method, path, op in operations(document) if method == "post"]
-    assert len(posts) == 6
+    assert len(posts) == 7
     for path, operation in posts:
         assert operation["security"] == [{"bearerAuth": []}], path
         assert {"200", "401", "403", "409", "413", "422", "429"} <= set(operation["responses"]), (
@@ -243,10 +251,13 @@ CASES: list[tuple[str, str, str, int, dict[str, Any]]] = [
     ("get", "/api/v1/events", "/api/v1/events", 200, {}),
     ("get", "/api/v1/images", "/api/v1/images", 200, {}),
     ("get", "/api/v1/alignment/state", "/api/v1/alignment/state", 200, {}),
+    ("get", "/api/v1/dark", "/api/v1/dark", 200, {}),
     ("get", "/api/v1/profile", "/api/v1/profile", 200, {}),
     ("get", "/api/v1/config", "/api/v1/config", 200, {}),
     ("post", "/api/v1/commands/burst", "/api/v1/commands/burst", 200, {"json": {}}),
     ("post", "/api/v1/alignment/stop", "/api/v1/alignment/stop", 409, {}),
+    ("post", "/api/v1/commands/dark", "/api/v1/commands/dark", 200, {"json": {}}),
+    ("post", "/api/v1/commands/dark", "/api/v1/commands/dark", 422, {"json": {"frames": 2}}),
     ("post", "/api/v1/mode", "/api/v1/mode", 401, {"no_token": True, "json": {"mode": "auto"}}),
     ("post", "/api/v1/mode", "/api/v1/mode", 422, {"json": {"mode": "reboot"}}),
     ("get", "/api/v1/seeing", "/api/v1/seeing", 422, {"params": {"limit": 0}}),
@@ -317,6 +328,39 @@ def check_answer(
         validate(response.json(), schema, document)
     except InvalidError as error:  # name the case, because the message names only the path
         raise AssertionError(f"{method.upper()} {url} {status}: {error}") from None
+
+
+def test_a_populated_dark_library_matches_the_documented_schema(
+    make_app: Callable[..., FastAPI],
+    open_client: Callable[..., TestClient],
+    seeded: Store,
+    clock: VirtualClock,
+    document: dict[str, Any],
+) -> None:
+    core = FakeCoreClient(clock=clock, dark_script=DarkScript(queued_s=0.0, bias_s=10.0))
+    core.dark.sets = [dark_set("dark-a", 12.0, 3.0), dark_set("dark-b", 4.0, 40.0)]
+    core.dark.model = DarkModelView(
+        reference_c=20.0, rate_ref_e_per_s=0.12, doubling_c=6.0, doubling_fitted=True, n_sets=2
+    )
+    chosen = open_client(make_app(core=core))
+    core.submit(QueueDark(frames=5, bias_frames=4))
+    clock.advance(2)  # the session runs its bias frames
+    answer = chosen.get(f"{API}/dark")
+    assert answer.json()["task"]["phase"] == "bias"
+    schema = documented_schema(document, "get", f"{API}/dark", 200)
+    validate(answer.json(), schema, document)
+    components = document["components"]["schemas"]
+    assert set(components["DarkLibraryResponse"]["properties"]) == {
+        "mode",
+        "gain",
+        "exposure_s",
+        "sensor_temperature_c",
+        "status",
+        "model",
+        "sets",
+        "task",
+        "quality",
+    }
 
 
 def test_an_image_answer_matches_the_documented_schema(

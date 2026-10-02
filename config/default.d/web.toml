@@ -98,3 +98,10 @@ rpc_timeout_s = 5.0
 submit_timeout_s = 10.0
 retry_interval_s = 3.0
 probe_timeout_s = 0.25
+
+# Limits on what a command may ask for. max_dark_exposure_s caps the exposure of a dark frame
+# (a longer one keeps the camera covered, and the station paused, for longer). max_label_chars
+# caps the note that a command carries.
+[web.requests]
+max_dark_exposure_s = 120.0
+max_label_chars = 40

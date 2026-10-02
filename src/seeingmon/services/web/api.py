@@ -29,7 +29,7 @@ import seeingmon
 from seeingmon.clock import NS_PER_S
 from seeingmon.scheduler.commands import Command, RejectReason, StopAlignment
 from seeingmon.services.web.context import WebContext
-from seeingmon.services.web.contract import AlignmentState, SchedulerView
+from seeingmon.services.web.contract import AlignmentState, DarkLibraryView, SchedulerView
 from seeingmon.services.web.data import (
     InvalidQueryError,
     Step,
@@ -49,6 +49,12 @@ from seeingmon.services.web.models import (
     BurstRequest,
     CommandResponse,
     CoreLink,
+    DarkLibraryResponse,
+    DarkModelResponse,
+    DarkRequest,
+    DarkSetResponse,
+    DarkStatusResponse,
+    DarkTaskResponse,
     ErrorResponse,
     EventLevel,
     FaultStatusView,
@@ -190,6 +196,51 @@ def scheduler_response(view: SchedulerView) -> SchedulerStatusResponse:
         queued_tasks=view.queued_tasks,
         survey_pending=view.survey_pending,
         alignment_idle_s=view.alignment_idle_s,
+    )
+
+
+def dark_response(view: DarkLibraryView) -> DarkLibraryResponse:
+    """The dark library as the API serves it. Free text from `core` goes through `scrub_text`."""
+    quality: dict[str, str] = {}
+    if view.sensor_temperature_c is None:
+        quality["sensor_temperature_c"] = "core reports no sensor temperature"
+    if view.model is None:
+        quality["model"] = "core has no dark model yet"
+    task = view.task
+    return DarkLibraryResponse(
+        mode=view.mode,
+        gain=view.gain,
+        exposure_s=view.exposure_s,
+        sensor_temperature_c=view.sensor_temperature_c,
+        status=DarkStatusResponse(
+            due=view.status.due,
+            reason=scrub_text(view.status.reason),
+            tolerance_c=view.status.tolerance_c,
+            max_age_days=view.status.max_age_days,
+            gap_c=view.status.gap_c,
+            nearest_name=view.status.nearest_name,
+            newest_age_days=view.status.newest_age_days,
+        ),
+        model=None
+        if view.model is None
+        else DarkModelResponse(
+            reference_c=view.model.reference_c,
+            rate_ref_e_per_s=view.model.rate_ref_e_per_s,
+            doubling_c=view.model.doubling_c,
+            doubling_fitted=view.model.doubling_fitted,
+            rms_log2=view.model.rms_log2,
+            n_sets=view.model.n_sets,
+        ),
+        sets=[DarkSetResponse(**item.model_dump()) for item in view.sets],
+        task=DarkTaskResponse(
+            **{
+                **task.model_dump(),
+                "message": scrub_text(task.message),
+                "reason": scrub_text(task.reason),
+                "summary": scrub_text(task.summary),
+            }
+        ),
+        quality=quality or None,
     )
 
 
@@ -678,6 +729,72 @@ def post_alignment_start(ctx: Ctx, body: AlignmentStartRequest | None = None) ->
 def post_alignment_stop(ctx: Ctx) -> JSONResponse:
     """End the alignment stream. The scheduler goes back to `safe` and checks the sky."""
     return command_reply(ctx, StopAlignment())
+
+
+# --- Dark ---
+
+
+@router.post(
+    "/commands/dark",
+    operation_id="post_dark",
+    summary="Queue a dark session",
+    tags=["commands", "dark"],
+    response_model=CommandResponse,
+    responses=command_responses,
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_dark(body: DarkRequest, ctx: Ctx) -> JSONResponse:
+    """Queue a dark session: record bias and dark frames with the camera covered.
+
+    Cover the camera before you send it. With `wait_for_cover`, the session waits until short
+    test frames are dark, which proves that the camera is covered. The session adds a set to the
+    dark library, and with `pause_after` it pauses the scheduler at the end, so that nothing
+    records data while the camera may still be covered. `Resume` (`POST /mode`) continues, and
+    `Pause` ends a running session as `aborted`. The session starts at the next cycle boundary,
+    which can take minutes in `auto`. Only one session may be queued or running (`409` with the
+    reason `busy`). `GET /dark` shows its progress.
+    """
+    limits = ctx.settings.requests
+    problems = []
+    if body.exposure_s is not None and body.exposure_s > limits.max_dark_exposure_s:
+        problems.append(
+            {
+                "field": "body.exposure_s",
+                "message": f"Input should be less than or equal to {limits.max_dark_exposure_s:g}",
+                "type": "less_than_equal",
+            }
+        )
+    if len(body.label) > limits.max_label_chars:
+        problems.append(
+            {
+                "field": "body.label",
+                "message": f"String should have at most {limits.max_label_chars} characters",
+                "type": "string_too_long",
+            }
+        )
+    if problems:
+        raise ApiError(422, details=problems)
+    return command_reply(ctx, body.to_command())
+
+
+@router.get(
+    "/dark",
+    operation_id="get_dark",
+    summary="Get the dark library and the dark session",
+    tags=["dark"],
+    response_model=DarkLibraryResponse,
+    responses=errors(401, 429, 502, 503),
+    dependencies=READ,
+)
+def get_dark(ctx: Ctx) -> JSONResponse:
+    """Return the dark sets, whether the library is due for a new set, the dark model, the sensor
+    temperature, and the progress of the latest dark session.
+
+    Poll it while a session is queued or running. It answers `503 core_unavailable` when `core`
+    does not answer, because the library lives there.
+    """
+    return JSONResponse(dark_response(ctx.core.dark_library()).model_dump(mode="json"))
 
 
 # --- Alignment ---
