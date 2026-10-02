@@ -24,6 +24,7 @@ from seeingmon.scheduler.commands import (
 )
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.ipc.endpoint import Endpoint
+from seeingmon.services.ipc.errors import IpcConnectError
 from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.ipc.rpc import connect_rpc
 from seeingmon.services.ipc.server import IpcServer
@@ -369,6 +370,112 @@ def test_a_failed_connection_is_not_retried_before_the_interval_passes(
     with pytest.raises(CoreUnavailableError):
         client.status()
     assert len(attempts) == 2
+
+
+def test_a_retry_after_a_failure_waits_for_core_only_a_short_time(
+    native: Endpoint,
+    key: ConnectionKey,
+    servers: list[IpcServer],
+    clients: list[RpcCoreClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first connection waits for the whole connect timeout, because core may be starting. A
+    page that polls a core that is down must not wait that long on every refresh."""
+    waits: list[float] = []
+    down = [True]
+    real = connect_rpc
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        waits.append(kwargs["connect_timeout_s"])
+        if down[0]:
+            raise IpcConnectError("nothing answers")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("seeingmon.services.web.core_client.connect_rpc", recording)
+    clock = VirtualClock()
+    client = make_client(
+        clients,
+        native,
+        key,
+        connect_timeout_s=2.0,
+        retry_interval_s=3.0,
+        probe_timeout_s=0.25,
+        clock=clock,
+    )
+    for _ in range(
+        3
+    ):  # the first call waits for the whole timeout, and the next two answer at once
+        with pytest.raises(CoreUnavailableError, match="does not answer"):
+            client.status()
+    assert waits == [2.0]
+    clock.advance(2.9)  # still inside the window
+    with pytest.raises(CoreUnavailableError):
+        client.status()
+    assert waits == [2.0]
+    clock.advance(0.2)  # the window is over: one probe, and it is short
+    with pytest.raises(CoreUnavailableError):
+        client.status()
+    assert waits == [2.0, 0.25]
+    for _ in range(3):  # a long outage costs one short probe at the end of each window
+        clock.advance(3.1)
+        with pytest.raises(CoreUnavailableError):
+            client.status()
+    assert waits == [2.0, 0.25, 0.25, 0.25, 0.25]
+    servers.append(ReferenceCore(native, key).start())  # core comes back
+    down[0] = False
+    clock.advance(3.1)
+    assert client.status().instance == "reference-core"
+    assert waits[-1] == 0.25
+    # A link that worked and then broke starts over with the whole timeout.
+    down[0] = True
+    client.close()
+    with pytest.raises(CoreUnavailableError):
+        client.status()
+    assert waits[-1] == 2.0
+
+
+def test_the_probe_never_waits_longer_than_the_connect_timeout(
+    native: Endpoint,
+    key: ConnectionKey,
+    clients: list[RpcCoreClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        waits.append(kwargs["connect_timeout_s"])
+        raise IpcConnectError("nothing answers")
+
+    monkeypatch.setattr("seeingmon.services.web.core_client.connect_rpc", recording)
+    clock = VirtualClock()
+    client = make_client(
+        clients,
+        native,
+        key,
+        connect_timeout_s=0.1,
+        retry_interval_s=1.0,
+        probe_timeout_s=5.0,
+        clock=clock,
+    )
+    for _ in range(2):
+        with pytest.raises(CoreUnavailableError):
+            client.status()
+        clock.advance(1.5)
+    assert waits == [0.1, 0.1]
+
+
+def test_the_link_settings_default_to_a_short_probe_and_a_few_seconds_of_memory() -> None:
+    settings = CoreLinkSettings()
+    assert settings.probe_timeout_s < settings.connect_timeout_s
+    assert 2.0 <= settings.retry_interval_s <= 10.0
+
+
+def test_the_client_takes_the_probe_timeout_from_the_configuration(native: Endpoint) -> None:
+    services = ServicesConfig(connection_key=secrets.token_urlsafe(24), core_address=str(native))
+    link = CoreLinkSettings(probe_timeout_s=0.5, retry_interval_s=4.0)
+    client = RpcCoreClient.from_config(services, link, env={})
+    assert client._probe_timeout_s == 0.5
+    assert client._retry_interval_ns == 4_000_000_000
 
 
 def test_the_client_connects_when_core_starts_later(

@@ -110,7 +110,8 @@ class CoreLinkSettings(SectionModel):
     connect_timeout_s: float = Field(2.0, gt=0, le=60)
     rpc_timeout_s: float = Field(5.0, gt=0, le=300)
     submit_timeout_s: float = Field(10.0, gt=0, le=300)
-    retry_interval_s: float = Field(1.0, ge=0, le=60)
+    retry_interval_s: float = Field(3.0, ge=0, le=60)
+    probe_timeout_s: float = Field(0.25, gt=0, le=60)
 
 
 def _interface_address(value: str, setting: str) -> str:

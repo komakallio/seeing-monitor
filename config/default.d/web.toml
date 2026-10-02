@@ -87,9 +87,14 @@ idle_s = 10.0
 max_clients = 4
 stall_s = 5.0
 
-# The link to core. The address and the key come from [services].
+# The link to core. The address and the key come from [services]. connect_timeout_s is how long
+# the first connection waits for core, which may be starting. After a failure, the web process
+# answers "core is unreachable" at once for retry_interval_s seconds, and then it tries again for
+# probe_timeout_s seconds only, so a page that refreshes while core is down does not wait for the
+# whole connect_timeout_s each time.
 [web.core]
 connect_timeout_s = 2.0
 rpc_timeout_s = 5.0
 submit_timeout_s = 10.0
-retry_interval_s = 1.0
+retry_interval_s = 3.0
+probe_timeout_s = 0.25

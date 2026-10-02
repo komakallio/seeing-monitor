@@ -5,9 +5,11 @@ command, the state of the alignment helper, and the live-view frames. `CoreClien
 
 - `RpcCoreClient` is the production client. It connects to `core` over the local connection layer
   and speaks the methods that `seeingmon.services.web.contract` documents. It connects when the
-  first call needs it, and it reconnects after `core` restarts. While `core` is down, a call fails
-  at once with `CoreUnavailableError` and the client retries after `retry_interval_s`, so a page
-  that polls does not pile up connection attempts.
+  first call needs it, and it reconnects after `core` restarts. A failed connection is
+  remembered: for `retry_interval_s`, a call fails at once with `CoreUnavailableError`, and the
+  next call then tries again. That try waits only `probe_timeout_s` for `core`, not the whole
+  `connect_timeout_s`, so a page that polls a `core` that is down pays a short wait once in a
+  while and not the long one on every refresh.
 - `FakeCoreClient` answers in memory, for tests and for the demo. It follows the rules of the real
   scheduler for the commands, and it streams the frames of a source that you give it.
 
@@ -134,7 +136,8 @@ class RpcCoreClient:
         handshake_timeout_s: float = 5.0,
         rpc_timeout_s: float = 5.0,
         submit_timeout_s: float = 10.0,
-        retry_interval_s: float = 1.0,
+        retry_interval_s: float = 3.0,
+        probe_timeout_s: float = 0.25,
         max_rpc_bytes: int = 1 * MIB,
         max_frame_bytes: int = 32 * MIB,
         window: StreamWindow | None = None,
@@ -148,6 +151,7 @@ class RpcCoreClient:
         self._rpc_timeout_s = rpc_timeout_s
         self._submit_timeout_s = submit_timeout_s
         self._retry_interval_ns = round(retry_interval_s * 1e9)
+        self._probe_timeout_s = probe_timeout_s
         self._max_rpc_bytes = max_rpc_bytes
         self._max_frame_bytes = max_frame_bytes
         self._window = window or StreamWindow(messages=4, bytes=2 * max_frame_bytes)
@@ -156,6 +160,7 @@ class RpcCoreClient:
         self._lock = threading.RLock()
         self._rpc: RpcClient | None = None
         self._retry_after_ns = 0
+        self._failed = False  # the last connection attempt failed, or the link broke
         self._last_failure = "core has not answered yet"
         self.connections = 0
 
@@ -177,6 +182,7 @@ class RpcCoreClient:
             rpc_timeout_s=link.rpc_timeout_s,
             submit_timeout_s=link.submit_timeout_s,
             retry_interval_s=link.retry_interval_s,
+            probe_timeout_s=link.probe_timeout_s,
             max_rpc_bytes=services.max_rpc_bytes,
             max_frame_bytes=min(services.max_frame_bytes, 32 * MIB),
             clock=clock,
@@ -187,6 +193,7 @@ class RpcCoreClient:
     def _fail(self, message: str) -> CoreUnavailableError:
         with self._lock:
             self._last_failure = message
+            self._failed = True
             self._retry_after_ns = self._clock.monotonic_ns() + self._retry_interval_ns
         return CoreUnavailableError(message)
 
@@ -198,13 +205,21 @@ class RpcCoreClient:
             self._rpc = None
             if self._clock.monotonic_ns() < self._retry_after_ns:
                 raise CoreUnavailableError(self._last_failure)
+            # The first try waits for `core` as long as `connect_timeout_s` (it may be starting).
+            # A try after a failure is a probe: `core` is probably still down, and a call that
+            # waits for it holds up a page.
+            wait_s = (
+                min(self._probe_timeout_s, self._connect_timeout_s)
+                if self._failed
+                else self._connect_timeout_s
+            )
             try:
                 client, _ = connect_rpc(
                     self._endpoint,
                     self._key,
                     {"role": "web"},
                     channel=RPC_CHANNEL,
-                    connect_timeout_s=self._connect_timeout_s,
+                    connect_timeout_s=wait_s,
                     handshake_timeout_s=self._handshake_timeout_s,
                     default_timeout_s=self._rpc_timeout_s,
                     max_message_bytes=self._max_rpc_bytes,
@@ -215,6 +230,7 @@ class RpcCoreClient:
             except IpcError:
                 raise self._fail("core does not answer") from None
             self._rpc = client
+            self._failed = False
             self.connections += 1
             return client
 
