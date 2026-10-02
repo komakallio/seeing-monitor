@@ -16,13 +16,15 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from seeingmon.clock import NS_PER_S
+from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.records.base import Record
-from seeingmon.scheduler.commands import StartAlignment, StopAlignment
+from seeingmon.scheduler.commands import Pause, QueueDark, Resume, StartAlignment, StopAlignment
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import AlignmentState, pack_frame, unpack_frame
 from seeingmon.services.web.demo import (
+    DEMO_DARK_SCRIPT,
     DEMO_NOW_NS,
+    DEMO_SENSOR_TEMPERATURE_C,
     DEMO_STATION,
     DEMO_TOKEN,
     FITS_BLOCK,
@@ -507,6 +509,7 @@ def test_the_demo_answers_match_the_documented_schemas(demo_client: TestClient) 
         ("/pointing", {"step": "1h"}),
         ("/events", {}),
         ("/images", {}),
+        ("/dark", {}),
     ]
     for path, params in cases:
         response = demo_client.get(f"{API}{path}", params=params)
@@ -557,6 +560,29 @@ def test_the_live_view_streams_frames_after_the_alignment_starts(
         demo_client.post(f"{API}/alignment/stop", headers=bearer(DEMO_TOKEN))
 
 
+def test_the_demo_serves_the_dark_library_and_a_session_that_the_demo_token_starts(
+    demo_client: TestClient,
+) -> None:
+    library = demo_client.get(f"{API}/dark").json()
+    assert len(library["sets"]) == 6
+    assert library["status"]["due"] is True
+    assert library["task"]["state"] == "idle"
+    refused = demo_client.post(f"{API}/commands/dark", json={}, headers=bearer("wrong"))
+    assert refused.status_code == 401
+    started = demo_client.post(f"{API}/commands/dark", json={}, headers=bearer(DEMO_TOKEN))
+    assert started.status_code == 200
+    try:
+        assert demo_client.get(f"{API}/dark").json()["task"]["state"] in {"queued", "running"}
+        again = demo_client.post(f"{API}/commands/dark", json={}, headers=bearer(DEMO_TOKEN))
+        assert again.status_code == 409
+        assert again.json()["reason"] == "busy"
+    finally:  # leave the shared demo as it was: the pause aborts the session, and Resume lifts it
+        paused = {"mode": "paused"}
+        demo_client.post(f"{API}/mode", json=paused, headers=bearer(DEMO_TOKEN))
+        demo_client.post(f"{API}/mode", json={"mode": "auto"}, headers=bearer(DEMO_TOKEN))
+    assert demo_client.get(f"{API}/dark").json()["task"]["state"] == "aborted"
+
+
 def test_the_demo_token_is_a_fixed_word_and_not_a_secret() -> None:
     assert DEMO_TOKEN == "demo"
 
@@ -600,3 +626,119 @@ def test_a_demo_that_fails_to_build_leaves_no_folder_behind(
         build_demo(WebSettings())
     assert made
     assert not made[0].exists()
+
+
+# --- The dark library of the demo ------------------------------------------------------------
+
+
+@pytest.fixture
+def dark_core() -> tuple[DemoCore, VirtualClock]:
+    clock = VirtualClock(DEMO_NOW_NS)
+    return DemoCore(clock), clock
+
+
+def test_the_demo_library_has_six_sets_a_model_and_a_gap_at_the_sensor_temperature(
+    dark_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, _ = dark_core
+    library = core.dark_library()
+    assert [item.age_days for item in library.sets] == [3.0, 12.0, 25.0, 47.0, 66.0, 90.0]
+    assert library.sensor_temperature_c == DEMO_SENSOR_TEMPERATURE_C
+    assert library.model is not None
+    assert library.model.doubling_fitted is True
+    assert library.model.n_sets == 6
+    for item in library.sets:  # the sets follow the model, with a little scatter
+        expected = library.model.rate_ref_e_per_s * 2 ** (
+            (item.temperature_c - library.model.reference_c) / library.model.doubling_c
+        )
+        assert item.rate_e_per_s == pytest.approx(expected, rel=0.05)
+    assert library.status.due is True  # no set lies within 3 C of the sensor temperature
+    assert library.status.gap_c is not None
+    assert library.status.gap_c > 3.0
+    assert library.task.state == "idle"
+    assert len({item.name for item in library.sets}) == 6
+
+
+def test_the_demo_library_can_start_empty() -> None:
+    library = DemoCore(VirtualClock(DEMO_NOW_NS), library=False).dark_library()
+    assert library.sets == []
+    assert library.model is None
+    assert library.status.due is True
+
+
+def test_a_demo_session_follows_its_timeline_and_closes_the_gap(
+    dark_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, clock = dark_core
+    script = DEMO_DARK_SCRIPT
+    assert core.submit(QueueDark()).accepted
+    assert core.dark_library().task.state == "queued"  # the queue lasts a few seconds
+    clock.advance(script.queued_s)
+    task = core.dark_library().task
+    assert (task.state, task.phase, task.steps) == ("running", "bias", 9)
+    clock.advance(script.bias_s)  # the wait for the cover starts, and nobody has covered the camera
+    task = core.dark_library().task
+    assert (task.phase, task.covered) == ("cover", False)
+    assert task.reason  # a plain reason: the frame is not dark yet
+    clock.advance(script.cover_s * 0.7)  # a few seconds later, the camera is covered
+    assert core.dark_library().task.covered is True
+    clock.advance(script.cover_s * 0.3)
+    task = core.dark_library().task
+    assert (task.phase, task.steps) == ("dark", 9)
+    clock.advance(script.dark_s)
+    assert core.dark_library().task.phase == "build"
+    clock.advance(script.build_s)
+    library = core.dark_library()
+    assert library.task.state == "ok"
+    assert library.task.set_name == library.sets[0].name
+    assert library.sets[0].temperature_c == DEMO_SENSOR_TEMPERATURE_C
+    assert len(library.sets) == 7
+    assert library.model is not None
+    assert library.model.n_sets == 7
+    assert library.status.due is False  # the new set closes the gap
+    assert core.status().scheduler.state == "paused"
+
+
+def test_the_demo_scheduler_resumes_after_a_session(
+    dark_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, clock = dark_core
+    core.submit(QueueDark())
+    clock.advance(60)
+    assert core.status().scheduler.state == "paused"
+    assert core.submit(Resume()).accepted
+    assert core.status().scheduler.state == "safe"
+
+
+def test_a_demo_session_that_does_not_wait_for_the_cover_fails(
+    dark_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, clock = dark_core
+    core.submit(QueueDark(wait_for_cover=False))
+    clock.advance(DEMO_DARK_SCRIPT.queued_s + DEMO_DARK_SCRIPT.bias_s + 0.1)
+    library = core.dark_library()
+    assert library.task.state == "failed"
+    assert "not covered" in library.task.summary
+    assert len(library.sets) == 6
+
+
+def test_a_pause_aborts_a_demo_session(dark_core: tuple[DemoCore, VirtualClock]) -> None:
+    core, clock = dark_core
+    core.submit(QueueDark())
+    clock.advance(12)
+    assert core.dark_library().task.state == "running"
+    assert core.submit(Pause()).accepted
+    assert core.dark_library().task.state == "aborted"
+
+
+def test_two_demo_sessions_in_a_row_name_their_sets_apart(
+    dark_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    """The demo clock stands still in UTC, so two sets get the same stamp."""
+    core, clock = dark_core
+    for _ in range(2):
+        core.submit(QueueDark(pause_after=False))
+        clock.advance(60)
+    names = [item.name for item in core.dark_library().sets]
+    assert len(names) == 8
+    assert len(set(names)) == 8

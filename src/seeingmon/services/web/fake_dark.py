@@ -382,8 +382,14 @@ class DarkSimulator:
             rate = model.rate_ref_e_per_s * 2 ** (
                 (temperature - model.reference_c) / model.doubling_c
             )
+        name = f"dark-{stamp}-{self.mode}-g{self.gain}.fits"
+        taken = {item.name for item in self.sets}
+        number = 1
+        while name in taken:  # a clock that stands still gives the same stamp twice
+            number += 1
+            name = f"dark-{stamp}-{self.mode}-g{self.gain}-{number}.fits"
         added = DarkSetView(
-            name=f"dark-{stamp}-{self.mode}-g{self.gain}.fits",
+            name=name,
             t_utc=utc_ns_to_iso(now_ns, digits=0),
             age_days=0.0,
             temperature_c=round(temperature, 2),

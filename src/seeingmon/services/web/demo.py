@@ -11,7 +11,12 @@ sources, so that you can look at the UI on a laptop:
 - **A fake `core`.** `DemoCore` is a `FakeCoreClient` whose live view streams the frames of a
   synthetic star field (`StarField`) while the fake scheduler aligns. Start and stop the alignment
   in the UI with the demo token (`DEMO_TOKEN`). The mount drifts around the target, so the
-  overlays move, and the saturation warning comes and goes.
+  overlays move, and the saturation warning comes and goes. The fake `core` also holds a dark
+  library of six sets with a model, and it plays a dark session on a short timeline (see
+  `DEMO_DARK_SCRIPT`): queued, bias frames, the wait for the cover, dark frames, and the
+  build. The camera counts as covered a few seconds into the wait, so the session ends
+  `ok`, adds a set at the sensor temperature, and pauses the fake scheduler, so that
+  Resume works. A session without the wait for the cover fails, and Pause aborts one.
 - **A clock.** `DemoClock` stands still in UTC at `DEMO_NOW_NS`, so the newest record is always
   fresh, and it runs in monotonic time, so the rate limits, the timeouts, and the live view work.
 
@@ -46,6 +51,8 @@ from seeingmon.services.web.contract import (
     AlignmentFrame,
     AlignmentFrameInfo,
     AlignmentState,
+    DarkModelView,
+    DarkSetView,
     FocusView,
     HistogramView,
     OffsetView,
@@ -54,6 +61,7 @@ from seeingmon.services.web.contract import (
     TargetView,
 )
 from seeingmon.services.web.core_client import FakeCoreClient
+from seeingmon.services.web.fake_dark import DarkScript
 from seeingmon.store.db import Store, StoreReader
 from seeingmon.store.layout import DataLayout
 
@@ -78,6 +86,22 @@ HISTOGRAM_BINS = 32
 IDLE_POLL_S = 0.2
 RAD_PER_ARCSEC = math.pi / 180 / 3600
 HOUR_NS = 3600 * NS_PER_S
+DAY_NS = 24 * HOUR_NS
+DEMO_SENSOR_TEMPERATURE_C = 12.3
+# The demo plays a dark session in about 35 seconds: the queue, 5 s of bias frames, a wait
+# for the cover (the camera counts as covered after 6 of its 9 seconds), 15 s of dark
+# frames, and a build.
+DEMO_DARK_SCRIPT = DarkScript(queued_s=4.0, bias_s=5.0, cover_s=9.0, dark_s=15.0, build_s=1.0)
+# The demo library: the temperature of each set (degrees C), and its age (days). No set lies
+# within 3 C of the sensor temperature, so the library is due until a session adds one.
+DEMO_DARK_SETS = (
+    (1.4, 90.0),
+    (5.1, 66.0),
+    (8.3, 47.0),
+    (16.9, 25.0),
+    (20.2, 12.0),
+    (23.8, 3.0),
+)
 
 
 class DemoClock:
@@ -521,12 +545,52 @@ class StarField:
         return AlignmentFrame(state, jpeg)
 
 
+def demo_dark_library(now_ns: int, *, seed: int = 31) -> tuple[list[DarkSetView], DarkModelView]:
+    """The six sets of the demo library, the newest first, and the model that they fit.
+
+    The dark current doubles every 6 C, with a little scatter. The numbers are made up.
+    """
+    rng = random.Random(seed)
+    reference_c, rate_ref, doubling_c = 20.0, 0.118, 6.1
+    sets: list[DarkSetView] = []
+    for temperature, age_days in sorted(DEMO_DARK_SETS, key=lambda item: item[1]):
+        when_ns = now_ns - round(age_days * DAY_NS)
+        stamp = utc_ns_to_iso(when_ns, digits=0).replace("-", "").replace(":", "")
+        scatter = 1.0 + rng.uniform(-0.04, 0.04)
+        rate = rate_ref * 2 ** ((temperature - reference_c) / doubling_c) * scatter
+        sets.append(
+            DarkSetView(
+                name=f"dark-{stamp}-bin2-g120.fits",
+                t_utc=utc_ns_to_iso(when_ns, digits=0),
+                age_days=age_days,
+                temperature_c=temperature,
+                temperature_spread_c=round(rng.uniform(0.2, 0.6), 2),
+                exposure_s=30.0,
+                n_frames=9,
+                n_bias_frames=9,
+                rate_e_per_s=round(rate, 4),
+                hot_pixels=rng.randint(160, 240),
+            )
+        )
+    model = DarkModelView(
+        reference_c=reference_c,
+        rate_ref_e_per_s=rate_ref,
+        doubling_c=doubling_c,
+        doubling_fitted=True,
+        rms_log2=0.07,
+        n_sets=len(sets),
+    )
+    return sets, model
+
+
 class DemoCore(FakeCoreClient):
     """A fake `core` whose live view streams a synthetic star field while the scheduler aligns.
 
     The commands work as in `FakeCoreClient`. While the fake scheduler is in `align`, the stream
     yields a frame every `period_s` seconds. In any other state the stream stays open and sends
-    nothing, so the UI shows that it waits for frames.
+    nothing, so the UI shows that it waits for frames. The dark library starts with six sets
+    (`demo_dark_library`), or empty with `library=False`, and a dark session follows
+    `dark_script` (`DEMO_DARK_SCRIPT` by default).
     """
 
     def __init__(
@@ -535,8 +599,19 @@ class DemoCore(FakeCoreClient):
         *,
         period_s: float = FRAME_PERIOD_S,
         field: StarField | None = None,
+        dark_script: DarkScript | None = None,
+        library: bool = True,
     ) -> None:
-        super().__init__(clock=clock, frames=self._stream, instance="demo-core", state="auto")
+        super().__init__(
+            clock=clock,
+            frames=self._stream,
+            instance="demo-core",
+            state="auto",
+            dark_script=dark_script or DEMO_DARK_SCRIPT,
+        )
+        self.dark.sensor_temperature_c = DEMO_SENSOR_TEMPERATURE_C
+        if library:
+            self.dark.sets, self.dark.model = demo_dark_library(self._clock.utc_ns())
         self._period_s = period_s
         self._field = field or StarField()
         self._seq = 0
