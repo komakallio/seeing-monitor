@@ -244,5 +244,18 @@ def test_the_help_lists_the_options(capsys: pytest.CaptureFixture[str]) -> None:
         "--standalone",
         "--detach",
         "--address",
+        "--wait-timeout",
     ):
         assert option in text
+
+
+def test_the_help_says_that_the_mode_and_the_gain_need_standalone(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["dark", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "(only with --standalone; core takes the mode of [survey.dark])" in text
+    assert "(only with --standalone; core takes the gain of [survey.dark])" in text
+    assert "--wait-timeout" in text
+    assert "(default: wait_timeout_s of [survey.dark])" in text  # a run through core takes it too

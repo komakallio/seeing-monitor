@@ -178,6 +178,8 @@ def encode_command(command: Command) -> dict[str, Any]:
             "pause_after": command.pause_after,
             "label": command.label,
             "priority": command.priority,
+            "wait_for_cover_timeout_s": command.wait_for_cover_timeout_s,
+            "immediate": command.immediate,
         }
     raise TypeError(f"cannot send {type(command).__name__} to core")
 
@@ -248,6 +250,8 @@ def decode_command(value: Any) -> Command:
                 "pause_after",
                 "label",
                 "priority",
+                "wait_for_cover_timeout_s",
+                "immediate",
             ),
         )
         return QueueDark(
@@ -260,6 +264,8 @@ def decode_command(value: Any) -> Command:
             pause_after=get_bool(body, "pause_after", what) if "pause_after" in body else True,
             label=get_str(body, "label", what) if "label" in body else "",
             priority=get_int(body, "priority", what) if "priority" in body else 0,
+            wait_for_cover_timeout_s=get_opt_float(body, "wait_for_cover_timeout_s", what),
+            immediate=get_bool(body, "immediate", what) if "immediate" in body else True,
         )
     raise CodecError("command.type is not a command that core accepts")
 

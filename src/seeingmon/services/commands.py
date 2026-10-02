@@ -365,13 +365,12 @@ def _run_here(args: argparse.Namespace, config: Any, services: Any, command: Com
 
 
 # The options of `seeingmon dark` that the run through `core` cannot take, because `core` has its
-# own settings ([survey.dark]), its own camera, and its own data folder.
+# own camera, its own data folder, and its own readout mode and gain ([survey.dark]).
 DARK_STANDALONE_OPTIONS = (
     ("--driver", "driver"),
     ("--library", "library"),
     ("--mode", "mode"),
     ("--gain", "gain"),
-    ("--wait-timeout", "wait_timeout"),
 )
 
 
@@ -389,8 +388,8 @@ def run_dark_through_core(args: argparse.Namespace) -> int:
     for flag, name in DARK_STANDALONE_OPTIONS:
         if getattr(args, name, None) is not None:
             raise CliError(
-                f"{flag} needs --standalone, because core runs the session with its own settings "
-                "([survey.dark]) and its own library",
+                f"{flag} needs --standalone, because core runs the session with its own camera, "
+                "library, readout mode, and gain",
                 exit_code=2,
             )
     try:
@@ -403,6 +402,7 @@ def run_dark_through_core(args: argparse.Namespace) -> int:
         frames=args.frames,
         bias_frames=args.bias_frames,
         wait_for_cover=not args.no_wait,
+        wait_for_cover_timeout_s=args.wait_timeout,
     )
     client = _connect(args, services)
     try:

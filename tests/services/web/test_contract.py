@@ -86,7 +86,11 @@ COMMANDS: list[Command] = [
         pause_after=False,
         label="winter set",
         priority=2,
+        wait_for_cover_timeout_s=900.0,
+        immediate=False,
     ),
+    QueueDark(wait_for_cover_timeout_s=30.0),
+    QueueDark(immediate=False),
 ]
 
 
@@ -118,6 +122,11 @@ def test_a_command_without_optional_fields_takes_the_defaults() -> None:
     assert decode_command({"type": "queue_dark"}) == QueueDark()
     assert QueueDark().wait_for_cover
     assert QueueDark().pause_after
+    assert QueueDark().immediate  # a session starts at once unless the command says otherwise
+    assert QueueDark().wait_for_cover_timeout_s is None  # core takes [survey.dark] wait_timeout_s
+    decoded = decode_command({"type": "queue_dark"})
+    assert isinstance(decoded, QueueDark)
+    assert (decoded.immediate, decoded.wait_for_cover_timeout_s) == (True, None)
 
 
 def test_an_object_that_is_not_a_command_cannot_be_sent() -> None:
@@ -164,6 +173,11 @@ def test_an_object_that_is_not_a_command_cannot_be_sent() -> None:
         {"type": "queue_dark", "pause_after": 1},
         {"type": "queue_dark", "label": 7},
         {"type": "queue_dark", "priority": 1.5},
+        {"type": "queue_dark", "immediate": "yes"},
+        {"type": "queue_dark", "immediate": 1},
+        {"type": "queue_dark", "wait_for_cover_timeout_s": "soon"},
+        {"type": "queue_dark", "wait_for_cover_timeout_s": math.nan},
+        {"type": "queue_dark", "wait_for_cover_timeout_s": math.inf},
         {"type": "queue_dark", "extra": 1},
     ],
 )

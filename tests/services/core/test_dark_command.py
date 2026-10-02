@@ -143,6 +143,25 @@ class TestThroughCore:
         assert "The scheduler waits in pause" in out  # the camera may still be covered
         assert sets(served) == []
 
+    def test_the_wait_timeout_goes_to_core_and_beats_its_configuration(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        served, stop = serve(tmp_path, uncovered_sim)  # core waits 120 s by its configuration
+        try:
+            code, out, _ = run(capsys, served, "--wait-timeout", "10")
+        finally:
+            stop()
+        assert code == 1
+        assert "dark 1: failed. The camera was not dark after 10 s" in out
+
+    def test_a_wait_timeout_that_the_scheduler_refuses_exits_with_two(
+        self, served: Served, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, out, _ = run(capsys, served, "--wait-timeout", "0")
+        assert code == 2
+        assert "core rejected the command" in out
+        assert "wait_for_cover_timeout_s" in out
+
     def test_numbers_that_the_scheduler_refuses_exit_with_two(
         self, served: Served, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -183,7 +202,7 @@ class TestThroughCore:
 class TestTheOptionsOfEachRun:
     @pytest.mark.parametrize(
         "option",
-        [["--mode", "bin2"], ["--gain", "120"], ["--driver", "sim"], ["--wait-timeout", "5"]],
+        [["--mode", "bin2"], ["--gain", "120"], ["--driver", "sim"]],
     )
     def test_an_option_that_core_decides_needs_standalone(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], option: list[str]

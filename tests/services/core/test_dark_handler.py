@@ -273,6 +273,38 @@ class TestTheWaitForTheCover:
         assert view.set_name is None
         assert view.finished_utc is not None
 
+    def test_the_timeout_of_the_command_gives_up_sooner_than_the_configured_one(
+        self, rig: Rig
+    ) -> None:
+        uncovered = simfx.make_driver(PROFILE, SimOptions(seed=5), rig.clock)
+        result = rig.run(QueueDark(wait_for_cover_timeout_s=10.0), rig.context(uncovered))
+        assert result.status == "failed"
+        assert result.summary.startswith("The camera was not dark after 10 s")  # not 120 s
+        assert rig.library.sets() == ()
+
+    def test_the_timeout_of_the_command_waits_longer_than_the_configured_one(
+        self, rig: Rig
+    ) -> None:
+        # The configuration gives up after 20 s, and the cover goes on after 30 s: a poll takes 2 s.
+        config = SMALL.model_copy(update={"wait_timeout_s": 20.0})
+        root = Path(rig.layout.root).parent
+        configured = Rig(root / "configured", config)
+        refused = configured.run(QueueDark(), self.make_context(configured, cover_after=3 + 15))
+        assert refused.status == "failed"
+        assert refused.summary.startswith("The camera was not dark after 20 s")
+        asked = Rig(root / "asked", config)
+        result = asked.run(
+            QueueDark(wait_for_cover_timeout_s=100.0), self.make_context(asked, cover_after=3 + 15)
+        )
+        assert result.status == "ok"
+        assert float(result.data["waited_s"]) > 20.0
+        assert len(asked.library.sets()) == 1
+
+    def test_the_timeout_does_not_matter_without_the_wait(self, rig: Rig) -> None:
+        context = rig.context(covered(rig.clock))
+        result = rig.run(QueueDark(wait_for_cover=False, wait_for_cover_timeout_s=5.0), context)
+        assert result.status == "ok"
+
 
 class TestWithoutTheWait:
     def test_the_first_frame_that_is_not_dark_fails_the_task(self, rig: Rig) -> None:

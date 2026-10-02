@@ -310,6 +310,7 @@ class DarkHandler:
                 frames=command.frames,
                 bias_frames=command.bias_frames,
                 wait=command.wait_for_cover,
+                wait_timeout_s=command.wait_for_cover_timeout_s,
             )
             self._profile.mode(options.mode)
         except (ValueError, ProfileError) as error:

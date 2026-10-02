@@ -117,12 +117,20 @@ def register(subparsers: Subparsers) -> None:
     dark.add_argument("--frames", type=int, help="dark frames in the set")
     dark.add_argument("--bias-frames", type=int, help="bias frames at the shortest exposure")
     dark.add_argument("--exposure-s", type=float, help="the exposure of a dark frame, in seconds")
-    dark.add_argument("--gain", type=int, help="the camera gain (with --standalone)")
-    dark.add_argument("--mode", help="the readout mode (with --standalone)")
+    dark.add_argument(
+        "--gain",
+        type=int,
+        help="the camera gain (only with --standalone; core takes the gain of [survey.dark])",
+    )
+    dark.add_argument(
+        "--mode",
+        help="the readout mode (only with --standalone; core takes the mode of [survey.dark])",
+    )
     dark.add_argument(
         "--wait-timeout",
         type=float,
-        help="seconds to wait for the cover before giving up (with --standalone)",
+        help="seconds to wait for the cover before giving up (default: wait_timeout_s of "
+        "[survey.dark])",
     )
     dark.add_argument(
         "--driver",

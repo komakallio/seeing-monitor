@@ -248,6 +248,20 @@ class TestTheFlow:
         (result,) = events_of(rig.records("event"), "scheduler.dark_result")
         assert result.level == "warning"
 
+    def test_the_timeout_of_the_command_ends_the_wait_for_the_cover(self, tmp_path: Path) -> None:
+        holder: dict[str, CoverGoesOn] = {}
+        rig = make_rig(tmp_path, uncovered_then_covered(10**6, holder))  # nobody covers it
+        rig.app.start()
+        # The configuration waits 120 s. The command asks for 10 s, and the field crosses the RPC.
+        assert send(rig, QueueDark(wait_for_cover_timeout_s=10.0)).accepted
+        run_until(rig, lambda: paused(rig))
+        view = library(rig)
+        assert view.task.state == "failed"
+        assert view.task.summary.startswith("The camera was not dark after 10 s")
+        assert view.sets == []
+        refused = send(rig, QueueDark(wait_for_cover_timeout_s=-1.0))
+        assert (refused.accepted, refused.reason) == (False, RejectReason.INVALID)
+
     def test_a_pause_in_the_middle_of_the_dark_frames_aborts_the_task(self, tmp_path: Path) -> None:
         holder: dict[str, CoverGoesOn] = {}
         rig = make_rig(tmp_path, uncovered_then_covered(0, holder))  # covered from the start
