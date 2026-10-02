@@ -618,11 +618,13 @@ class TestGeometry:
 
     def test_a_silent_change_is_corrected_by_applying_the_geometry_again(self) -> None:
         rig = make_rig().opened()
+        rig.driver.configure(TINY)  # the first configure sets the other format too (the latch)
+        sets_before = len(rig.sdk.calls_named("set_roi_format"))
         rig.sdk.corrupt_next_roi(24, 8)
         active = rig.driver.configure(TINY)
         assert active.config.roi == Roi(8, 4, 16, 8)
         assert rig.sdk.roi == (8, 4, 16, 8)
-        assert len(rig.sdk.calls_named("set_roi_format")) == 2
+        assert len(rig.sdk.calls_named("set_roi_format")) - sets_before == 2
         assert rig.event_kinds() == ["camera.geometry_corrected"]
 
     def test_a_silent_change_that_persists_is_an_error(self) -> None:
@@ -648,6 +650,45 @@ class TestGeometry:
         with pytest.raises(CameraConfigError, match="buffer"):
             rig.driver.read_frame(1.0)
         assert not rig.sdk.video_active
+
+    # The real camera takes up the high-speed flag only when the image format changes, so the
+    # driver sets the other format first. These tests check the calls; the camera check in
+    # `tests/hardware` checks the effect on a camera.
+
+    @staticmethod
+    def format_sets(rig: Rig) -> list[AsiImageType]:
+        return [AsiImageType(call[4]) for call in rig.sdk.calls_named("set_roi_format")]
+
+    def test_the_first_configure_sets_the_other_format_and_then_the_requested_one(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(FAST)
+        assert self.format_sets(rig) == [AsiImageType.RAW8, AsiImageType.RAW16]
+
+    def test_a_request_for_raw8_sets_raw16_first(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(replace(FAST, pixel_format=RAW8))
+        assert self.format_sets(rig) == [AsiImageType.RAW16, AsiImageType.RAW8]
+
+    def test_an_unchanged_flag_needs_no_second_format_set(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(FAST)
+        rig.driver.configure(replace(FAST, exposure_us=1000))
+        assert self.format_sets(rig) == [AsiImageType.RAW8, ASI_RAW16, ASI_RAW16]
+
+    def test_a_changed_flag_sets_the_other_format_again(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(FAST)
+        rig.driver.configure(replace(FAST, high_speed=True))
+        rig.driver.configure(replace(FAST, high_speed=False))
+        assert self.format_sets(rig) == [AsiImageType.RAW8, ASI_RAW16] * 3
+
+    def test_a_reopen_forgets_the_flag_so_the_recovery_step_sets_the_format_again(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(FAST)
+        rig.driver.start()
+        before = len(rig.sdk.calls_named("set_roi_format"))
+        rig.driver.recover(RecoveryLevel.REOPEN)
+        assert self.format_sets(rig)[before:] == [AsiImageType.RAW8, ASI_RAW16]
 
     def test_the_check_interval_limits_how_often_the_geometry_is_read(self) -> None:
         rig = make_rig(geometry_check_interval=4).streaming(TINY)

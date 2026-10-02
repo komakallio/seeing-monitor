@@ -92,6 +92,7 @@ def test_a_stalled_read_times_out_and_the_ladder_recovers(rig: Rig) -> None:
 
 
 def test_a_silent_geometry_change_is_corrected_through_the_binding(rig: Rig) -> None:
+    rig.driver.configure(TINY)  # the first configure also sets the other format (the latch)
     rig.sdk.corrupt_next_roi(24, 8)
     active = rig.driver.configure(TINY)
     assert active.config.roi == Roi(8, 4, 16, 8)

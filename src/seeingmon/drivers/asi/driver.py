@@ -37,6 +37,13 @@ Bandwidth and offset come from the stream, or else from the `bandwidth_pct` and 
 such as `seeingmon camera rates`, calls `save_settings` first and `restore_settings` last, because
 another program shares the camera.
 
+**The high-speed latch.** The camera takes up the high-speed flag only when the image format (RAW8
+or RAW16) changes, and the first time after `init`. A change of the flag alone is silently ignored:
+the stream keeps the old readout regime (a frame rate that differs by 20% and another ADC depth)
+while the driver reports the new one. So when the flag differs from the one that the camera last
+took up, or none is known (after an open, a recovery, or a restore), `configure` sets the other
+image format and then the requested one.
+
 **Frames.** A `RAW8` buffer becomes a `uint8` array, and a `RAW16` buffer becomes a `uint16` array
 with the ADC value in the high bits, as the SDK delivers it. `dropped_before` is the change of the
 SDK drop counter since the previous frame. The first frame after a recovery step carries
@@ -261,6 +268,9 @@ class AsiDriver:
         self._time_quality = TimeQuality.ESTIMATED
         self._time_error_ns = 0
         self._has_temperature = False
+        self._latched_high_speed: bool | None = (
+            None  # the flag that the camera took up; None: unknown
+        )
         self._status_interval_ns = round(self._opts.status_interval_s * NS_PER_S)
         self._temperature_interval_ns = round(self._opts.temperature_interval_s * NS_PER_S)
 
@@ -342,6 +352,7 @@ class AsiDriver:
                 self._sdk_version = api.get_sdk_version() or None
         self._info = info
         self._open = True
+        self._latched_high_speed = None  # `init` leaves the readout regime of the camera unknown
         self._temperature_c = None
         self._temperature_ns = None
 
@@ -714,9 +725,32 @@ class AsiDriver:
             raise CameraConfigError(f"the camera applied {label} {applied} for the request {value}")
         return applied
 
+    def _latch_high_speed(self, plan: _Plan) -> None:
+        """Set the other image format, so that the format of the request is a change.
+
+        The camera takes up the high-speed flag only when the image format changes, and the first
+        time after `init`. A change of the flag alone leaves the old readout regime in place, and
+        the stream runs at the old speed while the driver reports the new ADC depth. The caller
+        sets the format of the request next, which makes the camera read the flag.
+        """
+        info = self._require_open()
+        other = AsiImageType.RAW8 if plan.image_type is AsiImageType.RAW16 else AsiImageType.RAW16
+        if other not in info.supported_formats:
+            return
+        with self._guard("set_roi_format"):
+            self._api.set_roi_format(
+                self._camera_id, plan.roi.width, plan.roi.height, plan.mode.sdk_bin, other
+            )
+
     def _apply_geometry(self, plan: _Plan) -> Roi:
         roi, mode = plan.roi, plan.mode
         mismatch = ""
+        wanted_flag = plan.config.high_speed
+        if (
+            int(AsiControl.HIGH_SPEED_MODE) in self._caps
+            and self._latched_high_speed != wanted_flag
+        ):
+            self._latch_high_speed(plan)
         for attempt in (1, 2):
             with self._guard("set_roi_format"):
                 self._api.set_roi_format(
@@ -738,6 +772,7 @@ class AsiDriver:
                         "camera.geometry_corrected",
                         "The camera applied a different geometry. Applying it again fixed it.",
                     )
+                self._latched_high_speed = wanted_flag
                 return Roi(x, y, roi.width, roi.height)
             mismatch = (
                 f"asked for {asked[0]} x {asked[1]} at binning {asked[2]}, "
@@ -1103,6 +1138,7 @@ class AsiDriver:
         with self._lock:
             self._stream = None
             self._intent_running = False
+            self._latched_high_speed = None  # the restore writes the flag, not the regime
             if not self._open:
                 return ["camera"]
             for number, saved in settings.controls.items():
