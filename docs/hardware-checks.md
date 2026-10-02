@@ -70,6 +70,22 @@ Each row prints the measured rate, the rate of the model, the median, the standa
 
 The command saves every writable control and the geometry of the camera before the first row, and it puts back what the rows changed, even when a row fails or you press Ctrl+C, because other programs such as SharpCap share the camera. It closes the camera at the end. A row that fails prints `FAILED` and the reason, and the table goes on. The exit code is 1 when a row failed or a control could not be restored.
 
+## Compare the binding with the SDK header
+
+The binding copies the enumerations, the two structures that the SDK fills, and the argument types of the functions that it calls from the vendor header. A new SDK release can change any of them, and a wrong structure layout reads garbage without an error. `tests/hardware/test_asi_header.py` parses `ASICamera2.h` and compares it with the binding:
+
+- the value of every enumerator that the binding lists (the error codes, the image types, the controls, and the exposure states),
+- the fields of `ASI_CAMERA_INFO` and `ASI_CONTROL_CAPS`: the order, the types, the array lengths, and the size and offsets in the layout of the platform, with `long` as the `long` of the platform,
+- the return type and the argument types of every function that the binding declares.
+
+The test needs no camera and no library. It needs a copy of the header, which the repository never holds. Set the path and run the test on the platform that will use the library, such as the Raspberry Pi with the header of the Linux archive (`include/ASICamera2.h`):
+
+```bash
+SEEINGMON_ASI__HEADER_PATH=<path-to>/ASICamera2.h python -m pytest tests/hardware/test_asi_header.py -s
+```
+
+Without the variable, the four checks against the header skip. A difference fails the test, and the message names the enumerator, the field, or the function. The header can also hold more than the binding lists, such as the controls of newer cameras. The test prints those with `-s` and does not fail. On a platform where `long` and `int` have the same size, such as Windows, `ctypes` makes the two types one, so the check cannot tell them apart there. The Windows archive and the Linux and macOS archive of V1.41 carry the same header file, and the binding matches it.
+
 ## Send the SQM-LE sample to the maintainer
 
 The reader follows the protocol from documentation, and no real unit has confirmed it (blocker B5). To close the blocker, save the raw responses:
