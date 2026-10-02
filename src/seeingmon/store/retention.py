@@ -14,7 +14,8 @@ that a writer holds open is safe.
   while the survey frame of the same time stays, whatever its age, so the frame that thinning keeps
   for a night keeps its preview. The two files share the time stamp in their names
   (`<kind>-<stamp>.jpg` and `<stamp>.fits`). A preview that outlives its frame ages out by the age
-  limit in the same pass that deletes the frame.
+  limit: in the same pass when the age of the frame deletes it, and in the next pass when a size
+  cap deletes it.
 - Survey frames (`survey/`): every frame stays for `survey_full_days`. Then one frame for each
   night stays for `survey_thinned_days`, the frame nearest to the middle of the night. The
   tier also has a size cap, `survey_max_gb`.

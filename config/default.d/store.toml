@@ -44,7 +44,8 @@ previews_max_gb = 1.0
 # and at most this size. A night of 12 hours adds 0.25 GB (24 FITS files of about 10 MB) and, with
 # the event frames at their limit, up to 0.5 GB. A week takes 1.8 to 3.5 GB, and the thinned
 # nights add 0.6 GB. With the metrics (2 GB) and the previews (1 GB), 4 GB takes 7 of the 8 GB
-# that the quota of 25% allows on a 32 GB card, and the database takes the rest.
+# that the quota of 25% allows on a 32 GB card. The database and the bursts (on demand, 2 GB at
+# most) share the rest, and when all of them fill up, the quota deletes the oldest metrics first.
 # Over the cap, the oldest frames go first, except the one frame for each night that thinning
 # keeps, which goes last.
 survey_full_days = 7.0
