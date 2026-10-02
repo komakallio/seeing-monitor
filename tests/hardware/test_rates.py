@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from seeingmon.cli import build_parser, main
+from seeingmon.clock import utc_ns_to_iso
 from seeingmon.drivers.base import CameraDisconnectedError
 from seeingmon.frames import PixelFormat, Roi, StreamConfig
 from seeingmon.hardware import rates
@@ -316,6 +317,12 @@ class TestRunTable:
         )
         assert events == ["start ZWO ASI294MM (fake)", "baseline", "RAW8"]
 
+    def test_the_report_takes_its_time_from_the_clock_that_it_is_given(self) -> None:
+        rig = make_rig()
+        started = utc_ns_to_iso(rig.clock.utc_ns(), digits=0)  # the table starts at this time
+        report = run_table(rig.driver, PROFILE, frames=6, settle=1, groups=(), clock=rig.clock)
+        assert report.conditions["utc"] == started
+
     def test_the_conditions_name_the_camera_and_the_run_and_nothing_private(self) -> None:
         report = table(make_rig(), groups=())
         conditions = report.conditions
@@ -453,7 +460,7 @@ class TestCommand:
     @pytest.fixture
     def rig(self, monkeypatch: pytest.MonkeyPatch) -> Rig:
         rig = make_rig()
-        monkeypatch.setattr(rates, "create_driver", lambda profile, options: rig.driver)
+        monkeypatch.setattr(rates, "create_driver", lambda profile, options, clock=None: rig.driver)
         return rig
 
     def run(self, tmp_path: Path, *args: str) -> list[str]:
@@ -521,7 +528,7 @@ class TestCommand:
     def test_a_library_that_is_missing_is_a_message_and_exit_code_1(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        def missing(profile: object, options: object) -> object:
+        def missing(profile: object, options: object, clock: object = None) -> object:
             raise AsiLibraryError("the ASI library is not installed or not on the search path")
 
         monkeypatch.setattr(rates, "create_driver", missing)

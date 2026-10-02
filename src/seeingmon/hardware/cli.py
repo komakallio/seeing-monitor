@@ -86,6 +86,7 @@ def _missing_subcommand(args: argparse.Namespace) -> int:
 
 
 def _rates(args: argparse.Namespace) -> int:
+    from seeingmon.clock import SystemClock
     from seeingmon.config import ConfigError, load_config
     from seeingmon.drivers.base import CameraError
     from seeingmon.hardware import rates
@@ -109,7 +110,8 @@ def _rates(args: argparse.Namespace) -> int:
     try:
         config = load_config(local_file=args.local_config)
         profile = config.profile
-        driver = rates.create_driver(profile, rates.driver_options(config))
+        clock = SystemClock()
+        driver = rates.create_driver(profile, rates.driver_options(config), clock)
     except (ConfigError, ProfileError, CameraError) as error:
         raise CliError(str(error)) from None
 
@@ -131,6 +133,7 @@ def _rates(args: argparse.Namespace) -> int:
             groups=groups,
             on_start=on_start,
             on_row=on_row,
+            clock=clock,
         )
     except CameraError as error:
         raise CliError(f"cannot measure the camera: {error}") from None

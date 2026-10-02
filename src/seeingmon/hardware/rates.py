@@ -44,11 +44,11 @@ import platform
 import statistics
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from seeingmon.clock import Clock, SystemClock, utc_ns_to_iso
 from seeingmon.drivers.asi import AsiDriver
 from seeingmon.drivers.base import CameraError
 from seeingmon.frames import PixelFormat, Roi, StreamConfig
@@ -372,13 +372,14 @@ def run_table(
     groups: Sequence[str] = GROUPS,
     on_start: Callable[[dict[str, Any]], None] | None = None,
     on_row: Callable[[RateRow], None] | None = None,
+    clock: Clock | None = None,
 ) -> RatesReport:
     """Open the camera, measure every row, put the camera back, and close it.
 
     `on_start` receives the conditions of the run once the camera is open, and `on_row` receives
     each row as soon as it is measured, so a command can print the table while it grows. The camera
     is restored and closed on every path out: a failing row, an exception from a callback, and an
-    interrupt.
+    interrupt. `clock` gives the time of the report (the system clock by default).
     """
     plan = plan_rows(profile, gain=gain, groups=groups)
     info = driver.open()
@@ -392,7 +393,7 @@ def run_table(
         "frames": frames,
         "settle": settle,
         "gain": gain,
-        "utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "utc": utc_ns_to_iso((clock or SystemClock()).utc_ns(), digits=0),
         "platform": f"{platform.system()} {platform.machine()}",
         "python": platform.python_version(),
     }
@@ -558,9 +559,10 @@ def driver_options(config: Config) -> dict[str, Any]:
     return dict(options) if isinstance(options, dict) else {}
 
 
-def create_driver(profile: Profile, options: Mapping[str, object]) -> AsiDriver:
+def create_driver(
+    profile: Profile, options: Mapping[str, object], clock: Clock | None = None
+) -> AsiDriver:
     """The production driver for the connected camera: the vendor library through `ctypes`."""
-    from seeingmon.clock import SystemClock
     from seeingmon.drivers import asi
 
-    return asi.create(profile=profile, clock=SystemClock(), options=options)
+    return asi.create(profile=profile, clock=clock or SystemClock(), options=options)
