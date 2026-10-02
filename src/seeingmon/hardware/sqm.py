@@ -1,14 +1,28 @@
-"""The SQM-LE reader: a fixed sky-brightness meter on the LAN.
+"""The SQM-LE reader: a fixed sky-brightness meter, read from the unit or from InfluxDB.
 
 The Unihedron SQM-LE measures the sky brightness in magnitudes per square arcsecond and reports it
-over Ethernet. The system polls it, and it compares the readings with its own sky brightness to
+over Ethernet. The system reads it, and it compares the readings with its own sky brightness to
 fit the loss of the dome and the difference in altitude (see `docs/architecture.md`, "Sky
-quality"). `SqmLeReader` turns each reading into a `ReferenceRecord` (`instrument` `sqm_le`,
-`source` `fixed`).
+quality"). Each reading becomes a `ReferenceRecord` (`instrument` `sqm_le` by default, `source`
+`fixed`).
 
-**The protocol, as the owner's blocker B5 leaves it.** The reader uses the ASCII protocol that
-Unihedron documents for the SQM-LE, from the maintainer's knowledge. **No sample from a real unit
-has been checked yet**, so each fact below is unverified against hardware:
+**Two sources.** `[sqm] source` says where the readings come from:
+
+- `tcp` (the default) polls the unit over the LAN. `SqmLeReader` in this module does that, and
+  the rest of this module describes it.
+- `influx` reads the readings that another program wrote to InfluxDB. It suits a unit that this
+  system cannot reach, for example one that a different computer polls and records.
+  `SqmInfluxReader` in `seeingmon.hardware.sqm_influx` does that, and the table `[sqm.influx]`
+  holds its settings (`SqmInfluxConfig` in this module).
+
+Both readers have the interface `SqmReader`, so `core` runs either one, and
+`seeingmon.hardware.sqm_factory` builds the one that `source` names. Both give the same events
+(`sqm.read_failed` and `sqm.recovered`), the same backoff after a failure, and the same count of
+failed polls in a row, which the `sqm` component of `health` reports.
+
+**The protocol of the TCP source, as the owner's blocker B5 leaves it.** The reader uses the
+ASCII protocol that Unihedron documents for the SQM-LE, from the maintainer's knowledge. **No
+sample from a real unit has been checked yet**, so each fact below is unverified against hardware:
 
 - The unit listens on TCP port 10001.
 - A request is two ASCII characters with no terminator: `ix` (information), `rx` (the reading,
@@ -33,8 +47,8 @@ one connection. A failure closes the connection, and the reader backs off expone
 `backoff_initial_s` to `backoff_max_s` before it tries again. All waiting between polls goes
 through the `Clock`. The socket timeouts are real time, because they bound a wait on the network.
 
-**What the reader stores.** A record has the time of the response (the unit may have measured a
-little earlier, up to its sampling time), the magnitude, and the temperature. The pointing
+**What the TCP reader stores.** A record has the time of the response (the unit may have measured
+a little earlier, up to its sampling time), the magnitude, and the temperature. The pointing
 (`altitude_deg`, `azimuth_deg`) comes from the configuration. The serial number and the address
 never enter a record, an event, or a log line.
 """
@@ -46,14 +60,15 @@ import re
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, TypeVar
+from typing import Literal, Protocol, Self, TypeVar
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from seeingmon.clock import Clock
 from seeingmon.config import SectionModel
 from seeingmon.hardware.events import EventCallback, HardwareEvent, emit
 from seeingmon.records.reference import ReferenceRecord
+from seeingmon.sinks.config import check_endpoint, check_influx_connection
 
 _log = logging.getLogger(__name__)
 
@@ -63,6 +78,9 @@ MIN_MAGNITUDE = -5.0  # a reading outside this range is garbled, whatever the un
 MAX_MAGNITUDE = 30.0
 MAX_LINE_BYTES = 512
 SLEEP_SLICE_S = 1.0  # `run` sleeps in slices of this length, so a stop request is prompt
+MAX_NAME_CHARS = 256  # the longest name or tag value of `[sqm.influx]`
+MAX_TAGS = 16
+MAX_SECONDS = 30 * 86_400  # the longest `max_age_s` or `lookback_s`: 30 days
 READER_VERSION = "sqm-le-1"
 _NUMBER = r"[-+]?\s*\d+(?:\.\d*)?"
 _FIELD = re.compile(rf"({_NUMBER})\s*(Hz|hz|HZ|m|c|s|C)(?![A-Za-z])")
@@ -316,18 +334,140 @@ class SqmLeClient:
         return self._parse(parse_calibration, self.request("cx"))
 
 
-# --- The reader --------------------------------------------------------------------------
+# --- The configuration -------------------------------------------------------------------
+
+
+class SqmInfluxConfig(SectionModel):
+    """The `[sqm.influx]` table: where InfluxDB keeps the readings of the SQM-LE, and their shape.
+
+    Read the table with the `source` of `[sqm]` set to `influx`. Every key describes one
+    installation, so keep the table in `local/config.toml` and give a secret with `token_env` or
+    `password_env`, the names of environment variables. `seeingmon hardware sqm` reads one point
+    with these settings and says what it found.
+
+    **The connection.** The keys follow the InfluxDB sink (`seeingmon.sinks.config`). Version 2
+    (Flux, `POST /api/v2/query`) needs `org`, `bucket`, and a `token`. Version 1 (InfluxQL,
+    `GET /query`) needs `database`, and takes `retention_policy`, `username`, and a password.
+
+    **The data.** `measurement` and `field` name the series with the magnitude in mag/arcsec^2.
+    `temperature_field` names the field with the temperature in degrees Celsius. `tags` maps tag
+    names to values, and it selects the unit when the measurement holds more than one.
+
+    **Freshness.** A reading older than `max_age_s` is stale, and it counts as a failed poll.
+    `lookback_s` is how far back the query looks, so it must be at least `max_age_s`. Give it more
+    to tell a stale reading from no reading at all.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", coerce_numbers_to_str=True)
+
+    endpoint: str = Field(
+        description="The address of the server, such as https://influx.example.org."
+    )
+    version: Literal[1, 2] = Field(default=2, description="The query API: 1 or 2.")
+    org: str | None = Field(default=None, min_length=1, description="The organization (version 2).")
+    bucket: str | None = Field(default=None, min_length=1, description="The bucket (version 2).")
+    database: str | None = Field(
+        default=None, min_length=1, description="The database (version 1)."
+    )
+    retention_policy: str | None = Field(
+        default=None, min_length=1, description="The retention policy (version 1)."
+    )
+    token: SecretStr | None = Field(default=None, description="The API token (version 2).")
+    token_env: str | None = Field(
+        default=None, description="The name of the environment variable that holds the token."
+    )
+    username: str | None = Field(default=None, description="The user name (version 1).")
+    password: SecretStr | None = Field(default=None, description="The password (version 1).")
+    password_env: str | None = Field(
+        default=None, description="The name of the environment variable that holds the password."
+    )
+    timeout_s: float = Field(
+        default=10.0, gt=0, le=300, description="How long to wait for the server, in seconds."
+    )
+    verify_tls: bool = Field(
+        default=True, description="Whether to check the certificate of the server."
+    )
+    measurement: str = Field(
+        min_length=1, max_length=MAX_NAME_CHARS, description="The measurement of the readings."
+    )
+    field: str = Field(
+        min_length=1,
+        max_length=MAX_NAME_CHARS,
+        description="The field with the magnitude, in mag/arcsec^2.",
+    )
+    temperature_field: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_NAME_CHARS,
+        description="The field with the temperature, in degrees Celsius.",
+    )
+    tags: dict[str, str] = Field(
+        default_factory=dict, description="The tags that select the unit, as name and value."
+    )
+    max_age_s: float = Field(
+        default=600.0,
+        gt=0,
+        le=MAX_SECONDS,
+        description="A reading older than this is stale, in seconds.",
+    )
+    lookback_s: float = Field(
+        default=3600.0,
+        gt=0,
+        le=MAX_SECONDS,
+        description="How far back the query looks, in seconds. At least max_age_s.",
+    )
+
+    @field_validator("endpoint")
+    @classmethod
+    def _check_endpoint(cls, value: str) -> str:
+        return check_endpoint(value)
+
+    @field_validator("tags")
+    @classmethod
+    def _check_tags(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > MAX_TAGS:
+            raise ValueError(f"use at most {MAX_TAGS} tags")
+        for name, text in value.items():
+            if not name or not text:
+                raise ValueError("a tag needs a name and a value")
+            if len(name) > MAX_NAME_CHARS or len(text) > MAX_NAME_CHARS:
+                raise ValueError(f"a tag name or value has at most {MAX_NAME_CHARS} characters")
+        return value
+
+    @model_validator(mode="after")
+    def _check_settings(self) -> Self:
+        check_influx_connection(
+            version=self.version,
+            org=self.org,
+            bucket=self.bucket,
+            database=self.database,
+            token=self.token,
+            token_env=self.token_env,
+            username=self.username,
+            password=self.password,
+            password_env=self.password_env,
+        )
+        if self.temperature_field == self.field:
+            raise ValueError("temperature_field must differ from field")
+        if self.lookback_s < self.max_age_s:
+            raise ValueError("lookback_s must not be less than max_age_s")
+        return self
 
 
 class SqmConfig(SectionModel):
-    """The `[sqm]` section. The reader stays off unless you enable it and name the unit.
+    """The `[sqm]` section. The reader stays off unless you enable it and name its source.
 
-    `request` is `rx` for the averaged reading, or `ux` for the unaveraged one. `altitude_deg` and
-    `azimuth_deg` say where the unit points. They are optional, and the record carries them when
-    you set them.
+    `source` is `tcp` (the default) to poll the unit over the LAN, which needs `host`, or `influx`
+    to read the readings from InfluxDB, which needs the table `[sqm.influx]`. A reader that you
+    enable needs the keys of its source. `request` is `rx` for the averaged reading, or `ux` for
+    the unaveraged one (a `tcp` key, like `host`, `port`, `persistent`, and the two timeouts).
+    `poll_interval_s`, the backoff keys, `instrument`, `altitude_deg`, and `azimuth_deg` serve both
+    sources. `altitude_deg` and `azimuth_deg` say where the unit points. They are optional, and
+    the record carries them when you set them.
     """
 
     enabled: bool = False
+    source: Literal["tcp", "influx"] = "tcp"
     host: str = ""
     port: int = Field(default=10001, ge=1, le=65535)
     poll_interval_s: float = Field(default=60.0, ge=1.0)
@@ -340,18 +480,82 @@ class SqmConfig(SectionModel):
     instrument: str = Field(default="sqm_le", min_length=1)
     altitude_deg: float | None = Field(default=None, ge=-90.0, le=90.0)
     azimuth_deg: float | None = Field(default=None, ge=0.0, le=360.0)
+    influx: SqmInfluxConfig | None = None
 
     @model_validator(mode="after")
     def _check(self) -> SqmConfig:
-        if self.enabled and not self.host:
-            raise ValueError("an enabled SQM-LE reader needs a host")
+        if self.enabled and self.source == "tcp" and not self.host:
+            raise ValueError('an enabled SQM-LE reader with source = "tcp" needs a host')
+        if self.enabled and self.source == "influx" and self.influx is None:
+            raise ValueError('an enabled SQM-LE reader with source = "influx" needs [sqm.influx]')
         if self.backoff_max_s < self.backoff_initial_s:
             raise ValueError("backoff_max_s must not be less than backoff_initial_s")
         return self
 
 
+# --- The readers -------------------------------------------------------------------------
+
+
+class SqmReader(Protocol):
+    """What `core` needs from an SQM-LE reader. `SqmLeReader` and `SqmInfluxReader` have it.
+
+    `poll` reads once and returns the record, or `None` when the read failed or gave nothing new.
+    It never raises. `failures` counts the failed polls in a row, and `delay_s` is the wait before
+    the next poll. `run` polls until `should_stop()` returns true.
+    """
+
+    @property
+    def failures(self) -> int: ...
+
+    @property
+    def delay_s(self) -> float: ...
+
+    def poll(self) -> ReferenceRecord | None: ...
+
+    def run(
+        self, should_stop: Callable[[], bool], on_record: Callable[[ReferenceRecord], None]
+    ) -> None: ...
+
+    def close(self) -> None: ...
+
+
+def backoff_delay_s(config: SqmConfig, failures: int) -> float:
+    """The wait before the next poll: the poll interval, or the backoff after a failure.
+
+    After `failures` failed polls in a row, the wait doubles from `backoff_initial_s` up to
+    `backoff_max_s`. Both readers use it.
+    """
+    if failures == 0:
+        return config.poll_interval_s
+    doublings = min(failures - 1, 32)  # a long outage must not overflow the float
+    delay: float = config.backoff_initial_s * 2.0**doublings
+    return min(delay, config.backoff_max_s)
+
+
+def run_polling(
+    reader: SqmReader,
+    clock: Clock,
+    should_stop: Callable[[], bool],
+    on_record: Callable[[ReferenceRecord], None],
+) -> None:
+    """Poll until `should_stop()` returns true, and hand each record to `on_record`.
+
+    The loop sleeps on the clock in slices of one second, so a stop request takes effect within a
+    second. Both readers run it.
+    """
+    while not should_stop():
+        record = reader.poll()
+        if record is not None:
+            on_record(record)
+        remaining_s = reader.delay_s
+        while remaining_s > 0 and not should_stop():
+            step = min(remaining_s, SLEEP_SLICE_S)
+            clock.sleep(step)
+            remaining_s -= step
+
+
 class SqmLeReader:
-    """Poll an SQM-LE and produce `ReferenceRecord`s.
+    """Poll an SQM-LE over TCP and produce `ReferenceRecord`s. This is the `tcp` source.
 
     Args:
         config: The `[sqm]` section.
@@ -397,11 +601,7 @@ class SqmLeReader:
     @property
     def delay_s(self) -> float:
         """The wait before the next poll: the poll interval, or the backoff after a failure."""
-        if self._failures == 0:
-            return self._cfg.poll_interval_s
-        doublings = min(self._failures - 1, 32)  # a long outage must not overflow the float
-        delay: float = self._cfg.backoff_initial_s * 2.0**doublings
-        return min(delay, self._cfg.backoff_max_s)
+        return backoff_delay_s(self._cfg, self._failures)
 
     def _emit(self, level: str, kind: str, message: str, **detail: object) -> None:
         emit(
@@ -472,15 +672,7 @@ class SqmLeReader:
         within a second. It closes the connection when it ends.
         """
         try:
-            while not should_stop():
-                record = self.poll()
-                if record is not None:
-                    on_record(record)
-                remaining_s = self.delay_s
-                while remaining_s > 0 and not should_stop():
-                    step = min(remaining_s, SLEEP_SLICE_S)
-                    self._clock.sleep(step)
-                    remaining_s -= step
+            run_polling(self, self._clock, should_stop, on_record)
         finally:
             self.close()
 
