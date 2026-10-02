@@ -146,6 +146,43 @@ class TestTheSystem:
         assert health["status"] in ("healthy", "degraded")
         assert health["components"]["acquire"] == "ok"
 
+    def test_the_survey_frames_reach_the_images_of_the_web_api(self, system: System) -> None:
+        """`core` writes a preview of each long frame, and `web` lists it and serves it."""
+        ensure_running(system)
+
+        def kept_frame_listed() -> bool:
+            items = (system.get_or_none("images") or {}).get("items", [])
+            return any(item["has_fits"] for item in items)
+
+        # The preview comes first and the FITS file a moment later, so wait for the second.
+        system.wait_for(kept_frame_listed, "an image with a FITS frame in the web API")
+        listing = system.get("images")
+        items = listing["items"]
+        assert [i["t_utc_ns"] for i in items] == sorted(
+            (i["t_utc_ns"] for i in items), reverse=True
+        )
+        assert all(i["kind"] in {"survey", "event"} for i in items)
+        status, headers, body = system.get_bytes("images/latest")
+        assert status == 200
+        assert headers["content-type"] == "image/jpeg"
+        assert body.startswith(b"\xff\xd8\xff")
+        newest = system.get(f"images/{items[0]['id']}?format=json")
+        assert newest == items[0]
+        # The first long frame of a run is kept as a FITS file, and it is the oldest image here.
+        kept = [i for i in items if i["has_fits"]]
+        assert kept
+        status, headers, body = system.get_bytes(f"images/{kept[-1]['id']}?format=fits")
+        assert status == 200
+        assert headers["content-type"] == "application/fits"
+        assert body.startswith(b"SIMPLE  =")
+        assert len(body) == kept[-1]["fits_bytes"]
+        # The records point at files that the process of `core` wrote.
+        refs = [r.image_ref for r in system.records("survey_frame") if r.image_ref]
+        assert refs
+        data = system.plan.directory / "data"
+        assert all((data / ref).is_file() for ref in refs)
+        assert all(ref.startswith(("survey/", "previews/")) for ref in refs)
+
 
 class TestKillingAcquire:
     def test_a_killed_acquire_comes_back_with_the_fault_counted_and_no_silent_gap(

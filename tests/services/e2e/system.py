@@ -185,6 +185,20 @@ class System:
         with urllib.request.urlopen(url, timeout=timeout_s) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def get_bytes(self, path: str, *, timeout_s: float = 10.0) -> tuple[int, dict[str, str], bytes]:
+        """GET `/api/v1/<path>` and return the status, the headers (in lower case), and the body.
+
+        A status of 400 or more comes back as a value, and not as an exception.
+        """
+        url = f"http://127.0.0.1:{self.plan.port}/api/v1/{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout_s) as response:
+                headers = {k.lower(): v for k, v in response.headers.items()}
+                return int(response.status), headers, response.read()
+        except urllib.error.HTTPError as error:
+            headers = {k.lower(): v for k, v in error.headers.items()}
+            return int(error.code), headers, error.read()
+
     def post(
         self,
         path: str,
