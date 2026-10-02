@@ -145,6 +145,11 @@ def register(subparsers: Subparsers) -> None:
         help="Run the whole system on a simulated sky, with one command (acquire, core, and web).",
         handler=_dev,
     )
+    dev.description = (
+        "Run the whole system on a simulated sky, with one command (acquire, core, and web). "
+        "The simulated camera has no lens cap. To take darks from the web UI, create the cover "
+        "file that the command prints, and delete the file to uncover the camera."
+    )
     dev.add_argument(
         "--speed",
         type=float,

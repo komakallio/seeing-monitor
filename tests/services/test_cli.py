@@ -28,6 +28,17 @@ def test_the_commands_are_listed(capsys: pytest.CaptureFixture[str]) -> None:
         assert name in output
 
 
+def test_dev_help_says_how_to_cover_the_simulated_camera(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["dev", "--help"])
+    assert raised.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "create the cover file that the command prints" in text
+    assert "delete the file to uncover the camera" in text
+
+
 def test_acquire_help_names_its_options(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         main(["acquire", "--help"])
