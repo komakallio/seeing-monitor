@@ -291,6 +291,29 @@
     }
   }
 
+  /**
+   * The code, the message, and the details of a failed response. `data` is the decoded body, or
+   * `null` when the body was not JSON. An error of the API looks like {"error": {"code",
+   * "message", "details"}}. A command that the scheduler rejects (status 409) has the shape of a
+   * command answer instead: {"accepted": false, "message", "reason", "state"}. The message says
+   * what the person can do ("the scheduler is paused; resume it first"), so the page shows it, and
+   * the reason is the code. Any other body gives a message with the status only.
+   */
+  function failureFrom(status, data) {
+    let code = "error";
+    let message = "The request failed (" + status + ").";
+    let details = null;
+    if (data && data.error) {
+      code = data.error.code || code;
+      message = data.error.message || message;
+      details = Array.isArray(data.error.details) ? data.error.details : null;
+    } else if (data && data.accepted === false && typeof data.message === "string" && data.message !== "") {
+      code = typeof data.reason === "string" && data.reason !== "" ? data.reason : "rejected";
+      message = data.message;
+    }
+    return { code, message, details };
+  }
+
   async function request(method, path, options) {
     const opts = options || {};
     const url = new URL(path.startsWith("/") ? path : API + "/" + path, window.location.origin);
@@ -327,24 +350,24 @@
       }
       return response.json();
     }
-    let code = "error";
-    let message = "The request failed (" + response.status + ").";
-    let details = null;
+    let data = null;
     try {
-      const data = await response.json();
-      if (data && data.error) {
-        code = data.error.code || code;
-        message = data.error.message || message;
-        details = Array.isArray(data.error.details) ? data.error.details : null;
-      }
+      data = await response.json();
     } catch (error) {
-      /* The body was not JSON. The status text above is enough. */
+      /* The body was not JSON. The status of the response is all that there is to report. */
     }
+    const failure = failureFrom(response.status, data);
     const retry = Number(response.headers.get("Retry-After"));
     if (response.status === 401) {
-      emit("seeing:auth-needed", { message });
+      emit("seeing:auth-needed", { message: failure.message });
     }
-    throw new ApiError(response.status, code, message, Number.isFinite(retry) && retry > 0 ? retry : null, details);
+    throw new ApiError(
+      response.status,
+      failure.code,
+      failure.message,
+      Number.isFinite(retry) && retry > 0 ? retry : null,
+      failure.details
+    );
   }
 
   const api = {
@@ -706,7 +729,7 @@
   }
 
   window.Seeing = {
-    API, h, $, clear, emit, fmt, api, ApiError, Token, Night, Status, poller, boot, showImage,
+    API, h, $, clear, emit, fmt, api, ApiError, failureFrom, Token, Night, Status, poller, boot, showImage,
     openTokenPanel, readStorage, writeStorage, recall, remember, flagChip, explainReason, FLAG_HELP,
   };
 })();

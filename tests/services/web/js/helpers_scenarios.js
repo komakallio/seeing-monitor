@@ -1,8 +1,9 @@
 "use strict";
 
 /*
- * The scenarios of the pure helpers of the UI: the formatting of values (static/js/common.js) and
- * the tick and search functions of the plotter (static/js/plot.js). The function takes the global
+ * The scenarios of the pure helpers of the UI: the formatting of values and the reading of a failed
+ * response (static/js/common.js), and the tick and search functions of the plotter
+ * (static/js/plot.js). The function takes the global
  * `Seeing` object that the two scripts build, a `test(name, fn)` function, and an `assert` object,
  * so that Node (helpers.test.js) and a browser console can both run it.
  */
@@ -94,6 +95,40 @@ module.exports = function scenarios(Seeing, test, assert) {
     assert.equal(Seeing.explainReason("flag:low_space"), "Free disk space is low.");
     assert.equal(Seeing.explainReason("flag:unheard_of"), "The flag unheard_of is set.");
     assert.equal(Seeing.explainReason("brand_new_reason"), "brand_new_reason");
+  });
+
+  test("a failed response gives the message of the API error, or of a command that the scheduler rejected", () => {
+    const failureFrom = Seeing.failureFrom;
+    const apiError = {
+      error: { code: "invalid_command", message: "The exposure is out of range.", details: [{ field: "exposure_s" }] },
+    };
+    assert.deepEqual(failureFrom(422, apiError), {
+      code: "invalid_command",
+      message: "The exposure is out of range.",
+      details: [{ field: "exposure_s" }],
+    });
+    // The scheduler rejects a command with status 409 and the shape of a command answer.
+    const rejected = {
+      accepted: false,
+      message: "the scheduler is paused; resume it first",
+      reason: "paused",
+      state: "paused",
+      task_id: null,
+    };
+    assert.deepEqual(failureFrom(409, rejected), {
+      code: "paused",
+      message: "the scheduler is paused; resume it first",
+      details: null,
+    });
+    // A rejection without a reason still has a code.
+    assert.equal(failureFrom(409, { accepted: false, message: "not now" }).code, "rejected");
+    // A body of another shape leaves the message with the status only.
+    assert.equal(failureFrom(409, { accepted: false, message: "" }).message, "The request failed (409).");
+    assert.equal(failureFrom(409, { accepted: true, message: "queued" }).message, "The request failed (409).");
+    assert.equal(failureFrom(500, null).message, "The request failed (500).");
+    assert.equal(failureFrom(502, "bad gateway").message, "The request failed (502).");
+    assert.equal(failureFrom(502, { error: {} }).message, "The request failed (502).");
+    assert.equal(failureFrom(502, { error: {} }).code, "error");
   });
 
   test("value ticks are round numbers inside the range", () => {

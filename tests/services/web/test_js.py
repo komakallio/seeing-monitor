@@ -3,13 +3,13 @@
 `tests/services/web/js/` holds the scenarios of the parts of the UI that a browser is not needed
 to test: the live link (reconnects, the polling fallback, the close codes of the server, and the
 stall detection, all against a fake socket and a fake clock), the pure helpers (formatting of
-values, and the ticks of the plotter), the geometry of the sky overlay (projection against golden
-numbers from Python, clipping, and the rules that keep the grid from bunching up at the pole), and
-the words of the Align page (its sentences and the states of its cards), and the logic of the
-Dark page (the status line, the phases of a session, the check of the form, the polling interval,
-and the numbers of the chart). GitHub runners have Node, so CI runs them. A machine without Node
-skips them. The scenario files also run unchanged in a browser console, which is how they were
-checked on a machine without Node.
+values, the reading of a failed response, and the ticks of the plotter), the geometry of the sky
+overlay (projection against golden numbers from Python, clipping, and the rules that keep the grid
+from bunching up at the pole), and the words of the Align page (its sentences and the states of its
+cards), and the logic of the Dark page (the status line, the phases of a session, the check of the
+form, the polling interval, and the numbers of the chart). GitHub runners have Node, so CI runs
+them. A machine without Node skips them. The scenario files also run unchanged in a browser
+console, which is how they were checked on a machine without Node.
 """
 
 from __future__ import annotations
