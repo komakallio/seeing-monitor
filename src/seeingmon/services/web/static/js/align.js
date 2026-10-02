@@ -449,10 +449,10 @@
         { text: "alt +", dx: sky.axes.altitude_dx, dy: sky.axes.altitude_dy },
         { text: "az +", dx: sky.axes.azimuth_dx, dy: sky.axes.azimuth_dy },
       ];
-      ctx.strokeStyle = colors.aim;
-      ctx.fillStyle = colors.aim;
-      ctx.lineWidth = 2;
       for (const arm of arms) {
+        ctx.strokeStyle = colors.aim; // drawLabel leaves the halo style behind, so set it per arm
+        ctx.fillStyle = colors.aim;
+        ctx.lineWidth = 2;
         const tip = [origin[0] + arm.dx * reach, origin[1] + arm.dy * reach];
         ctx.beginPath();
         ctx.moveTo(origin[0], origin[1]);
