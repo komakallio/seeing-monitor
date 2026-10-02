@@ -116,10 +116,17 @@ class QueueDark(Command):
     to the dark library, using the registered handler.
 
     Leave a field `None` to use the configured value (`[survey.dark]`). With `wait_for_cover`, the
-    session waits until short test frames are dark, which means that you covered the camera.
-    Without it, the first frame that is not dark ends the task as failed. `pause_after` pauses
-    the scheduler when the queue is empty again, so that nothing records data while the camera is
-    still covered, and `Resume` continues. `label` is a note for the event.
+    session waits until short test frames are dark, which means that you covered the camera, and
+    it gives up after `wait_for_cover_timeout_s` seconds. Without `wait_for_cover`, the first
+    frame that is not dark ends the task as failed. `pause_after` pauses the scheduler when the
+    queue is empty again, so that nothing records data while the camera is still covered, and
+    `Resume` continues. `label` is a note for the event.
+
+    With `immediate`, the task does not wait for the cycle boundary, because someone stands at the
+    camera with the cover on: the next step of the scheduler ends the fast stream, which flushes
+    its window as a partial one, or skips what is left of the survey step, and the task starts.
+    An exposure in progress finishes first. Without `immediate`, the task waits for the boundary,
+    as the other kinds of task do.
     """
 
     exposure_s: float | None = None
@@ -129,6 +136,8 @@ class QueueDark(Command):
     pause_after: bool = True
     label: str = ""
     priority: int = 0
+    wait_for_cover_timeout_s: float | None = None
+    immediate: bool = True
 
 
 QUEUE_COMMANDS = (QueueBurst, QueueSweep, QueueReplay, QueueDark)

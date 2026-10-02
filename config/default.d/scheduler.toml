@@ -83,6 +83,7 @@ max_results = 50
 [scheduler.dark]
 max_frames = 60             # The most dark frames, and the most bias frames, in one task.
 max_label_chars = 80        # The longest label.
+max_cover_wait_s = 7200.0   # The longest wait for the cover that one task may ask for, in seconds.
 
 # The default sweep grid. The values explore a range and choose nothing.
 [scheduler.sweep]

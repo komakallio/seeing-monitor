@@ -596,9 +596,9 @@ class Scheduler:
         if not self._queue.push(task):
             return self._reject(RejectReason.QUEUE_FULL, "the commissioning queue is full")
         self._next_task_id += 1
-        return self._accept(self._queued_message(kind), task_id=task.task_id)
+        return self._accept(self._queued_message(kind, command), task_id=task.task_id)
 
-    def _queued_message(self, kind: str) -> str:
+    def _queued_message(self, kind: str, command: Command) -> str:
         """Say when a task that just joined the queue starts. The caller holds the lock."""
         state = self._machine.state
         if state is State.PAUSED:
@@ -607,6 +607,8 @@ class Scheduler:
             return f"the {kind} is queued: it runs after the alignment helper ends"
         if self._faults.degraded:
             return f"the {kind} is queued: it runs after the camera recovers"
+        if isinstance(command, QueueDark) and command.immediate:
+            return f"the {kind} is queued and starts at the next step"
         return f"the {kind} is queued and runs at the next cycle boundary"
 
     def _dark_task_pending(self) -> bool:
@@ -629,6 +631,14 @@ class Scheduler:
             low_us, high_us = self._profile.limits.exposure_us_range
             if not low_us <= seconds_to_us(seconds) <= high_us:
                 return f"exposure_s must be between {low_us / 1e6:g} and {high_us / 1e6:g} seconds"
+        timeout = command.wait_for_cover_timeout_s
+        if timeout is not None and not (
+            math.isfinite(timeout) and 0 < timeout <= limits.max_cover_wait_s
+        ):
+            return (
+                "wait_for_cover_timeout_s must be a positive number of seconds, "
+                f"at most {limits.max_cover_wait_s:g}"
+            )
         if len(command.label) > limits.max_label_chars:
             return f"the label has at most {limits.max_label_chars} characters"
         return None
@@ -1074,6 +1084,16 @@ class Scheduler:
 
     def _step_auto(self) -> StepKind:
         phase = self._cycle.phase
+        if (
+            phase is not Phase.BEGIN  # at a boundary, `_auto_begin` runs the tasks after the gates
+            and self._immediate_task_waits()
+            and self._enter_commission(State.AUTO, "a dark session starts at once")
+        ):
+            # The fast stream, if one runs, ends in `_reconcile` on the next step, with its window
+            # flushed. An exposure that was in progress has finished, because the step that reads
+            # it does not return before. What is left of the survey step is skipped, and the cycle
+            # starts again when commissioning is done.
+            return StepKind.TRANSITION
         if phase is Phase.FAST:
             return self._fast_step()
         if phase is Phase.SURVEY:
@@ -1510,8 +1530,13 @@ class Scheduler:
         with self._lock:
             return len(self._queue) > 0 and not self._faults.degraded
 
-    def _enter_commission(self, from_state: State) -> bool:
-        if not self._transition("a task is queued", State.COMMISSION, expect=from_state):
+    def _immediate_task_waits(self) -> bool:
+        """Whether a queued task must not wait for the cycle boundary, and the camera can run it."""
+        with self._lock:
+            return not self._faults.degraded and self._queue.has(_starts_at_once)
+
+    def _enter_commission(self, from_state: State, reason: str = "a task is queued") -> bool:
+        if not self._transition(reason, State.COMMISSION, expect=from_state):
             return False
         self._return_state = from_state
         with self._lock:
@@ -1837,6 +1862,11 @@ def build_scheduler(
         alignment_sink=alignment_sink,
         result_sink=result_sink,
     )
+
+
+def _starts_at_once(task: CommissionTask) -> bool:
+    """Whether the task asks to start at the next step (`QueueDark.immediate`)."""
+    return isinstance(task.command, QueueDark) and task.command.immediate
 
 
 def _failed(task: CommissionTask, started: int, finished: int, summary: str) -> CommissionResult:

@@ -32,7 +32,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -132,6 +132,10 @@ class TaskQueue:
     def tasks(self) -> tuple[CommissionTask, ...]:
         """The waiting tasks in the order that they will run."""
         return tuple(entry[2] for entry in sorted(self._heap))
+
+    def has(self, predicate: Callable[[CommissionTask], bool]) -> bool:
+        """Whether a waiting task satisfies `predicate`. It does not sort, so asking is cheap."""
+        return any(predicate(entry[2]) for entry in self._heap)
 
 
 # --- Frame statistics ----------------------------------------------------------------------------

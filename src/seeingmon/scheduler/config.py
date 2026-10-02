@@ -240,6 +240,9 @@ class DarkTaskConfig(SectionModel):
     max_label_chars: PositiveInt = 80
     """The longest label that a dark task may carry, in characters."""
 
+    max_cover_wait_s: Seconds = 7200.0
+    """The longest wait for the cover that a dark task may ask for, in seconds."""
+
 
 class SweepConfig(SectionModel):
     """The default grid of a sweep. The values explore a range and choose nothing."""

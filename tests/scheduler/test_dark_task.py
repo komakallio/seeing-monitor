@@ -2,9 +2,9 @@
 
 The session itself belongs to the services lane (`seeingmon.services.core.commissioning.dark`).
 These tests register a stand-in handler that reads a few frames, so they show what the scheduler
-does around a dark task: it checks the command, holds one dark task at a time, and, when the task
-asks for it, ends the commission episode in `paused`, so that nothing records data while the
-camera is still covered.
+does around a dark task: it checks the command, holds one dark task at a time, starts the task at
+the next step when it asks to (`immediate`), and, when the task asks for it, ends the commission
+episode in `paused`, so that nothing records data while the camera is still covered.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ from seeingmon.scheduler.config import SchedulerConfig
 from tests.scheduler.scenario import PROFILE, World
 
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
+FRAME_PERIOD_S = 2.0  # the fast stream of the scenario gives one frame every 2 s
+LONG_EXPOSURE_US = 30_000_000  # the long exposure of the survey step
 
 
 class StandInDark:
@@ -141,6 +143,11 @@ class TestTheCommand:
             (QueueDark(exposure_s=1e-9), "exposure_s"),
             (QueueDark(exposure_s=1e7), "exposure_s"),
             (QueueDark(label="x" * 81), "label"),
+            (QueueDark(wait_for_cover_timeout_s=0.0), "wait_for_cover_timeout_s"),
+            (QueueDark(wait_for_cover_timeout_s=-1.0), "wait_for_cover_timeout_s"),
+            (QueueDark(wait_for_cover_timeout_s=math.nan), "wait_for_cover_timeout_s"),
+            (QueueDark(wait_for_cover_timeout_s=math.inf), "wait_for_cover_timeout_s"),
+            (QueueDark(wait_for_cover_timeout_s=7200.5), "wait_for_cover_timeout_s"),
         ],
     )
     def test_a_setting_out_of_range_is_invalid_and_names_the_field(
@@ -160,6 +167,8 @@ class TestTheCommand:
             QueueDark(exposure_s=30.0),
             QueueDark(exposure_s=0.0001),
             QueueDark(label="x" * 80),
+            QueueDark(wait_for_cover_timeout_s=0.001),
+            QueueDark(wait_for_cover_timeout_s=7200.0),
             QueueDark(),
         ],
     )
@@ -168,12 +177,17 @@ class TestTheCommand:
         assert world.scheduler.submit(command).accepted
 
     def test_the_limits_come_from_the_configuration(self) -> None:
-        config = SchedulerConfig.model_validate({"dark": {"max_frames": 5, "max_label_chars": 4}})
+        config = SchedulerConfig.model_validate(
+            {"dark": {"max_frames": 5, "max_label_chars": 4, "max_cover_wait_s": 60.0}}
+        )
         world = World(start_utc_ns=NIGHT, config=config)
         world.scheduler.register_handler("dark", StandInDark(world.scheduler))
         assert not world.scheduler.submit(QueueDark(frames=6)).accepted
         assert not world.scheduler.submit(QueueDark(label="12345")).accepted
-        assert world.scheduler.submit(QueueDark(frames=5, label="1234")).accepted
+        assert not world.scheduler.submit(QueueDark(wait_for_cover_timeout_s=61.0)).accepted
+        assert world.scheduler.submit(
+            QueueDark(frames=5, label="1234", wait_for_cover_timeout_s=60.0)
+        ).accepted
 
     def test_the_exposure_range_is_the_one_of_the_profile(self) -> None:
         low_us, high_us = PROFILE.limits.exposure_us_range
@@ -185,9 +199,16 @@ class TestTheCommand:
 
 
 class TestWhenTheTaskStarts:
-    def test_the_answer_says_the_next_cycle_boundary_while_the_survey_runs(self) -> None:
+    def test_the_answer_says_the_next_step_for_a_session_that_starts_at_once(self) -> None:
         world, _ = night_world()
         queued = submit_at(world, 50, QueueDark())
+        world.run_until(60)
+        assert queued[0].state == "auto"
+        assert "starts at the next step" in queued[0].message
+
+    def test_the_answer_says_the_next_cycle_boundary_for_a_session_that_waits(self) -> None:
+        world, _ = night_world()
+        queued = submit_at(world, 50, QueueDark(immediate=False))
         world.run_until(60)
         assert queued[0].state == "auto"
         assert "runs at the next cycle boundary" in queued[0].message
@@ -220,6 +241,147 @@ class TestWhenTheTaskStarts:
         assert stand_in.tasks == []
         world.run_until(900)
         assert len(stand_in.tasks) == 1
+
+
+def started_at(world: World, kind: str = "dark") -> float:
+    """The seconds since the start of the world at which the first task of a kind started."""
+    events = [e for e in world.events("scheduler.task_started") if (e.detail or {})["kind"] == kind]
+    return world.seconds(events[0].t_utc_ns)
+
+
+def commission_reason(world: World) -> str:
+    """The reason that the scheduler gave when it entered `commission`."""
+    for event in world.events("scheduler.state_change"):
+        detail = event.detail or {}
+        if detail["to"] == "commission":
+            return str(detail["reason"])
+    raise AssertionError("the scheduler never entered commission")
+
+
+def queued_at(world: World, command: str) -> float:
+    """The seconds since the start of the world at which a command reached the scheduler."""
+    events = [
+        e for e in world.events("scheduler.command") if (e.detail or {})["command"] == command
+    ]
+    return world.seconds(events[0].t_utc_ns)
+
+
+class TestStartingAtOnce:
+    """A dark session does not wait for the cycle boundary, because someone stands at the camera.
+
+    The first fast period of the scenario runs from 0 to 120 s, the survey step follows to about
+    150 s, and the boundary is there.
+    """
+
+    def test_a_session_queued_in_a_fast_period_starts_within_one_frame_period(self) -> None:
+        world, stand_in = night_world()
+        submit_at(world, 20, QueueDark(pause_after=False))
+        world.run_until(400)
+        queued = queued_at(world, "QueueDark")
+        assert 19.0 <= queued <= 23.0  # in the middle of the first fast period
+        assert 0.0 <= started_at(world) - queued <= FRAME_PERIOD_S
+        assert commission_reason(world) == "a dark session starts at once"
+        assert stand_in is not None
+        assert len(stand_in.tasks) == 1
+
+    def test_the_fast_window_ends_as_a_partial_one_and_no_frame_is_lost(self) -> None:
+        world, _ = night_world()
+        submit_at(world, 20, QueueDark(pause_after=False))
+        world.run_until(400)
+        world.close()  # the window of the new cycle is still open, so close it
+        queued = queued_at(world, "QueueDark")
+        before = [w for w in world.windows() if world.seconds(w.t_utc_ns) < queued]
+        assert before
+        last = before[-1]
+        assert world.seconds(last.t_utc_ns) + last.duration_s == pytest.approx(queued, abs=2.5)
+        assert "partial" in last.flags
+        assert sum(w.n_frames for w in world.windows()) == world.fast.frames_pushed
+        assert sum(w.n_dropped for w in world.windows()) == 0
+
+    def test_the_scheduler_starts_a_new_cycle_when_the_session_is_done(self) -> None:
+        world, _ = night_world()
+        submit_at(world, 20, QueueDark(pause_after=False))
+        world.run_until(400)
+        assert world.states_visited() == ["safe", "auto", "commission", "auto"]
+        end = next(t for t, _, to in world.state_changes() if to == "auto" and t > 20)
+        assert any(world.seconds(w.t_utc_ns) >= end for w in world.windows())
+
+    def test_what_is_left_of_the_survey_step_is_skipped(self) -> None:
+        world, _ = night_world()
+        queued: list[CommandResult] = []
+        original = world.survey.submit
+
+        def submit_then_queue(frame: Any) -> None:
+            original(frame)
+            if len(world.survey.submitted) == 1:  # the short exposure is in, the long one is next
+                queued.append(world.scheduler.submit(QueueDark(pause_after=False)))
+
+        world.survey.submit = submit_then_queue  # type: ignore[method-assign]
+        world.run_until(400)
+        assert queued[0].accepted
+        started = started_at(world)
+        long_exposures = [
+            c
+            for c in world.camera.configure_log
+            if c.config.exposure_us == LONG_EXPOSURE_US and world.seconds(c.t_utc_ns) < started
+        ]
+        assert long_exposures == []  # the exposure that would have taken 30 s did not start
+        assert started - queued_at(world, "QueueDark") < 1.0
+
+    def test_an_exposure_in_progress_finishes_first(self) -> None:
+        world, _ = night_world()
+        queued: list[CommandResult] = []
+        original = world.survey.submit
+
+        def queue_during_the_long_exposure(frame: Any) -> None:
+            original(frame)
+            if len(world.survey.submitted) == 2:  # the long frame is in: its exposure is over
+                queued.append(world.scheduler.submit(QueueDark(pause_after=False)))
+
+        world.survey.submit = queue_during_the_long_exposure  # type: ignore[method-assign]
+        world.run_until(400)
+        assert queued[0].accepted
+        assert [f.exposure_us for f in world.survey.submitted[:2]] == [1000, LONG_EXPOSURE_US]
+        assert started_at(world) - queued_at(world, "QueueDark") < 1.0
+
+    def test_a_session_without_the_flag_waits_for_the_boundary(self) -> None:
+        world, _ = night_world()
+        submit_at(world, 20, QueueDark(immediate=False, pause_after=False))
+        world.run_until(400)
+        assert started_at(world) >= 120.0  # after the fast period
+        assert commission_reason(world) == "a task is queued"
+
+    def test_the_other_kinds_of_task_still_wait_for_the_boundary(self) -> None:
+        world, _ = night_world()
+        world.scheduler.register_handler("burst", Plain())
+        submit_at(world, 20, QueueBurst())
+        world.run_until(400)
+        assert started_at(world, "burst") >= 120.0
+
+    def test_a_dark_session_takes_the_waiting_tasks_with_it(self) -> None:
+        world, _ = night_world()
+        world.scheduler.register_handler("burst", Plain())
+        submit_at(world, 20, QueueBurst(priority=-1))
+        submit_at(world, 30, QueueDark(pause_after=False))
+        world.run_until(400)
+        assert [r.kind for r in world.results] == ["dark", "burst"]
+        assert started_at(world, "burst") < 120.0  # the episode ran both
+
+    def test_a_command_that_preempts_commissioning_still_ends_the_session(self) -> None:
+        world, stand_in = night_world(frames=4, during=lambda s: s.submit(StartAlignment()))
+        submit_at(world, 20, QueueDark(pause_after=True))
+        world.run_until(400)
+        assert stand_in is not None
+        assert [r.status for r in world.results if r.kind == "dark"] == ["aborted"]
+        assert "align" in world.states_visited()
+        assert "paused" not in world.states_visited()  # the cut-short episode does not pause
+
+    def test_a_pause_cuts_the_session_short_too(self) -> None:
+        world, _ = night_world(frames=4, during=lambda s: s.submit(Pause()))
+        submit_at(world, 20, QueueDark(pause_after=False))
+        world.run_until(400)
+        assert [r.status for r in world.results if r.kind == "dark"] == ["aborted"]
+        assert world.states_visited()[-2:] == ["commission", "paused"]
 
 
 class TestOneAtATime:
