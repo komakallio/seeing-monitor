@@ -127,7 +127,12 @@ class AlignmentSettings(SectionModel):
     The target is where Polaris belongs in the frame of the alignment stream (the survey readout
     mode), and the roll that the camera should have. Take both from a reference solution at
     commissioning. Without a target, the helper still shows the live view and the solved position,
-    and it leaves the offset out.
+    and it leaves the offset out. The live view needs no target: it aims the pole at the center of
+    the frame.
+
+    The aim is where the pole should go, in pixels of the same frame. The default is the center of
+    the frame, and `aim_x_px` and `aim_y_px` (set together) name another pixel. The reticle of the
+    live view, the dashed circle with the radius of the orbit of Polaris, is centered on the aim.
 
     The preview holds at most `max_preview_pixels` pixels, and the helper sends at most one frame
     each `min_interval_s`. A solve starts at most each `solve_interval_s`, and a solved position
@@ -139,6 +144,9 @@ class AlignmentSettings(SectionModel):
     target_x_px: float | None = None
     target_y_px: float | None = None
     target_roll_deg: float | None = None
+
+    aim_x_px: float | None = None
+    aim_y_px: float | None = None
 
     jpeg_quality: int = Field(80, ge=10, le=95)
     max_preview_pixels: int = Field(1_000_000, ge=10_000)
@@ -158,9 +166,18 @@ class AlignmentSettings(SectionModel):
     def _target_is_whole(self) -> AlignmentSettings:
         if (self.target_x_px is None) != (self.target_y_px is None):
             raise ValueError("set target_x_px and target_y_px together")
+        if (self.aim_x_px is None) != (self.aim_y_px is None):
+            raise ValueError("set aim_x_px and aim_y_px together")
         return self
 
     @property
     def has_target(self) -> bool:
         """Whether the configuration gives a target position."""
         return self.target_x_px is not None and self.target_y_px is not None
+
+    @property
+    def aim_xy(self) -> tuple[float, float] | None:
+        """The configured aim, or `None` for the center of the frame."""
+        if self.aim_x_px is None or self.aim_y_px is None:
+            return None
+        return self.aim_x_px, self.aim_y_px

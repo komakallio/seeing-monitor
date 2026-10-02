@@ -421,6 +421,7 @@ class CoreApp:
             solver=quick,
             tracker=self.tracker,
             touch=lambda: self.scheduler.touch_alignment(),
+            site=load_site(self.config),
         )
 
     def _make_quick_solver(self) -> QuickSolver | None:

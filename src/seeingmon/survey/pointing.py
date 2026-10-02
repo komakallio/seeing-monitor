@@ -49,6 +49,21 @@ SOLUTION_FORMAT = 1
 _Z = np.array([0.0, 0.0, 1.0])
 
 
+def _colatitude_deg(vector: FloatArray) -> float:
+    """The angle between a CIRS unit vector and the celestial pole, in degrees."""
+    return float(np.degrees(np.arctan2(np.hypot(vector[0], vector[1]), vector[2])))
+
+
+def polaris_colatitude_deg(t_utc_ns: int, dut1_s: float = 0.0) -> float:
+    """The angle between the apparent place of Polaris and the celestial pole, in degrees.
+
+    It is the radius of the circle that Polaris follows around the pole of date, and it needs no
+    solution: the apparent place depends on the time only. It changes by arcseconds in a year.
+    """
+    epoch = apparent.epoch_from_utc_ns(t_utc_ns, dut1_s)
+    return _colatitude_deg(apparent.apparent_vectors_for(apparent.POLARIS, epoch))
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class PointingSolution:
     """The camera attitude fixed to the Earth, with the readout mode it belongs to.
@@ -136,8 +151,7 @@ class PointingSolution:
         It is the radius of the circle that Polaris follows around the pole of date. The method
         uses the same vector as `polaris_pixel`, so the two always agree.
         """
-        vector = self._polaris_vector(t_utc_ns)
-        return float(np.degrees(np.arctan2(np.hypot(vector[0], vector[1]), vector[2])))
+        return _colatitude_deg(self._polaris_vector(t_utc_ns))
 
     def to_dict(self) -> dict[str, Any]:
         return {

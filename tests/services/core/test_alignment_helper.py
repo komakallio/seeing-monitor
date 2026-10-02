@@ -12,6 +12,7 @@ import pytest
 from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile, load_profile
+from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.helper import AlignmentHelper
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.settings import AlignmentSettings
@@ -178,6 +179,32 @@ class TestOneFrame:
         )  # the frame is 640 x 480
         assert state.sky.pole.dy_px == pytest.approx(pole[1] - 239.5, abs=0.01)
         assert "sky" not in state.quality
+
+    def test_the_state_carries_the_reticle_with_and_without_a_solution(self, build: Build) -> None:
+        helper = build()  # no solver, so there is never a solution
+        state = unpack_frame(helper.process_frame(sky_frame())).state
+        assert state.sky is None
+        assert state.reticle is not None
+        assert (state.reticle.x_px, state.reticle.y_px) == (319.5, 239.5)  # the frame is 640 x 480
+        assert state.reticle.radius_px == pytest.approx(580.0, abs=15.0)  # about 0.62 degrees
+
+    def test_a_site_gives_the_state_the_move_in_altitude_and_azimuth(self, build: Build) -> None:
+        site = SiteConfig(latitude_deg=50.0, longitude_deg=10.0)  # a synthetic site
+        solver = StubSolver(solution(attitude=camera(), polaris_colatitude_deg=0.6265))
+        with_site = build(solver=solver, site=site)
+        frame = sky_frame(seq=3)
+        with_site.solve_frame(frame)
+        state = unpack_frame(with_site.process_frame(frame)).state
+        assert state.sky is not None
+        assert state.sky.altitude_arcmin is not None
+        assert state.sky.azimuth_arcmin is not None
+        assert state.sky.axes is not None
+        without_site = build(solver=StubSolver(solution(attitude=camera())))
+        without_site.solve_frame(frame)
+        plain = unpack_frame(without_site.process_frame(frame)).state
+        assert plain.sky is not None
+        assert plain.sky.altitude_arcmin is None
+        assert plain.sky.axes is None
 
     def test_a_helper_without_a_target_still_has_the_sky_and_the_solved_position(
         self, build: Build

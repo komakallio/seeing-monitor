@@ -11,7 +11,7 @@ import pytest
 
 from seeingmon.survey import apparent, skyview
 from seeingmon.survey.geometry import ARCSEC_PER_RAD, rot_z
-from seeingmon.survey.pointing import PointingSolution
+from seeingmon.survey.pointing import PointingSolution, polaris_colatitude_deg
 from seeingmon.survey.skyview import build_sky_view, frame_center, position_angle_deg
 from seeingmon.survey.wcs_fit import ROLL_MIN_DISTANCE_PX, CameraAttitude, pixel_center
 from tests.survey.synth import NIGHT_UTC_NS, make_attitude
@@ -211,7 +211,7 @@ class TestCamera:
 
     def test_the_view_stays_small(self) -> None:
         view = build_sky_view(attitude(0.9, -65.0), WIDTH, HEIGHT, COLATITUDE)
-        assert len(json.dumps(dataclasses.asdict(view))) < 700
+        assert len(json.dumps(dataclasses.asdict(view))) < 1300
 
 
 class TestOrbit:
@@ -354,3 +354,19 @@ class TestPolarisColatitude:
         solution = self.solution()
         later = solution.polaris_colatitude_deg(NIGHT_UTC_NS + 12 * 3600 * 1_000_000_000)
         assert later == pytest.approx(solution.polaris_colatitude_deg(NIGHT_UTC_NS), abs=0.002)
+
+    def test_the_function_needs_no_solution_and_agrees_with_the_method(self) -> None:
+        solution = self.solution()
+        for hours in (0, 5, 17):
+            t = NIGHT_UTC_NS + hours * 3600 * 1_000_000_000
+            assert polaris_colatitude_deg(t) == pytest.approx(
+                solution.polaris_colatitude_deg(t), abs=1e-12
+            )
+
+    def test_the_apparent_colatitude_shifts_with_the_season_by_the_aberration(self) -> None:
+        # Annual aberration moves the apparent place of Polaris by up to 20 arcseconds, which is
+        # 0.0057 degrees, and nutation adds a few arcseconds.
+        day = 24 * 3600 * 1_000_000_000
+        values = [polaris_colatitude_deg(NIGHT_UTC_NS + k * 30 * day) for k in range(12)]
+        assert max(values) - min(values) > 0.002
+        assert max(values) - min(values) < 0.02

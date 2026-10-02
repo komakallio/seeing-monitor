@@ -15,11 +15,19 @@ has no target and no offset.
 target roll, wrapped to -180 to 180 degrees. A solution older than `solution_max_age_s` is no longer
 current, and the state leaves it out.
 
-**The sky view.** A current solution that carries a camera attitude also gives the `sky` view: the
-celestial pole, the circle that Polaris follows around it, and the camera model that projects both
-(`seeingmon.survey.skyview`). It does not depend on the target, so a new install that has none
-still shows the pole and the orbit. It follows the freshness rule of the solved position, and
-without a current solution `sky` is `None` and `quality["sky"]` says why.
+**The reticle.** The first layer of the live view is fixed in the picture: a circle centered on
+the aim (the center of the frame, unless `[alignment]` names another pixel) with the radius of the
+orbit of Polaris in pixels (`seeingmon.survey.skyview.reticle_geometry`). It needs the frame size,
+the plate scale, and the colatitude of Polaris at the time of the frame, which follows from the time
+alone, so the state carries it without a solution too.
+
+**The sky view.** A current solution that carries a camera attitude also gives the `sky` view, the
+layer that is fixed to the stars: the pole, the aim and the offset from it, the aim ring (where
+Polaris belongs now), the circle that Polaris follows, and the camera model that projects them.
+With a site (`[site]`), the view adds the move in altitude and in azimuth that brings the pole to
+the aim. It does not depend on the target, so a new install that has none still shows all of this.
+It follows the freshness rule of the solved position, and without a current solution `sky` is
+`None` and `quality["sky"]` says why.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ import math
 from dataclasses import dataclass
 
 from seeingmon.clock import NS_PER_S, utc_ns_to_iso
+from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.settings import AlignmentSettings
 from seeingmon.services.web.contract import (
@@ -36,12 +45,15 @@ from seeingmon.services.web.contract import (
     FocusView,
     HistogramView,
     OffsetView,
+    ReticleView,
     SaturationView,
     SkyView,
     SolvedView,
     TargetView,
 )
-from seeingmon.survey.skyview import build_sky_view
+from seeingmon.survey.apparent import earth_rotation_angle
+from seeingmon.survey.pointing import polaris_colatitude_deg
+from seeingmon.survey.skyview import build_sky_view, reticle_geometry, zenith_vector
 from seeingmon.survey.tracker import PointingTracker
 
 
@@ -100,8 +112,13 @@ def build_state(
     settings: AlignmentSettings,
     *,
     best_fwhm_px: float | None = None,
+    site: SiteConfig | None = None,
 ) -> AlignmentState:
-    """The state that describes `frame`, with the latest solution and the target."""
+    """The state that describes `frame`, with the latest solution and the target.
+
+    `site` is the `[site]` of the configuration. With it, the sky view says how to move the camera
+    in altitude and in azimuth, and without it the view gives the image directions only.
+    """
     quality: dict[str, str] = {}
     info = AlignmentFrameInfo(
         seq=frame.seq,
@@ -132,18 +149,35 @@ def build_state(
     elif target is not None:
         quality["offset"] = "the offset needs a current solution"
 
+    reticle_view = _reticle(frame, solution, settings, quality)
+
     sky_view: SkyView | None = None
     if solved_view is None:
         quality["sky"] = reason or "no current solution"
     elif solution is None or solution.attitude is None:
         quality["sky"] = "the solution carries no camera attitude"
     else:
+        polaris = (
+            None
+            if solution.x_px is None or solution.y_px is None
+            else (solution.x_px, solution.y_px)
+        )
+        zenith = (
+            None
+            if site is None
+            else zenith_vector(
+                site.latitude_deg, site.longitude_deg, earth_rotation_angle(solution.t_utc_ns)
+            )
+        )
         sky_view = SkyView.from_geometry(
             build_sky_view(
                 solution.attitude,
                 frame.width_px,
                 frame.height_px,
                 solution.polaris_colatitude_deg,
+                polaris_xy=polaris,
+                aim_xy=settings.aim_xy,
+                zenith=zenith,
             )
         )
 
@@ -169,8 +203,35 @@ def build_state(
         focus=focus_view,
         histogram=frame.histogram,
         saturation=frame.saturation,
+        reticle=reticle_view,
         sky=sky_view,
         quality=quality,
+    )
+
+
+def _reticle(
+    frame: FrameSummary,
+    solution: QuickSolution | None,
+    settings: AlignmentSettings,
+    quality: dict[str, str],
+) -> ReticleView | None:
+    """The fixed circle of the reticle. It follows from the frame and the time, not a solution."""
+    scale = frame.plate_scale_arcsec_px or (None if solution is None else solution.scale_arcsec_px)
+    if scale is None:
+        quality["reticle"] = "the plate scale is not known"
+        return None
+    colatitude = polaris_colatitude_deg(frame.t_utc_ns)
+    geometry = reticle_geometry(
+        frame.width_px, frame.height_px, scale, colatitude, aim_xy=settings.aim_xy
+    )
+    if geometry is None:
+        quality["reticle"] = "the radius of the orbit of Polaris is not known"
+        return None
+    return ReticleView(
+        x_px=geometry.x_px,
+        y_px=geometry.y_px,
+        radius_px=geometry.radius_px,
+        polaris_colatitude_deg=round(colatitude, 5),
     )
 
 

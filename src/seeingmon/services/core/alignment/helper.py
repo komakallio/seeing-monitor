@@ -34,6 +34,7 @@ from typing import Any, Protocol
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile
+from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.preview import (
     frame_saturation_dn,
     histogram_counts,
@@ -81,8 +82,10 @@ class AlignmentHelper:
         solver: Solver | None = None,
         tracker: PointingTracker | None = None,
         touch: Callable[[], None] | None = None,
+        site: SiteConfig | None = None,
     ) -> None:
         self._settings = settings
+        self._site = site
         self._profile = profile
         self._clock = clock
         self._is_active = is_active
@@ -160,7 +163,9 @@ class AlignmentHelper:
         self, summary: FrameSummary, solution: QuickSolution | None, best: float | None
     ) -> AlignmentState:
         target = resolve_target(self._settings, self._tracker, summary.t_utc_ns, summary.mode)
-        state = build_state(summary, solution, target, self._settings, best_fwhm_px=best)
+        state = build_state(
+            summary, solution, target, self._settings, best_fwhm_px=best, site=self._site
+        )
         if self._solver is not None:
             return state
         reason = "the quick solve is not available: no catalog is configured"

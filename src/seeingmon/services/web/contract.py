@@ -508,18 +508,90 @@ class OrbitView(_View):
     margin_arcmin: float | None = None
 
 
+class PointView(_View):
+    """A pixel of the frame."""
+
+    x_px: float
+    y_px: float
+
+
+class ReticleView(_View):
+    """The fixed reticle: a circle that does not move with the mount.
+
+    It is centered on the aim (the center of the frame, unless `[alignment]` names another pixel),
+    and its radius is the radius of the orbit of Polaris in pixels of the frame:
+    `tan(colatitude) / scale_rad_px`. It depends on the frame size, the plate scale, and the
+    colatitude of Polaris only, so `core` serves it without a solution too.
+    """
+
+    x_px: float
+    y_px: float
+    radius_px: float = Field(gt=0)
+    polaris_colatitude_deg: float | None = Field(None, ge=0, lt=90)
+
+
+class AimView(_View):
+    """Where the pole should go, and how far it is from there.
+
+    `x_px` and `y_px` are the aim, which is the center of the reticle. `dx_px` and `dy_px` are the
+    pole minus the aim, and they are `null` when the pole lies behind the camera.
+    `distance_arcmin` is the exact angle between the pole and the sky direction at the aim pixel.
+    """
+
+    x_px: float
+    y_px: float
+    dx_px: float | None = None
+    dy_px: float | None = None
+    distance_arcmin: float | None = Field(None, ge=0)
+
+
+class AxesView(_View):
+    """The image directions of the two moves of the mount, as unit vectors (x right, y down).
+
+    `altitude_*` is where the camera looks when you raise it, and `azimuth_*` is where it looks
+    when you turn it toward the east. The pole lies on the side of the aim in which the camera has
+    to move, so the two vectors read like the arrows of a compass drawn on the picture.
+    """
+
+    altitude_dx: float
+    altitude_dy: float
+    azimuth_dx: float
+    azimuth_dy: float
+
+
 class SkyView(_View):
-    """The pole, the orbit of Polaris, and the camera that projects them. Coordinates are of date.
+    """The sky layer of the live view: the camera, the pole, the aim, and the move to make.
+
+    Everything here is fixed to the stars and comes from the solution of the very frame, so it
+    moves in the picture as the mount moves. Coordinates are of date. The whole view takes about a
+    kilobyte, because the state travels with every frame.
 
     `polaris_colatitude_deg` is the angle between Polaris and the pole at the time of the frame,
-    which is the radius of the orbit. `orbit` is `null` without it. The whole view takes a few
-    hundred bytes, because the state travels with every frame.
+    which is the radius of the orbit, and `orbit` says whether that circle fits in the frame
+    (`null` without the colatitude). `aim` says where the pole should go and how far it is from
+    there. `aim_ring` is where Polaris belongs now: the pixel on the circle of the reticle that the
+    real Polaris would take if the pole sat at the aim, with the same roll and at the same time.
+    It is the detected Polaris pixel plus the aim minus the detected pole, because the moves of an
+    altitude-azimuth mount translate the picture.
+
+    `altitude_arcmin` and `azimuth_arcmin` are the move of the camera's pointing that brings the
+    pole to the aim: positive altitude means raise the camera (toward the zenith), and positive
+    azimuth means turn it toward the east. They are arcs on the sky, so a turn of the azimuth axis
+    is the azimuth arc divided by the cosine of the altitude of the camera. Both are `null` when
+    the site is not configured, and when the zenith lies within about a degree of the aim, where
+    the directions of the two moves are not defined. `axes` holds the image directions of the two
+    moves, under the same conditions.
     """
 
     camera: CameraView
     pole: PoleView
     polaris_colatitude_deg: float | None = Field(None, ge=0, lt=90)
     orbit: OrbitView | None = None
+    aim: AimView | None = None
+    aim_ring: PointView | None = None
+    altitude_arcmin: float | None = None
+    azimuth_arcmin: float | None = None
+    axes: AxesView | None = None
 
     @classmethod
     def from_geometry(cls, geometry: Any) -> SkyView:
@@ -532,8 +604,10 @@ class AlignmentState(_View):
 
     Every part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an
     ISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to
-    the size of the image that it shows. `sky` holds the pole, the orbit of Polaris, and the
-    camera model of the latest current solution. It exists whether or not a target is set.
+    the size of the image that it shows. `reticle` is the fixed circle of the first layer, and it
+    exists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the
+    orbit of Polaris, and the camera model of the latest current solution. It exists whether or not
+    a target is set.
     """
 
     active: bool = False
@@ -545,6 +619,7 @@ class AlignmentState(_View):
     focus: FocusView | None = None
     histogram: HistogramView | None = None
     saturation: SaturationView | None = None
+    reticle: ReticleView | None = None
     sky: SkyView | None = None
     quality: dict[str, str] = Field(default_factory=dict, max_length=32)
 

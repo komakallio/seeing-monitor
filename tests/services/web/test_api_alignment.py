@@ -92,6 +92,7 @@ def test_the_state_is_inactive_outside_alignment(client: TestClient) -> None:
         "focus": None,
         "histogram": None,
         "saturation": None,
+        "reticle": None,
         "sky": None,
         "quality": {},
     }

@@ -95,9 +95,14 @@ token_hash = "<hash of the API token>"
 # [services.core.escalation]
 # reboot_command = ["<path to the reboot program>", "<argument>"]
 #
-# The alignment helper compares the solved position of Polaris with a target. Take the target
-# from a reference solution at commissioning. The values below are placeholders.
+# The alignment helper of the live view needs no configuration: it aims the pole at the center of
+# the frame. The Align page also tells you how to move the camera in altitude and in azimuth when
+# the site is set in [site]. Name another aim pixel with aim_x_px and aim_y_px (set both).
+# The Offset card compares the solved position of Polaris with a target, which is optional. Take the
+# target from a reference solution at commissioning. The values below are placeholders.
 # [alignment]
+# aim_x_px = 0.0
+# aim_y_px = 0.0
 # target_x_px = 0.0
 # target_y_px = 0.0
 # target_roll_deg = 0.0

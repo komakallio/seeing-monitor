@@ -1,6 +1,59 @@
 {
   "components": {
     "schemas": {
+      "AimView": {
+        "description": "Where the pole should go, and how far it is from there.\n\n`x_px` and `y_px` are the aim, which is the center of the reticle. `dx_px` and `dy_px` are the\npole minus the aim, and they are `null` when the pole lies behind the camera.\n`distance_arcmin` is the exact angle between the pole and the sky direction at the aim pixel.",
+        "properties": {
+          "distance_arcmin": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Arcmin"
+          },
+          "dx_px": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dx Px"
+          },
+          "dy_px": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dy Px"
+          },
+          "x_px": {
+            "title": "X Px",
+            "type": "number"
+          },
+          "y_px": {
+            "title": "Y Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px"
+        ],
+        "title": "AimView",
+        "type": "object"
+      },
       "AlignmentFrameInfo": {
         "description": "The frame that the state describes. Coordinates elsewhere are pixels of this frame.",
         "properties": {
@@ -105,7 +158,7 @@
         "type": "object"
       },
       "AlignmentState": {
-        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `sky` holds the pole, the orbit of Polaris, and the\ncamera model of the latest current solution. It exists whether or not a target is set.",
+        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `reticle` is the fixed circle of the first layer, and it\nexists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the\norbit of Polaris, and the camera model of the latest current solution. It exists whether or not\na target is set.",
         "properties": {
           "active": {
             "default": false,
@@ -159,6 +212,16 @@
             "maxProperties": 32,
             "title": "Quality",
             "type": "object"
+          },
+          "reticle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReticleView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "saturation": {
             "anyOf": [
@@ -238,6 +301,35 @@
           "openapi"
         ],
         "title": "ApiInfo",
+        "type": "object"
+      },
+      "AxesView": {
+        "description": "The image directions of the two moves of the mount, as unit vectors (x right, y down).\n\n`altitude_*` is where the camera looks when you raise it, and `azimuth_*` is where it looks\nwhen you turn it toward the east. The pole lies on the side of the aim in which the camera has\nto move, so the two vectors read like the arrows of a compass drawn on the picture.",
+        "properties": {
+          "altitude_dx": {
+            "title": "Altitude Dx",
+            "type": "number"
+          },
+          "altitude_dy": {
+            "title": "Altitude Dy",
+            "type": "number"
+          },
+          "azimuth_dx": {
+            "title": "Azimuth Dx",
+            "type": "number"
+          },
+          "azimuth_dy": {
+            "title": "Azimuth Dy",
+            "type": "number"
+          }
+        },
+        "required": [
+          "altitude_dx",
+          "altitude_dy",
+          "azimuth_dx",
+          "azimuth_dy"
+        ],
+        "title": "AxesView",
         "type": "object"
       },
       "BurstRequest": {
@@ -1709,6 +1801,25 @@
         "title": "Order",
         "type": "string"
       },
+      "PointView": {
+        "description": "A pixel of the frame.",
+        "properties": {
+          "x_px": {
+            "title": "X Px",
+            "type": "number"
+          },
+          "y_px": {
+            "title": "Y Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px"
+        ],
+        "title": "PointView",
+        "type": "object"
+      },
       "Pointing": {
         "description": "The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
         "properties": {
@@ -2484,6 +2595,44 @@
           "source"
         ],
         "title": "ReplayRequest",
+        "type": "object"
+      },
+      "ReticleView": {
+        "description": "The fixed reticle: a circle that does not move with the mount.\n\nIt is centered on the aim (the center of the frame, unless `[alignment]` names another pixel),\nand its radius is the radius of the orbit of Polaris in pixels of the frame:\n`tan(colatitude) / scale_rad_px`. It depends on the frame size, the plate scale, and the\ncolatitude of Polaris only, so `core` serves it without a solution too.",
+        "properties": {
+          "polaris_colatitude_deg": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 90.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Polaris Colatitude Deg"
+          },
+          "radius_px": {
+            "exclusiveMinimum": 0.0,
+            "title": "Radius Px",
+            "type": "number"
+          },
+          "x_px": {
+            "title": "X Px",
+            "type": "number"
+          },
+          "y_px": {
+            "title": "Y Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px",
+          "radius_px"
+        ],
+        "title": "ReticleView",
         "type": "object"
       },
       "RoiRequest": {
@@ -4174,8 +4323,60 @@
         "x-storage": "table"
       },
       "SkyView": {
-        "description": "The pole, the orbit of Polaris, and the camera that projects them. Coordinates are of date.\n\n`polaris_colatitude_deg` is the angle between Polaris and the pole at the time of the frame,\nwhich is the radius of the orbit. `orbit` is `null` without it. The whole view takes a few\nhundred bytes, because the state travels with every frame.",
+        "description": "The sky layer of the live view: the camera, the pole, the aim, and the move to make.\n\nEverything here is fixed to the stars and comes from the solution of the very frame, so it\nmoves in the picture as the mount moves. Coordinates are of date. The whole view takes about a\nkilobyte, because the state travels with every frame.\n\n`polaris_colatitude_deg` is the angle between Polaris and the pole at the time of the frame,\nwhich is the radius of the orbit, and `orbit` says whether that circle fits in the frame\n(`null` without the colatitude). `aim` says where the pole should go and how far it is from\nthere. `aim_ring` is where Polaris belongs now: the pixel on the circle of the reticle that the\nreal Polaris would take if the pole sat at the aim, with the same roll and at the same time.\nIt is the detected Polaris pixel plus the aim minus the detected pole, because the moves of an\naltitude-azimuth mount translate the picture.\n\n`altitude_arcmin` and `azimuth_arcmin` are the move of the camera's pointing that brings the\npole to the aim: positive altitude means raise the camera (toward the zenith), and positive\nazimuth means turn it toward the east. They are arcs on the sky, so a turn of the azimuth axis\nis the azimuth arc divided by the cosine of the altitude of the camera. Both are `null` when\nthe site is not configured, and when the zenith lies within about a degree of the aim, where\nthe directions of the two moves are not defined. `axes` holds the image directions of the two\nmoves, under the same conditions.",
         "properties": {
+          "aim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AimView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "aim_ring": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PointView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "altitude_arcmin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Altitude Arcmin"
+          },
+          "axes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AxesView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "azimuth_arcmin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Azimuth Arcmin"
+          },
           "camera": {
             "$ref": "#/components/schemas/CameraView"
           },

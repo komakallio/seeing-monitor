@@ -183,9 +183,18 @@ dew_margin_c = 1.0
 [alignment]
 # The alignment helper of core: a live view and a quick solve while the scheduler is in `align`.
 #
+# The live view needs no configuration. It aims the pole at the center of the frame, and it draws
+# a fixed circle there with the radius of the orbit of Polaris. If you want the pole somewhere else,
+# name that pixel of the alignment stream (the survey readout mode) in local/config.toml. The two
+# keys go together.
+# aim_x_px = 0.0
+# aim_y_px = 0.0
+#
 # The target is where Polaris belongs in the frame of the alignment stream, in pixels of the
-# survey readout mode, and the roll that the camera should have. They stay unset here. Take them
-# from a reference solution at commissioning, and set them in local/config.toml.
+# survey readout mode, and the roll that the camera should have. The Offset card of the live view
+# compares Polaris with it. They stay unset here, and nothing needs them. Polaris circles the pole
+# once a day, so a fixed target fits one time of day only. Take them from a reference solution at
+# commissioning, and set them in local/config.toml.
 # target_x_px = 0.0
 # target_y_px = 0.0
 # target_roll_deg = 0.0

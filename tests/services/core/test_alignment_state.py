@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import math
 
+import numpy as np
 import pytest
 
 from seeingmon.clock import NS_PER_S
+from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.alignment.state import (
     FrameSummary,
@@ -25,8 +27,10 @@ from seeingmon.services.web.contract import (
     decode_alignment_state,
     pack_frame,
 )
-from seeingmon.survey.geometry import ARCSEC_PER_RAD
-from seeingmon.survey.skyview import build_sky_view
+from seeingmon.survey.apparent import earth_rotation_angle
+from seeingmon.survey.geometry import ARCSEC_PER_RAD, nearest_rotation
+from seeingmon.survey.pointing import polaris_colatitude_deg
+from seeingmon.survey.skyview import build_sky_view, reticle_geometry, zenith_vector
 from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
 from tests.services.web.helpers import tiny_jpeg
@@ -252,7 +256,9 @@ class TestSky:
 
     def test_a_current_solution_gives_the_sky_view_of_its_attitude(self) -> None:
         state = build_state(frame_summary(), solution(), TARGET, SETTINGS)
-        expected = SkyView.from_geometry(build_sky_view(camera(), 4144, 2822, COLATITUDE))
+        expected = SkyView.from_geometry(
+            build_sky_view(camera(), 4144, 2822, COLATITUDE, polaris_xy=(2075.0, 1400.0))
+        )
         assert state.sky == expected
         assert "sky" not in state.quality
         assert state.sky is not None
@@ -341,3 +347,212 @@ class TestSky:
         payload = pack_frame(state, tiny_jpeg())
         assert len(payload) < MAX_STATE_BYTES // 16
         assert math.isfinite(state.sky.pole.distance_arcmin or 0.0)
+
+
+# A synthetic round-number site. It is not a real station.
+SITE = SiteConfig(latitude_deg=50.0, longitude_deg=10.0)
+
+
+def altaz_camera(altitude_deg: float, azimuth_deg: float) -> CameraAttitude:
+    """A camera that looks at an altitude and an azimuth of the site at the time `T0`."""
+    up = zenith_vector(SITE.latitude_deg, SITE.longitude_deg, earth_rotation_angle(T0))
+    pole = np.array([0.0, 0.0, 1.0])
+    north = pole - up * float(pole @ up)
+    north /= np.linalg.norm(north)
+    east = np.cross(north, up)
+    alt, az = math.radians(altitude_deg), math.radians(azimuth_deg)
+    boresight = math.cos(alt) * (math.cos(az) * north + math.sin(az) * east) + math.sin(alt) * up
+    down = -(up - boresight * float(up @ boresight))
+    down /= np.linalg.norm(down)
+    return CameraAttitude(
+        rotation=nearest_rotation(np.stack([np.cross(down, boresight), down, boresight])),
+        scale_rad_px=SCALE / ARCSEC_PER_RAD,
+        parity=1,
+        center_px=pixel_center(4144, 2822),
+    )
+
+
+class TestReticle:
+    """The first layer is fixed in the picture, and it needs no solution."""
+
+    def test_the_reticle_is_a_circle_around_the_center_with_the_radius_of_the_orbit(self) -> None:
+        state = build_state(frame_summary(), None, None, AlignmentSettings())
+        expected = reticle_geometry(4144, 2822, SCALE, polaris_colatitude_deg(T0))
+        assert expected is not None
+        assert state.reticle is not None
+        assert (state.reticle.x_px, state.reticle.y_px) == (expected.x_px, expected.y_px)
+        assert state.reticle.radius_px == expected.radius_px
+        # The apparent colatitude of Polaris moves by 20 arcseconds in a year (aberration), and it
+        # was about 0.617 degrees at the time of the test, which is 581.6 pixels at 3.82 arcsec/px.
+        assert state.reticle.polaris_colatitude_deg == pytest.approx(0.617, abs=0.003)
+        assert state.reticle.radius_px == pytest.approx(581.6, abs=1.0)
+        assert (state.reticle.x_px, state.reticle.y_px) == (2071.5, 1410.5)  # the frame center
+
+    def test_without_a_solution_the_state_has_the_reticle_and_no_sky(self) -> None:
+        state = build_state(frame_summary(), None, None, AlignmentSettings())
+        assert state.reticle is not None
+        assert state.sky is None
+        assert state.quality["sky"] == "no solve has finished yet"
+        assert "reticle" not in state.quality
+
+    def test_the_reticle_holds_still_for_five_different_poles(self) -> None:
+        reticles = set()
+        poles = set()
+        for altitude, azimuth in ((0.0, 0.0), (0.4, 0.1), (-0.3, -0.2), (0.7, 0.3), (-0.1, 0.5)):
+            camera = altaz_camera(SITE.latitude_deg + altitude, azimuth)
+            state = build_state(
+                frame_summary(),
+                solution(attitude=camera),
+                None,
+                AlignmentSettings(),
+                site=SITE,
+            )
+            assert state.reticle is not None
+            assert state.sky is not None
+            reticles.add(state.reticle.model_dump_json())
+            poles.add(state.sky.pole.model_dump_json())
+        assert len(reticles) == 1
+        assert len(poles) == 5
+
+    def test_the_reticle_follows_the_size_and_the_scale_of_the_frame_and_nothing_else(self) -> None:
+        wide = build_state(frame_summary(), None, None, AlignmentSettings()).reticle
+        small = build_state(
+            frame_summary(width_px=2072, height_px=1411), None, None, AlignmentSettings()
+        ).reticle
+        coarse = build_state(
+            frame_summary(plate_scale_arcsec_px=2 * SCALE), None, None, AlignmentSettings()
+        ).reticle
+        assert wide is not None
+        assert small is not None
+        assert coarse is not None
+        assert (small.x_px, small.y_px) == (1035.5, 705.0)
+        assert small.radius_px == wide.radius_px
+        assert coarse.radius_px == pytest.approx(wide.radius_px / 2, abs=0.01)
+
+    def test_the_configured_aim_moves_the_center_of_the_circle(self) -> None:
+        settings = AlignmentSettings(aim_x_px=1800.0, aim_y_px=1200.0)
+        state = build_state(frame_summary(), solution(), None, settings)
+        assert state.reticle is not None
+        assert (state.reticle.x_px, state.reticle.y_px) == (1800.0, 1200.0)
+        assert state.sky is not None
+        assert state.sky.aim is not None
+        assert (state.sky.aim.x_px, state.sky.aim.y_px) == (1800.0, 1200.0)
+
+    def test_the_target_does_not_move_the_circle(self) -> None:
+        plain = build_state(frame_summary(), solution(), None, AlignmentSettings())
+        targeted = build_state(frame_summary(), solution(), TARGET, SETTINGS)
+        assert plain.reticle == targeted.reticle
+
+    def test_the_scale_of_the_solution_stands_in_for_a_missing_scale_of_the_mode(self) -> None:
+        state = build_state(
+            frame_summary(plate_scale_arcsec_px=None),
+            solution(scale_arcsec_px=SCALE),
+            None,
+            SETTINGS,
+        )
+        assert state.reticle is not None
+        state = build_state(frame_summary(plate_scale_arcsec_px=None), None, None, SETTINGS)
+        assert state.reticle is None
+        assert state.quality["reticle"] == "the plate scale is not known"
+
+
+class TestAimRingAndAdjustment:
+    def test_the_state_carries_the_aim_the_ring_and_the_center_as_default_aim(self) -> None:
+        state = build_state(frame_summary(), solution(), None, AlignmentSettings())
+        assert state.sky is not None
+        assert state.sky.aim is not None
+        assert (state.sky.aim.x_px, state.sky.aim.y_px) == (2071.5, 1410.5)
+        assert state.sky.aim_ring is not None
+        pole = state.sky.pole
+        assert pole.x_px is not None
+        assert pole.y_px is not None
+        # The solution puts Polaris at (2075, 1400): the ring is that pixel plus aim minus pole.
+        assert state.sky.aim_ring.x_px == pytest.approx(2075.0 + 2071.5 - pole.x_px, abs=2e-3)
+        assert state.sky.aim_ring.y_px == pytest.approx(1400.0 + 1410.5 - pole.y_px, abs=2e-3)
+
+    def test_the_ring_lies_on_the_circle_of_the_reticle(self) -> None:
+        for altitude, azimuth in ((0.2, 0.05), (-0.3, 0.1), (0.5, -0.2)):
+            camera = altaz_camera(SITE.latitude_deg + altitude, azimuth)
+            rho = math.radians(polaris_colatitude_deg(T0))
+            x, y, _ = camera.project(np.array([math.sin(rho), 0.0, math.cos(rho)]))
+            state = build_state(
+                frame_summary(),
+                solution(attitude=camera, x_px=float(x[0]), y_px=float(y[0])),
+                None,
+                AlignmentSettings(),
+                site=SITE,
+            )
+            assert state.reticle is not None
+            assert state.sky is not None
+            assert state.sky.aim_ring is not None
+            distance = math.hypot(
+                state.sky.aim_ring.x_px - state.reticle.x_px,
+                state.sky.aim_ring.y_px - state.reticle.y_px,
+            )
+            assert distance == pytest.approx(state.reticle.radius_px, abs=1.0)
+
+    def test_with_a_site_the_state_says_how_to_move_in_altitude_and_azimuth(self) -> None:
+        raised = altaz_camera(SITE.latitude_deg + 0.5, 0.0)  # 30 arcminutes too high
+        state = build_state(frame_summary(), solution(attitude=raised), None, SETTINGS, site=SITE)
+        assert state.sky is not None
+        assert state.sky.altitude_arcmin == pytest.approx(-30.0, abs=0.1)  # lower it
+        assert state.sky.azimuth_arcmin == pytest.approx(0.0, abs=0.1)
+        assert state.sky.axes is not None
+        lowered = altaz_camera(SITE.latitude_deg - 0.25, 0.0)  # 15 arcminutes too low
+        state = build_state(frame_summary(), solution(attitude=lowered), None, SETTINGS, site=SITE)
+        assert state.sky is not None
+        assert state.sky.altitude_arcmin == pytest.approx(15.0, abs=0.1)  # raise it
+
+    def test_an_azimuth_error_comes_out_with_the_sign_of_the_turn_to_make(self) -> None:
+        east_of_the_pole = altaz_camera(SITE.latitude_deg, 0.2)  # 0.2 degrees of azimuth east
+        state = build_state(
+            frame_summary(), solution(attitude=east_of_the_pole), None, SETTINGS, site=SITE
+        )
+        assert state.sky is not None
+        assert state.sky.azimuth_arcmin is not None
+        assert state.sky.azimuth_arcmin < -5.0  # turn it west
+        west_of_the_pole = altaz_camera(SITE.latitude_deg, -0.2)
+        state = build_state(
+            frame_summary(), solution(attitude=west_of_the_pole), None, SETTINGS, site=SITE
+        )
+        assert state.sky is not None
+        assert state.sky.azimuth_arcmin is not None
+        assert state.sky.azimuth_arcmin > 5.0  # turn it east
+
+    def test_without_a_site_there_is_no_move_and_no_arrows(self) -> None:
+        state = build_state(frame_summary(), solution(), None, SETTINGS)
+        assert state.sky is not None
+        assert state.sky.altitude_arcmin is None
+        assert state.sky.azimuth_arcmin is None
+        assert state.sky.axes is None
+        assert state.sky.aim is not None
+
+    def test_a_site_leaves_the_rest_of_the_state_alone(self) -> None:
+        without = build_state(frame_summary(), solution(), TARGET, SETTINGS)
+        with_site = build_state(frame_summary(), solution(), TARGET, SETTINGS, site=SITE)
+        assert with_site.sky is not None
+        assert without.sky is not None
+        assert with_site.sky.pole == without.sky.pole
+        assert with_site.reticle == without.reticle
+        assert with_site.offset == without.offset
+        assert with_site.quality == without.quality
+
+    def test_the_state_round_trips_through_the_contract_with_everything_set(self) -> None:
+        state = build_state(frame_summary(), solution(), TARGET, SETTINGS, site=SITE)
+        assert state.reticle is not None
+        assert state.sky is not None
+        assert state.sky.altitude_arcmin is not None
+        from seeingmon.services.web.contract import decode_alignment_state
+
+        again = decode_alignment_state(json.loads(state.model_dump_json()))
+        assert again == state
+        assert len(pack_frame(state, tiny_jpeg())) < MAX_STATE_BYTES // 16
+
+
+def test_the_settings_take_the_aim_as_a_pair() -> None:
+    assert AlignmentSettings().aim_xy is None
+    assert AlignmentSettings(aim_x_px=10.0, aim_y_px=20.0).aim_xy == (10.0, 20.0)
+    with pytest.raises(ValueError, match="aim_x_px and aim_y_px together"):
+        AlignmentSettings(aim_x_px=10.0)
+    with pytest.raises(ValueError, match="aim_x_px and aim_y_px together"):
+        AlignmentSettings(aim_y_px=10.0)
