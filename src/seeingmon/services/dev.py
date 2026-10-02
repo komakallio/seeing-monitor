@@ -20,6 +20,18 @@ launcher prints its path), start the dark session on the Dark page, and delete t
 session says that the cover can come off. The simulator looks at the file twice a second. A dev
 run also shortens the dark session to a few frames of each kind.
 
+**The real camera.** `--driver asi` swaps the simulator for your ZWO camera, so that you can try
+the web UI (the Dark page, the Align page) on the hardware. `acquire` runs the `asi` driver on the
+full sensor (`asi294mm-gs250`, so `--sensor` does not apply), and all three processes run in real
+time on the system clock: `--speed` must be 1, and `--start` does not apply. The fast stream takes
+the exposure of the profile (2 ms), and the simulator gets no option. The vendor library comes from
+`--asi-library`, or from `SEEINGMON_ASI__LIBRARY_PATH` in your environment, and never from a file.
+The launcher gives it to `acquire` alone, through the environment of that child, and prints no
+path. `--data-dir` keeps the store, the dark library, and the images in a folder that survives the
+run. Without it, the run keeps its temporary folder. The sky catalog, the first pointing solution,
+and the site stay synthetic, so a camera that sees a room or a dark reports no stars, and the
+seeing windows and the sky quality stay empty.
+
 **Isolation.** A simulated run must never reach a real sink, device, or data directory. Each child
 gets a clean environment: no `SEEINGMON_*` variable of yours reaches it, and `--local-config`
 points the children that take it at a file that does not exist, so `local/config.toml` is not
@@ -94,6 +106,12 @@ FULL_SENSOR_READ_MARGIN_S = 20.0
 COVER_FILE_NAME = "cover"
 DEV_DARK_FRAMES = 5
 DEV_DARK_POLL_S = 2.0
+# The real camera: the driver name, the profile of its full sensor, and the variable that names the
+# vendor library. The launcher reads the variable from its own environment and gives it to
+# `acquire`.
+REAL_DRIVER = "asi"
+REAL_PROFILE = "asi294mm-gs250"
+ASI_LIBRARY_VARIABLE = "SEEINGMON_ASI__LIBRARY_PATH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +134,12 @@ class DevOptions:
     extra_sim: Mapping[str, Any] = field(default_factory=dict)
     core_overrides: Mapping[str, Any] = field(default_factory=dict)
     acquire_overrides: Mapping[str, Any] = field(default_factory=dict)
+    # The real camera (`acquire_driver` is `asi`): where the vendor library is (without it, the
+    # launcher reads the variable of its own environment), a data folder that survives the run, and
+    # whether the person chose a sensor, which the real camera ignores.
+    asi_library: str | None = None
+    data_dir: Path | None = None
+    sensor_given: bool = False
 
 
 @dataclass(slots=True)
@@ -144,6 +168,8 @@ class DevPlan:
     core_endpoint: str = ""
     acquire_endpoint: str = ""
     cover_file: Path | None = None  # the simulated camera is covered while this file exists
+    real: bool = False  # the camera is the real one, and the clock is the system clock
+    notes: list[str] = field(default_factory=list)  # lines for the banner
 
     def urls(self) -> list[str]:
         """One URL for each bind address, with an IPv6 address in brackets."""
@@ -285,14 +311,18 @@ def build_plan(
     token = uuid.uuid4().hex[:12]
     key = secrets.token_urlsafe(32)
     directory.mkdir(parents=True, exist_ok=True)
-    start_utc_ns = iso_to_utc_ns(options.start) if options.start else default_start_utc_ns()
+    real = options.acquire_driver == REAL_DRIVER
     origin_ns = CLOCK.utc_ns() if origin_real_ns is None else origin_real_ns
+    if real:
+        start_utc_ns = origin_ns  # real time: the simulated sky of the plan starts now
+    else:
+        start_utc_ns = iso_to_utc_ns(options.start) if options.start else default_start_utc_ns()
 
     # The simulated sky: a profile, a catalog, a first solution, and the pointing of the camera.
-    if options.sensor == "small":
+    if options.sensor == "small" and not real:
         profile_path: Path | str = write_small_profile(directory)
     else:
-        profile_path = "asi294mm-gs250"
+        profile_path = REAL_PROFILE
     profile = load_profile(str(profile_path))
     catalog, field_ = sim_catalog(options.seed, polaris_mag=options.polaris_mag)
     catalog_path = directory / "catalog.bin"
@@ -303,25 +333,33 @@ def build_plan(
     nowhere = directory / "no-local-config.toml"  # does not exist, so no local file is read
 
     slow_reads: dict[str, Any] = (
-        {} if options.sensor == "small" else {"read_timeout_margin_s": FULL_SENSOR_READ_MARGIN_S}
+        {}
+        if options.sensor == "small" or real  # a real camera reads inside its own exposure
+        else {"read_timeout_margin_s": FULL_SENSOR_READ_MARGIN_S}
     )
     acquire_address = _endpoint_text(directory, "acquire", token)
     core_address = _endpoint_text(directory, "core", token)
     cover_file = directory / COVER_FILE_NAME if options.acquire_driver == "sim" else None
+    data_dir = directory / "data" if options.data_dir is None else options.data_dir
+    clock: dict[str, Any] = (
+        {"kind": "system"}
+        if real
+        else {
+            "kind": "scaled",
+            "speed": options.speed,
+            "start_utc_ns": start_utc_ns,
+            "origin_real_ns": origin_ns,
+        }
+    )
     shared: dict[str, Any] = {
         "station_id": "dev",
         "profile": str(profile_path),
-        "paths": {"data_dir": str(directory / "data")},
+        "paths": {"data_dir": str(data_dir)},
         "services": {
             "connection_key": key,
             "acquire_address": acquire_address,
             "core_address": core_address,
-            "clock": {
-                "kind": "scaled",
-                "speed": options.speed,
-                "start_utc_ns": start_utc_ns,
-                "origin_real_ns": origin_ns,
-            },
+            "clock": clock,
         },
     }
     sim_options: dict[str, Any] = {
@@ -333,23 +371,27 @@ def build_plan(
         **({} if cover_file is None else {"cover_file": str(cover_file)}),
         **options.extra_sim,
     }
-    acquire_settings = _merge(
-        _merge(
-            shared,
-            {
-                "services": {
-                    "acquire": {
-                        "driver": options.acquire_driver,
-                        "gap_factor": 1000.0,
-                        "raise_priority": False,
-                        "driver_options": sim_options if options.acquire_driver == "sim" else {},
-                        **slow_reads,
-                    }
-                }
-            },
-        ),
-        options.acquire_overrides,
+    acquire_table: dict[str, Any] = (
+        # The real camera keeps the default frame gap, and its options are its own.
+        {"driver": options.acquire_driver, "raise_priority": False, "driver_options": {}}
+        if real
+        else {
+            "driver": options.acquire_driver,
+            "gap_factor": 1000.0,
+            "raise_priority": False,
+            "driver_options": sim_options if options.acquire_driver == "sim" else {},
+            **slow_reads,
+        }
     )
+    acquire_settings = _merge(
+        _merge(shared, {"services": {"acquire": acquire_table}}), options.acquire_overrides
+    )
+    fast_table: dict[str, Any] = {
+        "analysis_window_s": options.window_s,
+        "window_s": options.window_s * 3,
+    }
+    if not real:
+        fast_table["exposure_us"] = options.fast_exposure_us  # the real one keeps its 2 ms
     core_settings = _merge(
         _merge(
             shared,
@@ -361,14 +403,7 @@ def build_plan(
                 },
                 # Windows of 20 s, so that the UI has data half a minute after the start.
                 "fastpath": {"window_s": options.window_s, "min_window_s": options.window_s / 2},
-                "scheduler": {
-                    "fast": {
-                        "exposure_us": options.fast_exposure_us,
-                        "analysis_window_s": options.window_s,
-                        "window_s": options.window_s * 3,
-                    },
-                    "loop": dict(slow_reads),
-                },
+                "scheduler": {"fast": fast_table, "loop": dict(slow_reads)},
                 "survey": {
                     "catalog_path": str(catalog_path),
                     "solvers": [],
@@ -400,21 +435,32 @@ def build_plan(
     base = child_environment(parent_env)
     base_args = [interpreter, "-m", "seeingmon"]
 
-    def spec(name: str, argv: list[str], settings: Mapping[str, Any]) -> ChildSpec:
+    def spec(
+        name: str,
+        argv: list[str],
+        settings: Mapping[str, Any],
+        extra_env: Mapping[str, str] | None = None,
+    ) -> ChildSpec:
         env = dict(base)
         top = {k: v for k, v in settings.items() if not isinstance(v, Mapping)}
         env.update({f"SEEINGMON_{k.upper()}": render_env_value(v) for k, v in top.items()})
         for section, table in settings.items():
             if isinstance(table, Mapping):
                 env.update(flatten_env(table, f"SEEINGMON_{section.upper()}"))
+        env.update(extra_env or {})
         return ChildSpec(name, argv, env, directory / f"{name}.log")
 
+    # The one setting of the real camera that comes from the person: the vendor library. Only
+    # `acquire` gets it, in its environment, and never on a command line.
+    library = options.asi_library or parent_env.get(ASI_LIBRARY_VARIABLE) if real else None
+    acquire_env = {ASI_LIBRARY_VARIABLE: str(Path(library).expanduser())} if library else {}
     level = ["--log-level", options.log_level]
     children = [
         spec(
             "acquire",
             [*base_args, "acquire", "--local-config", str(nowhere), *level],
             acquire_settings,
+            acquire_env,
         ),
         spec("core", [*base_args, "core", "--local-config", str(nowhere), *level], core_settings),
         spec(
@@ -436,7 +482,26 @@ def build_plan(
         core_endpoint=core_address,
         acquire_endpoint=acquire_address,
         cover_file=cover_file,
+        real=real,
+        notes=_real_notes(options) if real else [],
     )
+
+
+def _real_notes(options: DevOptions) -> list[str]:
+    """The lines that the banner adds for the real camera."""
+    notes = []
+    if options.sensor_given:
+        notes.append("--sensor does not apply to the real camera, which has the full sensor.")
+    notes.append(
+        "The sky catalog and the first pointing solution are simulated, so a camera that sees a "
+        "room or a dark reports no stars: the seeing windows and the sky quality stay empty."
+    )
+    notes.append(
+        "The scheduler stays in safe while the Sun is above -3 degrees at the synthetic site "
+        "(by the clock of this machine). A dark session and the alignment run in safe too."
+    )
+    notes.append("Cover the camera by hand for a dark session.")
+    return notes
 
 
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -564,8 +629,17 @@ def wait_for_web(plan: DevPlan, child: Child, timeout_s: float) -> bool:
 def banner(plan: DevPlan) -> list[str]:
     """The lines that tell you where the UI is. Nothing here is private except the token."""
     options = plan.options
-    lines = [f"Seeing monitor, simulated sky: {options.speed:g}x speed, {options.sensor} sensor."]
+    if plan.real:
+        lines = [
+            f"Seeing monitor, real camera ({options.acquire_driver} driver): "
+            "real time, full sensor."
+        ]
+    else:
+        lines = [
+            f"Seeing monitor, simulated sky: {options.speed:g}x speed, {options.sensor} sensor."
+        ]
     lines.extend(f"Web UI: {url}" for url in plan.urls())
+    lines.extend(plan.notes)
     if plan.cover_file is not None:
         lines.append(
             f"To cover the simulated camera for a dark session, create the file {plan.cover_file}. "
@@ -593,17 +667,25 @@ def run_dev(
     and returns. `directory` names the run folder, which a test wants to read, and the run removes
     it at the end unless `--keep-data` is set.
     """
+    driver = getattr(args, "driver", None) or "sim"
+    asi_library = getattr(args, "asi_library", None)
+    data_dir = getattr(args, "data_dir", None)
     options = DevOptions(
         speed=args.speed,
         port=args.port,
-        sensor=args.sensor,
+        sensor=args.sensor or "small",
+        sensor_given=args.sensor is not None,
         seed=args.seed,
         start=args.start,
         keep_data=args.keep_data,
         log_level=args.log_level,
+        acquire_driver=driver,
+        asi_library=asi_library,
+        data_dir=None if not data_dir else Path(data_dir).expanduser().resolve(),
     )
     if options.speed <= 0:
         raise CliError("--speed must be positive", exit_code=2)
+    _check_real_camera(options, os.environ if env is None else env)
     run_directory = directory or Path(tempfile.mkdtemp(prefix="smon-dev-"))
     children: dict[str, Child] = {}
     try:
@@ -640,10 +722,37 @@ def run_dev(
         for name in ("web", "core", "acquire"):
             if name in children:
                 children[name].stop()
-        if options.keep_data:
+        if options.keep_data and options.data_dir is not None:
+            out(f"The run folder stays: {run_directory}")  # the data is in your folder
+        elif options.keep_data:
             out(f"The data folder stays: {run_directory}")
         else:
             shutil.rmtree(run_directory, ignore_errors=True)
+
+
+def _check_real_camera(options: DevOptions, env: Mapping[str, str]) -> None:
+    """Refuse what the real camera cannot do, before anything starts. A message names no path."""
+    if options.acquire_driver != REAL_DRIVER:
+        if options.asi_library:
+            raise CliError("--asi-library needs --driver asi", exit_code=2)
+        return
+    if options.speed != DEFAULT_SPEED:
+        raise CliError(
+            f"--speed must be {DEFAULT_SPEED:g} with --driver asi, because the real camera runs "
+            "in real time",
+            exit_code=2,
+        )
+    if options.start:
+        raise CliError(
+            "--start does not apply with --driver asi, because the real camera runs in real time",
+            exit_code=2,
+        )
+    library = options.asi_library or env.get(ASI_LIBRARY_VARIABLE)
+    if library and not Path(library).expanduser().is_file():
+        raise CliError(
+            f"the ASI library file does not exist: check --asi-library and {ASI_LIBRARY_VARIABLE}",
+            exit_code=2,
+        )
 
 
 def _wait_for_stop(

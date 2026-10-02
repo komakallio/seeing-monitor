@@ -148,7 +148,30 @@ def register(subparsers: Subparsers) -> None:
     dev.description = (
         "Run the whole system on a simulated sky, with one command (acquire, core, and web). "
         "The simulated camera has no lens cap. To take darks from the web UI, create the cover "
-        "file that the command prints, and delete the file to uncover the camera."
+        "file that the command prints, and delete the file to uncover the camera. With "
+        "--driver asi, the system runs on your ZWO camera in real time instead: the full sensor, "
+        "the system clock, and the exposure of the profile. The sky stays simulated, so a camera "
+        "that sees a room or a dark reports no stars."
+    )
+    dev.add_argument(
+        "--driver",
+        choices=("sim", "asi"),
+        default="sim",
+        help="the camera: sim is the simulator (the default), and asi is a connected ZWO camera "
+        "that runs in real time, so --speed must be 1 and --start does not apply",
+    )
+    dev.add_argument(
+        "--asi-library",
+        metavar="PATH",
+        help="the vendor library of --driver asi (default: SEEINGMON_ASI__LIBRARY_PATH in your "
+        "environment, then the system search path). The command gives it to acquire in its "
+        "environment, and prints no path",
+    )
+    dev.add_argument(
+        "--data-dir",
+        metavar="PATH",
+        help="keep the store, the dark library, and the images in this folder, which survives "
+        "the run (default: a temporary folder that the run removes)",
     )
     dev.add_argument(
         "--speed",
@@ -164,11 +187,12 @@ def register(subparsers: Subparsers) -> None:
     dev.add_argument(
         "--sensor",
         choices=("small", "full"),
-        default="small",
+        default=None,
         help=(
             "small keeps the simulation fast, but Polaris leaves its field after about two hours "
             "of simulated time. full is the reference sensor, and it keeps Polaris in view for "
-            "the whole run (default small)"
+            "the whole run (default small). --driver asi ignores it: the real camera has the "
+            "full sensor"
         ),
     )
     dev.add_argument("--seed", type=int, default=1, help="the seed of the simulated sky")

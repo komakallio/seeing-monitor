@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -374,6 +375,211 @@ class TestTheCover:
         assert (dark.frames, dark.bias_frames, dark.wait_timeout_s) == (3, 5, 60.0)
 
 
+LIBRARY_VARIABLE = "SEEINGMON_ASI__LIBRARY_PATH"
+
+
+class TestTheRealCamera:
+    """`--driver asi`: the plan of a run on the real camera. No test starts a real camera."""
+
+    def real(self, tmp_path: Path, local_text: str = "", **options: Any) -> DevPlan:
+        return plan_for(tmp_path, local_text, acquire_driver="asi", **options)
+
+    def configuration(self, plan: DevPlan, name: str, tmp_path: Path) -> Any:
+        return load_config(
+            local_file=tmp_path / "absent.toml", env=seeingmon_env(child(plan, name))
+        )
+
+    def test_every_child_runs_the_real_profile_on_the_system_clock(self, tmp_path: Path) -> None:
+        plan = self.real(tmp_path, sensor="small")  # the sensor does not matter
+        assert plan.real
+        for name in ("acquire", "core", "web"):
+            config = self.configuration(plan, name, tmp_path)
+            assert config.profile.id == "asi294mm-gs250"  # the full sensor
+            assert config.section("services", ServicesConfig).clock.kind == "system"
+        assert plan.start_utc_ns == plan.origin_real_ns  # the plan starts now
+        assert abs(plan.origin_real_ns - time.time_ns()) < 120 * 10**9
+
+    def test_acquire_runs_the_asi_driver_with_no_simulator_option(self, tmp_path: Path) -> None:
+        plan = self.real(tmp_path)
+        services = self.configuration(plan, "acquire", tmp_path).section("services", ServicesConfig)
+        assert services.acquire.driver == "asi"
+        assert services.acquire.driver_options == {}
+        assert services.acquire.gap_factor == ServicesConfig().acquire.gap_factor  # not 1000
+        assert plan.cover_file is None
+        assert not [k for k in child(plan, "acquire").env if "DRIVER_OPTIONS" in k]
+
+    def test_the_fast_stream_keeps_the_exposure_of_the_profile(self, tmp_path: Path) -> None:
+        plan = self.real(tmp_path)
+        core = self.configuration(plan, "core", tmp_path)
+        scheduler = core.section("scheduler", SchedulerConfig)
+        assert scheduler.fast.exposure_us == 2000  # 2 ms, and not the 50 ms of the simulator
+        assert scheduler.loop.read_timeout_margin_s == 0.5
+        assert scheduler.fast.analysis_window_s == 20.0  # the windows stay short for the UI
+        simulated = self.configuration(plan_for(tmp_path, name="sim"), "core", tmp_path)
+        assert simulated.section("scheduler", SchedulerConfig).fast.exposure_us == 50_000
+
+    def test_the_sky_and_the_site_stay_synthetic(self, tmp_path: Path) -> None:
+        plan = self.real(tmp_path)
+        core = child(plan, "core").env
+        assert Path(json.loads(core["SEEINGMON_SURVEY__CATALOG_PATH"])).is_file()
+        assert Path(json.loads(core["SEEINGMON_SERVICES__CORE__SEED_SOLUTION_FILE"])).is_file()
+        assert float(core["SEEINGMON_SITE__LATITUDE_DEG"]) == 55.0
+
+    def test_the_banner_names_the_camera_and_says_what_the_sky_reports(
+        self, tmp_path: Path
+    ) -> None:
+        lines = banner(self.real(tmp_path))
+        assert lines[0] == "Seeing monitor, real camera (asi driver): real time, full sensor."
+        assert any(line.startswith("Web UI: ") for line in lines)
+        assert sum("reports no stars" in line for line in lines) == 1
+        assert sum("stays in safe while the Sun is above -3 degrees" in line for line in lines) == 1
+        assert "Cover the camera by hand for a dark session." in lines
+        assert not [line for line in lines if "simulated camera" in line]  # no cover file
+        assert not [line for line in lines if "--sensor" in line]  # nobody chose a sensor
+
+    def test_a_sensor_that_the_person_chose_gets_a_one_line_note(self, tmp_path: Path) -> None:
+        plan = self.real(tmp_path, sensor="small", sensor_given=True)
+        notes = [line for line in banner(plan) if "--sensor" in line]
+        assert notes == ["--sensor does not apply to the real camera, which has the full sensor."]
+
+    def test_the_simulator_banner_is_what_it_was(self, tmp_path: Path) -> None:
+        lines = banner(plan_for(tmp_path))
+        assert lines[0].startswith("Seeing monitor, simulated sky: 1x speed, small sensor.")
+        assert not [line for line in lines if "real camera" in line or "no stars" in line]
+
+
+class TestTheVendorLibrary:
+    """The one setting of the real camera that comes from the person."""
+
+    @pytest.fixture
+    def library(self, tmp_path: Path) -> str:
+        return str(tmp_path / "vendor" / "asi-library.example")
+
+    def test_the_option_reaches_acquire_alone_and_in_its_environment(
+        self, tmp_path: Path, library: str
+    ) -> None:
+        plan = plan_for(tmp_path, acquire_driver="asi", asi_library=library)
+        assert child(plan, "acquire").env[LIBRARY_VARIABLE] == library
+        for name in ("core", "web"):
+            assert LIBRARY_VARIABLE not in child(plan, name).env
+            assert library not in json.dumps(child(plan, name).env)
+        for spec in plan.children:
+            assert library not in " ".join(spec.argv)  # never on a command line
+        assert library not in "\n".join(banner(plan))  # and not in the console
+
+    def test_no_file_of_the_run_holds_it(self, tmp_path: Path, library: str) -> None:
+        plan = plan_for(tmp_path, acquire_driver="asi", asi_library=library)
+        for path in plan.directory.rglob("*"):
+            if path.is_file():
+                assert library.encode() not in path.read_bytes(), path.name
+
+    def test_without_the_option_the_variable_of_the_launcher_is_read(
+        self, tmp_path: Path, library: str
+    ) -> None:
+        plan = plan_for(
+            tmp_path, acquire_driver="asi", env={LIBRARY_VARIABLE: library}, name="from-env"
+        )
+        assert child(plan, "acquire").env[LIBRARY_VARIABLE] == library
+        other = str(tmp_path / "other" / "library.example")
+        plan = plan_for(
+            tmp_path,
+            acquire_driver="asi",
+            asi_library=other,
+            env={LIBRARY_VARIABLE: library},
+            name="beats-env",
+        )
+        assert child(plan, "acquire").env[LIBRARY_VARIABLE] == other  # the option wins
+
+    def test_a_home_folder_in_the_path_is_expanded_for_acquire(self, tmp_path: Path) -> None:
+        plan = plan_for(tmp_path, acquire_driver="asi", asi_library="~/vendor/library.example")
+        value = child(plan, "acquire").env[LIBRARY_VARIABLE]
+        assert value == str(Path("~/vendor/library.example").expanduser())
+        assert "~" not in value
+
+    def test_without_either_acquire_gets_no_variable(self, tmp_path: Path) -> None:
+        plan = plan_for(tmp_path, acquire_driver="asi")
+        assert LIBRARY_VARIABLE not in child(plan, "acquire").env
+
+    def test_a_simulated_run_never_passes_it_on(self, tmp_path: Path, library: str) -> None:
+        plan = plan_for(tmp_path, env={LIBRARY_VARIABLE: library})
+        for spec in plan.children:
+            assert LIBRARY_VARIABLE not in spec.env  # the children start clean
+
+    def test_nothing_else_of_the_owner_reaches_a_child_of_the_real_camera(
+        self, tmp_path: Path, library: str
+    ) -> None:
+        plan = plan_for(tmp_path, OWNER, acquire_driver="asi", asi_library=library)
+        everything = json.dumps([[spec.argv, spec.env] for spec in plan.children], sort_keys=True)
+        for text in FORBIDDEN:
+            assert text not in everything, text
+        for path in plan.directory.rglob("*"):
+            if path.is_file():
+                for text in FORBIDDEN:
+                    assert text.encode() not in path.read_bytes(), (path.name, text)
+        assert json.loads(child(plan, "web").env["SEEINGMON_WEB__PORT"]) == 8123  # the web part
+
+
+class TestTheDataFolder:
+    def test_without_the_option_the_run_keeps_its_own_folder(self, tmp_path: Path) -> None:
+        plan = plan_for(tmp_path)
+        for spec in plan.children:
+            assert Path(json.loads(spec.env["SEEINGMON_PATHS__DATA_DIR"])).parent == plan.directory
+
+    def test_the_option_names_a_folder_for_every_child(self, tmp_path: Path) -> None:
+        kept = tmp_path / "kept"
+        for driver in ("sim", "asi"):
+            plan = plan_for(tmp_path, name=driver, acquire_driver=driver, data_dir=kept)
+            for spec in plan.children:
+                assert Path(json.loads(spec.env["SEEINGMON_PATHS__DATA_DIR"])) == kept
+
+
+class TestTheRealCameraRefusals:
+    def args(self, **changes: Any) -> argparse.Namespace:
+        values: dict[str, Any] = {
+            "speed": 1.0,
+            "port": None,
+            "sensor": None,
+            "seed": 1,
+            "start": None,
+            "keep_data": False,
+            "log_level": "warning",
+            "driver": "asi",
+        }
+        values.update(changes)
+        return argparse.Namespace(**values)
+
+    @pytest.mark.parametrize(
+        ("changes", "message"),
+        [
+            ({"speed": 2.0}, "--speed must be 1 with --driver asi"),
+            ({"start": "2026-01-01T19:00:00Z"}, "--start does not apply with --driver asi"),
+            ({"driver": "sim", "asi_library": "library"}, "--asi-library needs --driver asi"),
+        ],
+    )
+    def test_what_the_real_camera_cannot_do_is_refused_before_anything_starts(
+        self, tmp_path: Path, changes: dict[str, Any], message: str
+    ) -> None:
+        with pytest.raises(CliError, match=message) as raised:
+            run_dev(self.args(**changes), env={}, directory=tmp_path / "run")
+        assert raised.value.exit_code == 2
+        assert not (tmp_path / "run").exists()
+
+    def test_a_library_that_does_not_exist_is_refused_without_its_path(
+        self, tmp_path: Path
+    ) -> None:
+        missing = tmp_path / "vendor" / "missing-library.example"
+        with pytest.raises(CliError, match="ASI library file does not exist") as raised:
+            run_dev(self.args(asi_library=str(missing)), env={}, directory=tmp_path / "run")
+        assert str(missing) not in str(raised.value)
+        assert LIBRARY_VARIABLE in str(raised.value)  # the message names the setting
+        assert not (tmp_path / "run").exists()
+
+    def test_the_variable_of_the_launcher_gets_the_same_check(self, tmp_path: Path) -> None:
+        env = {LIBRARY_VARIABLE: str(tmp_path / "missing-library.example")}
+        with pytest.raises(CliError, match="ASI library file does not exist"):
+            run_dev(self.args(), env=env, directory=tmp_path / "run")
+
+
 class TestTheEndpoints:
     def test_every_run_gets_fresh_addresses_with_a_random_token(self, tmp_path: Path) -> None:
         first = plan_for(tmp_path, name="one")
@@ -563,6 +769,33 @@ class TestAWholeRun:
         assert json.loads(received["SEEINGMON_WEB__PORT"]) == port
         assert "SEEINGMON_AUTH__TOKEN_HASH" in received
         assert "owner-sink-token" not in json.dumps(received)
+
+    def test_the_data_folder_of_the_person_outlives_the_run(self, tmp_path: Path) -> None:
+        port = free_port()
+        kept = tmp_path / "kept"
+        lines: list[str] = []
+
+        def stop_after_a_look(plan: DevPlan, children: Any) -> None:
+            raise KeyboardInterrupt
+
+        args = args_for(port)
+        args.data_dir = str(kept)
+        code = run_dev(
+            args,
+            local_file=tmp_path / "none.toml",
+            env=clean_environment(
+                DEV_TEST_DUMP=str(tmp_path / "dump.json"), DEV_TEST_PORT=str(port)
+            ),
+            out=lines.append,
+            web_command=[sys.executable, "-c", STUB_WEB],
+            wait=stop_after_a_look,
+            directory=tmp_path / "run",
+        )
+        assert code == 0
+        assert not (tmp_path / "run").exists()  # the run folder is gone
+        assert kept.is_dir()
+        assert any(kept.iterdir())  # core put its store there
+        assert not any(str(kept) in line for line in lines)  # the console names no path of yours
 
     def test_a_child_that_dies_ends_the_run_with_its_log_and_stops_the_others(
         self, tmp_path: Path

@@ -39,6 +39,20 @@ def test_dev_help_says_how_to_cover_the_simulated_camera(
     assert "delete the file to uncover the camera" in text
 
 
+def test_dev_help_describes_the_real_camera(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["dev", "--help"])
+    assert raised.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    for option in ("--driver {sim,asi}", "--asi-library PATH", "--data-dir PATH"):
+        assert option in text
+    assert "SEEINGMON_ASI__LIBRARY_PATH" in text
+    assert "real time" in text
+    assert "--speed must be 1" in text
+    assert "reports no stars" in text
+    assert "--driver asi ignores it" in text  # the help of --sensor
+
+
 def test_acquire_help_names_its_options(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         main(["acquire", "--help"])
