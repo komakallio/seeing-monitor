@@ -87,7 +87,7 @@ The steps depend on how you imaged the card, and the deploy lane did not test th
 sudo mkfs.ext4 -L seeingmon-data /dev/<data-partition>
 ```
 
-Then mount it at the data directory through `/etc/fstab`. The `nofail` option lets the Pi boot without the partition, and the `core` and `web` units then wait for it and never write to the root file system by mistake:
+Then mount it at the data directory through `/etc/fstab`. The `nofail` option lets the Pi boot without the partition. The `core` and `web` units require the mount, so they wait for it and fail to start when it does not come up, and they never write to the root file system by mistake. After you fix the mount, start the services again with `sudo systemctl start seeingmon.target`:
 
 ```text
 LABEL=seeingmon-data  /srv/seeingmon-data  ext4  defaults,noatime,nofail  0  2
@@ -379,6 +379,8 @@ if [ "$count" -ge 10 ]; then
 fi
 ```
 
+The sketch sends no token, so it fails on every poll when you set `require_token_for_reads`. Add the header `Authorization: Bearer <token>` to the `curl` command in that case, and keep the script readable by its owner only. The endpoint answers 503 for any failed component, including a heater fault and an SQM-LE reader that fails five polls in a row, so decide whether such a failure should cycle the power.
+
 ## SD card care
 
 An SD card wears out with writes. The design keeps the write budget under 1 GB a day, and these rules keep it there:
@@ -394,7 +396,7 @@ An SD card wears out with writes. The design keeps the write budget under 1 GB a
   ```
 
   A Pi that runs for a day and shows much more than 1 GB has a writer to find.
-- **Know the retention tiers.** A task runs hourly and deletes the oldest files first. It never deletes a file that changed in the last 15 minutes.
+- **Know the retention tiers.** A task runs hourly and deletes the oldest files first. It never deletes a file that changed in the last 15 minutes. The data directory may use 25% of its partition (`quota_fraction` in `[store.retention]`). Past that, the task shrinks the tiers ahead of their age limits and writes `retention.early_delete` events.
 
   | Tier | Retention |
   |---|---|
@@ -423,10 +425,10 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 |---|---|---|
 | `seeingmon burst` | Records frames to a SER file with a JSON sidecar, and pins the burst. Pinned bursts are exempt from retention, so a burst stays until you remove the `PINNED` file in its folder. | Also `POST /api/v1/commands/burst` (token required). |
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
-| `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
-| `seeingmon recordings info <path>` | Prints the geometry, the frame count, and the timing of a recording. | Read-only. |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
+| `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
+| `seeingmon recordings info <path>` | Prints the geometry, the frame count, and the timing of a recording. | Read-only. |
 | `seeingmon profile show` | Prints the hardware profile with its derived values. | Read-only. |
 | `seeingmon store info <database>` | Prints the counts, the last row IDs, and the sink cursors of a store. | Read-only. The database of the station is `<data-dir>/db/results.sqlite`. |
 
@@ -481,7 +483,7 @@ The dark rate depends on the sensor temperature, so a set serves only the temper
 | The UI is not reachable from the LAN. | `bind_address` is still the loopback address. | Set the LAN address in `[web]` of the local configuration, and run the installer again. |
 | Commands over the API are refused. | `web` has no token hash. | Run `seeingmon web hash-token`, and install the hash with `--token-hash-file`. |
 | The data directory warns about the root file system. | No data partition. | See [Create the data partition](#create-the-data-partition). |
-| A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts. |
+| A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts by deleting the `PINNED` file in their folders under `<data-dir>/bursts/`. |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
 | The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by the bind address. |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
