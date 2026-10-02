@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -176,6 +176,7 @@ class FakeAsiSdk:
         state: The settings that the camera keeps. Share one `FakeCameraState` between instances
             to model a camera that one process leaves in some state for the next. The default is a
             new camera in its power-on state.
+        without: Controls that the camera lacks, to test a driver on an older camera model.
     """
 
     def __init__(
@@ -198,9 +199,11 @@ class FakeAsiSdk:
         control_numbers: Mapping[AsiControl, int] | None = None,
         control_names: Mapping[AsiControl, str] | None = None,
         state: FakeCameraState | None = None,
+        without: Iterable[AsiControl] = (),
     ) -> None:
         self._clock = clock
         self._state = FakeCameraState() if state is None else state
+        self._without = frozenset(int(control) for control in without)
         self._model = model
         self._max_width = max_width
         self._max_height = max_height
@@ -406,13 +409,13 @@ class FakeAsiSdk:
         ]
         if self.temperature_c is not None:
             listed.append(caps(AsiControl.TEMPERATURE, "Temperature", -500, 1000, 200))
-        return dict(listed)
+        return {control: entry for control, entry in listed if control not in self._without}
 
     def _caps(self) -> list[AsiControlCaps]:
         return list(self._logical_caps().values())
 
     def _high_speed(self) -> bool:
-        return bool(self._controls[AsiControl.HIGH_SPEED_MODE])
+        return bool(self._controls.get(AsiControl.HIGH_SPEED_MODE, 0))  # an older camera lacks it
 
     def _frame_adc_bits(self) -> int:
         return self._adc_bits[(self._bin, self._high_speed())]

@@ -34,6 +34,22 @@ class AsiOptions(SectionModel):
     camera_index: NonNegativeInt = 0
     """Which camera to open when several are attached, counted from 0."""
 
+    bandwidth_pct: Annotated[int, Field(ge=1, le=100)] | None = 100
+    """The USB bandwidth control, in percent, that a stream applies when it asks for none.
+    `StreamConfig.bandwidth_pct` overrides it for one stream. The camera keeps this control
+    between processes until it loses power, and the vendor default after power-up is 50. On the
+    reference camera that default holds the fast mode (bin1, 128 x 128) at 41 frames a second where
+    100 gives 82. A new process that asked for nothing would get the rate of whichever process ran
+    before it. The default of 100 makes the rate the same after every start. Lower it when frames
+    break on a weak USB port (INDI advises 40 on ARM boards). `None` leaves the control as the
+    camera has it."""
+
+    offset: NonNegativeInt | None = None
+    """The offset, which sets the bias level of the frames, that a stream applies when it asks for
+    none. `StreamConfig.offset` overrides it for one stream. The camera keeps the offset between
+    processes, and another program can leave any value, so the driver always applies one. `None`
+    applies the default value from the camera's control caps (8 on the reference camera)."""
+
     discard_frames: Annotated[int, Field(ge=0, le=100)] = 1
     """Frames that `start` reads and drops after it starts video capture. The first frame after
     a mode change can be stale or partial."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,6 +17,7 @@ from seeingmon.drivers import (
     CameraError,
     CameraStateError,
     CameraTimeoutError,
+    RecoveryLevel,
 )
 from seeingmon.drivers.asi import AsiDriver, AsiOptions, create
 from seeingmon.frames import (
@@ -27,7 +29,12 @@ from seeingmon.frames import (
     TimeQuality,
 )
 from seeingmon.hardware.asi.api import AsiControl, AsiImageType, AsiLibraryError
-from seeingmon.hardware.asi.fake import FakeAsiSdk, FakeFrameInfo, default_pixels
+from seeingmon.hardware.asi.fake import (
+    FakeAsiSdk,
+    FakeCameraState,
+    FakeFrameInfo,
+    default_pixels,
+)
 from tests.hardware.asi_support import FAST, TINY, Rig, make_rig, reference_profile
 
 RAW16, RAW8 = PixelFormat.RAW16, PixelFormat.RAW8
@@ -200,11 +207,12 @@ class TestControls:
         assert rig.sdk.control(AsiControl.OFFSET) == 30
         assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 80
 
-    def test_a_value_that_the_request_leaves_out_is_read_back(self) -> None:
+    def test_a_value_that_the_request_leaves_out_comes_from_the_options(self) -> None:
         rig = make_rig().opened()
         active = rig.driver.configure(StreamConfig(mode="bin1", exposure_us=2000, gain=1))
-        assert active.config.offset == 10  # the camera default
-        assert active.config.bandwidth_pct == 50
+        assert active.config.offset == 10  # the camera's default, because the option is None
+        assert active.config.bandwidth_pct == 100  # the default of the option
+        assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 100
 
     @pytest.mark.parametrize(
         ("field", "value"),
@@ -273,6 +281,174 @@ class TestControls:
                 mode="bin1", exposure_us=2000, gain=1, roi=Roi(0, 0, 8, 2), pixel_format=RAW8
             )
         )
+
+
+PERSISTENT = (
+    AsiControl.HIGH_SPEED_MODE,
+    AsiControl.FLIP,
+    AsiControl.BANDWIDTH_OVERLOAD,
+    AsiControl.OFFSET,
+    AsiControl.GAIN,
+    AsiControl.EXPOSURE,
+)
+
+
+def stale_state() -> FakeCameraState:
+    """What another program can leave in a camera: a half bandwidth, a flip, an offset, high-speed
+    mode, a gain, an exposure, and the automatic mode of three controls."""
+    state = FakeCameraState(
+        {
+            AsiControl.BANDWIDTH_OVERLOAD: 50,
+            AsiControl.FLIP: 3,
+            AsiControl.OFFSET: 20,
+            AsiControl.HIGH_SPEED_MODE: 1,
+            AsiControl.GAIN: 99,
+            AsiControl.EXPOSURE: 123_456,
+        }
+    )
+    state.automatic.update({AsiControl.GAIN, AsiControl.EXPOSURE, AsiControl.BANDWIDTH_OVERLOAD})
+    return state
+
+
+def applied(rig: Rig) -> dict[str, int]:
+    return {control.name.lower(): rig.sdk.control(control) for control in PERSISTENT}
+
+
+class TestPersistentControls:
+    """The camera keeps its controls until it loses power. A driver that leaves one as it finds it
+    inherits what the last process or program set: half the frame rate, a mirrored frame, or
+    another bias level."""
+
+    def test_a_stream_applies_every_persistent_control_over_a_stale_camera(self) -> None:
+        state = stale_state()
+        rig = make_rig(sdk={"state": state}).opened()
+        active = rig.driver.configure(
+            StreamConfig(mode="bin1", exposure_us=2000, gain=120, roi=Roi(0, 0, 16, 8))
+        )
+        assert applied(rig) == {
+            "high_speed_mode": 0,
+            "flip": 0,
+            "bandwidth_overload": 100,
+            "offset": 10,  # the default of the camera, because the option is None
+            "gain": 120,
+            "exposure": 2000,
+        }
+        assert state.automatic == set()  # every control is back in manual mode
+        config = active.config
+        assert (config.bandwidth_pct, config.offset, config.gain, config.exposure_us) == (
+            100,
+            10,
+            120,
+            2000,
+        )
+        assert config.high_speed is False
+
+    def test_the_bandwidth_option_none_leaves_the_control_and_reports_it(self) -> None:
+        state = stale_state()
+        rig = make_rig(sdk={"state": state}, bandwidth_pct=None).opened()
+        active = rig.driver.configure(
+            StreamConfig(mode="bin1", exposure_us=2000, gain=120, roi=Roi(0, 0, 16, 8))
+        )
+        assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 50
+        assert active.config.bandwidth_pct == 50
+        assert rig.sdk.control(AsiControl.FLIP) == 0  # the other controls still apply
+        assert rig.sdk.control(AsiControl.OFFSET) == 10
+
+    def test_the_options_apply_when_the_stream_asks_for_nothing(self) -> None:
+        rig = make_rig(bandwidth_pct=70, offset=15).opened()
+        active = rig.driver.configure(
+            StreamConfig(mode="bin1", exposure_us=2000, gain=1, roi=Roi(0, 0, 16, 8))
+        )
+        assert (active.config.bandwidth_pct, active.config.offset) == (70, 15)
+        assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 70
+        assert rig.sdk.control(AsiControl.OFFSET) == 15
+
+    def test_a_stream_overrides_the_options_for_that_stream_only(self) -> None:
+        rig = make_rig(bandwidth_pct=70, offset=15).opened()
+        override = StreamConfig(
+            mode="bin1",
+            exposure_us=2000,
+            gain=1,
+            roi=Roi(0, 0, 16, 8),
+            bandwidth_pct=60,
+            offset=25,
+        )
+        active = rig.driver.configure(override)
+        assert (active.config.bandwidth_pct, active.config.offset) == (60, 25)
+        again = rig.driver.configure(replace(override, bandwidth_pct=None, offset=None))
+        assert (again.config.bandwidth_pct, again.config.offset) == (70, 15)
+
+    def test_every_configure_applies_the_controls_again(self) -> None:
+        rig = make_rig().opened()
+        config = StreamConfig(mode="bin1", exposure_us=2000, gain=120, roi=Roi(0, 0, 16, 8))
+        rig.driver.configure(config)
+        rig.sdk.state.controls.update({AsiControl.BANDWIDTH_OVERLOAD: 40, AsiControl.FLIP: 2})
+        rig.driver.configure(config)  # another program changed the camera in between
+        assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 100
+        assert rig.sdk.control(AsiControl.FLIP) == 0
+
+    def test_a_new_process_finds_the_camera_as_the_last_one_left_it_and_sets_it_again(
+        self,
+    ) -> None:
+        state = FakeCameraState()
+        first = make_rig(sdk={"state": state}, bandwidth_pct=60).opened()
+        first.driver.configure(TINY)
+        first.driver.close()
+        assert state.controls[AsiControl.BANDWIDTH_OVERLOAD] == 60  # the camera keeps it
+        second = make_rig(sdk={"state": state}).opened()  # a process with the default option
+        assert second.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 60  # until it configures
+        second.driver.configure(TINY)
+        assert second.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 100
+
+    @pytest.mark.parametrize("level", [RecoveryLevel.REOPEN, RecoveryLevel.USB_RESET])
+    def test_recovery_applies_the_controls_again(self, level: RecoveryLevel) -> None:
+        rig = make_rig().streaming(FAST)
+        rig.sdk.state.controls.update({AsiControl.BANDWIDTH_OVERLOAD: 50, AsiControl.FLIP: 3})
+        rig.driver.recover(level)
+        assert rig.sdk.control(AsiControl.BANDWIDTH_OVERLOAD) == 100
+        assert rig.sdk.control(AsiControl.FLIP) == 0
+        assert rig.driver.read_frame(1.0).flags & FrameFlag.RECOVERED
+
+    def test_a_control_that_stays_automatic_is_an_error(self) -> None:
+        rig = make_rig().opened()
+        rig.sdk.keep_auto(AsiControl.EXPOSURE)
+        with pytest.raises(CameraConfigError, match="exposure_us in automatic mode"):
+            rig.driver.configure(TINY)
+
+    def test_the_driver_asks_for_manual_mode_in_every_write(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(TINY)
+        writes = rig.sdk.calls_named("set_control_value")
+        assert len(writes) >= len(PERSISTENT)
+        assert all(call[3] is False for call in writes)  # the `auto` argument
+
+    def test_a_camera_without_flip_and_bandwidth_controls_is_not_an_error(self) -> None:
+        rig = make_rig(sdk={"without": (AsiControl.FLIP, AsiControl.BANDWIDTH_OVERLOAD)}).opened()
+        active = rig.driver.configure(TINY)
+        assert active.config.bandwidth_pct is None  # nothing to apply and nothing to report
+        written = {call[1] for call in rig.sdk.calls_named("set_control_value")}
+        assert written == {
+            int(control)
+            for control in (
+                AsiControl.HIGH_SPEED_MODE,
+                AsiControl.OFFSET,
+                AsiControl.GAIN,
+                AsiControl.EXPOSURE,
+            )
+        }
+
+    def test_a_stream_that_asks_for_a_control_the_camera_lacks_is_refused(self) -> None:
+        rig = make_rig(sdk={"without": (AsiControl.BANDWIDTH_OVERLOAD,)}).opened()
+        with pytest.raises(CameraConfigError, match="no bandwidth_pct control"):
+            rig.driver.configure(replace(TINY, bandwidth_pct=80))
+
+    def test_the_new_options_have_defaults_and_limits(self) -> None:
+        options = AsiOptions()
+        assert (options.bandwidth_pct, options.offset) == (100, None)
+        assert AsiOptions(bandwidth_pct=None).bandwidth_pct is None
+        for bad in ({"bandwidth_pct": 0}, {"bandwidth_pct": 101}, {"offset": -1}):
+            with pytest.raises(CameraConfigError):
+                AsiOptions.from_mapping(bad)
 
 
 class TestControlNumbers:

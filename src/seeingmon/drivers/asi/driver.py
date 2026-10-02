@@ -27,6 +27,14 @@ access"):
    a stream runs, the driver checks the geometry every `geometry_check_interval` frames and stops
    with `CameraConfigError` when it differs.
 
+**Persistent controls.** The camera keeps its controls when a process closes it, and between
+processes, until it loses power. Another program, such as SharpCap, can leave any value. A stale USB
+bandwidth halves the frame rate (the vendor default after power-up is 50), a stale flip mirrors the
+frames, and a stale offset moves the bias level. So every `configure` sets high-speed mode, flip,
+bandwidth, offset, gain, and exposure in manual mode, and it reads each back. Flip is always 0.
+Bandwidth and offset come from the stream, or else from the `bandwidth_pct` and `offset` options.
+`ActiveStream.config` reports the values that applied.
+
 **Frames.** A `RAW8` buffer becomes a `uint8` array, and a `RAW16` buffer becomes a `uint16` array
 with the ADC value in the high bits, as the SDK delivers it. `dropped_before` is the change of the
 SDK drop counter since the previous frame. The first frame after a recovery step carries
@@ -114,8 +122,10 @@ CONTROL_NAMES: dict[AsiControl, str] = {
     AsiControl.OFFSET: "offset",
     AsiControl.BANDWIDTH_OVERLOAD: "bandwidth",
     AsiControl.HIGH_SPEED_MODE: "highspeedmode",
+    AsiControl.FLIP: "flip",
     AsiControl.TEMPERATURE: "temperature",
 }
+FLIP_NONE = 0  # the value of the flip control for an image that is neither mirrored nor turned
 
 
 def _normalize(name: str) -> str:
@@ -609,21 +619,36 @@ class AsiDriver:
         return replace(applied, roi=roi), roi
 
     def _apply_controls(self, plan: _Plan) -> StreamConfig:
-        config = plan.config
-        if int(AsiControl.HIGH_SPEED_MODE) in self._caps:
+        """Set every control that the camera keeps and that changes the image or the rate.
+
+        The camera keeps its controls between processes until it loses power, and another program
+        can leave any value (see "Persistent controls" in the module text). So the function sets
+        high-speed mode, flip, bandwidth, offset, gain, and exposure at every call, in manual
+        mode, and it reads each back. It leaves a control alone only when the option says so: a
+        `bandwidth_pct` of `None`. It returns the stream with the values that applied.
+        """
+        config, opts, caps = plan.config, self._opts, self._caps
+        if int(AsiControl.HIGH_SPEED_MODE) in caps:
             self._set_checked(AsiControl.HIGH_SPEED_MODE, int(config.high_speed), "high_speed")
         elif config.high_speed:
             raise CameraConfigError("this camera has no high-speed mode")
+        if int(AsiControl.FLIP) in caps:  # a mirrored frame would break the pointing solution
+            self._set_checked(AsiControl.FLIP, FLIP_NONE, "flip")
+        has_bandwidth = int(AsiControl.BANDWIDTH_OVERLOAD) in caps
         bandwidth = config.bandwidth_pct
+        if bandwidth is None and has_bandwidth:
+            bandwidth = opts.bandwidth_pct
         if bandwidth is not None:
             bandwidth = self._set_checked(AsiControl.BANDWIDTH_OVERLOAD, bandwidth, "bandwidth_pct")
-        elif int(AsiControl.BANDWIDTH_OVERLOAD) in self._caps:
+        elif has_bandwidth:  # the option is None: leave the control, and report what it holds
             bandwidth = self._get_control(AsiControl.BANDWIDTH_OVERLOAD)
         offset = config.offset
+        if offset is None and int(AsiControl.OFFSET) in caps:
+            offset = opts.offset
+            if offset is None:
+                offset = caps[int(AsiControl.OFFSET)].default_value
         if offset is not None:
             offset = self._set_checked(AsiControl.OFFSET, offset, "offset")
-        elif int(AsiControl.OFFSET) in self._caps:
-            offset = self._get_control(AsiControl.OFFSET)
         gain = self._set_checked(AsiControl.GAIN, config.gain, "gain")
         exposure = self._set_checked(
             AsiControl.EXPOSURE, config.exposure_us, "exposure_us", tolerance=EXPOSURE_TOLERANCE
@@ -632,15 +657,20 @@ class AsiDriver:
             config, gain=gain, exposure_us=exposure, offset=offset, bandwidth_pct=bandwidth
         )
 
-    def _get_control(self, control: AsiControl) -> int:
+    def _read_control(self, control: AsiControl) -> tuple[int, bool]:
+        """The value of a control, and whether the camera sets it automatically."""
         with self._guard("get_control_value"):
-            return self._api.get_control_value(self._camera_id, self._sdk_number(control))[0]
+            return self._api.get_control_value(self._camera_id, self._sdk_number(control))
+
+    def _get_control(self, control: AsiControl) -> int:
+        return self._read_control(control)[0]
 
     def _set_checked(
         self, control: AsiControl, value: int, label: str, *, tolerance: float = 0.0
     ) -> int:
-        """Set a control and read it back. Raises `CameraConfigError` for a value that the
-        camera's range excludes, or that the camera changed without an error."""
+        """Set a control in manual mode and read it back. Raises `CameraConfigError` for a value
+        that the camera's range excludes, a value that the camera changed without an error, or a
+        control that stays in automatic mode."""
         caps = self._caps.get(int(control))
         if caps is None:
             raise CameraConfigError(f"this camera has no {label} control")
@@ -650,8 +680,10 @@ class AsiDriver:
                 f"{caps.min_value} to {caps.max_value}"
             )
         with self._guard("set_control_value"):
-            self._api.set_control_value(self._camera_id, caps.control, value)
-        applied = self._get_control(control)
+            self._api.set_control_value(self._camera_id, caps.control, value, auto=False)
+        applied, automatic = self._read_control(control)
+        if automatic:
+            raise CameraConfigError(f"the camera keeps {label} in automatic mode")
         allowed = max(1.0, abs(value) * tolerance) if tolerance else 0.0
         if abs(applied - value) > allowed:
             raise CameraConfigError(f"the camera applied {label} {applied} for the request {value}")
