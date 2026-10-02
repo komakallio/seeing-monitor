@@ -103,11 +103,13 @@ Keep these files outside the repository, or under `local/`, which Git ignores. N
   - `station_id`, and the `[site]` table.
   - `driver = "asi"` in `[services.acquire]`. The default driver is the simulator.
   - `bind_address` in `[web]`, the LAN address of the Pi. The default is the loopback address, so the UI is reachable from the Pi only.
+  - `catalog_path` and `index_dir` in `[survey]`, the cap catalog and the solver index (see **Cap catalog and solver index** below). `core` does not start without `catalog_path`.
   - The `[power]` route and the `[services.core.escalation]` `reboot_command` (see [The camera recovery ladder](#the-camera-recovery-ladder)).
   - The `[heater]` table, once you know the HAT.
 
   Do not write a path under `/home` into the file. The units hide `/home` from the services.
-- **API token hash.** Make a token and its hash with `seeingmon web hash-token`, a command that comes with the web process. Keep the token in a password manager. Write the hash to a file for `--token-hash-file`.
+- **API token hash.** Run `seeingmon web hash-token --generate > <hash file>`. The command makes a random token, prints it once on the standard error, and writes the hash to the file. Keep the token in a password manager, and pass the file as `--token-hash-file`. To hash a token of your own, run the command without `--generate`: it reads the token from a hidden prompt or from the standard input.
+- **Cap catalog and solver index.** Build them on a machine with a network connection, with `seeingmon catalog build --output <catalog file>`. The command queries the Gaia archive (a job that can queue for many minutes) and VizieR, and it writes the catalog (about 4 MB). When `build-astrometry-index` is installed, it also writes the solver index files to an `index` folder next to the catalog. Copy the catalog file and the folder to a place that the service user can read, such as a folder under the data directory. The Pi never runs the build.
 - **Vendor SDK.** Download the archive from ZWO, compute its checksum once with `sha256sum`, and keep the checksum with your notes. The repository never holds the SDK.
 - **Time sources.** The NTP servers that chrony uses. A Pi 4 has no real-time clock, so it needs at least one source on the LAN or the internet.
 - **Environment file (optional).** Lines of `NAME=value` that the services read. Use it for the values that `token_env`, `password_env`, and `${NAME}` in the configuration name, such as a smart-plug token.
@@ -423,7 +425,7 @@ sudo /opt/seeingmon/bin/seeingmon <command> --help
 | `seeingmon profile show` | Prints the hardware profile with its derived values. | Read-only. |
 | `seeingmon store info <database>` | Prints the counts, the last row IDs, and the sink cursors of a store. | Read-only. |
 
-`burst`, `sweep`, and `replay` queue a task in the running `core`, wait for the result, and print it. `--no-wait` queues the task and returns, and `--standalone` runs the task on the camera without `core`, so stop the services first. Run `seeingmon <command> --help` for the options. Build the cap catalog (`seeingmon catalog build`) on a larger machine, and copy the files to a folder under the data directory. The solver needs the files, and the `[survey]` table names their paths.
+`burst`, `sweep`, and `replay` queue a task in the running `core`, wait for the result, and print it. `--no-wait` queues the task and returns, and `--standalone` runs the task on the camera without `core`, so stop the services first. Run `seeingmon <command> --help` for the options.
 
 ## Take a dark set from the UI
 
@@ -466,6 +468,7 @@ The dark rate depends on the sensor temperature, so a set serves only the temper
 | The log shows "Operation not permitted" for a system call, or a process ends with a bad system call. | The system call filter blocks a call that a library needs. | Allow it in a drop-in: `sudo systemctl edit seeingmon-core.service`, then add `SystemCallFilter=<call>`. Tell the maintainer. |
 | A unit shows `start-limit-hit`. | It failed five times in ten minutes. | Read `journalctl -u <unit>`, fix the cause, then `systemctl reset-failed` and `systemctl start`. |
 | `acquire` restarts again and again. | Exit code 70: the SDK hung. Code 71: a thread died. | Read the log. Check the USB cable, the port, and the power. Run `lsusb -d 03c3:`. |
+| `core` fails to start, and the log says that `catalog_path` is not set. | `[survey] catalog_path` is empty in the local configuration. | Build the catalog and set the path (see [Prepare your files](#prepare-your-files)), then run the installer again. |
 | No camera appears. | The udev rule did not apply, or the SDK path is wrong. | `lsusb -d 03c3:`. `ls -l /dev/bus/usb/*/*` must show the service group. `cat <config-dir>/sdk.env` must name an existing library. |
 | Frames drop, or the stream breaks on large frames. | The USB buffer is too small. | `cat /sys/module/usbcore/parameters/usbfs_memory_mb`, and see [First start and checks](#first-start-and-checks). |
 | Records carry `time_invalid`. | chrony has no synchronized source. | See [Time sync](#time-sync). |
