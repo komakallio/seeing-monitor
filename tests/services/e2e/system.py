@@ -171,6 +171,33 @@ class System:
         with urllib.request.urlopen(url, timeout=timeout_s) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        authorized: bool = True,
+        timeout_s: float = 10.0,
+    ) -> tuple[int, Any]:
+        """POST JSON to `/api/v1/<path>`. Returns the HTTP status and the decoded JSON answer.
+
+        The request carries the API token of the run, as the UI does, unless `authorized` is
+        false. A status of 400 or more comes back as a value, and not as an exception.
+        """
+        url = f"http://127.0.0.1:{self.plan.port}/api/v1/{path}"
+        headers = {"Content-Type": "application/json"}
+        if authorized:
+            assert self.plan.token is not None, "the run has no generated API token"
+            headers["Authorization"] = f"Bearer {self.plan.token}"
+        request = urllib.request.Request(
+            url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
+                return int(response.status), json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return int(error.code), json.loads(error.read().decode("utf-8") or "null")
+
     def get_or_none(self, path: str) -> Any:
         try:
             return self.get(path)
