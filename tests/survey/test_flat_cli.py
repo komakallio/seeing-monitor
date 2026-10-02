@@ -20,7 +20,7 @@ from seeingmon.survey import flat_cli
 from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.sky import load_flat
 from tests.survey import flatfx as fx
-from tests.survey import test_flat_sky
+from tests.survey import test_flat_base, test_flat_sky
 
 SHAPE = (352, 512)
 SCALE_DOWN = fx.REFERENCE_SHAPE[1] / SHAPE[1]
@@ -401,5 +401,160 @@ def test_the_help_of_build_names_the_options_of_the_brief(
         "--min-transparency",
         "--sky-tolerance-percent",
         "--accept-unchecked",
+        "--base-flat",
+        "--update",
+        "--radial-limit-percent",
     ):
         assert option in text, option
+
+
+# --- seeingmon flat build --base-flat -------------------------------------------------------
+
+
+@pytest.fixture
+def based(
+    night: test_flat_sky.Night, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> tuple[Path, Path]:
+    """The frames of the night in an accumulator, and a panel flat that still has dust that left.
+
+    The panel flat has a shadow of 4.5% that the lens has not any more: the sky shows it as a
+    bright patch. The accumulator holds the six frames, so that the tests read no frame again.
+    """
+    accumulator = tmp_path / "acc.npz"
+    out = tmp_path / "sky.npy"
+    code = main(
+        [
+            "flat",
+            "build",
+            str(night.folder),
+            "--out",
+            str(out),
+            "--accumulator",
+            str(accumulator),
+            *BUILD_OPTIONS,
+        ]
+    )
+    assert code == 0
+    capsys.readouterr()
+    panel = tmp_path / "panel.npy"
+    np.save(panel, test_flat_base.WITH_DUST)
+    return accumulator, panel
+
+
+def test_a_base_flat_is_compared_and_nothing_is_written_without_update(
+    based: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    accumulator, panel = based
+    code = main(
+        [
+            "flat",
+            "build",
+            "--accumulator",
+            str(accumulator),
+            "--base-flat",
+            str(panel),
+            *BUILD_OPTIONS,
+        ]
+    )
+    text = capsys.readouterr().out
+    assert code == 0
+    assert "Flat from the night sky, compared with a base flat." in text
+    assert "Base flat: panel.npy. The mean sky is divided by it." in text
+    assert "Change of the vignetting against the base flat" in text
+    assert "Patches brighter than the base flat by more than" in text
+    assert "An update would apply 1 bright patch." in text
+    assert "Nothing written. Add --update and --out to write the new flat." in text
+    assert "Wrote" not in text
+    assert str(tmp_path) not in text
+    assert sorted(path.name for path in tmp_path.iterdir() if path.suffix == ".npy") == [
+        "panel.npy",
+        "sky.npy",
+    ]
+
+
+def test_the_update_writes_the_base_flat_with_its_changes_for_the_survey_path(
+    based: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    accumulator, panel = based
+    new = tmp_path / "new.npy"
+    code = main(
+        [
+            "flat",
+            "build",
+            "--accumulator",
+            str(accumulator),
+            "--base-flat",
+            str(panel),
+            "--update",
+            "--out",
+            str(new),
+            *BUILD_OPTIONS,
+        ]
+    )
+    text = capsys.readouterr().out
+    assert code == 0
+    assert "Update: applied 1 bright patch." in text
+    assert "Wrote new.npy, the base flat with these changes. Set flat_file" in text
+    assert "Nothing written" not in text
+    assert str(tmp_path) not in text
+    image = load_flat(new).image(SHAPE)
+    assert image is not None
+    assert float(np.median(image)) == pytest.approx(1.0, abs=1e-3)
+    # the dust that left is out of the new flat, and the panel flat itself is as it was
+    truth = test_flat_base.TRUTH
+    core = test_flat_base.distance_from(test_flat_base.NEW_DUST, SHAPE) < 3.0
+    error_new = float(np.abs(image[core] / truth[core] - 1.0).mean())
+    error_base = float(np.abs(test_flat_base.WITH_DUST[core] / truth[core] - 1.0).mean())
+    assert error_base > 0.04  # the base has the dust of 4.5%
+    assert error_new < 0.4 * error_base  # the sky of six frames takes most of it out
+    np.testing.assert_array_equal(np.load(panel), test_flat_base.WITH_DUST)
+
+
+def test_the_calls_that_do_not_make_sense_are_refused_before_any_work(
+    based: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    accumulator, panel = based
+    common = ["flat", "build", "--accumulator", str(accumulator), *BUILD_OPTIONS]
+    new = str(tmp_path / "new.npy")
+    assert main([*common, "--update", "--out", new]) == 2
+    assert "--update needs --base-flat" in capsys.readouterr().err
+    assert main([*common, "--base-flat", str(panel), "--out", new]) == 2
+    assert "without --update the command only reports" in capsys.readouterr().err
+    assert main([*common, "--base-flat", str(panel), "--update"]) == 2
+    assert "give --out" in capsys.readouterr().err
+    assert main([*common, "--base-flat", str(panel), "--update", "--out", str(panel)]) == 2
+    assert "--out names the base flat" in capsys.readouterr().err
+    assert main([*common, "--base-flat", str(panel), "--radial-limit-percent", "0"]) == 2
+    assert "radial limit" in capsys.readouterr().err
+    assert not (tmp_path / "new.npy").exists()
+
+
+def test_a_base_flat_that_cannot_be_read_fails_with_a_message_that_names_no_path(
+    based: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    accumulator, _ = based
+    common = ["flat", "build", "--accumulator", str(accumulator), *BUILD_OPTIONS]
+    assert main([*common, "--base-flat", str(tmp_path / "missing.npy")]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read the flat file: No such file or directory" in err
+    assert str(tmp_path) not in err
+    assert "missing.npy" not in err
+    bad = tmp_path / "bad.fits"
+    bad.write_bytes(b"not a fits file" * 100)
+    assert main([*common, "--base-flat", str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read the flat file" in err
+    assert str(tmp_path) not in err
+
+
+def test_a_base_flat_of_another_size_fails_before_any_frame_is_read(
+    night: test_flat_sky.Night, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    small = tmp_path / "small.npy"
+    np.save(small, np.ones((12, 16), dtype=np.float32))
+    code = main(["flat", "build", str(night.folder), "--base-flat", str(small), *BUILD_OPTIONS])
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert "the base flat has 16 x 12 pixels, and the survey mode has 512 x 352" in err
+    assert "frame 1 of" not in out  # nothing was processed
+    assert str(tmp_path) not in err

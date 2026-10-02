@@ -506,7 +506,7 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
 | `seeingmon flat make` | Combines frames of a lit panel into the master flat for `[survey] flat_file`, and prints the vignetting, the tilt, the shadows, and how well the sets agree. | Offline: it needs no camera and no running service. See [Take a flat with a panel](#take-a-flat-with-a-panel). |
-| `seeingmon flat build` | Builds a flat from the survey frames of the night sky, adds them to an accumulator file on request, and prints the vignetting, the shadows, and a check of the mask around Polaris. | Offline: it needs no camera and no running service. It needs a clear night of frames, a dark library, and `[site]`. See [Build a flat from the night sky](#build-a-flat-from-the-night-sky). |
+| `seeingmon flat build` | Builds a flat from the survey frames of the night sky, adds them to an accumulator file on request, and prints the vignetting, the shadows, and a check of the mask around Polaris. With `--base-flat` it compares the sky with a panel flat instead, and with `--update` it writes the panel flat with the changes that exceed their limits. | Offline: it needs no camera and no running service. It needs a clear night of frames, a dark library, and `[site]`. See [Build a flat from the night sky](#build-a-flat-from-the-night-sky). |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode. It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
 | `seeingmon hardware sqm` | Reads the SQM-LE once from the source that `[sqm]` names (the unit over TCP, or the readings in InfluxDB), and prints the magnitude, the temperature, and the age of the reading. | Read-only, and it needs no camera. It ignores `enabled`. The wrapper does not load `seeingmon.env`, so a variable that `token_env` names must be in the environment of the command (see [Check the settings](#check-the-settings)). |
 | `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
@@ -638,13 +638,13 @@ The flat has a median of 1. The command floors a pixel that reads at or below ze
 
 ### When to take it again
 
-Take a new flat when the camera comes off the lens, when you change the spacing or the focus, and when you clean the sensor window, because each of them moves the shadows of the dust or changes the vignetting.
+Take a new flat when the camera comes off the lens, when you change the spacing or the focus, and when you clean the sensor window, because each of them moves the shadows of the dust or changes the vignetting. Between panel flats, the night sky reports the small changes of the vignetting and of the dust (see [Compare the sky with your panel flat](#compare-the-sky-with-your-panel-flat)).
 
 ## Build a flat from the night sky
 
 The camera is fixed to the ground and points at the pole, so the sky turns about the middle of the frame, 15 arcsec every second. The mean of many frames in the sensor frame, with the stars masked, holds the flat times the mean sky. The structure that is fixed on the sky (faint stars, nebulosity) averages down to its mean about the pole, because the rotation spreads it round the frame. A mount that tracks the sky could not do this. `seeingmon flat build` takes the survey frames that `core` keeps as FITS files and turns them into the flat that `[survey] flat_file` loads. It needs no panel and no camera.
 
-The sky cannot give the tilt. It cannot tell a tilt of the flat from a gradient of the sky itself, so the flat holds none. The tilt of the optics and the sensor stays in your frames, about 1% at the frame edges, until you take a panel flat (see [Take a flat with a panel](#take-a-flat-with-a-panel)).
+The sky cannot give the tilt. It cannot tell a tilt of the flat from a gradient of the sky itself, so the flat holds none. The tilt of the optics and the sensor stays in your frames, about 1% at the frame edges, until you take a panel flat (see [Take a flat with a panel](#take-a-flat-with-a-panel)). With a panel flat as the base, the command keeps its tilt and takes the changes of the vignetting and the dust from the sky (see [Compare the sky with your panel flat](#compare-the-sky-with-your-panel-flat)).
 
 ### When to run it
 
@@ -699,10 +699,10 @@ Vignetting at each radius from the center, against the center:
   ...
   corners (2.65 degrees): -9.91%
 Tilt: not determined. The sky cannot tell a tilt of the flat from a gradient of the sky itself, so the flat holds none. ...
-Shadows deeper than 1%: 3
+Shadows deeper than 1.5% (the noise raises the search above 1%): 3
   x 2489, y 1994: depth 3.0%, width 71 px
   ...
-Edge artifacts deeper than 1% (center within 20 px of an edge): none
+Edge artifacts deeper than 1.5% (center within 20 px of an edge; the noise raises the search above 1%): none
 Polaris orbit: radius 584 px (from the positions of Polaris), bump +0.12% against a limit of 0.3%.
 Time: 28.4 s, 1.2 s for each frame added.
 Wrote flat.npy. Set flat_file in the [survey] table to its path.
@@ -719,6 +719,64 @@ The numbers in this example come from a synthetic night. Read the lines like thi
 - **Time.** The time of the run and for each frame added.
 
 The command warns when fewer than 20 frames (`--min-frames`) or less than 60 degrees of roll (`--min-roll-deg`) went in, because the rotation has not averaged the structure of the sky then, and the fine structure is noisy. A simulation with the roll angles of a real year at 60 degrees north gave, for one clear night of 24 frames over 190 degrees of roll, a fine part good to 0.31% rms and a radial profile good to 0.14%, and for 240 frames 0.22% and 0.15%. The structure of the sky about the pole sets that floor, and not the photon noise.
+
+### Compare the sky with your panel flat
+
+A panel flat has the tilt, and the sky cannot give it. The sky has what a panel flat cannot keep current: the vignetting and the dust shadows as they are now. `--base-flat` combines the two, and the tilt of the new flat always comes from your panel flat.
+
+```bash
+uv run seeingmon flat build --accumulator <accumulator file>.npz --base-flat <panel flat>.npy
+```
+
+The command divides the mean sky by the base flat and reports what changed. It writes nothing. Name the accumulator of an earlier run, and the command reads no frame again, or add the folder of the frames to add the new ones first. The base flat is a `.npy` file or a FITS file of the size of the survey mode, as `[survey] flat_file` takes it. This is the report of a synthetic night, for a base flat with 1% of tilt that was taken before the vignetting deepened and before dust landed on the window:
+
+```text
+Flat from the night sky, compared with a base flat.
+Frames: 0 found in the folder, 0 already in the accumulator, 0 rejected, 0 added now.
+Accumulator: 24 frames from 2026-12-09 to 2026-12-10. Roll coverage: 173 degrees.
+Noise: 0.57% per binned pixel (4 x 4) in the mean sky. One pixel of one frame scatters by 11.4%.
+Base flat: panel.npy. The mean sky is divided by it.
+Change of the vignetting against the base flat, at each radius from the center (against the disk within 0.40 degrees of it):
+  0.5 degrees: -0.11%
+  1.0 degrees: -0.40%
+  1.5 degrees: -0.99%
+  2.0 degrees: -1.58%
+  2.5 degrees: -2.32%
+  corners (2.66 degrees): -2.57%
+Radial profile: the largest change is -2.3% at 2.5 degrees, over the limit of 1%.
+Plane: the mean sky over the base flat has -0.99% across the width, +4.51% across the height (a positive value means that it rises toward the right edge or the bottom edge). That is the gradient of the sky plus any change of the tilt of the flat, and the sky cannot tell them apart, so the tilt comes from the base flat.
+New shadows deeper than 1.5% (the noise raises the search above 1%): 1
+  x 1500, y 1000: depth 4.5%, width 127 px
+Patches brighter than the base flat by more than 1.5% (the noise raises the search above 1%): none
+Edge artifacts deeper than 1.5% (center within 20 px of an edge; the noise raises the search above 1%): none
+Polaris orbit: radius 584 px (from the positions of Polaris), bump +0.12% against a limit of 0.3%.
+An update would apply the radial change and 1 new shadow. It would leave the plane and every smaller change as the base flat has them.
+Nothing written. Add --update and --out to write the new flat.
+```
+
+Read the lines like this:
+
+- **Vignetting.** The change at each radius is the mean sky over the base flat at that radius, in percent of its mean over the disk at the middle of the frame (the disk within 15% of the way to the corners, which is about 0.4 degrees). The sky does not turn at the middle, so a smaller disk would carry structure of the sky that the rotation does not average, and it would shift every change with it. A change of more than 1% at any of the five radii exceeds the limit (`--radial-limit-percent`). The rings of the sky itself add 0.15 to 0.5% to the profile, so a smaller change is noise.
+- **Plane.** The plane of the mean sky over the base flat. It holds the gradient of the sky and any change of the tilt of the flat, and the sky cannot tell them apart. The command reports it, and an update never applies it.
+- **New shadows.** The dips deeper than 1% in the fine part of the quotient: dust that landed after the panel flat. When the noise is high, the search needs 5 times the local noise instead, and the heading says so.
+- **Bright patches.** The bumps brighter than 1% over a shadow of the base flat: dust that left or moved. A bump over no shadow of the base flat is the residue of a star that the masks missed, and the report counts it as ignored.
+- **Edge artifacts.** The dips within 20 pixels of an edge. The report lists them apart, and an update leaves them out.
+- **The last line.** It says what an update would apply.
+
+Add `--update` and `--out` to write the new flat. `--out` must not name the base flat, so that your panel flat stays as it is.
+
+```bash
+uv run seeingmon flat build --accumulator <accumulator file>.npz --base-flat <panel flat>.npy --update --out <new flat>.npy
+```
+
+The new flat is the base flat times a correction, scaled to a median of 1. The correction holds only the changes that exceed their limits:
+
+- the radial change, as a whole, when it exceeds 1% at any of the five radii, and not at all otherwise;
+- each new shadow and each bright patch, over its own region with a soft edge.
+
+It never holds the plane, a radial change under its limit, or a dip at the frame edge. Everything else stays as the base flat has it, down to the pixel: the tilt, the pattern of the pixels, and the shadows that did not change. When the ring check fails (the Polaris orbit line of the report warns), the update applies nothing, because the halo of Polaris is in the mean sky: raise `--polaris-mask-px`, and build again.
+
+A light smoothing takes the noise out of a shadow that the update takes from the sky, so the shadow comes out a little shallower. In a simulation of the development lens, the core of a 3% shadow that is 71 pixels wide came out at 2.8%. In a simulation of one clear night of 24 frames, the update took a base flat whose vignetting was off by up to 2.4% and that lacked a shadow of 3% to 0.2% rms from the lens. The flat from the sky alone was off by 0.6% rms, because it lacks the tilt. When many shadows changed, take a new panel flat instead.
 
 ### Use the flat
 

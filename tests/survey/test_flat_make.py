@@ -849,6 +849,19 @@ class TestTheWrittenFlat:
             np.testing.assert_allclose(read_flat_image(path), result.flat, rtol=1e-6)
         assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]  # no temporary file
 
+    def test_a_flat_file_that_cannot_be_read_gives_a_message_without_the_path(
+        self, tmp_path: Path
+    ) -> None:
+        from seeingmon.survey.flat_files import FlatFileError, read_flat_image
+
+        with pytest.raises(FlatFileError) as caught:
+            read_flat_image(tmp_path / "missing.npy")
+        assert str(caught.value) == "cannot read the flat file: No such file or directory"
+        negative = tmp_path / "negative.npy"
+        np.save(negative, -np.ones((4, 4), dtype=np.float32))
+        with pytest.raises(FlatFileError, match="positive"):
+            read_flat_image(negative)
+
     def test_a_flat_file_needs_a_known_suffix(self, tmp_path: Path) -> None:
         from seeingmon.survey.flat_files import FlatFileError, write_flat
 

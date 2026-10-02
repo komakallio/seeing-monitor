@@ -9,7 +9,8 @@ sky (faint stars, nebulosity), because the rotation averages the rest away. A mo
 sky could not do this. The result has the vignetting to a fraction of a percent and the shadows of
 the dust, and it has no tilt: the sky cannot tell a tilt of the flat from a gradient of the sky
 itself, so the flat holds none. A tilt of the optics of about 1% stays in the frames. A panel flat
-(`seeingmon flat make`) gives the tilt, and `--base-flat` combines the two.
+(`seeingmon flat make`) gives the tilt, and `--base-flat` combines the two (see
+`seeingmon.survey.flat_base`).
 
 **The frames.** The survey frames that `core` keeps as FITS files (every tenth long frame and the
 frames of events, see `seeingmon.survey.framefile`) are the input. A frame is *usable* when the
@@ -46,6 +47,11 @@ flat is the radial part times the fine part, scaled to a median of 1 and spread 
 with bilinear interpolation. This is the recipe of the sky average with a better edge: the radial
 part comes from `M` itself, so the Gaussian cannot bias it where the vignetting is steepest.
 
+**A base flat.** With `--base-flat FILE` the command divides the mean sky by a flat that you took
+with a panel, and reports what changed: the vignetting, the new shadows, and the plane. It writes
+nothing without `--update`. With `--update` it writes the base flat times a correction that holds
+only the changes over their limits, and never the plane, so the tilt comes from the base.
+
 **Checks.** The roll of a frame is the Earth rotation angle at its time. The report gives the
 coverage: 360 degrees minus the largest gap between the rolls. A flat from fewer than 20 frames or
 less than 60 degrees of roll gets a warning, because the rotation has not averaged the structure of
@@ -67,7 +73,7 @@ import numpy as np
 import numpy.typing as npt
 
 from seeingmon.clock import NS_PER_S, Clock, utc_ns_to_iso
-from seeingmon.survey import flat_report
+from seeingmon.survey import flat_base, flat_report
 from seeingmon.survey.framefile import (
     FrameMeta,
     parse_frame_header,
@@ -141,7 +147,8 @@ class BuildOptions:
     (a fraction of the median sky level), and `min_exposure_s`. A frame that lacks the cloud
     fraction, the transparency, or the site stays out unless `accept_unchecked` is true.
     `min_frames` and `min_roll_deg` set the warnings, and `ring_limit` the bump (a fraction) that
-    says that the mask of Polaris is too small.
+    says that the mask of Polaris is too small. `radial_limit` is the change of the radial profile
+    (a fraction) that a base flat takes from the sky.
     """
 
     bin_factor: int = 4
@@ -160,6 +167,7 @@ class BuildOptions:
     accept_unchecked: bool = False
     ring_limit: float = 0.003
     edge_margin_px: float = flat_report.EDGE_MARGIN_PX
+    radial_limit: float = flat_base.RADIAL_LIMIT
 
     def __post_init__(self) -> None:
         if self.bin_factor < 1 or self.high_pass_px <= 0 or self.polaris_mask_px < 0:
@@ -168,6 +176,8 @@ class BuildOptions:
             raise ValueError("the sky tolerance and the cloud fraction must lie between 0 and 1")
         if self.min_frames < 1 or self.min_roll_deg < 0:
             raise ValueError("the warning limits must not be negative")
+        if not 0 < self.radial_limit < 1:
+            raise ValueError("the radial limit must lie between 0 and 1")
 
 
 # --- The roll -------------------------------------------------------------------------------
@@ -940,7 +950,13 @@ def screen_headers(
 
 @dataclass(frozen=True, slots=True)
 class SkyResult:
-    """The flat of a run and what the report says about it."""
+    """The flat of a run and what the report says about it.
+
+    `flat` is the flat that the command writes: the flat of the sky alone, or the updated base
+    flat when `updated` is true. With a base flat and no update, the command writes nothing.
+    `base` holds the comparison with the base flat, and `applied` what an update applies (or
+    would apply).
+    """
 
     flat: Float32Array
     options: BuildOptions
@@ -954,6 +970,9 @@ class SkyResult:
     dark_note: str
     warnings: tuple[str, ...]
     elapsed_s: float | None
+    base: flat_base.BaseComparison | None = None
+    applied: flat_base.Applied | None = None
+    updated: bool = False
 
 
 ProgressFn = Callable[[str], None]
@@ -971,14 +990,27 @@ def build_sky_flat(
     options: BuildOptions | None = None,
     clock: Clock | None = None,
     progress: ProgressFn | None = None,
+    base_flat: Float32Array | None = None,
+    update: bool = False,
 ) -> SkyResult:
-    """Add the new frames of a folder to the accumulator and build the flat. See the module text."""
+    """Add the new frames of a folder to the accumulator and build the flat. See the module text.
+
+    `base_flat` is a flat of the whole sensor (a median of 1), and the sky is compared with it.
+    With `update`, the result is the base flat with the changes that the sky shows.
+    """
     cfg = options or BuildOptions()
     started = None if clock is None else clock.monotonic_ns()
     say = progress or (lambda _: None)
     readout = profile.survey_readout
     mode = profile.survey_mode.mode
     shape = (readout.height_px, readout.width_px)
+    if update and base_flat is None:
+        raise SkyFlatError("an update needs a base flat")
+    if base_flat is not None and base_flat.shape != shape:
+        raise SkyFlatError(
+            f"the base flat has {base_flat.shape[1]} x {base_flat.shape[0]} pixels, and the "
+            f"survey mode has {shape[1]} x {shape[0]}: use a flat of this mode"
+        )
     settings = {"polaris_mask_px": cfg.polaris_mask_px, "edge_px": float(EDGE_PX)}
     if accumulator_path is not None and accumulator_path.exists():
         acc = Accumulator.load(accumulator_path)
@@ -1063,7 +1095,6 @@ def build_sky_flat(
     sky_flat = flat_from_average(
         average, center_binned=center_binned, high_pass_px=cfg.high_pass_px
     )
-    flat = flat_report.upsample_bilinear(sky_flat.flat_binned, cfg.bin_factor, shape)
     summary = flat_report.summarize_flat(
         sky_flat.flat_binned,
         factor=cfg.bin_factor,
@@ -1076,6 +1107,29 @@ def build_sky_flat(
         valid=average.valid,
     )
     ring = ring_check(average, acc, optical_center=center, scale_arcsec_px=scale)
+    ring_ok = ring.bump is None or ring.bump <= cfg.ring_limit
+    comparison: flat_base.BaseComparison | None = None
+    plan: flat_base.Applied | None = None
+    flat: Float32Array | None = None
+    if base_flat is not None:
+        comparison = flat_base.compare_with_base(
+            average.mean,
+            flat_report.block_mean(base_flat, cfg.bin_factor),
+            valid=average.valid,
+            noise_scale=average.noise_scale,
+            factor=cfg.bin_factor,
+            sensor_shape=shape,
+            scale_arcsec_px=scale,
+            center_xy=center_binned,
+            high_pass_px=cfg.high_pass_px,
+            radial_limit=cfg.radial_limit,
+            edge_margin_px=cfg.edge_margin_px,
+        )
+        plan = flat_base.plan_update(comparison, trusted=ring_ok)
+        if update:
+            flat = flat_base.apply_update(base_flat, comparison, plan, factor=cfg.bin_factor)
+    if flat is None:
+        flat = flat_report.upsample_bilinear(sky_flat.flat_binned, cfg.bin_factor, shape)
     rolls = [record.roll_deg for record in acc.frames]
     coverage = roll_coverage(rolls)
     if len(acc.frames) < cfg.min_frames:
@@ -1088,7 +1142,7 @@ def build_sky_flat(
             f"The frames cover {coverage:.0f} degrees of roll, under {cfg.min_roll_deg:g}. The "
             "rotation has not averaged the structure of the sky, so the flat holds part of it."
         )
-    if ring.bump is not None and ring.bump > cfg.ring_limit:
+    if not ring_ok and ring.bump is not None:
         warnings.append(
             f"The mean sky has a bump of {100 * ring.bump:.2f}% at the radius of the orbit of "
             f"Polaris, over {100 * cfg.ring_limit:.1f}%: the mask around Polaris is too small. "
@@ -1123,6 +1177,9 @@ def build_sky_flat(
         dark_note=darks.describe(),
         warnings=tuple(warnings),
         elapsed_s=elapsed,
+        base=comparison,
+        applied=plan,
+        updated=update,
     )
 
 
@@ -1186,10 +1243,20 @@ def _nothing_to_use(selection: Selection, options: BuildOptions) -> str:
 # --- The report -----------------------------------------------------------------------------
 
 
-def format_sky_report(result: SkyResult, *, name: str | None = None) -> list[str]:
-    """The plain-text report of a run. It names no path of the machine."""
+def format_sky_report(
+    result: SkyResult, *, name: str | None = None, base_name: str | None = None
+) -> list[str]:
+    """The plain-text report of a run. It names no path of the machine.
+
+    `name` is the file that the command wrote, and `base_name` the base flat. Both are names
+    without a folder.
+    """
     cfg, selection, acc = result.options, result.selection, result.accumulator
-    lines = ["Flat from the night sky."]
+    lines = [
+        "Flat from the night sky."
+        if result.base is None
+        else "Flat from the night sky, compared with a base flat."
+    ]
     rejected = sum(selection.rejected.values())
     lines.append(
         f"Frames: {selection.found} found in the folder, {selection.already} already in the "
@@ -1204,28 +1271,36 @@ def format_sky_report(result: SkyResult, *, name: str | None = None) -> list[str
         f"Accumulator: {len(acc.frames)} frames from {first[:10]} to {last[:10]}. Roll coverage: "
         f"{roll_coverage(rolls):.0f} degrees."
     )
-    lines.append(f"Dark: {result.dark_note}.")
+    if result.used_now:  # a run that added no frame processed none, and used no dark
+        lines.append(f"Dark: {result.dark_note}.")
     lines.append(
         f"Noise: {100 * result.average.noise_mean:.2f}% per binned pixel ({cfg.bin_factor} x "
         f"{cfg.bin_factor}) in the mean sky. One pixel of one frame scatters by "
         f"{100 * result.average.noise_frame:.1f}%."
     )
-    lines.extend(flat_report.profile_lines(result.summary.profile))
-    lines.append(
-        "Tilt: not determined. The sky cannot tell a tilt of the flat from a gradient of the "
-        "sky itself, so the flat holds none. A tilt of the optics of about 1% across the frame "
-        "stays in the frames."
-    )
-    lines.extend(
-        flat_report.shadow_lines(result.summary.shadows, depth=result.summary.shadow_depth)
-    )
-    lines.extend(
-        flat_report.edge_artifact_lines(
-            result.summary.edge_artifacts,
-            margin_px=cfg.edge_margin_px,
-            depth=result.summary.shadow_depth,
+    if result.base is not None:
+        lines.extend(
+            flat_base.comparison_lines(
+                result.base, base_name=base_name, edge_margin_px=cfg.edge_margin_px
+            )
         )
-    )
+    else:
+        lines.extend(flat_report.profile_lines(result.summary.profile))
+        lines.append(
+            "Tilt: not determined. The sky cannot tell a tilt of the flat from a gradient of "
+            "the sky itself, so the flat holds none. A tilt of the optics of about 1% across "
+            "the frame stays in the frames."
+        )
+        lines.extend(
+            flat_report.shadow_lines(result.summary.shadows, depth=result.summary.shadow_depth)
+        )
+        lines.extend(
+            flat_report.edge_artifact_lines(
+                result.summary.edge_artifacts,
+                margin_px=cfg.edge_margin_px,
+                depth=result.summary.shadow_depth,
+            )
+        )
     ring = result.ring
     if ring.bump is None:
         lines.append("Polaris orbit: the ring check could not run (the frame holds too little).")
@@ -1240,7 +1315,12 @@ def format_sky_report(result: SkyResult, *, name: str | None = None) -> list[str
             f"Time: {result.elapsed_s:.1f} s, {result.elapsed_s / result.used_now:.1f} s for each "
             "frame added."
         )
+    if result.applied is not None:
+        lines.extend(flat_base.update_lines(result.applied, written=result.updated))
     lines.extend(f"Warning: {warning}" for warning in result.warnings)
     if name is not None:
-        lines.append(f"Wrote {name}. Set flat_file in the [survey] table to its path.")
+        what = ", the base flat with these changes" if result.updated else ""
+        lines.append(f"Wrote {name}{what}. Set flat_file in the [survey] table to its path.")
+    elif result.base is not None and not result.updated:
+        lines.append("Nothing written. Add --update and --out to write the new flat.")
     return lines

@@ -19,7 +19,8 @@ hot_pixel_file = ""
 calibration_dir = ""
 # A measured flat field of the survey mode: a 2-D image of the whole sensor with a median of 1 (.npy
 # or FITS). `seeingmon flat make` builds one from frames of a lit panel, and `seeingmon flat build` from the
-# survey frames of the night sky (which gives no tilt). Empty means a unit flat: no correction.
+# survey frames of the night sky (which gives no tilt, so `--base-flat` takes the tilt from a panel flat).
+# Empty means a unit flat: no correction.
 flat_file = ""
 # The UTC hour that ends one night and starts the next. Pick an hour when the Sun is up at your
 # site, so that no night splits in two. The star epochs and the transparency reference group by

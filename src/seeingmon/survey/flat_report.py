@@ -316,6 +316,7 @@ def vignetting_profile(
     center_xy: tuple[float, float],
     radii_deg: Sequence[float] = RADII_DEG,
     valid: BoolArray | None = None,
+    center_fraction: float = _CENTER_RADIUS_FRACTION,
 ) -> tuple[ProfilePoint, ...]:
     """The azimuthal mean at each radius and in the corners, in percent against the center.
 
@@ -323,20 +324,13 @@ def vignetting_profile(
     `center_xy` is the optical center in binned pixels. A radius whose ring holds fewer than 30
     valid pixels (a radius beyond the corners) gives `None`. The last point is the corners: the
     valid pixels within 2 binned pixels of the farthest valid pixel from the optical center. The
-    value at the center is the mean of the disk within 3% of that distance (4 binned pixels at
-    least).
+    value at the center is the mean of the disk within `center_fraction` of that distance (3%
+    unless you say otherwise, and 4 binned pixels at least).
     """
     radius = radius_map(image.shape, center_xy)
     weight = np.ones(image.shape) if valid is None else valid.astype(np.float64)
     usable = weight > 0
-    if not usable.any():
-        raise ValueError("the image holds no valid pixel")
-    corner_bins = float(radius[usable].max())
-    center_bins = max(_CENTER_RADIUS_BINS, _CENTER_RADIUS_FRACTION * corner_bins)
-    inner = (radius <= center_bins) & usable
-    if int(inner.sum()) < 4:
-        raise ValueError("the center of the image holds no valid pixel")
-    center_value = float(image[inner].mean())
+    center_value, corner_bins, _ = _center_and_corner(image, radius, usable, center_fraction)
     points: list[ProfilePoint] = []
     for degrees in radii_deg:
         r_bins = degrees * 3600.0 / scale_arcsec_px / factor
@@ -348,6 +342,43 @@ def vignetting_profile(
     corner = _ring_point(corner_deg, image, corner_ring, center_value, minimum=4)
     points.append(ProfilePoint(corner.radius_deg, corner.change_percent, corner=True))
     return tuple(points)
+
+
+def _center_and_corner(
+    image: FloatArray, radius: FloatArray, usable: BoolArray, fraction: float
+) -> tuple[float, float, float]:
+    """The mean of the disk at the center, the corner distance, and the radius of the disk.
+
+    The corner distance is the distance to the farthest valid pixel. All distances are in binned
+    pixels.
+    """
+    if not usable.any():
+        raise ValueError("the image holds no valid pixel")
+    corner_bins = float(radius[usable].max())
+    center_bins = max(_CENTER_RADIUS_BINS, fraction * corner_bins)
+    inner = (radius <= center_bins) & usable
+    if int(inner.sum()) < 4:
+        raise ValueError("the center of the image holds no valid pixel")
+    return float(image[inner].mean()), corner_bins, center_bins
+
+
+def center_level(
+    image: FloatArray,
+    *,
+    center_xy: tuple[float, float],
+    valid: BoolArray | None = None,
+    center_fraction: float = _CENTER_RADIUS_FRACTION,
+) -> tuple[float, float]:
+    """The value at the center of an image, as `vignetting_profile` takes it, and the disk's radius.
+
+    The value is the mean of the valid pixels within `center_fraction` of the distance to the
+    farthest valid pixel (4 binned pixels at least). The radius is in binned pixels.
+    """
+    usable = np.ones(image.shape, dtype=np.bool_) if valid is None else valid
+    level, _, radius = _center_and_corner(
+        image, radius_map(image.shape, center_xy), usable, center_fraction
+    )
+    return level, radius
 
 
 def _ring_point(
@@ -464,7 +495,29 @@ def fine_noise(
     return float(1.4826 * np.median(np.abs(values - center)))
 
 
-def find_shadows(
+@dataclass(frozen=True, slots=True)
+class Dips:
+    """The dips that `locate_dips` found, and the region of the image that each one fills.
+
+    `labels` numbers the connected regions of the search (0 outside every region), and `ids[i]` is
+    the number of the region of `shadows[i]`.
+    """
+
+    shadows: tuple[Shadow, ...]
+    labels: npt.NDArray[np.int32]
+    ids: tuple[int, ...]
+
+    def mask(self, *, edge: bool = False) -> BoolArray:
+        """The pixels of the dips that count. A dip at an edge counts only when `edge` is true."""
+        keep = [
+            region
+            for shadow, region in zip(self.shadows, self.ids, strict=True)
+            if edge or not shadow.at_edge
+        ]
+        return np.asarray(np.isin(self.labels, keep), dtype=np.bool_)
+
+
+def locate_dips(
     fine: FloatArray,
     *,
     factor: int,
@@ -473,14 +526,14 @@ def find_shadows(
     edge_margin_px: float = EDGE_MARGIN_PX,
     smooth_sigma: float = 1.0,
     valid: BoolArray | None = None,
-) -> tuple[Shadow, ...]:
-    """The dips deeper than `min_depth` in a fine part, deepest first.
+) -> Dips:
+    """The dips deeper than `min_depth` in a fine part, deepest first, with the region of each.
 
     A light Gaussian of `smooth_sigma` binned pixels takes the noise down first. A dip is a
     connected region where the fine part lies below `1 - min_depth / 2`, and it counts when its
     deepest point is below `1 - min_depth`. `min_depth` is a fraction, or an image of fractions
     when the noise differs across the frame. `sensor_shape` is the shape of the sensor in pixels,
-    which tells how far a dip lies from an edge.
+    which tells how far a dip lies from an edge. To search for bright patches, give `2 - fine`.
     """
     deficit = 1.0 - _scipy.gaussian_filter(fine, smooth_sigma)
     if valid is not None:
@@ -489,7 +542,7 @@ def find_shadows(
     relative = deficit / depth  # 1 where a dip has the depth that the search needs
     labels, count = _scipy.label(relative > 0.5)
     if count == 0:
-        return ()
+        return Dips((), labels, ())
     inside = labels > 0
     label_ids = labels[inside]
     depth_values = deficit[inside]
@@ -506,7 +559,7 @@ def find_shadows(
     x_sum = np.bincount(kept_labels, weights=xs[half] * kept_depth, minlength=count + 1)
     y_sum = np.bincount(kept_labels, weights=ys[half] * kept_depth, minlength=count + 1)
     sensor_height, sensor_width = sensor_shape
-    shadows: list[Shadow] = []
+    found: list[tuple[Shadow, int]] = []
     for index in range(1, count + 1):
         if peak_relative[index] < 1.0 or area[index] == 0 or weight[index] <= 0:
             continue
@@ -516,17 +569,62 @@ def find_shadows(
         distance = min(
             x_sensor, sensor_width - 1 - x_sensor, y_sensor, sensor_height - 1 - y_sensor
         )
-        shadows.append(
-            Shadow(
-                x_px=round(x_sensor),
-                y_px=round(y_sensor),
-                depth=float(peak[index]),
-                width_px=2.0 * math.sqrt(area[index] / math.pi) * factor,
-                at_edge=distance < edge_margin_px,
-            )
+        shadow = Shadow(
+            x_px=round(x_sensor),
+            y_px=round(y_sensor),
+            depth=float(peak[index]),
+            width_px=2.0 * math.sqrt(area[index] / math.pi) * factor,
+            at_edge=distance < edge_margin_px,
         )
-    shadows.sort(key=lambda shadow: -shadow.depth)
-    return tuple(shadows)
+        found.append((shadow, index))
+    found.sort(key=lambda item: -item[0].depth)
+    return Dips(
+        shadows=tuple(shadow for shadow, _ in found),
+        labels=labels,
+        ids=tuple(index for _, index in found),
+    )
+
+
+def find_shadows(
+    fine: FloatArray,
+    *,
+    factor: int,
+    sensor_shape: tuple[int, int],
+    min_depth: float | FloatArray = SHADOW_MIN_DEPTH,
+    edge_margin_px: float = EDGE_MARGIN_PX,
+    smooth_sigma: float = 1.0,
+    valid: BoolArray | None = None,
+) -> tuple[Shadow, ...]:
+    """The dips deeper than `min_depth` in a fine part, deepest first. See `locate_dips`."""
+    return locate_dips(
+        fine,
+        factor=factor,
+        sensor_shape=sensor_shape,
+        min_depth=min_depth,
+        edge_margin_px=edge_margin_px,
+        smooth_sigma=smooth_sigma,
+        valid=valid,
+    ).shadows
+
+
+def shadow_search_depth(
+    fine: FloatArray,
+    *,
+    smooth_sigma: float = 1.0,
+    noise_scale: FloatArray | None = None,
+    valid: BoolArray | None = None,
+) -> tuple[float, float | FloatArray]:
+    """The depth that the search for shadows needs: 1%, or 5 times the noise when that is more.
+
+    The first value is the depth for a pixel of typical noise, and the second is what
+    `locate_dips` takes: that depth, or an image of depths when `noise_scale` says that the noise
+    differs across the frame (the noise of each binned pixel over the typical one).
+    """
+    noise = fine_noise(fine, smooth_sigma=smooth_sigma, valid=valid)
+    depth = max(SHADOW_MIN_DEPTH, SHADOW_NOISE_SIGMAS * noise)
+    if noise_scale is None:
+        return depth, depth
+    return depth, np.maximum(SHADOW_MIN_DEPTH, SHADOW_NOISE_SIGMAS * noise * noise_scale)
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,11 +664,9 @@ def summarize_flat(
     search for shadows needs 5 times the local noise there.
     """
     parts = decompose(flat_binned, center_xy=center_xy, high_pass_px=high_pass_px, valid=valid)
-    noise = fine_noise(parts.fine, smooth_sigma=smooth_sigma, valid=valid)
-    depth = max(SHADOW_MIN_DEPTH, SHADOW_NOISE_SIGMAS * noise)
-    depth_map: float | FloatArray = depth
-    if noise_scale is not None:
-        depth_map = np.maximum(SHADOW_MIN_DEPTH, SHADOW_NOISE_SIGMAS * noise * noise_scale)
+    depth, depth_map = shadow_search_depth(
+        parts.fine, smooth_sigma=smooth_sigma, noise_scale=noise_scale, valid=valid
+    )
     found = find_shadows(
         parts.fine,
         factor=factor,
@@ -683,22 +779,29 @@ def shadow_lines(
     *,
     depth: float = SHADOW_MIN_DEPTH,
     title: str = "Shadows",
+    relation: str = "deeper than",
+    measure: str = "depth",
     qualifier: str = "",
     none: str = "none",
 ) -> list[str]:
     """The lines that list the shadows (position, depth, and width), and count the ones left out.
 
     `depth` is the depth of the search. A depth above 1% means that the noise raised it, and the
-    heading says so. `qualifier` follows the depth in the heading.
+    heading says so. The heading reads `title`, `relation`, the depth, and a note in parentheses
+    (`qualifier` first, then the note about the noise), and a line gives the `measure` of a shadow
+    (its depth, or the excess of a bright patch).
     """
-    heading = f"{title} deeper than {100 * depth:.3g}%{qualifier}"
+    notes = [qualifier] if qualifier else []
     if depth > SHADOW_MIN_DEPTH * 1.001:
-        heading += " (the noise raises the search above 1%)"
+        notes.append("the noise raises the search above 1%")
+    heading = f"{title} {relation} {100 * depth:.3g}%"
+    if notes:
+        heading += f" ({'; '.join(notes)})"
     if not shadows:
         return [f"{heading}: {none}"]
     lines = [f"{heading}: {len(shadows)}"]
     lines.extend(
-        f"  x {shadow.x_px}, y {shadow.y_px}: depth {100 * shadow.depth:.1f}%, "
+        f"  x {shadow.x_px}, y {shadow.y_px}: {measure} {100 * shadow.depth:.1f}%, "
         f"width {shadow.width_px:.0f} px"
         for shadow in shadows[:MAX_LISTED_SHADOWS]
     )
@@ -718,7 +821,7 @@ def edge_artifact_lines(
         shadows,
         depth=depth,
         title="Edge artifacts",
-        qualifier=f" (center within {margin_px:.0f} px of an edge)",
+        qualifier=f"center within {margin_px:.0f} px of an edge",
     )
 
 

@@ -49,11 +49,16 @@ def write_flat(path: Path, flat: npt.NDArray[np.float32]) -> None:
 def read_flat_image(path: Path) -> npt.NDArray[np.float32]:
     """Read a flat file and return its image, scaled to a median of 1.
 
-    The result is the image that `[survey] flat_file` would give the pipeline.
+    The result is the image that `[survey] flat_file` would give the pipeline. A message of
+    `FlatFileError` names no path.
     """
     try:
         flat = load_flat(path)
     except SkyError as error:
+        cause = error.__cause__
+        if isinstance(cause, OSError):  # its text names the path, and this message must not
+            reason = cause.strerror or type(cause).__name__
+            raise FlatFileError(f"cannot read the flat file: {reason}") from None
         raise FlatFileError(str(error)) from None
     if not isinstance(flat, ArrayFlat):
         raise FlatFileError("the flat file is empty")

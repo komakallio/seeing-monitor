@@ -12,8 +12,8 @@ itself, with the driver of the `[services.acquire]` configuration, so stop `acqu
 process at a time can open the camera.
 
 `seeingmon flat make` combines frames of a lit panel into the master flat for `[survey] flat_file`,
-and `seeingmon flat build` builds a flat from the survey frames of the night sky. Both run offline
-(see `seeingmon.survey.flat_cli`).
+and `seeingmon flat build` builds a flat from the survey frames of the night sky, or updates a panel
+flat with what the sky shows (`--base-flat`). Both run offline (see `seeingmon.survey.flat_cli`).
 """
 
 from __future__ import annotations

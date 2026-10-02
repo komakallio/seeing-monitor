@@ -2,8 +2,9 @@
 
 `seeingmon flat make` combines frames of a lit panel into the master flat for `[survey] flat_file`
 (`seeingmon.survey.flat_make`). `seeingmon flat build` builds a flat from the survey frames of
-the night sky (`seeingmon.survey.flat_sky`). Both run offline, on one frame at a time, and print a
-plain-text report that names no path of the machine.
+the night sky (`seeingmon.survey.flat_sky`), or compares the sky with a panel flat and updates
+it (`--base-flat`, `seeingmon.survey.flat_base`). Both run offline, on one frame at a time, and
+print a plain-text report that names no path of the machine.
 
 This module only defines the arguments and reads the configuration. The handlers import the heavy
 modules when they run, so `seeingmon --help` stays fast.
@@ -176,7 +177,11 @@ def _register_build(commands: argparse._SubParsersAction[argparse.ArgumentParser
             "transparency is at least 0.95, and the sky level lies within 10% of the median. "
             "The Sun and the Moon come from [site] in the configuration. --accumulator keeps the "
             "sums in a file, so that a later run adds only the new frames. The command writes a "
-            "float32 image with a median of 1 and prints a report."
+            "float32 image with a median of 1 and prints a report. With --base-flat, a flat that "
+            "you took with a panel, the command divides the mean sky by it and reports what "
+            "changed: new shadows, a change of the vignetting of more than 1%, and the plane. It "
+            "writes nothing then, unless you add --update: the new flat is the base flat with the "
+            "changes that exceed their limits, and its tilt is always the tilt of the base flat."
         ),
     )
     build.add_argument(
@@ -185,7 +190,31 @@ def _register_build(commands: argparse._SubParsersAction[argparse.ArgumentParser
         type=Path,
         help="the folder with the survey frames (searched for FITS files, also in subfolders)",
     )
-    build.add_argument("--out", type=Path, help="the flat to write (.npy, or FITS: .fits)")
+    build.add_argument(
+        "--out",
+        type=Path,
+        help="the flat to write (.npy, or FITS: .fits). With --base-flat, give it with --update",
+    )
+    build.add_argument(
+        "--base-flat",
+        type=Path,
+        help="a flat that you took with a panel (.npy or FITS): the command divides the mean sky "
+        "by it and reports what changed. The tilt comes from this flat",
+    )
+    build.add_argument(
+        "--update",
+        action="store_true",
+        help="with --base-flat, write the base flat with the changes that the sky shows and that "
+        "exceed their limits (new shadows, bright patches, and a radial change of more than 1%%) "
+        "to --out. Without it, the command only reports",
+    )
+    build.add_argument(
+        "--radial-limit-percent",
+        type=float,
+        default=1.0,
+        help="with --base-flat, the change of the radial profile at one of the five radii that "
+        "the update takes from the sky (default 1)",
+    )
     build.add_argument(
         "--accumulator",
         type=Path,
@@ -420,12 +449,27 @@ def _build(args: argparse.Namespace) -> int:
     from seeingmon.scheduler.config import load_site
     from seeingmon.survey import flat_sky as fs
     from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary
-    from seeingmon.survey.flat_files import FlatFileError, write_flat
+    from seeingmon.survey.flat_files import FlatFileError, read_flat_image, write_flat
 
-    if args.out is None:
+    base_path = None if args.base_flat is None else Path(args.base_flat)
+    if args.update and base_path is None:
+        raise CliError("--update needs --base-flat, the flat to update", exit_code=2)
+    if base_path is not None and not args.update and args.out is not None:
+        raise CliError(
+            "without --update the command only reports: add --update, or leave out --out",
+            exit_code=2,
+        )
+    if args.out is None and (base_path is None or args.update):
         raise CliError("give --out, the flat to write", exit_code=2)
-    out = Path(args.out)
-    _check_output_name(out)
+    out = None if args.out is None else Path(args.out)
+    if out is not None:
+        _check_output_name(out)
+        if base_path is not None and out.resolve() == base_path.resolve():
+            raise CliError(
+                "--out names the base flat: write the new flat to another file, so that the "
+                "panel flat stays",
+                exit_code=2,
+            )
     if args.frames is None and args.accumulator is None:
         raise CliError(
             "give the folder of frames, or an accumulator that holds frames", exit_code=2
@@ -447,9 +491,16 @@ def _build(args: argparse.Namespace) -> int:
             sky_tolerance=args.sky_tolerance_percent / 100.0,
             min_exposure_s=args.min_exposure_s,
             accept_unchecked=args.accept_unchecked,
+            radial_limit=args.radial_limit_percent / 100.0,
         )
     except ValueError as exc:
         raise CliError(str(exc), exit_code=2) from None
+    base_flat = None
+    if base_path is not None:
+        try:
+            base_flat = read_flat_image(base_path)
+        except FlatFileError as exc:
+            raise CliError(str(exc)) from None
     context = _load_context(args)
     try:
         site = load_site(context.config)
@@ -474,13 +525,21 @@ def _build(args: argparse.Namespace) -> int:
             options=options,
             clock=SystemClock(),
             progress=progress,
+            base_flat=base_flat,
+            update=args.update,
         )
-        try:
-            write_flat(out, result.flat)
-        except FlatFileError as exc:
-            raise CliError(str(exc)) from None
+        if out is not None:
+            try:
+                write_flat(out, result.flat)
+            except FlatFileError as exc:
+                raise CliError(str(exc)) from None
     except fs.SkyFlatError as exc:
         raise CliError(str(exc)) from None
-    for line in fs.format_sky_report(result, name=out.name):
+    report = fs.format_sky_report(
+        result,
+        name=None if out is None else out.name,
+        base_name=None if base_path is None else base_path.name,
+    )
+    for line in report:
         print(line)
     return 0
