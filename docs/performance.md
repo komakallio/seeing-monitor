@@ -349,6 +349,23 @@ The architecture keeps Rust (PyO3) as the replacement for the per-frame metrics 
 
 The number that flips the decision is a Pi 4 run in which the fast path (the `fastpath` case, without the receive) takes more than 25% of a core. That is 2.55 ms per frame in bin1 at 98 fps, and 0.69 ms per frame in bin2 at 360 fps. It takes a Pi 4 that runs 30 to 97 times slower than the dev machine in bin1, and 7 to 28 times slower in bin2 (the ranges cover the six runs), against the 5 to 11 times that the estimate assumes. The `calibration` ratios of a Pi 4 run show which side to expect. With the receive, bin2 at 360 fps is the first row to reach the limit: it takes a Pi 4 that runs 5 to 13 times slower than the dev machine, against the 5 to 11 times that the estimate assumes, so this is the row to read first in a Pi 4 run.
 
+## Results on a Raspberry Pi 5
+
+A temporary Pi 5 (Cortex-A76, 4 cores, 8 GB, Debian 13, Python 3.13) ran the harness on October 2, 2026, with the services stopped and the machine 0 to 5% busy (`seeingmon perf run --label pi5 --quiet-wait 120`, about 7 minutes). The Pi 5 is not the final machine. **Do not read the "Pi 4 (estimate)" column of `seeingmon perf report --budgets` for this run.** That column applies the scaling from a fast x86-64 dev machine (`seeingmon.perf.scaling`), and a Pi 5 is not that machine. Raspberry Pi's own Geekbench 6 figures put a Pi 5 about 2.4 times ahead of a Pi 4 for one core and 2.2 times for four cores (the Pi 4 scores 340 and 723, the Pi 5 774 and 1,604; [benchmarking Raspberry Pi 5](https://www.raspberrypi.com/news/benchmarking-raspberry-pi-5/)), so a Pi 4 figure is roughly 2.2 to 2.4 times the Pi 5 figure for CPU-bound work. That is an estimate too, until a Pi 4 runs.
+
+| Figure | Pi 5, measured | Pi 4, about 2.2 to 2.4 times that |
+|---|---|---|
+| `acquire` without the camera, bin1 at 98 fps | 130 µs a frame, 1.28% of a core | 2.8 to 3.1% (limit 10%) |
+| Fast path, bin1 | 49 µs a frame, 0.47% | 1.0 to 1.1% (limit 25%) |
+| Fast path and receive in `core`, bin1, measured in the whole system | 1.79% | 3.9 to 4.3% (limit 25%) |
+| Fast path and receive, bin2 64 × 64 at 360 fps | 2.58% | 5.7 to 6.2% (limit 25%) |
+| Kernel, 128 × 128 | 34 µs | 75 to 82 µs |
+| Survey frame, bin2 | 1.42 s (detection 0.85 s, sky quality 0.51 s) | 3.1 to 3.4 s |
+| Survey worker, peak memory | 444 MB (limit 550 MB) | the same, within tens of percent |
+| All processes in the whole system, sum of the peaks | 1,117 MB, with the simulator in `acquire` | the same (budget 1.4 GB, gate 1.6 GB) |
+
+On this estimate every CPU budget passes with a wide margin, including the `acquire` row that the dev-machine scaling called marginal or failing. The memory rows stay near their budgets, because memory does not scale with the clock. The camera on the Pi streamed bin1 at 82.1 fps with a jitter of 0.01 to 0.03 ms and no drops (`docs/hardware-checks.md`).
+
 ## Measure on a Pi 4
 
 The Pi 4 measurement stays blocked (blocker B2), because no Pi 4 was available while the harness was built. You run these commands on the Pi, and you copy one JSON file back. The report holds no host name, user name, or serial number.
