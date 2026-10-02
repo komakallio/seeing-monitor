@@ -439,7 +439,7 @@ class FakeCoreClient:
 
     def _settle_dark(self) -> None:
         """Let the dark task follow the clock, and apply what it does to the scheduler."""
-        for change in self.dark.settle(paused=self._state == "paused"):
+        for change in self.dark.settle(state=self._state):
             self._transition(change.state, change.reason)
 
     def status(self) -> CoreStatus:
@@ -523,7 +523,7 @@ class FakeCoreClient:
                 task_id=task_id,
             )
         if isinstance(command, QueueDark):
-            accepted, reason, message = self.dark.submit(command, self._next_task_id)
+            accepted, reason, message = self.dark.submit(command, self._next_task_id, self._state)
             if not accepted:
                 assert reason is not None
                 return self._reject(reason, message)

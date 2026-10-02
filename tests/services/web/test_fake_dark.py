@@ -8,7 +8,14 @@ from __future__ import annotations
 import pytest
 
 from seeingmon.clock import VirtualClock
-from seeingmon.scheduler.commands import Pause, QueueDark, RejectReason, Resume
+from seeingmon.scheduler.commands import (
+    Pause,
+    QueueDark,
+    RejectReason,
+    Resume,
+    StartAlignment,
+    StopAlignment,
+)
 from seeingmon.services.web.contract import DarkModelView
 from seeingmon.services.web.core_client import CoreUnavailableError, FakeCoreClient
 from seeingmon.services.web.fake_dark import DarkScript
@@ -261,9 +268,13 @@ def test_a_paused_scheduler_holds_the_task_until_it_resumes(
     core: FakeCoreClient, clock: VirtualClock
 ) -> None:
     core.submit(Pause())
-    assert core.submit(QueueDark()).accepted
+    answer = core.submit(QueueDark())
+    assert answer.accepted
+    assert answer.message == "The scheduler is paused. The dark session starts after you resume it."
     clock.advance(600)
-    assert core.dark_library().task.state == "queued"
+    held = core.dark_library().task
+    assert held.state == "queued"
+    assert held.message == "The scheduler is paused. The dark session starts after you resume it."
     core.submit(Resume())
     clock.advance(4.9)
     assert core.dark_library().task.state == "queued"  # the queue time counts from the resume
@@ -317,3 +328,20 @@ def test_a_wait_for_the_cover_that_is_long_enough_does_not_fail(
     core.submit(QueueDark(wait_for_cover_timeout_s=600.0))
     clock.advance(60)
     assert core.dark_library().task.state == "ok"
+
+
+def test_a_running_alignment_holds_the_task_until_it_ends(
+    core: FakeCoreClient, clock: VirtualClock
+) -> None:
+    core.submit(StartAlignment())
+    answer = core.submit(QueueDark())
+    assert answer.accepted
+    assert answer.message == "The alignment helper runs. The dark session starts after it ends."
+    clock.advance(600)
+    held = core.dark_library().task
+    assert held.state == "queued"
+    assert held.message == "The alignment helper runs. The dark session starts after it ends."
+    core.submit(StopAlignment())  # the scheduler goes back to safe
+    clock.advance(SCRIPT.queued_s + 0.1)
+    assert core.dark_library().task.state == "running"
+    assert core.dark_library().task.message.startswith("Bias frame")

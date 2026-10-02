@@ -46,6 +46,12 @@ COVER_FRACTION = 2 / 3  # the part of the cover phase before the camera counts a
 UNCOVERED_LEVEL_DN = 2412.5
 COVERED_LEVEL_DN = 11.8
 NOT_DARK_REASON = "the median is 2400 counts above the expected level"
+# A task runs only in `safe` or `auto`. In these states of the scheduler, it waits.
+HOLD_MESSAGES = {
+    "paused": "The scheduler is paused. The dark session starts after you resume it.",
+    "align": "The alignment helper runs. The dark session starts after it ends.",
+}
+WAIT_MESSAGE = "Waiting for the next step of the scheduler."
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +116,7 @@ class DarkSimulator:
         self.model = model
         self.status_override: DarkStatusView | None = None
         self._run: _Run | None = None
+        self._held_by: str | None = None  # the state of the scheduler that holds a queued task
 
     # --- The library -----------------------------------------------------------------------
 
@@ -180,7 +187,9 @@ class DarkSimulator:
         """Whether a task waits for its turn, which counts as a queued task of the scheduler."""
         return self.active and self._run is not None and not self._run.started
 
-    def submit(self, command: QueueDark, task_id: int) -> tuple[bool, RejectReason | None, str]:
+    def submit(
+        self, command: QueueDark, task_id: int, state: str = "auto"
+    ) -> tuple[bool, RejectReason | None, str]:
         """Check a command, and queue the task. Returns whether it was accepted, and why not."""
         if self.active:
             return False, RejectReason.BUSY, "a dark session is already queued or running"
@@ -218,7 +227,11 @@ class DarkSimulator:
             submitted_ns=self._clock.monotonic_ns(),
             submitted_utc_ns=self._clock.utc_ns(),
         )
-        return True, None, "the dark session is queued and starts at the next step"
+        return (
+            True,
+            None,
+            HOLD_MESSAGES.get(state, "the dark session is queued and starts at the next step"),
+        )
 
     def abort(self) -> bool:
         """End a queued or running task as `aborted`. Returns whether there was one."""
@@ -230,16 +243,17 @@ class DarkSimulator:
         run.finished_utc_ns = self._clock.utc_ns()
         return True
 
-    def settle(self, *, paused: bool = False) -> list[Transition]:
+    def settle(self, *, state: str = "auto") -> list[Transition]:
         """Move the task to where the clock puts it. Returns the changes of the scheduler.
 
-        A paused scheduler runs nothing, so a task that waits for its turn keeps waiting, and its
-        queue time starts again when the scheduler resumes.
+        `state` is the state of the scheduler. A paused scheduler and a running alignment hold a
+        task that waits for its turn, and its queue time starts again when they let go.
         """
         run = self._run
         if run is None or run.outcome is not None:
             return []
-        if paused and not run.started:
+        self._held_by = state if state in HOLD_MESSAGES else None
+        if self._held_by is not None and not run.started:
             run.submitted_ns = self._clock.monotonic_ns()
             return []
         changes: list[Transition] = []
@@ -274,12 +288,10 @@ class DarkSimulator:
                 set_name=run.set_name,
                 finished_utc=None if finished is None else utc_ns_to_iso(finished, digits=0),
             )
-        seconds = self._seconds_running(run)
-        if seconds < 0:
-            return self._view(
-                run, state="queued", message="Waiting for the next step of the scheduler."
-            )
-        return self._running(run, seconds)
+        if not run.started:
+            message = HOLD_MESSAGES.get(self._held_by or "", WAIT_MESSAGE)
+            return self._view(run, state="queued", message=message)
+        return self._running(run, self._seconds_running(run))
 
     # --- Inside ----------------------------------------------------------------------------
 
