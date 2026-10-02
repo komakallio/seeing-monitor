@@ -74,3 +74,9 @@ def test_the_driver_overrides_a_stale_camera(
     asi_api: AsiApi, asi_driver: AsiDriver, local_config: Config
 ) -> None:
     print(checks.check_stale_controls_are_overridden(asi_api, asi_driver, local_config.profile))
+
+
+def test_the_high_speed_flag_takes_effect_in_every_order(
+    asi_driver: AsiDriver, local_config: Config
+) -> None:
+    print(checks.check_high_speed_follows_the_flag(asi_driver, local_config.profile))

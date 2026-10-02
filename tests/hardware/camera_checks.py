@@ -10,6 +10,7 @@ camera that does not work, and it does not tune one.
 from __future__ import annotations
 
 import statistics
+from dataclasses import replace
 from itertools import pairwise
 
 from seeingmon.drivers.asi import AsiDriver
@@ -19,6 +20,23 @@ from seeingmon.hardware.asi.api import AsiApi, AsiControl
 from seeingmon.profile import Profile
 
 FRAME_TIMEOUT_S = 5.0
+
+# The sequence that showed the defect on the bench: n128 / h128 / h8_128 / h128 / n128 / n8_128 /
+# n128. Each step is a label, the high-speed flag, and the pixel format, at 128 x 128 pixels (n is
+# the normal flag, h is the high-speed flag, and 8 is RAW8; the others are RAW16). The second and
+# the fifth step change the flag alone, which the camera ignores unless the driver changes the
+# image format with it.
+HIGH_SPEED_SEQUENCE: tuple[tuple[str, bool, PixelFormat], ...] = (
+    ("n128", False, PixelFormat.RAW16),
+    ("h128", True, PixelFormat.RAW16),
+    ("h8_128", True, PixelFormat.RAW8),
+    ("h128", True, PixelFormat.RAW16),
+    ("n128", False, PixelFormat.RAW16),
+    ("n8_128", False, PixelFormat.RAW8),
+    ("n128", False, PixelFormat.RAW16),
+)
+SEQUENCE_SETTLE_FRAMES = 3  # frames that a step reads before it measures
+REGIME_AGREEMENT = 0.05  # the steps of one regime agree in their frame period within this much
 
 
 def fast_config(profile: Profile, roi: Roi | None = None) -> StreamConfig:
@@ -238,4 +256,67 @@ def check_stale_controls_are_overridden(api: AsiApi, driver: AsiDriver, profile:
         f"driver applied bandwidth 100, flip 0, offset {active.config.offset}, and normal speed, "
         f"and the stream ran at {fps:.1f} fps (the profile predicts {1 / expected_s:.1f}); the "
         "camera is back as it was"
+    )
+
+
+def check_high_speed_follows_the_flag(
+    driver: AsiDriver, profile: Profile, *, frames: int = 40
+) -> str:
+    """A change of the high-speed flag changes the readout regime of the camera, in every order.
+
+    The ASI294MM takes up the flag only at the first ROI format after it opens and when the image
+    format changes. A driver that sets the flag alone leaves the camera in the old regime: the frame
+    rate is off by 20 to 25%, the ADC depth is another, and the camera reports no error. The check
+    runs the bench sequence (`HIGH_SPEED_SEQUENCE`) on the fast stream of the profile, takes the
+    median frame period of each step, and asserts that the steps of one regime agree and that the
+    high-speed steps are faster than the normal ones by about what the profile predicts. It needs
+    no number of the profile but that ratio, so it works before the profile holds measured timing.
+    The camera is back as it was at the end.
+    """
+    mode = profile.fast_readout
+    if not mode.has_high_speed:
+        return "the fast readout mode of the profile has no high-speed variant: nothing to check"
+    base = fast_config(profile)
+    assert base.roi is not None
+    rows, exposure_us = base.roi.height, base.exposure_us
+    predicted = profile.frame_period_s(
+        mode.high_speed_variant(), rows, exposure_us
+    ) / profile.frame_period_s(mode, rows, exposure_us)
+    if predicted > 0.95:
+        return "the profile predicts under 5% between the regimes: nothing to tell them apart by"
+    driver.open()
+    saved = driver.save_settings()
+    try:
+        steps: list[tuple[str, bool, float]] = []
+        for label, high_speed, pixel_format in HIGH_SPEED_SEQUENCE:
+            driver.configure(replace(base, high_speed=high_speed, pixel_format=pixel_format))
+            driver.start()
+            received = [
+                driver.read_frame(FRAME_TIMEOUT_S) for _ in range(SEQUENCE_SETTLE_FRAMES + frames)
+            ]
+            driver.stop()
+            arrivals = [frame.t_arrival_ns for frame in received[SEQUENCE_SETTLE_FRAMES:]]
+            period_s = statistics.median((b - a) / 1e9 for a, b in pairwise(arrivals))
+            steps.append((label, high_speed, period_s))
+    finally:
+        problems = driver.restore_settings(saved)
+    assert not problems, f"the camera could not be restored: {problems}"
+    normal_s = statistics.median(period for _, high_speed, period in steps if not high_speed)
+    fast_s = statistics.median(period for _, high_speed, period in steps if high_speed)
+    listing = ", ".join(f"{label} {1 / period:.1f}" for label, _, period in steps)
+    for number, (label, high_speed, period_s) in enumerate(steps, start=1):
+        regime_s = fast_s if high_speed else normal_s
+        assert abs(period_s / regime_s - 1.0) < REGIME_AGREEMENT, (
+            f"step {number} ({label}) ran at {1 / period_s:.1f} fps, and the median of its regime "
+            f"is {1 / regime_s:.1f} fps: the camera did not take up the flag that the step asked "
+            f"for. The steps ran at {listing} fps."
+        )
+    assert fast_s < normal_s * (1.0 + predicted) / 2.0, (
+        f"the high-speed steps ran at {1 / fast_s:.1f} fps and the normal steps at "
+        f"{1 / normal_s:.1f}: the camera shows no difference between the regimes, and the profile "
+        f"predicts {1 / predicted:.2f} times the rate. The steps ran at {listing} fps."
+    )
+    return (
+        f"{listing} fps; the high-speed regime runs {normal_s / fast_s:.2f} times as fast as the "
+        f"normal one (the profile predicts {1 / predicted:.2f}); the camera is back as it was"
     )
