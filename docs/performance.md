@@ -1,10 +1,12 @@
 # Performance
 
-The architecture sets a performance gate for a Raspberry Pi 4 (see [architecture.md](architecture.md), "Processes, data rates, and storage"). This page describes the harness that measures the gate on a development machine, the results of a run, the Pi 4 estimate that follows from them, and the commands that measure it on a Pi 4. No Pi 4 was available while the harness was built (blocker B2), so every Pi 4 figure on this page is an estimate. The estimate states its assumptions, and a run on a Pi 4 replaces it.
+The architecture sets a performance gate for a Raspberry Pi 4 (see [architecture.md](architecture.md), "Processes, data rates, and storage"). This page describes the harness that measures the gate on a development machine, the results of a run, the Pi 4 estimate that follows from them, and the commands that measure it on a Pi 4. A Raspberry Pi 4 with 2 GB ran the harness and the installed system on October 3, 2026, and [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4) gives the measured figures. The Pi 4 columns of the older tables stay as the estimate that this run replaced.
 
 ## Summary
 
-On the estimate, the per-frame analysis fits its budget with a wide margin, and so does the receive in `core` since the services lane batched the stream. `acquire` is the one row of the CPU budgets that fails in all six runs. The memory is the open question: the peaks that the whole-system run measures put the estimate across the 1.4 GB budget.
+**Measured on a Pi 4 with 2 GB (October 3, 2026): every budget passes.** The sum of the peaks of all processes is 895 MB against the budget of 1.4 GB. The installed system with the real camera used at most 1,053 MiB of the 1,844 MiB, and a 45-minute simulated run at most 1,155 MiB, so 2 GB of RAM is enough (see [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4)). The rest of this summary and the tables below show the estimate from the dev machine that the run replaced.
+
+On the estimate before the Pi 4 run, the per-frame analysis fits its budget with a wide margin, and so does the receive in `core` since the services lane batched the stream. `acquire` is the one row of the CPU budgets that fails in all six runs. The memory is the open question: the peaks that the whole-system run measures put the estimate across the 1.4 GB budget.
 
 | Budget | Limit | Dev machine | Pi 4 (estimate) | Verdict | Verdict in the six runs |
 |---|---|---|---|---|---|
@@ -32,7 +34,7 @@ The `core-sim` case (see [The whole-system case](#the-whole-system-case)) measur
 - **The fast path has room.** One bin1 frame takes 26 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 19 µs of that. The Pi 4 estimate for the kernel (0.10 to 0.21 ms) agrees with the architecture's 0.2 to 0.4 ms.
 - **The stream between the processes was the risk, and it has changed.** At commit `0a764af`, the production code of `acquire` spent 0.69 ms of CPU on a frame, and `core` spent 0.41 ms on receiving it. At 360 frames per second, the receive alone cost an estimated 93 to 146% of a Pi 4 core. The costs belonged to each message and each frame, not to the bytes. The services lane then cut the per-message work (commits `0db406c` to `80acdcc`): `core` asks for batches, and `acquire` holds a fast stream for 60 ms and sends its frames as one message, so a batch costs one wake-up. Now `acquire` spends 0.35 ms of CPU on a frame (0.32 to 0.37 ms over the three Linux runs), and `core` spends 0.09 ms on the receive (0.07 to 0.11 ms). The receive in bin2 at 360 frames per second takes 28 µs a frame, 1.0% of a core. The estimate for `acquire` is 12 to 24% of a Pi 4 core, still over its budget of 10%: the capture thread takes 235 of the 348 µs, and the work alone gives 10 to 16%. The receive with the fast path is within the 25% budget: 7.5 to 13% in bin1 and 12 to 21% in bin2 on the estimate, and 13 to 21% in bin1 in the whole system. The camera is not the cause of the `acquire` figure: the fake camera of the tests adds about 3 µs to a call (see [What the camera adds](#what-the-camera-adds)).
 - **The survey path has room in time and little in memory.** A bin2 frame takes 1.0 s on the dev machine (1.0 to 1.3 s over the three Linux runs), including 0.31 s for the sky quality step, and the worker peaks at 452 MB in the `survey` case and at 444 MB in the whole system.
-- **Two gigabytes of memory is not settled.** The estimate with a stand-in of 200 MB for `core` passes both limits. In the whole system, `core` peaks at 307 MB on Linux, and the estimated peak of all processes is 783 to 1,476 MB, which straddles the 1.4 GB budget and stays under the 1.6 GB gate. The range crosses the gate too when `acquire` counts with the simulator inside it (950 to 1,786 MB), and the true figure for `acquire` lies between the two. A run on a Pi 4 decides it (see [Memory](#memory)).
+- **Two gigabytes of memory was not settled on the estimate, and the Pi 4 run settled it (see [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4)).** The estimate with a stand-in of 200 MB for `core` passes both limits. In the whole system, `core` peaks at 307 MB on Linux, and the estimated peak of all processes is 783 to 1,476 MB, which straddles the 1.4 GB budget and stays under the 1.6 GB gate. The range crosses the gate too when `acquire` counts with the simulator inside it (950 to 1,786 MB), and the true figure for `acquire` lies between the two. A run on a Pi 4 decides it (see [Memory](#memory)).
 - **Rust for the per-frame metrics is not indicated** (see [The Rust decision](#the-rust-decision)).
 
 ## What the harness measures
@@ -308,7 +310,7 @@ In every run, the factor that the architecture implies overlaps the range of the
 
 ## Memory
 
-The harness adds the peaks of the processes on the dev machine, multiplies the sum by the `memory` range, and adds the share of the operating system. The `core-sim` case measures the peaks of `core`, the survey worker, and `web` in the running system, and the budgets read them in place of the stand-ins that the first version of the page used. The table shows the Linux run at commit `b2e1f93` (a run with another system active, see [The whole system](#the-whole-system)).
+A run on a Pi 4 replaced the estimates of this section (see [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4)). The harness adds the peaks of the processes on the dev machine, multiplies the sum by the `memory` range, and adds the share of the operating system. The `core-sim` case measures the peaks of `core`, the survey worker, and `web` in the running system, and the budgets read them in place of the stand-ins that the first version of the page used. The table shows the Linux run at commit `b2e1f93` (a run with another system active, see [The whole system](#the-whole-system)).
 
 | Process | Dev machine peak (MB) | Pi 4 estimate (MB) |
 |---|---|---|
@@ -366,9 +368,47 @@ A temporary Pi 5 (Cortex-A76, 4 cores, 8 GB, Debian 13, Python 3.13) ran the har
 
 On this estimate every CPU budget passes with a wide margin, including the `acquire` row that the dev-machine scaling called marginal or failing. The memory rows stay near their budgets, because memory does not scale with the clock. The camera on the Pi streamed bin1 at 82.1 fps with a jitter of 0.01 to 0.03 ms and no drops (`docs/hardware-checks.md`).
 
+## Results on a Raspberry Pi 4
+
+A Raspberry Pi 4 Model B (Cortex-A72, 4 cores, 2 GB of RAM of which 1,844 MiB are usable, Debian 13, kernel 6.18, Python 3.13, zram swap, an 8 GB card, and a ZWO ASI294MM on a USB 3 port) ran the harness on October 3, 2026, with the services stopped, the governor on `performance`, and the machine 0 to 1% busy (`seeingmon perf run --label pi4 --quiet-wait 120`, 8 minutes). A report with the label `pi4` compares its figures with the limits directly. The first run read `vcgencmd get_throttled` as 0x50000 (the board had seen under-voltage and throttling since it powered up), so a second run followed after a reboot, with 0x0 before and after. The two runs agree within 2%, and the table gives the second.
+
+| Budget | Limit | Pi 4, measured | Estimate from the Pi 5 (2.2 to 2.4 times) | Verdict |
+|---|---|---|---|---|
+| `acquire` without the camera, bin1 at 98 fps | 10% of a core | 3.10% | 2.8 to 3.1% | pass |
+| Fast path, bin1 at 98 fps | 25% | 1.84% | 1.0 to 1.1% | pass |
+| Fast path and receive in `core`, bin1, in the whole system | 25% | 7.95% | 3.9 to 4.3% | pass |
+| Fast path, bin2 64 × 64 at 360 fps | 25% | 6.27% | | pass |
+| Fast path and receive, bin2 64 × 64 at 360 fps | 25% | 9.11% | 5.7 to 6.2% | pass |
+| Kernel, 128 × 128 | | 132 µs | 75 to 82 µs | |
+| Survey frame, bin2 | 180 s | 4.49 s (detection 2.68 s, sky quality 1.50 s) | 3.1 to 3.4 s | pass (not a gate) |
+| Survey worker, peak memory | 550 MB | 440 MB | the same | pass |
+| All processes, sum of the peaks, with `acquire` from the `ipc` case | 1.4 GB, gate 1.6 GB | 895 MB | the same | pass |
+
+The Pi 4 ran 2.4 to 4.4 times slower than the Pi 5 on the CPU rows (3.1 times on the survey frame), more than the 2.2 to 2.4 times of Raspberry Pi's Geekbench figures, because small NumPy and Python work scales worse than Geekbench does. Every budget still passes by a factor of 2.7 or more.
+
+**Memory.** Three measurements bound it:
+
+- **The `core-sim` case.** `core` peaks at 312 MB, the survey worker at 439 MB, `web` at 75 MB, and the resource tracker at 12 MB. With the simulator in `acquire` (290 MB), the peaks sum to 1,128 MB. The budget row reads `acquire` from the `ipc` case (56 MB), and it gives 895 MB.
+- **The installed system on the real camera.** It ran for 7 minutes in `auto`, and every survey step ran (the camera saw a room, so the plate solver had no stars). The three services held at most 1,008 MB of resident memory together (`acquire` 275 MB, `core` and the worker 441 MB, and `web` 71 MB). The machine used at most 1,053 MiB, and at least 791 MiB stayed available.
+- **A 45-minute run of the whole system on the full sensor** (`seeingmon dev`, with the catalog and the matching sky: 18,477 frames, 15 survey steps, no dropped frame, no fault, and no warning). The processes held at most 992 MB at once, the machine used at most 1,155 MiB of the 1,844 MiB, and at least 689 MiB stayed available. `core` reached 365 MB in the first quarter of the run and held it, so nothing leaks over 45 minutes. The zram swap stayed empty, and the kernel killed no process.
+
+2 GB of RAM is enough. The worst moment used 63% of the memory and left 689 MiB, and every peak sits below the budget of 1.4 GB. The kernel reserves 512 MB of contiguous memory (CMA) on this image, and the figures include it.
+
+**What the run found.**
+
+- The kernel of Raspberry Pi OS leaves the memory cgroup off: `/sys/fs/cgroup/cgroup.controllers` listed no `memory`, so the `MemoryMax` limits of the units were not enforced. The kernel command line needs `cgroup_enable=memory cgroup_memory=1`. The installer warns now, and the runbook has the step. The units also set `MemorySwapMax=0`, so that a unit that passes its limit is killed and restarted and does not swap to zram.
+- The first survey exposure after a start timed out twice (`no frame within 0.6 s`) on the real camera. The first recovery step, `restart_capture`, fixed it, and the `camera` component read `degraded` until ten good frames had cleared it, which took 7 minutes at the survey cadence. Later steps never timed out.
+- The simulator cannot act as the camera on a Pi 4 with the default read margin of 0.5 s, because it renders a full frame inside the read. The scheduler then counts camera faults and stays in `safe`. Set `read_timeout_margin_s = 20.0` under `[services.acquire]` and `[scheduler.loop]`, as the harness and `seeingmon dev` do.
+
+**The camera.** `seeingmon camera rates` on the USB 3 port of the Pi 4 gave the rates of the Windows machine and the Pi 5: 82.1 fps for bin1 128 × 128, 102.9 fps in high-speed mode, and 415.8 fps for bin2 64 × 64 at 0.5 ms, with a jitter of 0.01 to 0.04 ms and no dropped frame in 34 rows. The timing fit matches the profile to 0.0%.
+
+**The plate solver.** `solve-field` 0.97 with the cap index (five files, 3.2 MB) solved six synthetic fields from the real catalog (the pole 0 to 2.5 degrees off the axis, any roll, 150 stars each) in 0.34 to 0.61 s each, with a center error of 0.04 to 0.22 arcsec and the scale within 0.01%. Its peak resident size was 30 MB.
+
+**What the Pi 4 runs do not show.** A real sky (stars through the detector and the solver), a night of running, a data partition on a card of the final size (the 8 GB test card has 2 GB free), the heater HAT, and the fast mode of the real camera under the full scheduler.
+
 ## Measure on a Pi 4
 
-The Pi 4 measurement stays blocked (blocker B2), because no Pi 4 was available while the harness was built. You run these commands on the Pi, and you copy one JSON file back. The report holds no host name, user name, or serial number.
+The Pi 4 measurement ran on October 3, 2026 (see above). These steps repeat it on another Pi 4, or after a change. You run these commands on the Pi, and you copy one JSON file back. The report holds no host name, user name, or serial number.
 
 1. Install the packages, and clone the repository. Raspberry Pi OS Lite (64-bit) with Python 3.11 or 3.13 works. An editable install lets the report name the commit.
 
