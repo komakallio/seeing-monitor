@@ -46,7 +46,10 @@ RuntimeDirectoryPreserve=yes
 # The out-of-memory killer takes the survey worker of core first, then web, then core, and
 # acquire last, because a restart of acquire costs the camera session.
 OOMScoreAdjust=-500
+# MemorySwapMax=0 makes MemoryMax a hard limit. Without it, a unit that passes the limit swaps to zram, which
+# keeps the compressed pages in RAM, and the limit never stops a leak.
 MemoryMax=20%
+MemorySwapMax=0
 
 # acquire never sees the data directory.
 InaccessiblePaths=@DATA_DIR@

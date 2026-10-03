@@ -59,6 +59,7 @@ StateDirectoryMode=0700
 # the highest score in this unit.
 OOMScoreAdjust=-200
 MemoryMax=75%
+MemorySwapMax=0
 
 # core is the only unit that writes to the data directory.
 ReadWritePaths=@DATA_DIR@

@@ -54,6 +54,7 @@ RuntimeDirectoryPreserve=yes
 # web holds no state, so the out-of-memory killer takes it before core or acquire.
 OOMScoreAdjust=100
 MemoryMax=15%
+MemorySwapMax=0
 
 # web has no camera access and no write access to the data directory.
 PrivateDevices=yes
