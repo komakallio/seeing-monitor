@@ -79,10 +79,10 @@ Five restarts of one unit within 10 minutes make systemd give up (`StartLimitAct
 
 ## Open items from the images lane
 
-The survey frames and previews work end to end on a simulated night. The three small follow-ups are done (`afa236c` to `206d71d`): retention keeps the preview of every FITS file that it keeps, `[store.retention] survey_max_gb` (4.0) and `previews_max_gb` (1.0) cap the two folders (the oldest files go first, the one frame of each night goes last, and a file from the last 15 minutes never goes), and `ram_frames` is 1, which frees 47 MB. These items remain:
+The survey frames and previews work end to end on a simulated night. The three small follow-ups are done (`afa236c` to `206d71d`): retention keeps the preview of every FITS file that it keeps, `[store.retention] survey_max_gb` (4.0) and `previews_max_gb` (1.0) cap the two folders (the oldest files go first, the one frame of each night goes last, and a file from the last 15 minutes never goes), and `ram_frames` was set to 1, which a Pi 4 showed to lose the files of every short frame (the result of the short frame of a step comes back only after the long exposure that follows it), so the default is 2 again (`ram_frames = 2`, 47 MB at bin2). These items remain:
 
 1. **The four caps and the quota.** The caps of the bursts, the metrics, the survey frames, and the previews (2 + 2 + 4 + 1 GB) plus the database can exceed the quota of 8 GB (25% of a 32 GB card). When all of them fill up, the quota deletes the oldest metrics first. Accept that, lower `survey_max_gb`, or use a larger partition. The rule that the one frame of each night goes last holds for the two new caps only: the quota and the low-space rule still delete the oldest files first, keepers included.
-2. **One frame in RAM.** A frame gets no files when its analysis outlasts the wait for the next frame (30 s after the short frame, a fast period after the long one). The log warns, and the records still reach the store. If a Pi logs this, set `ram_frames = 2`.
+2. **Two frames in RAM.** A frame still gets no files when its analysis outlasts the wait for the frame after next. The log warns, and the records still reach the store. Nothing reads the second frame yet: `web` cannot see the memory of `core`.
 3. **The thresholds** (a cloud fraction of 0.5, a bright sky at half of saturation, one event frame an hour, every tenth frame) wait for a real sky.
 4. **`astropy` is a new import in `core`** (22 MB), and the unit's `MemoryMax` is provisional.
 

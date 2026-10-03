@@ -4,8 +4,9 @@ The survey path turns each frame into records and then forgets the pixels. `Surv
 the survey analyzer of `core` (it is a `SurveyAnalyzer` itself, as `NightlySummary` is) and keeps
 what an operator and a later reanalysis want to see:
 
-- **RAM.** `submit` keeps the frame in a ring of `ram_frames` frames (one by default, 23 MB at
-  bin2). The ring holds a frame until the analysis has returned its result and the files are
+- **RAM.** `submit` keeps the frame in a ring of `ram_frames` frames (two by default, 47 MB at
+  bin2: the result of the short frame of a step comes back only after the long frame has
+  arrived). The ring holds a frame until the analysis has returned its result and the files are
   written, and it keeps the newest frames after that. It never copies a frame, and it never holds
   more than `ram_frames` of them, so the memory of `core` stays within its budget. A frame that
   falls out of the ring first gets no files. Nothing reads the frames that stay after their files

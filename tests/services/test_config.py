@@ -176,7 +176,7 @@ class TestSurveyFrameSettings:
     def test_the_defaults_follow_the_architecture(self, tmp_path: Path) -> None:
         settings = load(tmp_path).core.survey_frames
         assert settings.enabled is True
-        assert settings.ram_frames == 1  # one frame stays in RAM until its files are written
+        assert settings.ram_frames == 2  # the short frame of a step waits in RAM for the long frame
         assert settings.keep_every == 10  # every tenth long frame goes to disk
         assert settings.preview_max_pixels == 1_000_000  # a preview of up to 1 megapixel
         assert settings.fits_compression == "rice"

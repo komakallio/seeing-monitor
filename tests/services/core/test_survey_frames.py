@@ -363,14 +363,14 @@ class TestTheRing:
         assert all(a is b for a, b in zip(held, reversed(frames[2:]), strict=True))
         assert built.frames.ram_frames == 3
 
-    def test_the_ring_holds_one_frame_by_default(self, tmp_path: Path, profile: Profile) -> None:
+    def test_the_ring_holds_two_frames_by_default(self, tmp_path: Path, profile: Profile) -> None:
         built = build(tmp_path, profile)
         frames = [make_survey_frame(step) for step in range(3)]
         for frame in frames:
             built.frames.submit(frame)
-        (held,) = built.frames.recent_frames()
-        assert held is frames[-1]
-        assert built.frames.ram_frames == 1
+        held = built.frames.recent_frames()
+        assert [id(f) for f in held] == [id(frames[-1]), id(frames[-2])]
+        assert built.frames.ram_frames == 2
 
     def test_the_size_of_the_ring_is_a_setting(self, tmp_path: Path, profile: Profile) -> None:
         built = build(tmp_path, profile, ram_frames=2)

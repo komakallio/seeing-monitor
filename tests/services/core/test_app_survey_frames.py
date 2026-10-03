@@ -177,9 +177,14 @@ class TestTheWriterThread:
                 waited.wait(0.1)
             assert list(layout.survey_dir.rglob("*.fits"))
             assert "core-frames" in rig.app._threads
-            refs = [r.image_ref for r in survey_frames(rig) if r.image_ref]
-            assert refs
-            assert all(layout.resolve(ref).is_file() for ref in refs)
+            ok = False
+            for _ in range(100):  # a record has its reference while the writer writes the file
+                refs = [r.image_ref for r in survey_frames(rig) if r.image_ref]
+                ok = bool(refs) and all(layout.resolve(ref).is_file() for ref in refs)
+                if ok:
+                    break
+                waited.wait(0.1)
+            assert ok
         finally:
             rig.app.request_stop("a test")
             thread.join(60.0)
