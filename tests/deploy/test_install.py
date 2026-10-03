@@ -581,6 +581,94 @@ def test_a_tmp_that_is_not_a_tmpfs_is_a_warning(rig: Rig) -> None:
     assert "systemctl enable tmp.mount" in result.stderr
 
 
+# --- The memory cgroup --------------------------------------------------------------------------
+
+MEMORY_CGROUP_WARNING = "the kernel has no memory cgroup"
+BOOT_LINE = "console=serial0,115200 console=tty1 root=PARTUUID=00000000-02 rootwait\n"
+
+
+def test_a_kernel_without_the_memory_cgroup_is_a_warning_and_the_run_finishes(rig: Rig) -> None:
+    rig.write_controllers("cpuset cpu io pids\n")  # the list of Raspberry Pi OS, without memory
+    result = rig.install()
+    assert result.returncode == 0, result.output
+    for text in (
+        MEMORY_CGROUP_WARNING + ", so the MemoryMax limits of the units are not enforced",
+        "only the out-of-memory killer of the whole system protects the Pi",
+        "The units set OOMScoreAdjust, so that killer takes web before core, "
+        "and core before acquire",
+        "add cgroup_enable=memory cgroup_memory=1 to the end of the single line of "
+        "/boot/firmware/cmdline.txt (/boot/cmdline.txt on an old image that mounts the boot "
+        "partition at /boot), and reboot",
+        "The installer never edits the boot files",
+        "The runbook has the steps",
+    ):
+        assert text in result.stderr, text
+    assert MEMORY_CGROUP_WARNING in result.stdout  # the summary repeats it
+    assert "Summary" in result.stdout
+    assert "[restart] [seeingmon.target]" in rig.calls("systemctl")
+    assert rig.link("current") == f"releases/{release_id(rig)}"
+
+
+@pytest.mark.parametrize("text", ["cpuset cpu io pids\n", "\n", "", "cpu nomemory memory2 pids\n"])
+def test_a_list_of_controllers_without_memory_is_a_warning(rig: Rig, text: str) -> None:
+    rig.write_controllers(text)
+    result = rig.install()
+    assert result.returncode == 0, result.output
+    assert MEMORY_CGROUP_WARNING in result.stderr
+    assert "the kernel has the memory cgroup" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "cpuset cpu io memory pids\n",  # the list of Raspberry Pi OS with the memory cgroup on
+        "cpuset cpu io memory hugetlb pids rdma misc\n",
+        "memory\n",
+        "cpu memory",
+    ],
+)
+def test_a_kernel_with_the_memory_cgroup_needs_no_warning(rig: Rig, text: str) -> None:
+    rig.write_controllers(text)
+    result = rig.install()
+    assert result.returncode == 0, result.output
+    assert MEMORY_CGROUP_WARNING not in result.output
+    assert "the kernel has the memory cgroup, so systemd enforces" in result.stdout
+
+
+def test_a_system_without_the_controllers_file_skips_the_check(rig: Rig) -> None:
+    result = rig.install()  # the rig has no controllers file, as on a system without cgroup v2
+    assert result.returncode == 0, result.output
+    assert "skipped the check for the memory cgroup" in result.stdout
+    assert str(rig.system_root / "sys/fs/cgroup/cgroup.controllers") in result.stdout
+    assert MEMORY_CGROUP_WARNING not in result.output
+    assert "the kernel has the memory cgroup" not in result.stdout
+
+
+def test_the_memory_cgroup_warning_returns_until_the_kernel_has_the_controller(rig: Rig) -> None:
+    controllers = rig.write_controllers("cpuset cpu io pids\n")
+    assert MEMORY_CGROUP_WARNING in rig.install().stderr
+    again = rig.install()  # nothing else changed, and the warning stays
+    assert "Nothing changed" in again.stdout
+    assert MEMORY_CGROUP_WARNING in again.stderr
+    controllers.write_text("cpuset cpu io memory pids\n", encoding="utf-8", newline="\n")
+    after_the_reboot = rig.install()
+    assert after_the_reboot.returncode == 0, after_the_reboot.output
+    assert MEMORY_CGROUP_WARNING not in after_the_reboot.output
+
+
+def test_the_installer_never_edits_the_boot_files(rig: Rig) -> None:
+    rig.write_controllers("cpuset cpu io pids\n")
+    boot = rig.system_root / "boot" / "firmware"
+    boot.mkdir(parents=True)
+    (boot / "cmdline.txt").write_text(BOOT_LINE, encoding="utf-8", newline="\n")
+    result = rig.install()
+    assert result.returncode == 0, result.output
+    assert MEMORY_CGROUP_WARNING in result.stderr
+    assert (boot / "cmdline.txt").read_text(encoding="utf-8") == BOOT_LINE
+    assert sorted(path.name for path in boot.iterdir()) == ["cmdline.txt"]
+    assert sorted(path.name for path in (rig.system_root / "boot").iterdir()) == ["firmware"]
+
+
 def test_the_usb_buffer_setting_follows_the_option(rig: Rig) -> None:
     result = rig.install("--usbfs-memory-mb", "400")
     assert result.returncode == 0, result.output

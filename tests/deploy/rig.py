@@ -187,6 +187,17 @@ class Rig:
     def etc(self, relative: str) -> Path:
         return self.system_root / "etc" / relative
 
+    def write_controllers(self, text: str) -> Path:
+        """Write the list of cgroup controllers that the installer reads from the system root.
+
+        A new rig has no such file, as on a system without cgroup v2, so the installer skips
+        its check for the memory cgroup.
+        """
+        path = self.system_root / "sys" / "fs" / "cgroup" / "cgroup.controllers"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return path
+
     def values(self) -> dict[str, str]:
         """The values that the installer fills into the templates, for the parameters above."""
         return {

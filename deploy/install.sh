@@ -63,7 +63,10 @@ Optional parameters:
   --supervisor-actions let the service user restart the seeingmon units and reboot the Pi, for
                        the last steps of the camera recovery ladder. It adds a polkit rule.
   --system-root DIR    put every system file (units, udev rules, and so on) under DIR. For tests
-                       and for an image that you mounted. The installer still runs its commands.
+                       and for an image that you mounted. The installer still runs its commands,
+                       and it reads the kernel's list of cgroup controllers from
+                       DIR/sys/fs/cgroup/cgroup.controllers (it skips that check when the file is
+                       missing).
   --dry-run            print the plan, and change nothing.
   -h, --help           print this text.
 EOF
@@ -293,6 +296,7 @@ JOURNALD_FILE=$SYSTEM_ROOT/etc/systemd/journald.conf.d/seeingmon.conf
 CHRONY_CONF=$SYSTEM_ROOT/etc/chrony/chrony.conf
 CHRONY_FILE=$SYSTEM_ROOT$CHRONY_DROPIN_DIR/seeingmon.conf
 POLKIT_FILE=$SYSTEM_ROOT/etc/polkit-1/rules.d/50-seeingmon.rules
+CGROUP_CONTROLLERS=$SYSTEM_ROOT/sys/fs/cgroup/cgroup.controllers
 
 TIME_SOURCE_LINES=''
 for time_source in "${TIME_SOURCES[@]}"; do
@@ -818,6 +822,27 @@ prune_releases() {
 
 # --- Step 10: apply the changes --------------------------------------------------------------------
 
+# The units set MemoryMax=, and systemd applies it through the memory controller of cgroup v2. The
+# kernel of Raspberry Pi OS leaves that controller off until the kernel command line turns it on.
+# Without it, systemd ignores MemoryMax=, and only the out-of-memory killer of the whole system
+# protects the Pi. The installer never edits the boot files: it warns, and you edit them.
+check_memory_cgroup() {
+  local controllers
+  if [ ! -f "$CGROUP_CONTROLLERS" ]; then
+    say "skipped the check for the memory cgroup: there is no $CGROUP_CONTROLLERS (cgroup v2 is not mounted here)"
+    return 0
+  fi
+  controllers=$(cat -- "$CGROUP_CONTROLLERS" 2>/dev/null || true)
+  case " ${controllers//$'\n'/ } " in
+    *" memory "*)
+      say "the kernel has the memory cgroup, so systemd enforces the MemoryMax limits of the units"
+      ;;
+    *)
+      warn "the kernel has no memory cgroup, so the MemoryMax limits of the units are not enforced, and only the out-of-memory killer of the whole system protects the Pi. The units set OOMScoreAdjust, so that killer takes web before core, and core before acquire. To turn the memory cgroup on, add cgroup_enable=memory cgroup_memory=1 to the end of the single line of /boot/firmware/cmdline.txt (/boot/cmdline.txt on an old image that mounts the boot partition at /boot), and reboot. The installer never edits the boot files. The runbook has the steps."
+      ;;
+  esac
+}
+
 apply_system_changes() {
   local value
   if [ "$UNITS_CHANGED" -eq 1 ]; then
@@ -836,6 +861,7 @@ apply_system_changes() {
   else
     warn "the USB buffer size is ${value:-unknown} MB and not $USBFS_MEMORY_MB MB. A reboot may be needed. If it is still wrong after the reboot, add usbcore.usbfs_memory_mb=$USBFS_MEMORY_MB to /boot/firmware/cmdline.txt, as the file $TMPFILES_FILE says."
   fi
+  check_memory_cgroup
   if [ "$JOURNALD_CHANGED" -eq 1 ]; then
     systemctl restart systemd-journald
   fi
