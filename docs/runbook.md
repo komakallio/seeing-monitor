@@ -66,14 +66,33 @@ You need:
    sudo systemctl disable --now dphys-swapfile      # only if swapon lists a file on the card
    ```
 
-6. Make `/tmp` a tmpfs. The services then write their temporary files to RAM:
+6. Turn on the memory cgroup of the kernel. The three units limit their memory with `MemoryMax`, and systemd enforces that limit through the memory controller of the kernel's control groups (cgroup v2). The kernel of Raspberry Pi OS leaves the memory controller off until the kernel command line turns it on. Without it, systemd silently ignores `MemoryMax`, and only the out-of-memory killer of the whole system protects the Pi. Check the controllers:
+
+   ```bash
+   cat /sys/fs/cgroup/cgroup.controllers             # must list memory
+   ```
+
+   If the list has no `memory`, add two parameters to the single line of the kernel command line. Keep a backup, and keep the file to one line:
+
+   ```bash
+   sudo cp /boot/firmware/cmdline.txt /boot/firmware/cmdline.txt.bak
+   sudo sed -i '1 s/$/ cgroup_enable=memory cgroup_memory=1/' /boot/firmware/cmdline.txt
+   cat /boot/firmware/cmdline.txt                    # one line, with the two parameters at its end
+   sudo systemctl reboot
+   ```
+
+   An old image that mounts the boot partition at `/boot` keeps the file at `/boot/cmdline.txt`. If the Pi does not boot, put the card in another computer, and copy `cmdline.txt.bak` over `cmdline.txt`.
+
+   After the reboot, `cat /sys/fs/cgroup/cgroup.controllers` must list `memory`. After the install, while the units run, `systemctl show seeingmon-core -p MemoryCurrent` must print a number (see [First start and checks](#first-start-and-checks)). The installer reads the controllers file and warns when `memory` is missing, and it never edits the boot files.
+
+7. Make `/tmp` a tmpfs. The services then write their temporary files to RAM:
 
    ```bash
    findmnt -n -o FSTYPE /tmp                         # prints tmpfs when it is already one
    sudo systemctl enable tmp.mount                   # otherwise, then reboot
    ```
 
-7. Make the heater default to off at boot, before Linux starts. Add one line to `/boot/firmware/config.txt` for the GPIO pin of the heater output, and use `dh` instead of `dl` for a relay that switches on a low level. This line is untested, and the HAT is undecided (blocker B3):
+8. Make the heater default to off at boot, before Linux starts. Add one line to `/boot/firmware/config.txt` for the GPIO pin of the heater output, and use `dh` instead of `dl` for a relay that switches on a low level. This line is untested, and the HAT is undecided (blocker B3):
 
    ```text
    gpio=<pin>=op,dl
@@ -200,6 +219,7 @@ Then confirm, one by one:
 
 - **The camera.** `lsusb -d 03c3:` lists it (03c3 is the USB vendor ID of ZWO). `ls -l /dev/bus/usb/*/*` shows the device node with the group of the service user and the mode `crw-rw----`.
 - **The USB buffer.** `cat /sys/module/usbcore/parameters/usbfs_memory_mb` prints the size that you asked for (1000 by default). If it does not, reboot. If it is still wrong, add `usbcore.usbfs_memory_mb=1000` to the single line of `/boot/firmware/cmdline.txt`, and reboot.
+- **The memory limits.** While the units run, `systemctl show seeingmon-core -p MemoryCurrent` prints a number of bytes. If it prints `MemoryCurrent=[not set]`, the kernel has no memory cgroup, and systemd does not apply `MemoryMax`. Turn the memory cgroup on as [Prepare the Pi](#prepare-the-pi) describes, and reboot.
 - **The sandbox.** `systemd-analyze security seeingmon-core.service` prints an exposure level. The deploy lane measured about 2.5 for `acquire` and `core` and 1.9 for `web` on a development machine.
 - **Time.** See [Time sync](#time-sync).
 - **Health.** See [Check the health](#check-the-health).
@@ -937,6 +957,7 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | `core` fails to start, and the log says that `catalog_path` is not set. | `[survey] catalog_path` is empty in the local configuration. | Build the catalog and set the path (see [Prepare your files](#prepare-your-files)), then run the installer again. |
 | No camera appears. | The udev rule did not apply, or the SDK path is wrong. | `lsusb -d 03c3:`. `ls -l /dev/bus/usb/*/*` must show the service group. `cat <config-dir>/sdk.env` must name an existing library. |
 | Frames drop, or the stream breaks on large frames. | The USB buffer is too small. | `cat /sys/module/usbcore/parameters/usbfs_memory_mb`, and see [First start and checks](#first-start-and-checks). |
+| A unit grows past its `MemoryMax`, and nothing stops it. Or the installer warns that the kernel has no memory cgroup. | The kernel of Raspberry Pi OS has the memory controller off, so systemd does not apply `MemoryMax`. A running unit shows `MemoryCurrent=[not set]`. | `cat /sys/fs/cgroup/cgroup.controllers` must list `memory`. If it does not, add `cgroup_enable=memory cgroup_memory=1` to the single line of `/boot/firmware/cmdline.txt`, and reboot (see the memory cgroup step of [Prepare the Pi](#prepare-the-pi)). |
 | Records carry `time_invalid`. | chrony has no synchronized source. | See [Time sync](#time-sync). |
 | The health endpoint answers 503. | A component failed, or `core` wrote no health record for three minutes. | Read the `reasons` in the answer, then `systemctl status seeingmon.target` and the log of `core`. |
 | The UI is not reachable from the LAN. | `bind_address` is still the loopback address. | Set the LAN address in `[web]` of the local configuration, and run the installer again. |
