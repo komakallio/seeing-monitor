@@ -59,7 +59,7 @@ You need:
    python3 --version
    ```
 
-5. Turn swap off on the SD card, so that the out-of-memory killer, and not the card, absorbs a memory peak:
+5. Keep swap off the SD card, so that the out-of-memory killer, and not the card, absorbs a memory peak. Raspberry Pi OS based on Debian 13 swaps to zram (compressed RAM) by default: `swapon --show` then lists `/dev/zram0` and no file on the card, and you need no action. If `swapon --show` lists a file on the card, such as `/var/swap`, turn that swap off:
 
    ```bash
    swapon --show
