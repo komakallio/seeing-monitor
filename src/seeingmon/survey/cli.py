@@ -1,4 +1,4 @@
-"""The survey commands: `seeingmon catalog`, `seeingmon dark`, and `seeingmon flat`.
+"""The survey commands: `catalog`, `dark`, `flat`, and `pointing`.
 
 `seeingmon catalog build` queries the Gaia archive and VizieR for the stars around the north
 celestial pole, writes the cap catalog, and, when the astrometry.net tool
@@ -14,6 +14,10 @@ process at a time can open the camera.
 `seeingmon flat make` combines frames of a lit panel into the master flat for `[survey] flat_file`,
 and `seeingmon flat build` builds a flat from the survey frames of the night sky, or updates a panel
 flat with what the sky shows (`--base-flat`). Both run offline (see `seeingmon.survey.flat_cli`).
+
+`seeingmon pointing set-reference` saves the newest good pointing solution of the store as the
+reference solution for the offset of the Pointing card, and `seeingmon pointing show` prints it (see
+`seeingmon.survey.pointing_cli`).
 """
 
 from __future__ import annotations
@@ -33,8 +37,10 @@ if TYPE_CHECKING:
 
 def register(subparsers: Subparsers) -> None:
     from seeingmon.survey.flat_cli import register_flat
+    from seeingmon.survey.pointing_cli import register_pointing
 
     register_flat(subparsers)
+    register_pointing(subparsers)
     parser = add_command(
         subparsers,
         "catalog",

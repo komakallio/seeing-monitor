@@ -9,8 +9,9 @@ any other time, and it describes how far the mount has moved by comparing two so
   @ rot_z(-ERA(t))`.
 - `PointingSolution.polaris_pixel(t)` projects the apparent place of Polaris through it.
 - `offset_between` returns the boresight offset in arcminutes and the roll change in degrees.
-- `ReferenceSolution` is a solution with an ID, saved as JSON at commissioning, and later
-  solutions flag a move against it.
+- `ReferenceSolution` is a solution with an ID, saved as JSON, and later solutions flag a move
+  against it. `seeingmon pointing set-reference` makes the file from a stored record
+  (`seeingmon.survey.reference`), and `[survey.pointing] reference_file` names it.
 - `build_pointing_record` makes the `PointingRecord` of a fit, or the record of a failed solve.
 
 **The attitude in the record.** `PointingRecord.attitude` holds nine numbers, row by row: the

@@ -16,7 +16,8 @@ fits the SQM-LE offset at commissioning. `seeingmon flat make` (`seeingmon.surve
 builds the master flat from frames of a lit panel, `seeingmon flat build`
 (`seeingmon.survey.flat_sky`) builds one from the night sky, `seeingmon.survey.flat_base` compares
 the sky with a panel flat and updates it, and `seeingmon.survey.flat_report` measures what a flat
-looks like.
+looks like. `seeingmon pointing set-reference` (`seeingmon.survey.reference`) saves a stored
+pointing solution as the reference solution for the offset of the Pointing card.
 
 Import the submodules you need. The package imports nothing at start-up, so the command-line
 entry point stays fast.
