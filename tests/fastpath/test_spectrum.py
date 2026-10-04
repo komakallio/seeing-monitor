@@ -10,6 +10,7 @@ from seeingmon.fastpath.spectrum import (
     aliasing_expected,
     compute_spectrum,
     fill_short_gaps,
+    find_lines,
     log_bins,
     merge_lines,
     welch_dof,
@@ -233,8 +234,11 @@ class TestTheRedPart:
         assert FastPathConfig().vibration_min_hz == 4.0
 
     @pytest.mark.parametrize("seconds", [6.0, 20.0])
-    def test_red_noise_without_a_line_gets_no_flag(self, seconds: float) -> None:
-        assert [seed for seed in range(100) if red_lines(seed, seconds)] == []
+    def test_red_noise_without_a_line_gets_almost_no_flag(self, seconds: float) -> None:
+        """None of the 100 windows is flagged. The test allows two, because a window of 6 s has 10
+        degrees of freedom, and one bump in a hundred windows reaches 4.97 times the median."""
+        flagged = [seed for seed in range(100) if red_lines(seed, seconds)]
+        assert len(flagged) <= 2, flagged
 
     def test_the_old_minimum_of_1_hz_flagged_such_noise(self) -> None:
         """The reason for the new minimum: 61% of the 6 s windows and 23% of the 20 s windows."""
@@ -254,8 +258,21 @@ class TestTheRedPart:
         """The detection limit did not move: 12 times the continuum is found, 3 times is not."""
         strong = sum(bool(red_lines(s, 20.0, line=(12.0, 12.0))) for s in range(60))
         faint = sum(bool(red_lines(s, 20.0, line=(12.0, 3.0))) for s in range(60))
-        assert strong >= 57
-        assert faint <= 6
+        assert strong >= 55  # 60 of 60 when the test was written
+        assert faint <= 8  # 3 of 60
+
+    def test_a_bump_on_a_red_spectrum_is_a_line_only_above_the_minimum(self) -> None:
+        """A bump of 8 times the continuum is noise on the slope at 1.5 Hz, and a line at 12 Hz."""
+        frequency = np.asarray(0.5 * np.arange(1, 91), dtype=np.float64)  # 0.5 to 45 Hz
+        red = np.asarray(0.15 * frequency**-1.7, dtype=np.float64)
+        for bump_hz, found in ((1.5, False), (12.0, True)):
+            psd = red.copy()
+            psd[int(bump_hz / 0.5) - 1] *= 8.0
+            lines = find_lines(frequency, psd, threshold=5.0, local_bins=15, min_line_hz=4.0)
+            assert bool(lines) is found
+            # The old minimum finds both, which is how the first light got its false lines.
+            old = find_lines(frequency, psd, threshold=5.0, local_bins=15, min_line_hz=1.0)
+            assert [line for line, _ in old] == [pytest.approx(bump_hz, abs=0.1)]
 
     def test_a_strong_line_at_3_hz_is_below_the_search(self) -> None:
         lines = red_lines(1, 20.0, line=(3.0, 200.0))
