@@ -68,7 +68,9 @@ moved_arcmin = 5.0
 moved_roll_deg = 0.5
 tracker_min_stars = 8
 tracker_max_rms_px = 1.5
-reference_file = ""         # The JSON reference solution that commissioning saves.
+# The JSON reference solution that `seeingmon pointing set-reference` saves, which core loads at
+# start. Empty means no reference: the offset of the Pointing card stays empty.
+reference_file = ""
 
 # Calls to the plate solvers.
 [survey.solve]

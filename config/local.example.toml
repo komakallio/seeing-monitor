@@ -87,6 +87,12 @@ token_hash = "<hash of the API token>"
 # solve_field_command = "solve-field"
 # astap_command = "<path to the ASTAP command-line program>"
 # astap_database_dir = "<path to the ASTAP star database folder>"
+#
+# The Pointing card measures the offset from a reference solution. After you align the camera, run
+# `seeingmon pointing set-reference`. It saves the latest good pointing solution, and it prints
+# this table with the path of the file. Restart core to load it.
+# [survey.pointing]
+# reference_file = "<path to the pointing reference file>"
 
 # Local connections between the acquire, core, and web processes. The processes prove that they
 # hold the same key before they talk, so every installation needs one. Generate it with

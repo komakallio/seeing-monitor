@@ -533,6 +533,8 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 | `seeingmon hardware sqm` | Reads the SQM-LE once from the source that `[sqm]` names (the unit over TCP, or the readings in InfluxDB), and prints the magnitude, the temperature, and the age of the reading. | Read-only, and it needs no camera. It ignores `enabled`. The wrapper does not load `seeingmon.env`, so a variable that `token_env` names must be in the environment of the command (see [Check the settings](#check-the-settings)). |
 | `seeingmon replay <source>` | Runs a SER recording through the production fast analysis at the original rate, at the maximum rate, or at a speed factor. `core` reads the file itself, and it needs no camera. | Also `POST /api/v1/commands/replay` (token required). The source is the name of a recording in the `[replay] recordings_dir` folder, or of a burst under `bursts/` of the data directory. The replay writes its own store to `replays/` of the data directory, which retention does not manage. |
 | `seeingmon recordings info <path>` | Prints the geometry, the frame count, and the timing of a recording. | Read-only. |
+| `seeingmon pointing set-reference` | Saves the newest good pointing solution of the store as the reference solution, and prints the line to add to `[survey.pointing]`. | It opens the store read-only, so it is safe while `core` runs. Restart `core` afterwards. See [Save the pointing reference](#save-the-pointing-reference). |
+| `seeingmon pointing show` | Prints a reference file and, with `--data-dir`, the offset of the newest stored solution from it. | Read-only. |
 | `seeingmon profile show` | Prints the hardware profile with its derived values. | Read-only. |
 | `seeingmon store info <database>` | Prints the counts, the last row IDs, and the sink cursors of a store. | Read-only. The database of the station is `<data-dir>/db/results.sqlite`. |
 
@@ -804,6 +806,51 @@ A light smoothing takes the noise out of a shadow that the update takes from the
 
 Set `flat_file` in the `[survey]` table of `local/config.toml` to the path of the file on the Pi, and restart `core`. A unit flat stays the default until you do. The `sky_quality` records then carry `provenance.flat` with the name of the flat. Without a panel flat, the tilt of the optics, about 1% at the frame edges, stays in your sky quality values.
 
+## Save the pointing reference
+
+The **Pointing** card shows how far the camera has moved from a reference solution: a pointing solution that you save once, after you align the camera. Until you save one, the large value of the card stays empty, and its note says "no reference solution". With a reference, each `pointing` record carries `offset_arcmin` (the angle between the boresight of the record and the boresight of the reference) and `reference_id`. A record gets the `moved` flag when the offset exceeds `moved_arcmin` (5 arcminutes) or the roll changed by more than `moved_roll_deg` (0.5 degrees), both in `[survey.pointing]`. The reference is not the target of the **Align** page, which stays your setting in `[alignment]`.
+
+### When to run it
+
+Run the command when the camera is aligned: the **Align** page shows Polaris on the aim, you pressed **Stop alignment**, and `core` has solved a few survey frames, so the **Pointing** card shows a solution with hundreds of matched stars. Run it again, with `--force`, after you move the camera on purpose. A reference from before the move makes every later record say that the camera moved.
+
+### Run it
+
+```bash
+seeingmon pointing set-reference --data-dir <data folder>
+```
+
+On a Pi, run the wrapper of [Commissioning commands](#commissioning-commands): `sudo /opt/seeingmon/bin/seeingmon pointing set-reference`. It reads the data directory from the configuration, so it needs no `--data-dir`.
+
+The command opens the store read-only, so it is safe while `core` runs. It takes the newest `pointing` record that has a solution, at least 100 matched stars (`--min-matched`), a finite residual, and no `time_invalid` flag, and that is at most 60 minutes old (`--max-age-min`). When no record fits, it exits with status 1 and one line that says why.
+
+It writes `pointing-reference.json` to the calibration folder (`calibration_dir` in `[survey]`, or `calibration/` in the data directory). `--out` names another file. When `[survey.pointing] reference_file` names a file, that file is the default instead. The command refuses to replace a file that exists, unless you add `--force`, and it writes the file in one step. The file holds the attitude of the camera in an Earth-fixed frame, so the offset does not depend on the time of day. The command prints a summary of the solution and the lines to add (the numbers are made up):
+
+```text
+Saved the pointing reference.
+reference ID          reference-20261004T183852Z
+solution time         2026-10-04T18:38:52Z (21 min ago)
+matched stars         412
+residual              0.85 arcsec rms
+roll                  25.00 degrees
+plate scale           3.820 arcsec/px in bin2
+center from the pole  0.400 degrees
+file                  <calibration folder>/pointing-reference.json
+
+Add this to local/config.toml, then restart core to load the reference:
+
+[survey.pointing]
+reference_file = "<calibration folder>/pointing-reference.json"
+```
+
+Check that the solution time is recent and that the center from the pole is small, as it is when the pole sits on the aim at the middle of the frame. The roll is the position angle of the direction to the pole in the image, from image up toward image left.
+
+### Use it
+
+Add the lines to `local/config.toml`, and restart `core`. `core` loads the file once, when it starts. On a Pi, run `sudo systemctl restart seeingmon-core`. On the dev machine, stop `seeingmon dev` with Ctrl+C and start it again. The **Pointing** card shows the offset from the first survey frame that the plate solver solves after the restart. When `reference_file` already names the file that the command wrote, the command says so, and you only restart `core`.
+
+`core` ignores a `reference_file` that names no file, and it logs no error, so the card keeps its note. To check the file that the configuration names, run `seeingmon pointing show`. It prints the same summary as the command, and it says when the file does not exist. With `--data-dir <data folder>`, it also prints the offset of the newest stored solution from the reference.
+
 ## First light on the dev machine
 
 `seeingmon dev --driver asi --real-sky --data-dir <data folder>` runs `acquire`, `core`, and `web` on the dev machine against the real sky: your camera in real time, the real star catalog, a real plate solver, and your site. It is the first test of the survey path on real stars, and it needs no Raspberry Pi. It is a development run and not an install: no systemd unit runs, and no sink, heater, SQM-LE reader, or power route takes part.
@@ -879,7 +926,7 @@ Apart from the address of the web UI, the banner prints no coordinate, no path, 
 
 ### Point the camera and align it
 
-Open the **Align** page, enter the token when the page asks for it, and press **Start alignment**. The camera streams bin2 frames of 0.5 s at gain 120, and the page shows the newest one. The first quick solve has no pointing to start from, so it detects the stars and runs a plate solver, which takes a few seconds. When it succeeds, the pole card replaces "Waiting for a solution." with a sentence that tells you how to move the camera in altitude and in azimuth (it uses `[site]`), the orbit sentence says whether the circle of Polaris fits in the frame, and the **Solution and frame** card lists the matched stars and the residual. Move the mount until the pole sits on the aim, check the focus bar, and press **Stop alignment**, so that the camera goes back to measuring. In daylight the frames saturate, and the page shows a saturation warning. When the quick solve fails, the offset card gives the reason, such as too few stars for a solver or a solver that found no solution. The text of the page may change until you approve its look (blocker B8).
+Open the **Align** page, enter the token when the page asks for it, and press **Start alignment**. The camera streams bin2 frames of 0.5 s at gain 120, and the page shows the newest one. The first quick solve has no pointing to start from, so it detects the stars and runs a plate solver, which takes a few seconds. When it succeeds, the pole card replaces "Waiting for a solution." with a sentence that tells you how to move the camera in altitude and in azimuth (it uses `[site]`), the orbit sentence says whether the circle of Polaris fits in the frame, and the **Solution and frame** card lists the matched stars and the residual. Move the mount until the pole sits on the aim, check the focus bar, and press **Stop alignment**, so that the camera goes back to measuring. In daylight the frames saturate, and the page shows a saturation warning. When the quick solve fails, the offset card gives the reason, such as too few stars for a solver or a solver that found no solution. When the pole sits on the aim and the **Pointing** card shows a solution, save the pointing reference (see [Save the pointing reference](#save-the-pointing-reference)). The text of the page may change until you approve its look (blocker B8).
 
 ### Watch the night start
 
@@ -891,7 +938,7 @@ Open the **Align** page, enter the token when the page asks for it, and press **
 | After the first solution | The scheduler starts the fast stream with the ROI on Polaris. The first seeing window closes after 20 s. | The **Seeing** card |
 | Every 3 minutes | The survey step repeats. The tracker solves each frame from the last solution, so the log shows a solver run only when the tracker loses the field. | `core.log`, and the **Pointing** card |
 
-The warning event `scheduler.solve_requested` at the start is expected, and it comes again after a lost star. It does not mean a fault. The **Pointing** card shows the roll, the matched stars, the residual of the solution, the focus value, the plate scale (3.82 arcsec per pixel in bin2), and the solver. Its large value, the offset from the target, stays empty with the note "no reference solution", because nothing has saved a reference solution yet. The **Sky brightness** card needs at least 8 measurable stars for the zero point, and its records carry the `dark_due` flag until the library holds a set near the sensor temperature (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)). Transparency needs 20 clear zero points of history, so it stays empty at first. These are the expected results from the design and the synthetic tests, and the first night shows what a real sky does to them.
+The warning event `scheduler.solve_requested` at the start is expected, and it comes again after a lost star. It does not mean a fault. The **Pointing** card shows the roll, the matched stars, the residual of the solution, the focus value, the plate scale (3.82 arcsec per pixel in bin2), and the solver. Its large value, the offset from the reference solution, stays empty with the note "no reference solution" until you save a reference (see [Save the pointing reference](#save-the-pointing-reference)). The **Sky brightness** card needs at least 8 measurable stars for the zero point, and its records carry the `dark_due` flag until the library holds a set near the sensor temperature (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)). Transparency needs 20 clear zero points of history, so it stays empty at first. These are the expected results from the design and the synthetic tests, and the first night shows what a real sky does to them.
 
 ### Read the logs
 
@@ -940,6 +987,7 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | The frames show only "only N stars for a solver". | The detector finds fewer than 4 stars: a cover on the camera, clouds, or a bad focus. The 1 ms frame of each survey step shows this line by design, because it holds only the brightest stars. | Look at the 30 s frame, at the frame on the Align page, and at the focus bar. |
 | The state stays `safe`, and no survey frame runs. | The Sun is above -3 degrees at your `[site]`, or the measured sky brightness gate holds the scheduler. | Check the **System** card and the latest events. Check that the values of `[site]` are your own. |
 | The launcher ends with `acquire exited` and the end of its log. | The vendor library or the camera is not available. | Check `--asi-library` and `SEEINGMON_ASI__LIBRARY_PATH`, close other camera software, and see [Windows](hardware-checks.md#windows). |
+| The **Pointing** card still says "no reference solution" after you saved a reference. | You did not restart the run, or `[survey.pointing] reference_file` names no file, which `core` ignores without an error. | Run `seeingmon pointing show`, fix the path, and start the run again (see [Save the pointing reference](#save-the-pointing-reference)). |
 
 ## Troubleshooting
 
