@@ -11,6 +11,9 @@ declarations. This module adds what the REST API adds to a record, and the page 
   mean of a bucket is not whole. `n_samples` tells how many records a bucket combines.
 - Each also has a `...Page` component: `items` and `next_cursor`, with the range that the page
   answers.
+
+`polaris_components` adds the component `PolarisState`, the state of a frame of the live video of
+Polaris, with the components that it holds.
 """
 
 from __future__ import annotations
@@ -18,7 +21,10 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from pydantic.json_schema import models_json_schema
+
 from seeingmon.records.api_schema import api_schema, schema_name
+from seeingmon.services.web.contract import PolarisState
 from seeingmon.services.web.data import SETTING_FIELDS
 
 SERVED_RECORD_TYPES = ("seeing_window", "sky_quality", "pointing", "event")
@@ -111,3 +117,17 @@ def json_response(name: str, description: str) -> dict[str, Any]:
         "description": description,
         "content": {"application/json": {"schema": component_ref(name)}},
     }
+
+
+def polaris_components() -> dict[str, Any]:
+    """The component schemas of the state of a frame of the video of Polaris, and of its parts.
+
+    No route returns the state as its body, because it travels in the WebSocket and in the header
+    `X-Frame-State` of the polled frame. The document still describes it, so a client has the
+    names and the units of every field.
+    """
+    _, definitions = models_json_schema(
+        [(PolarisState, "serialization")], ref_template="#/components/schemas/{model}"
+    )
+    components: dict[str, Any] = definitions["$defs"]
+    return components

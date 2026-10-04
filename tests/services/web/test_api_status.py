@@ -132,6 +132,8 @@ def test_the_status_tells_the_ui_what_it_needs(client: TestClient) -> None:
         "commands_enabled": True,
         "alignment_max_fps": 30.0,
         "alignment_stall_s": 0.3,
+        "polaris_max_fps": 20.0,
+        "polaris_stall_s": 0.3,
     }
 
 

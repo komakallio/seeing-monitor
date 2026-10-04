@@ -1,8 +1,9 @@
 """The seam between the web process and `core`: the `CoreClient` protocol and its two clients.
 
-The API needs five things from `core`: the status of the scheduler, a way to submit a scheduler
+The API needs seven things from `core`: the status of the scheduler, a way to submit a scheduler
 command, the state of the alignment helper, the dark library with the progress of the dark task,
-and the live-view frames. `CoreClient` names them.
+the rolling seeing value, and the frames of the two live views (the alignment helper and the video
+of Polaris). `CoreClient` names them.
 
 - `RpcCoreClient` is the production client. It connects to `core` over the local connection layer
   and speaks the methods that `seeingmon.services.web.contract` documents. It connects when the
@@ -14,9 +15,9 @@ and the live-view frames. `CoreClient` names them.
 - `FakeCoreClient` answers in memory, for tests and for the demo. It follows the rules of the real
   scheduler for the commands, and it streams the frames of a source that you give it.
 
-The calls `status`, `submit`, `alignment_state`, and `dark_library` block, so call them from a
-thread (FastAPI runs a plain `def` endpoint in its thread pool). `alignment_frames` is an async
-iterator.
+The calls `status`, `submit`, `alignment_state`, `dark_library`, and `live_seeing` block, so call
+them from a thread (FastAPI runs a plain `def` endpoint in its thread pool). `alignment_frames` and
+`polaris_frames` are async iterators.
 
 **Errors.** A call raises `CoreUnavailableError` when `core` cannot be reached or does not answer in
 time, and `CoreProtocolError` when `core` answers something that this client cannot use. Neither
@@ -29,7 +30,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from seeingmon.clock import Clock, SystemClock
 from seeingmon.scheduler.commands import (
@@ -67,9 +68,11 @@ from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
+    POLARIS_CHANNEL,
     RPC_CHANNEL,
     ActivityView,
     AlignmentFrame,
@@ -77,19 +80,28 @@ from seeingmon.services.web.contract import (
     CoreStatus,
     DarkLibraryView,
     FaultView,
+    LiveSeeingView,
+    PolarisFrame,
     SchedulerView,
     StreamView,
     decode_alignment_state,
     decode_dark_library,
+    decode_live_seeing,
     decode_result,
     decode_status,
     encode_command,
     unpack_frame,
+    unpack_polaris_frame,
 )
 from seeingmon.services.web.fake_dark import DarkScript, DarkSimulator
 
 MIB = 1024 * 1024
+# A frame of the video of Polaris is a few kilobytes, and the stream sends 20 of them a second, so
+# the window holds eight of them: the event loop may stall for 400 ms before `core` skips a frame.
+POLARIS_WINDOW = StreamWindow(messages=8, bytes=4 * MIB)
 FrameSource = Callable[[], AsyncIterator[AlignmentFrame]]
+PolarisSource = Callable[[], AsyncIterator[PolarisFrame]]
+F = TypeVar("F")
 
 _log = logging.getLogger(__name__)
 
@@ -130,8 +142,16 @@ class CoreClient(Protocol):
         """The dark library, its status, and the latest dark task. Raises `CoreError`."""
         ...
 
+    def live_seeing(self) -> LiveSeeingView | None:
+        """The rolling seeing value of the fast stream, or `None` while `core` has none."""
+        ...
+
     def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
         """The live-view frames, newest last. Raises `CoreError` when the stream breaks."""
+        ...
+
+    def polaris_frames(self) -> AsyncIterator[PolarisFrame]:
+        """The frames of the video of Polaris, newest last. Raises `CoreError` when it breaks."""
         ...
 
     def close(self) -> None:
@@ -159,6 +179,7 @@ class RpcCoreClient:
         max_rpc_bytes: int = 1 * MIB,
         max_frame_bytes: int = 32 * MIB,
         window: StreamWindow | None = None,
+        polaris_window: StreamWindow | None = None,
         poll_s: float = 1.0,
         clock: Clock | None = None,
     ) -> None:
@@ -173,6 +194,7 @@ class RpcCoreClient:
         self._max_rpc_bytes = max_rpc_bytes
         self._max_frame_bytes = max_frame_bytes
         self._window = window or StreamWindow(messages=4, bytes=2 * max_frame_bytes)
+        self._polaris_window = polaris_window or POLARIS_WINDOW
         self._poll_s = poll_s
         self._clock = SystemClock() if clock is None else clock
         self._lock = threading.RLock()
@@ -329,18 +351,27 @@ class RpcCoreClient:
             _log.warning("core sent an unreadable dark library: %s", error)
             raise CoreProtocolError("core sent an unreadable dark library") from None
 
-    def _open_stream(self) -> StreamReceiver:
+    def live_seeing(self) -> LiveSeeingView | None:
+        """The rolling seeing value, from the `live_seeing` method. `None` means no value."""
+        answer = self._call(METHOD_LIVE_SEEING, None, self._rpc_timeout_s)
+        try:
+            return decode_live_seeing(answer)
+        except CodecError as error:
+            _log.warning("core sent an unreadable live seeing value: %s", error)
+            raise CoreProtocolError("core sent an unreadable live seeing value") from None
+
+    def _open_stream(self, channel: str, window: StreamWindow, name: str) -> StreamReceiver:
         try:
             receiver, _ = connect_stream(
                 self._endpoint,
                 self._key,
                 {"role": "web"},
-                channel=ALIGNMENT_CHANNEL,
-                window=self._window,
+                channel=channel,
+                window=window,
                 connect_timeout_s=self._connect_timeout_s,
                 handshake_timeout_s=self._handshake_timeout_s,
                 max_message_bytes=self._max_frame_bytes,
-                name="web-alignment",
+                name=f"web-{name}",
             )
         except IpcAuthError:
             raise CoreUnavailableError("core refused the connection key") from None
@@ -348,28 +379,45 @@ class RpcCoreClient:
             raise CoreUnavailableError("core does not answer") from None
         return receiver
 
-    async def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
-        """Open the `alignment` stream and yield its frames until the caller stops iterating.
+    async def _frames(
+        self,
+        channel: str,
+        window: StreamWindow,
+        name: str,
+        noun: str,
+        unpack: Callable[[memoryview], F],
+    ) -> AsyncIterator[F]:
+        """Open a stream and yield its frames until the caller stops iterating.
 
         The generator closes the stream when the caller stops, even when a task cancels it.
         """
-        receiver = await asyncio.to_thread(self._open_stream)
+        receiver = await asyncio.to_thread(self._open_stream, channel, window, name)
         try:
             while True:
                 try:
                     message = await asyncio.to_thread(receiver.recv, self._poll_s)
                 except IpcClosedError:
-                    raise CoreUnavailableError("the alignment stream of core closed") from None
+                    raise CoreUnavailableError(f"the {noun} stream of core closed") from None
                 if message is None or message.kind is not StreamKind.DATA:
                     continue
                 try:
-                    yield unpack_frame(message.payload)
+                    yield unpack(message.payload)
                 except CodecError as error:
-                    _log.warning("core sent an unreadable alignment frame: %s", error)
-                    raise CoreProtocolError("core sent an unreadable alignment frame") from None
+                    _log.warning("core sent an unreadable %s frame: %s", noun, error)
+                    raise CoreProtocolError(f"core sent an unreadable {noun} frame") from None
         finally:
             # Closing waits for the reader thread, so it must not block the event loop.
-            threading.Thread(target=receiver.close, name="web-alignment-close", daemon=True).start()
+            threading.Thread(target=receiver.close, name=f"web-{name}-close", daemon=True).start()
+
+    def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
+        """Open the `alignment` stream and yield its frames until the caller stops iterating."""
+        return self._frames(ALIGNMENT_CHANNEL, self._window, "alignment", "alignment", unpack_frame)
+
+    def polaris_frames(self) -> AsyncIterator[PolarisFrame]:
+        """Open the `polaris` stream and yield its frames until the caller stops iterating."""
+        return self._frames(
+            POLARIS_CHANNEL, self._polaris_window, "polaris", "Polaris", unpack_polaris_frame
+        )
 
     def close(self) -> None:
         """Close the connection to `core`. A later call connects again."""
@@ -390,7 +438,9 @@ class FakeCoreClient:
     pause, and the commissioning queue holds `max_queued` tasks. Every command that the client
     receives lands in `submitted`, in order. Set `fail_with` to make every call raise that error,
     and set it back to `None` to recover. Pass `frames` to give the live view a source: a function
-    that returns an async iterator of `AlignmentFrame`.
+    that returns an async iterator of `AlignmentFrame`. Pass `polaris` for the video of Polaris in
+    the same way (`PolarisFrame`), and set `live` to the rolling seeing value that `live_seeing`
+    answers with.
 
     `focus_resets` counts the calls of `alignment_reset_focus`.
 
@@ -407,6 +457,7 @@ class FakeCoreClient:
         *,
         clock: Clock | None = None,
         frames: FrameSource | None = None,
+        polaris: PolarisSource | None = None,
         state: str = "auto",
         instance: str = "fake-core",
         max_queued: int = 8,
@@ -416,6 +467,8 @@ class FakeCoreClient:
         self._clock = SystemClock() if clock is None else clock
         self.dark = DarkSimulator(self._clock, script=dark_script)
         self._frames = frames
+        self._polaris = polaris
+        self.live: LiveSeeingView | None = None
         self._instance = instance
         self._max_queued = max_queued
         self._lock = threading.Lock()
@@ -435,6 +488,9 @@ class FakeCoreClient:
         self.focus_resets = 0
         self.streams_opened = 0
         self.streams_closed = 0
+        self.polaris_streams_opened = 0
+        self.polaris_streams_closed = 0
+        self.live_seeing_calls = 0
         self.closed = False
 
     @property
@@ -580,6 +636,12 @@ class FakeCoreClient:
         with self._lock:
             self.focus_resets += 1
 
+    def live_seeing(self) -> LiveSeeingView | None:
+        self._check()
+        with self._lock:
+            self.live_seeing_calls += 1
+            return self.live
+
     async def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
         self._check()
         with self._lock:
@@ -595,6 +657,21 @@ class FakeCoreClient:
             with self._lock:
                 self.streams_closed += 1
 
+    async def polaris_frames(self) -> AsyncIterator[PolarisFrame]:
+        self._check()
+        with self._lock:
+            self.polaris_streams_opened += 1
+        try:
+            if self._polaris is None:
+                await asyncio.Event().wait()  # an open stream that sends nothing
+            else:
+                async for frame in self._polaris():
+                    self._check()
+                    yield frame
+        finally:
+            with self._lock:
+                self.polaris_streams_closed += 1
+
     def close(self) -> None:
         self.closed = True
 
@@ -606,5 +683,6 @@ __all__ = [
     "CoreUnavailableError",
     "FakeCoreClient",
     "FrameSource",
+    "PolarisSource",
     "RpcCoreClient",
 ]

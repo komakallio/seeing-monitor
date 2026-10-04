@@ -1,8 +1,8 @@
 """The state that the routes of the web process share, and the access rule.
 
 `WebContext` holds the pieces that `create_app` wires together: the data readers, the client of
-`core`, the token verifier, the rate limiters, and the alignment hub. It also decides who may do
-what. The access rule has two levels:
+`core`, the token verifier, the rate limiters, and the hubs of the two live views (the alignment
+helper and the video of Polaris). It also decides who may do what. The access rule has two levels:
 
 - **Reads** are open on the LAN. With `require_token_for_reads`, a read needs the token too.
 - **Every `POST`** needs the token as `Authorization: Bearer <token>`. Without a token hash in the
@@ -33,7 +33,7 @@ from seeingmon.services.web.data import StoreData, StoreUnavailableError
 from seeingmon.services.web.errors import ApiError
 from seeingmon.services.web.health import HealthReport, evaluate_health
 from seeingmon.services.web.images import ImageStore
-from seeingmon.services.web.live import AlignmentHub
+from seeingmon.services.web.live import AlignmentHub, PolarisHub
 
 _log = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class WebContext:
         clock: Clock,
         verifier: TokenVerifier,
         hub: AlignmentHub,
+        polaris_hub: PolarisHub,
         profile: Mapping[str, Any] | None,
         config_view: Mapping[str, Any] | None,
         station_id: str | None,
@@ -66,6 +67,7 @@ class WebContext:
         self.clock = clock
         self.verifier = verifier
         self.hub = hub
+        self.polaris_hub = polaris_hub
         self.profile = profile
         self.config_view = config_view
         self.station_id = station_id

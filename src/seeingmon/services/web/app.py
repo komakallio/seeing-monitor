@@ -39,7 +39,7 @@ from seeingmon.services.web.core_client import CoreClient
 from seeingmon.services.web.data import StoreData, StoreSource
 from seeingmon.services.web.errors import register_error_handlers
 from seeingmon.services.web.images import ImageStore
-from seeingmon.services.web.live import AlignmentHub, Sleep
+from seeingmon.services.web.live import AlignmentHub, PolarisHub, Sleep
 from seeingmon.services.web.middleware import (
     AllowedHosts,
     BodyLimit,
@@ -47,7 +47,7 @@ from seeingmon.services.web.middleware import (
     SelectiveGZip,
 )
 from seeingmon.services.web.privacy import public_config, scrub_json
-from seeingmon.services.web.schemas import record_components
+from seeingmon.services.web.schemas import polaris_components, record_components
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -100,6 +100,10 @@ TAGS = [
     {"name": "commands", "description": "Commands for the scheduler. Each needs the token."},
     {"name": "alignment", "description": "The alignment helper and its live view."},
     {
+        "name": "live",
+        "description": "The live video of Polaris and the rolling seeing value of the fast stream.",
+    },
+    {
         "name": "dark",
         "description": "The dark library, and the dark session that adds a set to it.",
     },
@@ -139,6 +143,7 @@ def _install_openapi(app: FastAPI) -> None:
         )
         components = schema.setdefault("components", {})
         components.setdefault("schemas", {}).update(record_components())
+        components["schemas"].update(polaris_components())
         components["securitySchemes"] = {
             "bearerAuth": {
                 "type": "http",
@@ -193,6 +198,7 @@ def build_context(
         clock=clock,
         verifier=TokenVerifier(token_hash, clock),
         hub=AlignmentHub(core, clock, **hub_options),
+        polaris_hub=PolarisHub(core, clock, **hub_options),
         profile=None if profile is None else scrub_json(profile),
         config_view=None if config is None else public_config(config),
         station_id=station_id,
@@ -204,6 +210,7 @@ def build_context(
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await app.state.ctx.hub.close()
+    await app.state.ctx.polaris_hub.close()
 
 
 def create_app(
@@ -255,7 +262,12 @@ def create_app(
         UiMount("/", app=StaticFiles(directory=STATIC_DIR, html=True), name="ui")
     )
     app.add_middleware(
-        SelectiveGZip, skip_prefixes=(f"{PREFIX}/images", f"{PREFIX}/alignment/frame")
+        SelectiveGZip,
+        skip_prefixes=(
+            f"{PREFIX}/images",
+            f"{PREFIX}/alignment/frame",
+            f"{PREFIX}/polaris/frame",
+        ),
     )
     app.add_middleware(BodyLimit, max_bytes=settings.max_body_bytes)
     app.add_middleware(SecurityHeaders)

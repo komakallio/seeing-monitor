@@ -77,12 +77,15 @@ max_preview_bytes = 8388608
 max_fits_bytes = 134217728
 scan_days = 31
 
-# The alignment live view. max_fps is the preview cadence: the most frames per second that the
-# server sends to one client. The server always sends the newest frame. It reads frames from core
-# while a client watches, and for idle_s seconds after the last one has gone. A client that gets no
-# frame for stall_s seconds sees the view as stalled.
+# The live views: the alignment preview and the video of Polaris. max_fps is the cadence of the
+# alignment preview and polaris_max_fps the cadence of the video: the most frames per second that
+# the server sends to one client. The server always sends the newest frame. It reads frames from
+# core while a client watches, and for idle_s seconds after the last one has gone. A client that
+# gets no frame for stall_s seconds sees the view as stalled. max_clients and stall_s apply to each
+# view on its own.
 [web.live]
 max_fps = 2.0
+polaris_max_fps = 20.0
 idle_s = 10.0
 max_clients = 4
 stall_s = 5.0

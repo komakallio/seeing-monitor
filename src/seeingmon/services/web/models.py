@@ -27,6 +27,7 @@ from seeingmon.scheduler.commands import (
     Resume,
     StartAlignment,
 )
+from seeingmon.services.web.contract import LiveSeeingView
 
 MODE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,15}$"
 RECORDING_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
@@ -538,6 +539,12 @@ class UiSettings(_Response):
     commands_enabled: bool = Field(description="False when no token hash is configured.")
     alignment_max_fps: float
     alignment_stall_s: float
+    polaris_max_fps: float = Field(
+        description="The most frames per second that the server sends of the video of Polaris."
+    )
+    polaris_stall_s: float = Field(
+        description="The seconds without a frame after which the video counts as stalled."
+    )
 
 
 class StatusResponse(_Response):
@@ -554,6 +561,28 @@ class StatusResponse(_Response):
     data: dict[str, RecordTime]
     ui: UiSettings
     quality: dict[str, str] | None = None
+
+
+# --- The rolling seeing value ----------------------------------------------------------------
+
+
+class LiveSeeingResponse(LiveSeeingView):
+    """The rolling seeing value of the fast stream: a provisional number that `core` does not store.
+
+    `core` estimates the seeing from the newest `span_s` seconds of frames with the estimator of the
+    stored windows, and it repeats the estimate every few seconds while the fast stream runs, which
+    is about three quarters of each cycle. Between fast periods the value keeps its time, so
+    `age_s` shows how old it is. The `seeing_fwhm_*` and `r0_*` values follow the records of the
+    `seeing` series: the first of each pair comes from the variance of the motion, and the second
+    from its structure function. `valid_fraction` is the share of the frames of the span (the frames
+    that the camera lost included) that have a usable centroid, and `flags` holds the window flags
+    that apply. A value that `core` cannot give is `null`, and `quality` says why.
+    """
+
+    t_utc: str = Field(description="The end of the span, as an ISO 8601 UTC string.")
+    age_s: float = Field(
+        ge=0, description="The seconds from the end of the span to the answer of the server."
+    )
 
 
 # --- Images ----------------------------------------------------------------------------------

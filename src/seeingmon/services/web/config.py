@@ -91,14 +91,17 @@ class ImageSettings(SectionModel):
 
 
 class LiveSettings(SectionModel):
-    """The alignment live view: the preview cadence and the number of clients.
+    """The live views: the alignment preview and the video of Polaris.
 
-    `max_fps` caps how often the server sends a frame to one client. The server always sends the
-    newest frame and skips the ones in between. The server reads frames from `core` while a client
-    watches, and for `idle_s` after the last one has gone.
+    `max_fps` caps how often the server sends an alignment frame to one client, and
+    `polaris_max_fps` does the same for the video of Polaris. The server always sends the newest
+    frame and skips the ones in between. The server reads frames from `core` while a client
+    watches, and for `idle_s` after the last one has gone. `max_clients` and `stall_s` apply to
+    each view on its own: each has its own viewers.
     """
 
     max_fps: float = Field(2.0, gt=0, le=30)
+    polaris_max_fps: float = Field(20.0, gt=0, le=60)
     idle_s: float = Field(10.0, gt=0, le=3600)
     max_clients: int = Field(4, ge=1, le=64)
     stall_s: float = Field(5.0, gt=0, le=600)

@@ -6,7 +6,7 @@ import asyncio
 import secrets
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 
@@ -33,12 +33,15 @@ from seeingmon.services.web.config import CoreLinkSettings
 from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_DARK_LIBRARY,
+    METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
     METHODS,
     AlignmentFrame,
     AlignmentState,
+    PolarisFrame,
+    pack_frame,
 )
 from seeingmon.services.web.core_client import (
     CoreClient,
@@ -49,7 +52,17 @@ from seeingmon.services.web.core_client import (
 )
 from seeingmon.services.web.fake_dark import DarkScript
 from tests.services.conftest import wait_until
-from tests.services.web.helpers import ReferenceCore, alignment_state, dark_set, tiny_jpeg
+from tests.services.web.helpers import (
+    ReferenceCore,
+    alignment_state,
+    dark_set,
+    live_seeing_view,
+    polaris_state,
+    tiny_jpeg,
+    tiny_png,
+)
+
+T = TypeVar("T")
 
 
 def run(coroutine: Any) -> Any:
@@ -158,8 +171,8 @@ def frames_from(items: list[AlignmentFrame]) -> Callable[[], AsyncIterator[Align
     return source
 
 
-async def take(frames: AsyncIterator[AlignmentFrame], count: int) -> list[AlignmentFrame]:
-    taken: list[AlignmentFrame] = []
+async def take(frames: AsyncIterator[T], count: int) -> list[T]:
+    taken: list[T] = []
     async for frame in frames:
         taken.append(frame)
         if len(taken) == count:
@@ -210,6 +223,58 @@ def test_the_fake_can_fail_its_stream() -> None:
     fake.fail_with = CoreUnavailableError("gone")
     with pytest.raises(CoreUnavailableError):
         run(take(fake.alignment_frames(), 1))
+
+
+def polaris_frames_from(items: list[PolarisFrame]) -> Callable[[], AsyncIterator[PolarisFrame]]:
+    async def source() -> AsyncIterator[PolarisFrame]:
+        for item in items:
+            yield item
+
+    return source
+
+
+def test_the_fake_streams_the_polaris_frames_of_its_source_and_counts_the_streams() -> None:
+    items = [PolarisFrame(polaris_state(seq), tiny_png(seq * 10)) for seq in (1, 2, 3)]
+    fake = FakeCoreClient(polaris=polaris_frames_from(items))
+    got = run(take(fake.polaris_frames(), 3))
+    assert got == items
+    assert (fake.polaris_streams_opened, fake.polaris_streams_closed) == (1, 1)
+    assert (fake.streams_opened, fake.streams_closed) == (0, 0)  # the alignment stream is apart
+
+
+def test_a_fake_without_polaris_frames_holds_the_stream_open_until_cancelled() -> None:
+    fake = FakeCoreClient()
+
+    async def main() -> None:
+        task = asyncio.ensure_future(take(fake.polaris_frames(), 1))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(main())
+    assert (fake.polaris_streams_opened, fake.polaris_streams_closed) == (1, 1)
+
+
+def test_the_fake_can_fail_its_polaris_stream_and_its_live_seeing() -> None:
+    fake = FakeCoreClient()
+    fake.fail_with = CoreUnavailableError("gone")
+    with pytest.raises(CoreUnavailableError):
+        run(take(fake.polaris_frames(), 1))
+    with pytest.raises(CoreUnavailableError):
+        fake.live_seeing()
+    fake.fail_with = None
+    assert fake.live_seeing() is None
+
+
+def test_the_fake_answers_the_live_seeing_value_that_it_holds() -> None:
+    fake = FakeCoreClient()
+    assert fake.live_seeing() is None
+    fake.live = live_seeing_view()
+    assert fake.live_seeing() == live_seeing_view()
+    assert fake.live_seeing_calls == 2
 
 
 # --- RpcCoreClient ---------------------------------------------------------------------------
@@ -757,6 +822,127 @@ def test_a_stream_with_the_wrong_key_is_unavailable(
     client = make_client(clients, core.endpoint, other_key)
     with pytest.raises(CoreUnavailableError, match="refused"):
         run(take(client.alignment_frames(), 1))
+
+
+# --- The live seeing value -------------------------------------------------------------------
+
+
+def test_the_client_reads_the_live_seeing_value_and_null_means_no_value(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core()
+    client = make_client(clients, core.endpoint, key)
+    assert client.live_seeing() is None
+    core.backend.live = live_seeing_view(flags=["cloud"], quality={"r0_cm": "too few frames"})
+    assert client.live_seeing() == core.backend.live
+    assert client.connections == 1
+
+
+def test_a_core_without_the_live_seeing_method_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(lambda core: core.handlers.pop(METHOD_LIVE_SEEING))
+    client = make_client(clients, core.endpoint, key)
+    with pytest.raises(CoreProtocolError, match="versions differ"):
+        client.live_seeing()
+
+
+def test_an_unreadable_live_seeing_answer_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(
+        lambda core: core.handlers.update({METHOD_LIVE_SEEING: lambda params: {"x": 1}})
+    )
+    client = make_client(clients, core.endpoint, key)
+    with pytest.raises(CoreProtocolError, match="unreadable live seeing"):
+        client.live_seeing()
+
+
+# --- The polaris stream ----------------------------------------------------------------------
+
+
+def test_the_client_streams_the_polaris_frames_of_core(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    frames = [(polaris_state(0), tiny_png(seq * 20)) for seq in (1, 2, 3)]
+    core = start_core(polaris_frames=frames)
+    client = make_client(clients, core.endpoint, key)
+    got = run(take(client.polaris_frames(), 3))
+    assert [(item.state, item.image) for item in got] == frames
+    assert wait_until(lambda: core.polaris_senders[0].closed)  # leaving the loop closed the stream
+    assert core.streams_started == 0  # the alignment stream stays shut
+
+
+def test_both_live_streams_run_at_once(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(
+        frames=[(alignment_state(1), tiny_jpeg())], polaris_frames=[(polaris_state(0), tiny_png())]
+    )
+    client = make_client(clients, core.endpoint, key)
+
+    async def main() -> tuple[list[AlignmentFrame], list[PolarisFrame]]:
+        return await asyncio.gather(
+            take(client.alignment_frames(), 1), take(client.polaris_frames(), 1)
+        )
+
+    aligned, polaris = run(main())
+    assert aligned[0].state == alignment_state(1)
+    assert polaris[0].state == polaris_state(0)
+
+
+def test_a_polaris_stream_that_core_ends_raises_unavailable_with_its_own_message(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(polaris_frames=[(polaris_state(0), tiny_png())])
+    client = make_client(clients, core.endpoint, key)
+
+    async def main() -> None:
+        stream = client.polaris_frames()
+        await stream.__anext__()
+        assert await asyncio.to_thread(core.sending_done.wait, 5)
+        core.end_streams()
+        with pytest.raises(CoreUnavailableError, match="Polaris stream of core closed"):
+            await stream.__anext__()
+
+    run(main())
+
+
+def test_a_polaris_message_that_is_not_a_frame_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(lambda core: core.raw_polaris_payloads.append(b"not a Polaris frame"))
+    client = make_client(clients, core.endpoint, key)
+    with pytest.raises(CoreProtocolError, match="unreadable Polaris frame"):
+        run(take(client.polaris_frames(), 1))
+
+
+def test_an_alignment_frame_on_the_polaris_channel_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(
+        lambda core: core.raw_polaris_payloads.append(pack_frame(alignment_state(1), tiny_jpeg()))
+    )
+    client = make_client(clients, core.endpoint, key)
+    with pytest.raises(CoreProtocolError):
+        run(take(client.polaris_frames(), 1))
+
+
+def test_the_polaris_stream_of_a_core_that_is_down_is_unavailable(
+    endpoint: Endpoint, key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    client = make_client(clients, endpoint, key, connect_timeout_s=0.05)
+    with pytest.raises(CoreUnavailableError):
+        run(take(client.polaris_frames(), 1))
+
+
+def test_a_polaris_stream_with_the_wrong_key_is_unavailable(
+    start_core: Callable[..., ReferenceCore], other_key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core()
+    client = make_client(clients, core.endpoint, other_key)
+    with pytest.raises(CoreUnavailableError, match="refused"):
+        run(take(client.polaris_frames(), 1))
 
 
 def test_the_methods_of_the_reference_core_match_the_contract(

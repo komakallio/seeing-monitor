@@ -2167,6 +2167,326 @@
         "title": "LastSolutionView",
         "type": "object"
       },
+      "LiveSeeingResponse": {
+        "description": "The rolling seeing value of the fast stream: a provisional number that `core` does not store.\n\n`core` estimates the seeing from the newest `span_s` seconds of frames with the estimator of the\nstored windows, and it repeats the estimate every few seconds while the fast stream runs, which\nis about three quarters of each cycle. Between fast periods the value keeps its time, so\n`age_s` shows how old it is. The `seeing_fwhm_*` and `r0_*` values follow the records of the\n`seeing` series: the first of each pair comes from the variance of the motion, and the second\nfrom its structure function. `valid_fraction` is the share of the frames of the span (the frames\nthat the camera lost included) that have a usable centroid, and `flags` holds the window flags\nthat apply. A value that `core` cannot give is `null`, and `quality` says why.",
+        "properties": {
+          "age_s": {
+            "description": "The seconds from the end of the span to the answer of the server.",
+            "minimum": 0.0,
+            "title": "Age S",
+            "type": "number"
+          },
+          "exposure_us": {
+            "minimum": 0.0,
+            "title": "Exposure Us",
+            "type": "integer"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256,
+            "title": "Flags",
+            "type": "array"
+          },
+          "image_motion_rms_x_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Motion Rms X Arcsec"
+          },
+          "image_motion_rms_y_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Motion Rms Y Arcsec"
+          },
+          "n_frames": {
+            "minimum": 0.0,
+            "title": "N Frames",
+            "type": "integer"
+          },
+          "n_usable": {
+            "minimum": 0.0,
+            "title": "N Usable",
+            "type": "integer"
+          },
+          "quality": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 256,
+            "title": "Quality",
+            "type": "object"
+          },
+          "r0_cm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "R0 Cm"
+          },
+          "r0_structure_cm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "R0 Structure Cm"
+          },
+          "readout_mode": {
+            "maxLength": 64,
+            "title": "Readout Mode",
+            "type": "string"
+          },
+          "seeing_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeing Fwhm Arcsec"
+          },
+          "seeing_fwhm_structure_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeing Fwhm Structure Arcsec"
+          },
+          "span_s": {
+            "exclusiveMinimum": 0.0,
+            "title": "Span S",
+            "type": "number"
+          },
+          "stream_id": {
+            "minimum": 0.0,
+            "title": "Stream Id",
+            "type": "integer"
+          },
+          "t_utc": {
+            "description": "The end of the span, as an ISO 8601 UTC string.",
+            "title": "T Utc",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "title": "T Utc Ns",
+            "type": "integer"
+          },
+          "valid_fraction": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Valid Fraction",
+            "type": "number"
+          },
+          "width_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Fwhm Arcsec"
+          }
+        },
+        "required": [
+          "t_utc_ns",
+          "span_s",
+          "n_frames",
+          "n_usable",
+          "valid_fraction",
+          "stream_id",
+          "readout_mode",
+          "exposure_us",
+          "t_utc",
+          "age_s"
+        ],
+        "title": "LiveSeeingResponse",
+        "type": "object"
+      },
+      "LiveSeeingView": {
+        "description": "The rolling seeing value of the fast stream: a provisional number that `core` does not store.\n\n`core` estimates the seeing from the newest `span_s` seconds of frames with the estimator of the\nstored windows, and it repeats the estimate every few seconds. `t_utc_ns` is the end of the\nspan in frame time. `n_frames` counts the frames of the span, and `n_usable` those with a\nusable centroid, and `valid_fraction` is `n_usable` over the frames that the camera produced\n(the frames lost in between included). The `seeing_fwhm_*` and `r0_*` values follow the\nrecords of the `seeing` series: the first of each pair comes from the variance of the motion,\nand the second from its structure function. `flags` holds the window flags that apply\n(`degraded`, `saturated`, and the context of the scheduler, such as `cloud`). A value that\n`core` cannot give is `null`, and `quality` says why.",
+        "properties": {
+          "exposure_us": {
+            "minimum": 0,
+            "title": "Exposure Us",
+            "type": "integer"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256,
+            "title": "Flags",
+            "type": "array"
+          },
+          "image_motion_rms_x_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image Motion Rms X Arcsec"
+          },
+          "image_motion_rms_y_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image Motion Rms Y Arcsec"
+          },
+          "n_frames": {
+            "minimum": 0,
+            "title": "N Frames",
+            "type": "integer"
+          },
+          "n_usable": {
+            "minimum": 0,
+            "title": "N Usable",
+            "type": "integer"
+          },
+          "quality": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 256,
+            "title": "Quality",
+            "type": "object"
+          },
+          "r0_cm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "R0 Cm"
+          },
+          "r0_structure_cm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "R0 Structure Cm"
+          },
+          "readout_mode": {
+            "maxLength": 64,
+            "title": "Readout Mode",
+            "type": "string"
+          },
+          "seeing_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seeing Fwhm Arcsec"
+          },
+          "seeing_fwhm_structure_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seeing Fwhm Structure Arcsec"
+          },
+          "span_s": {
+            "exclusiveMinimum": 0,
+            "title": "Span S",
+            "type": "number"
+          },
+          "stream_id": {
+            "minimum": 0,
+            "title": "Stream Id",
+            "type": "integer"
+          },
+          "t_utc_ns": {
+            "title": "T Utc Ns",
+            "type": "integer"
+          },
+          "valid_fraction": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Valid Fraction",
+            "type": "number"
+          },
+          "width_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Width Fwhm Arcsec"
+          }
+        },
+        "required": [
+          "t_utc_ns",
+          "span_s",
+          "n_frames",
+          "n_usable",
+          "valid_fraction",
+          "stream_id",
+          "readout_mode",
+          "exposure_us"
+        ],
+        "title": "LiveSeeingView",
+        "type": "object"
+      },
       "ModeRequest": {
         "additionalProperties": false,
         "description": "Pause the scheduler, or resume it.",
@@ -2935,6 +3255,214 @@
         "x-record-type": "pointing",
         "x-storage": "table"
       },
+      "PolarisStar": {
+        "description": "Where the star is in this frame, and how wide it is.\n\n`x` and `y` are pixels of the image, and the center of the first pixel is 0. A page that\nmagnifies the image by `k` draws the star at `((x + 0.5) * k, (y + 0.5) * k)`. `peak_fraction`\nis the brightest pixel of the aperture as a share of the full scale of the ADC. `fwhm_arcsec`\nis the width of this frame alone, from its second moments inside the aperture of the fast\nanalysis, so it jitters more than the width of a stored window, which averages it. When `found`\nis false, the other fields are `null`.",
+        "properties": {
+          "found": {
+            "title": "Found",
+            "type": "boolean"
+          },
+          "fwhm_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fwhm Arcsec"
+          },
+          "peak_fraction": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Peak Fraction"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "X"
+          },
+          "y": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Y"
+          }
+        },
+        "required": [
+          "found"
+        ],
+        "title": "PolarisStar",
+        "type": "object"
+      },
+      "PolarisState": {
+        "description": "What a page shows next to one frame of the live video of Polaris.\n\n`seq` is the number that the hub of `web` gives the frame (`core` sends 0), and a client that\npolls passes the newest one as `after`. `t_utc` and `t_utc_ns` are the time of the frame, and\n`stream_id`, `mode`, `exposure_us`, and `gain` name the stream that it belongs to. `roi` is the\nrectangle of the sensor that the image shows, in pixels of the readout mode, and\n`scale_arcsec_px` is the plate scale of that mode. `fast_fps` is the frame rate of the camera,\nwhich is higher than the rate of the video.\n\nThe image has the type `image_type` and the size `image_width` by `image_height`, which is the\nsize of the ROI: the page magnifies it. The video is lossless (a PNG), so that the page can\nmagnify it with nearest-neighbor scaling and show the pixels of the star. `stretch` holds the\nlevels of the stretch of the image, `star` the star of this frame, and `live_seeing` the newest\nrolling seeing value, or `null` while `core` has none. A value that `core` cannot give is\n`null`, and `quality` says why.",
+        "properties": {
+          "exposure_us": {
+            "minimum": 0,
+            "title": "Exposure Us",
+            "type": "integer"
+          },
+          "fast_fps": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fast Fps"
+          },
+          "gain": {
+            "minimum": 0,
+            "title": "Gain",
+            "type": "integer"
+          },
+          "image_height": {
+            "exclusiveMinimum": 0,
+            "title": "Image Height",
+            "type": "integer"
+          },
+          "image_type": {
+            "const": "image/png",
+            "default": "image/png",
+            "title": "Image Type",
+            "type": "string"
+          },
+          "image_width": {
+            "exclusiveMinimum": 0,
+            "title": "Image Width",
+            "type": "integer"
+          },
+          "live_seeing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveSeeingView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "mode": {
+            "maxLength": 64,
+            "title": "Mode",
+            "type": "string"
+          },
+          "quality": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 32,
+            "title": "Quality",
+            "type": "object"
+          },
+          "roi": {
+            "$ref": "#/components/schemas/RoiView"
+          },
+          "scale_arcsec_px": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale Arcsec Px"
+          },
+          "seq": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "star": {
+            "$ref": "#/components/schemas/PolarisStar"
+          },
+          "stream_id": {
+            "minimum": 0,
+            "title": "Stream Id",
+            "type": "integer"
+          },
+          "stretch": {
+            "$ref": "#/components/schemas/PolarisStretch"
+          },
+          "t_utc": {
+            "maxLength": 40,
+            "title": "T Utc",
+            "type": "string"
+          },
+          "t_utc_ns": {
+            "title": "T Utc Ns",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "t_utc",
+          "t_utc_ns",
+          "stream_id",
+          "mode",
+          "exposure_us",
+          "gain",
+          "roi",
+          "image_width",
+          "image_height",
+          "star",
+          "stretch"
+        ],
+        "title": "PolarisState",
+        "type": "object"
+      },
+      "PolarisStretch": {
+        "description": "The levels of the stretch, in the counts that the camera delivers.\n\nA frame of a 12-bit ADC in a 16-bit container reads 16 times its ADU. The image is black at\n`black_dn` and below, and white at `white_dn` and above, with an `asinh` curve between them.",
+        "properties": {
+          "black_dn": {
+            "title": "Black Dn",
+            "type": "number"
+          },
+          "white_dn": {
+            "title": "White Dn",
+            "type": "number"
+          }
+        },
+        "required": [
+          "black_dn",
+          "white_dn"
+        ],
+        "title": "PolarisStretch",
+        "type": "object"
+      },
       "PoleView": {
         "description": "Where the celestial pole of date falls. Offsets are the pole minus the frame center.\n\n`x_px`, `y_px`, `dx_px`, `dy_px`, and `distance_px` are `null` when the pole lies behind the\ncamera. `distance_arcmin` is the exact angle between the frame center and the pole. `roll_deg`\nis the position angle of the direction to the pole, from image up toward image left, and it\nis `null` within one pixel of the center.",
         "properties": {
@@ -3204,6 +3732,34 @@
           "height"
         ],
         "title": "RoiRequest",
+        "type": "object"
+      },
+      "RoiView": {
+        "properties": {
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          },
+          "x": {
+            "title": "X",
+            "type": "integer"
+          },
+          "y": {
+            "title": "Y",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "RoiView",
         "type": "object"
       },
       "SaturationView": {
@@ -5450,6 +6006,16 @@
             "title": "Commands Enabled",
             "type": "boolean"
           },
+          "polaris_max_fps": {
+            "description": "The most frames per second that the server sends of the video of Polaris.",
+            "title": "Polaris Max Fps",
+            "type": "number"
+          },
+          "polaris_stall_s": {
+            "description": "The seconds without a frame after which the video counts as stalled.",
+            "title": "Polaris Stall S",
+            "type": "number"
+          },
           "refresh_s": {
             "title": "Refresh S",
             "type": "number"
@@ -5464,7 +6030,9 @@
           "token_required_for_reads",
           "commands_enabled",
           "alignment_max_fps",
-          "alignment_stall_s"
+          "alignment_stall_s",
+          "polaris_max_fps",
+          "polaris_stall_s"
         ],
         "title": "UiSettings",
         "type": "object"
@@ -7394,6 +7962,95 @@
         ]
       }
     },
+    "/api/v1/polaris/frame": {
+      "get": {
+        "description": "Return the newest frame of the video of Polaris, for a client that cannot use the WebSocket.\n\nThe image is a lossless 8-bit grayscale PNG with the size of the ROI, so a page can magnify it\nwithout interpolation. The state of the same frame travels in the header `X-Frame-State`, so\none request gets both. Each call keeps the stream to `core` open for a few seconds. Call it as\noften as `ui.polaris_max_fps` says while the page shows the video. A value of `after` above\nthe newest number means that the server restarted, and the call returns the newest frame.",
+        "operationId": "get_polaris_frame",
+        "parameters": [
+          {
+            "description": "The `X-Frame-Seq` of the last frame.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "The `X-Frame-Seq` of the last frame.",
+              "minimum": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The newest frame, as a PNG image. `X-Frame-Seq` numbers it, and `X-Frame-State` holds its state.",
+            "headers": {
+              "X-Frame-Seq": {
+                "description": "The sequence number of the frame. Pass it as `after`.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Frame-State": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/PolarisState"
+                    }
+                  }
+                },
+                "description": "The state of the frame as one line of JSON, with the sequence number in `seq`."
+              }
+            }
+          },
+          "204": {
+            "description": "No frame is newer than `after`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          }
+        },
+        "summary": "Poll for the newest frame of the video of Polaris",
+        "tags": [
+          "live"
+        ]
+      }
+    },
     "/api/v1/profile": {
       "get": {
         "description": "Return the hardware profile with its derived values.\n\nEach readout mode carries its own plate scale, field of view, and sampling, so a plate\nscale always names its mode.",
@@ -7676,6 +8333,78 @@
         "summary": "Get the newest seeing_window record",
         "tags": [
           "records"
+        ]
+      }
+    },
+    "/api/v1/seeing/live": {
+      "get": {
+        "description": "Return the seeing of the newest seconds of the fast stream, as a provisional value.\n\n`core` repeats the estimate every few seconds and does not store it. The estimate uses the\nestimator of the stored windows on the newest `span_s` seconds of frames, so it jitters more\nthan a stored value does. `t_utc` is the end of the span and `age_s` is how old the value is:\n`age_s` keeps growing between the fast periods of a cycle, when no new frames arrive. The\nanswer is `404 no_data` when `core` has no value, which is the case until a fast period has\ngathered enough frames.",
+        "operationId": "get_seeing_live",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveSeeingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the rolling seeing value",
+        "tags": [
+          "live"
         ]
       }
     },
@@ -7973,6 +8702,10 @@
     {
       "description": "The alignment helper and its live view.",
       "name": "alignment"
+    },
+    {
+      "description": "The live video of Polaris and the rolling seeing value of the fast stream.",
+      "name": "live"
     },
     {
       "description": "The dark library, and the dark session that adds a set to it.",

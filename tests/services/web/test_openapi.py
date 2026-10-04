@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,15 +17,16 @@ from seeingmon.clock import VirtualClock
 from seeingmon.records.api_schema import api_schema, schema_name
 from seeingmon.scheduler.commands import QueueDark
 from seeingmon.services.web.api import router
-from seeingmon.services.web.contract import DarkModelView
+from seeingmon.services.web.contract import DarkModelView, PolarisFrame, PolarisState
 from seeingmon.services.web.core_client import FakeCoreClient
 from seeingmon.services.web.fake_dark import DarkScript
 from seeingmon.services.web.openapi import COMMAND, render_openapi
 from seeingmon.services.web.schemas import SERVED_RECORD_TYPES
 from seeingmon.store.db import Store
 from tests.records.jsonschema_lite import InvalidError, validate
+from tests.services.conftest import wait_until
 from tests.services.web.client import TestClient
-from tests.services.web.helpers import bearer, dark_set
+from tests.services.web.helpers import bearer, dark_set, live_seeing_view, polaris_state, tiny_png
 from tests.services.web.seed import write_fits, write_preview
 
 API = "/api/v1"
@@ -183,6 +185,8 @@ def test_the_documented_endpoints_are_the_ones_of_the_architecture(
         "/alignment/stop",
         "/alignment/state",
         "/alignment/focus/reset",
+        "/seeing/live",
+        "/polaris/frame",
     }
     assert {f"{API}{path}" for path in required} <= paths
 
@@ -270,6 +274,7 @@ CASES: list[tuple[str, str, str, int, dict[str, Any]]] = [
     ("get", "/api/v1/events", "/api/v1/events", 200, {}),
     ("get", "/api/v1/images", "/api/v1/images", 200, {}),
     ("get", "/api/v1/alignment/state", "/api/v1/alignment/state", 200, {}),
+    ("get", "/api/v1/seeing/live", "/api/v1/seeing/live", 404, {}),
     ("get", "/api/v1/dark", "/api/v1/dark", 200, {}),
     ("get", "/api/v1/profile", "/api/v1/profile", 200, {}),
     ("get", "/api/v1/config", "/api/v1/config", 200, {}),
@@ -380,6 +385,58 @@ def test_a_populated_dark_library_matches_the_documented_schema(
         "task",
         "quality",
     }
+
+
+def test_the_rolling_seeing_value_matches_the_documented_schema(
+    client: TestClient, core: FakeCoreClient, clock: VirtualClock, document: dict[str, Any]
+) -> None:
+    core.live = live_seeing_view(
+        t_utc_ns=clock.utc_ns() - 3_000_000_000,
+        r0_cm=None,
+        seeing_fwhm_arcsec=None,
+        flags=["cloud"],
+        quality={"r0_cm": "too few usable frames", "seeing_fwhm_arcsec": "too few usable frames"},
+    )
+    answer = client.get(f"{API}/seeing/live")
+    assert answer.status_code == 200
+    schema = documented_schema(document, "get", f"{API}/seeing/live", 200)
+    assert schema == {"$ref": "#/components/schemas/LiveSeeingResponse"}
+    validate(answer.json(), schema, document)
+    properties = document["components"]["schemas"]["LiveSeeingResponse"]["properties"]
+    assert set(answer.json()) == set(properties)
+    assert {"t_utc", "age_s", "t_utc_ns", "span_s", "seeing_fwhm_arcsec"} <= set(properties)
+
+
+def test_the_state_of_a_polaris_frame_is_documented_and_the_header_matches_it(
+    make_app: Callable[..., FastAPI],
+    open_client: Callable[..., TestClient],
+    seeded: Store,
+    clock: VirtualClock,
+    document: dict[str, Any],
+) -> None:
+    async def source() -> AsyncIterator[PolarisFrame]:
+        yield PolarisFrame(polaris_state(0), tiny_png())
+        await asyncio.Event().wait()
+
+    chosen = open_client(make_app(core=FakeCoreClient(clock=clock, polaris=source)))
+    assert wait_until(lambda: chosen.get(f"{API}/polaris/frame").status_code == 200)
+    answer = chosen.get(f"{API}/polaris/frame")
+    state = json.loads(answer.headers["x-frame-state"])
+    schemas = document["components"]["schemas"]
+    validate(state, {"$ref": "#/components/schemas/PolarisState"}, document)
+    assert set(schemas["PolarisState"]["properties"]) == set(PolarisState.model_fields)
+    assert set(schemas["PolarisState"]["properties"]) == set(state)
+    assert {"PolarisStar", "PolarisStretch", "LiveSeeingView", "RoiView"} <= set(schemas)
+    assert schemas["PolarisState"]["properties"]["image_type"]["const"] == "image/png"
+    operation = document["paths"][f"{API}/polaris/frame"]["get"]
+    ok = operation["responses"]["200"]
+    assert set(ok["content"]) == {"image/png"}
+    assert set(ok["headers"]) == {"X-Frame-Seq", "X-Frame-State"}
+    reference = ok["headers"]["X-Frame-State"]["content"]["application/json"]["schema"]
+    assert reference == {"$ref": "#/components/schemas/PolarisState"}
+    assert "204" in operation["responses"]
+    assert operation["tags"] == ["live"]
+    assert document["paths"][f"{API}/seeing/live"]["get"]["tags"] == ["live"]
 
 
 def test_an_image_answer_matches_the_documented_schema(

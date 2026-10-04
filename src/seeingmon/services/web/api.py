@@ -1,8 +1,8 @@
 """The routes of the REST API v1.
 
 `router` holds the routes of `/api/v1`. The handlers are plain functions, which FastAPI runs in its
-thread pool, because the store and the link to `core` block. The alignment routes are `async`,
-because they share the event loop with the live view.
+thread pool, because the store and the link to `core` block. The frame routes of the live views are
+`async`, because they share the event loop with the hubs that feed them.
 
 The router does not know any one application. Each handler takes the `WebContext` of its app through
 the `Ctx` dependency, which reads `app.state.ctx` (see `seeingmon.services.web.app`). So one router
@@ -20,7 +20,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import Annotated, Any
+from collections.abc import Callable
+from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Depends, Path, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -31,8 +32,10 @@ from seeingmon.scheduler.commands import Command, RejectReason, StopAlignment
 from seeingmon.services.web.context import WebContext
 from seeingmon.services.web.contract import (
     ActivityView,
+    AlignmentFrame,
     AlignmentState,
     DarkLibraryView,
+    PolarisFrame,
     SchedulerView,
 )
 from seeingmon.services.web.data import (
@@ -47,7 +50,7 @@ from seeingmon.services.web.data import (
 from seeingmon.services.web.errors import ApiError
 from seeingmon.services.web.health import HealthReport
 from seeingmon.services.web.images import ImageInfo, ImageKey, parse_image_id
-from seeingmon.services.web.live import HistoryCursor, Subscription
+from seeingmon.services.web.live import FrameHub, HistoryCursor, Subscription
 from seeingmon.services.web.models import (
     ActivityResponse,
     AlignmentStartRequest,
@@ -69,6 +72,7 @@ from seeingmon.services.web.models import (
     ImageFormat,
     ImageItem,
     ImageList,
+    LiveSeeingResponse,
     ModeRequest,
     Order,
     RecordTime,
@@ -316,6 +320,8 @@ def build_status(ctx: WebContext) -> StatusResponse:
             commands_enabled=ctx.verifier.enabled,
             alignment_max_fps=web.live.max_fps,
             alignment_stall_s=web.live.stall_s,
+            polaris_max_fps=web.live.polaris_max_fps,
+            polaris_stall_s=web.live.stall_s,
         ),
         quality=quality or None,
     )
@@ -924,7 +930,122 @@ async def alignment_stream(websocket: WebSocket) -> None:
     # the state holds the whole history in the first message of a viewer (`reset` true) and the new
     # points in the next ones (`reset` false). With
     # `require_token_for_reads`, the client sends `{"type": "auth", "token": "..."}` first.
-    await _serve_stream(websocket.app.state.ctx, websocket)
+    ctx = websocket.app.state.ctx
+    await _serve_stream(ctx, websocket, ctx.hub, ctx.settings.live.max_fps, _alignment_describer)
+
+
+# --- The video of Polaris and the rolling seeing value ---
+
+
+@router.get(
+    "/seeing/live",
+    operation_id="get_seeing_live",
+    summary="Get the rolling seeing value",
+    tags=["live"],
+    response_model=LiveSeeingResponse,
+    responses=errors(401, 404, 429, 502, 503),
+    dependencies=READ,
+)
+def get_seeing_live(ctx: Ctx) -> JSONResponse:
+    """Return the seeing of the newest seconds of the fast stream, as a provisional value.
+
+    `core` repeats the estimate every few seconds and does not store it. The estimate uses the
+    estimator of the stored windows on the newest `span_s` seconds of frames, so it jitters more
+    than a stored value does. `t_utc` is the end of the span and `age_s` is how old the value is:
+    `age_s` keeps growing between the fast periods of a cycle, when no new frames arrive. The
+    answer is `404 no_data` when `core` has no value, which is the case until a fast period has
+    gathered enough frames.
+    """
+    live = ctx.core.live_seeing()
+    if live is None:
+        raise ApiError(
+            404,
+            "no_data",
+            "Core has no live seeing value: the fast stream is not running, or it has not gathered "
+            "enough frames yet.",
+        )
+    age_s = round(max(0.0, (ctx.clock.utc_ns() - live.t_utc_ns) / NS_PER_S), 3)
+    body = LiveSeeingResponse(**live.model_dump(), t_utc=iso(live.t_utc_ns), age_s=age_s)
+    return JSONResponse(body.model_dump(mode="json"))
+
+
+POLARIS_FRAME_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": (
+            "The newest frame, as a PNG image. `X-Frame-Seq` numbers it, and `X-Frame-State` holds "
+            "its state."
+        ),
+        "headers": {
+            "X-Frame-Seq": {
+                "description": "The sequence number of the frame. Pass it as `after`.",
+                "schema": {"type": "integer"},
+            },
+            "X-Frame-State": {
+                "description": (
+                    "The state of the frame as one line of JSON, with the sequence number in `seq`."
+                ),
+                "content": {
+                    "application/json": {"schema": {"$ref": "#/components/schemas/PolarisState"}}
+                },
+            },
+        },
+        "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+    },
+    204: {"description": "No frame is newer than `after`."},
+    **errors(401, 422, 429),
+}
+
+
+@router.get(
+    "/polaris/frame",
+    operation_id="get_polaris_frame",
+    summary="Poll for the newest frame of the video of Polaris",
+    tags=["live"],
+    response_model=None,
+    response_class=Response,
+    responses=POLARIS_FRAME_RESPONSES,
+    dependencies=READ,
+)
+async def get_polaris_frame(
+    ctx: Ctx,
+    after: Annotated[int, Query(ge=0, description="The `X-Frame-Seq` of the last frame.")] = 0,
+) -> Response:
+    """Return the newest frame of the video of Polaris, for a client that cannot use the WebSocket.
+
+    The image is a lossless 8-bit grayscale PNG with the size of the ROI, so a page can magnify it
+    without interpolation. The state of the same frame travels in the header `X-Frame-State`, so
+    one request gets both. Each call keeps the stream to `core` open for a few seconds. Call it as
+    often as `ui.polaris_max_fps` says while the page shows the video. A value of `after` above
+    the newest number means that the server restarted, and the call returns the newest frame.
+    """
+    hub = ctx.polaris_hub
+    hub.touch()
+    latest = hub.latest
+    if latest is None or latest.seq == after:
+        return Response(status_code=204)
+    state, image = _polaris_parts(latest.frame)
+    return Response(
+        image,
+        media_type="image/png",
+        headers={
+            "X-Frame-Seq": str(latest.seq),
+            "X-Frame-State": json.dumps(state, separators=(",", ":")),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.websocket("/polaris/stream")
+async def polaris_stream(websocket: WebSocket) -> None:
+    # The video pushes the newest frame, with the protocol of `/alignment/stream`: a text message
+    # `{"type": "state", "state": {...}}` and then a binary message with the PNG image. The text
+    # message `{"type": "idle"}` says that no frame arrived for `stall_s` seconds, and
+    # `{"type": "error", "code": ...}` says that the stream to core broke. With
+    # `require_token_for_reads`, the client sends `{"type": "auth", "token": "..."}` first.
+    ctx = websocket.app.state.ctx
+    await _serve_stream(
+        ctx, websocket, ctx.polaris_hub, ctx.settings.live.polaris_max_fps, _polaris_describer
+    )
 
 
 def _add_series(path: str, record_type: str, name: str) -> None:
@@ -1032,11 +1153,47 @@ def _page_body(record_type: str, page: Any, now_ns: int) -> dict[str, Any]:
     }
 
 
-# --- The live view ---------------------------------------------------------------------------
+# --- The live views --------------------------------------------------------------------------
+
+F = TypeVar("F")
+# What a hub frame sends to one client: the JSON state, and the bytes of the image.
+Describe = Callable[[F], tuple[dict[str, Any], bytes]]
 
 
-async def _serve_stream(ctx: WebContext, websocket: WebSocket) -> None:
-    """Serve one WebSocket viewer of the alignment stream. See `alignment_stream`."""
+def _alignment_describer() -> Describe[AlignmentFrame]:
+    """The `describe` function of one alignment viewer, which keeps what the viewer has received."""
+    cursor = HistoryCursor()  # the focus history that this viewer has received
+
+    def describe(frame: AlignmentFrame) -> tuple[dict[str, Any], bytes]:
+        state = frame.state.model_dump(mode="json")
+        cursor.delta(state)
+        return state, frame.jpeg
+
+    return describe
+
+
+def _polaris_parts(frame: PolarisFrame) -> tuple[dict[str, Any], bytes]:
+    return frame.state.model_dump(mode="json"), frame.image
+
+
+def _polaris_describer() -> Describe[PolarisFrame]:
+    """The `describe` function of one viewer of the video of Polaris, which keeps nothing."""
+    return _polaris_parts
+
+
+async def _serve_stream(
+    ctx: WebContext,
+    websocket: WebSocket,
+    hub: FrameHub[F],
+    max_fps: float,
+    make_describe: Callable[[], Describe[F]],
+) -> None:
+    """Serve one WebSocket viewer of a live view. See `alignment_stream` and `polaris_stream`.
+
+    The two views share the protocol: the token, the limit of the viewers (`max_clients` for each
+    hub), and the messages. `max_fps` caps the frames that this viewer gets, and `make_describe`
+    gives this viewer its function that splits a frame into its JSON state and its image.
+    """
     client = ctx.client_key(websocket)
     needs_token = ctx.settings.require_token_for_reads
     authorized = not needs_token
@@ -1052,14 +1209,17 @@ async def _serve_stream(ctx: WebContext, websocket: WebSocket) -> None:
     if not authorized and not await _read_token(ctx, websocket, client):
         await websocket.close(code=WS_CLOSE_POLICY)
         return
-    if ctx.hub.viewers >= ctx.settings.live.max_clients:
+    if hub.viewers >= ctx.settings.live.max_clients:
         # The close comes after the handshake on purpose. A close before it turns into an HTTP
         # 403, which a browser reports as code 1006 (a failed connection). The page would take
         # "busy" for "broken" and fall back to polling, which the limit does not cover.
         await websocket.close(code=WS_CLOSE_TRY_LATER)
         return
-    async with ctx.hub.subscribe() as subscription:
-        sender = asyncio.ensure_future(_send_frames(ctx, websocket, subscription))
+    describe = make_describe()
+    async with hub.subscribe() as subscription:
+        sender = asyncio.ensure_future(
+            _send_frames(ctx, websocket, hub, subscription, max_fps, describe)
+        )
         receiver = asyncio.ensure_future(_drain(websocket))
         done, pending = await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -1095,14 +1255,20 @@ async def _drain(websocket: WebSocket) -> None:
             return
 
 
-async def _send_frames(ctx: WebContext, websocket: WebSocket, subscription: Subscription) -> None:
-    live = ctx.settings.live
-    min_interval_s = 1.0 / live.max_fps
+async def _send_frames(
+    ctx: WebContext,
+    websocket: WebSocket,
+    hub: FrameHub[F],
+    subscription: Subscription[F],
+    max_fps: float,
+    describe: Describe[F],
+) -> None:
+    stall_s = ctx.settings.live.stall_s
+    min_interval_s = 1.0 / max_fps
     clock = ctx.clock
     last_sent_ns: int | None = None
-    cursor = HistoryCursor()  # the focus history that this viewer has received
     while True:
-        update = await subscription.next_update(live.stall_s)
+        update = await subscription.next_update(stall_s)
         if update is None:
             await websocket.send_text(json.dumps({"type": "idle"}))
             continue
@@ -1114,12 +1280,11 @@ async def _send_frames(ctx: WebContext, websocket: WebSocket, subscription: Subs
         if last_sent_ns is not None:
             wait_s = min_interval_s - (clock.monotonic_ns() - last_sent_ns) / NS_PER_S
             if wait_s > 0:
-                await ctx.hub.sleep(wait_s)
+                await hub.sleep(wait_s)
                 frame = subscription.newest() or frame  # the newest frame wins
-        state = frame.frame.state.model_dump(mode="json")
-        cursor.delta(state)
+        state, image = describe(frame.frame)
         await websocket.send_text(json.dumps({"type": "state", "state": state}))
-        await websocket.send_bytes(frame.frame.jpeg)
+        await websocket.send_bytes(image)
         last_sent_ns = clock.monotonic_ns()
 
 

@@ -1,22 +1,23 @@
-"""The alignment hub: one stream from `core`, shared by many viewers."""
+"""The live-view hubs: one stream from `core`, shared by many viewers."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from functools import partial
 from typing import Any
 
 import pytest
 
 from seeingmon.clock import VirtualClock
-from seeingmon.services.web.contract import AlignmentFrame
+from seeingmon.services.web.contract import AlignmentFrame, PolarisFrame
 from seeingmon.services.web.core_client import (
     CoreProtocolError,
     CoreUnavailableError,
     FakeCoreClient,
 )
-from seeingmon.services.web.live import AlignmentHub
-from tests.services.web.helpers import alignment_state, tiny_jpeg
+from seeingmon.services.web.live import AlignmentHub, PolarisHub
+from tests.services.web.helpers import alignment_state, polaris_state, tiny_jpeg, tiny_png
 
 
 def frame(seq: int) -> AlignmentFrame:
@@ -31,10 +32,10 @@ class Source:
         self.opened = 0
         self.closed = 0
 
-    def __call__(self) -> AsyncIterator[AlignmentFrame]:
+    def __call__(self) -> AsyncIterator[Any]:
         return self._stream()
 
-    async def _stream(self) -> AsyncIterator[AlignmentFrame]:
+    async def _stream(self) -> AsyncIterator[Any]:
         self.opened += 1
         try:
             while True:
@@ -374,6 +375,134 @@ def test_the_hub_counts_the_frames_that_it_receives() -> None:
             await until(lambda: hub.frames_received == 5)
             assert hub.latest is not None
             assert hub.latest.seq == 5
+        await hub.close()
+
+    run(main())
+
+
+# --- The hub of the video of Polaris ---------------------------------------------------------
+
+
+def polaris_frame(seq: int = 0) -> PolarisFrame:
+    """A frame as `core` sends it: the state carries `seq` 0, because the hub numbers the frames."""
+    return PolarisFrame(polaris_state(seq=0), tiny_png(seq % 200))
+
+
+def make_polaris_hub(
+    source: Source, clock: VirtualClock | None = None, **options: Any
+) -> PolarisHub:
+    settings: dict[str, Any] = {"idle_s": 10.0, "retry_s": 0.0, "tick_s": 0.0, "sleep": fast_sleep}
+    settings.update(options)
+    core = FakeCoreClient(polaris=source)
+    return PolarisHub(core, clock or VirtualClock(), **settings)
+
+
+def received(hub: PolarisHub, count: int) -> bool:
+    return hub.frames_received == count
+
+
+def test_the_polaris_hub_stamps_its_sequence_number_into_the_state_of_each_frame() -> None:
+    async def main() -> None:
+        source = Source()
+        hub = make_polaris_hub(source)
+        async with hub.subscribe() as viewer:
+            for index in range(3):
+                source.queue.put_nowait(polaris_frame(index))
+            await until(lambda: hub.frames_received == 3)
+            update = await viewer.next_update(5)
+            assert update is not None
+            assert update.frame is not None
+            assert update.frame.seq == 3
+            assert update.frame.frame.state.seq == 3
+            assert update.frame.frame.state == polaris_state(seq=3)
+            assert update.frame.frame.image == tiny_png(2)
+        await hub.close()
+
+    run(main())
+
+
+def test_the_polaris_hub_numbers_the_frames_one_by_one_and_keeps_the_rest_of_the_state() -> None:
+    async def main() -> None:
+        source = Source()
+        hub = make_polaris_hub(source)
+        async with hub.subscribe():
+            seen = []
+            for count in range(1, 4):
+                source.queue.put_nowait(polaris_frame(count))
+                await until(partial(received, hub, count))
+                assert hub.latest is not None
+                seen.append(hub.latest.frame.state.seq)
+                assert hub.latest.frame.state.model_copy(update={"seq": 0}) == polaris_state(0)
+            assert seen == [1, 2, 3]
+        await hub.close()
+
+    run(main())
+
+
+def test_the_two_hubs_are_independent() -> None:
+    async def main() -> None:
+        aligned, polaris = Source(), Source()
+        clock = VirtualClock()
+        core = FakeCoreClient(frames=aligned, polaris=polaris)
+        options: dict[str, Any] = {"retry_s": 0.0, "tick_s": 0.0, "sleep": fast_sleep}
+        alignment_hub = AlignmentHub(core, clock, **options)
+        polaris_hub = PolarisHub(core, clock, **options)
+        async with alignment_hub.subscribe() as viewer:
+            assert alignment_hub.viewers == 1
+            assert polaris_hub.viewers == 0
+            assert not polaris_hub.running  # a viewer of one view does not open the other stream
+            await until(lambda: aligned.opened == 1)
+            assert polaris.opened == 0
+            async with polaris_hub.subscribe() as other:
+                await until(lambda: polaris.opened == 1)
+                aligned.queue.put_nowait(frame(1))
+                polaris.queue.put_nowait(polaris_frame(1))
+                one, two = await asyncio.gather(viewer.next_update(5), other.next_update(5))
+                assert one is not None
+                assert two is not None
+                assert one.frame is not None
+                assert two.frame is not None
+                assert one.frame.frame == frame(1)
+                assert two.frame.frame.state.seq == 1
+        await alignment_hub.close()
+        await polaris_hub.close()
+        assert (aligned.closed, polaris.closed) == (1, 1)
+
+    run(main())
+
+
+def test_a_broken_polaris_stream_is_reported_with_the_same_codes_and_reconnects() -> None:
+    async def main() -> None:
+        source = Source()
+        hub = make_polaris_hub(source)
+        async with hub.subscribe() as viewer:
+            source.queue.put_nowait(CoreUnavailableError("gone"))
+            update = await viewer.next_update(5)
+            assert update is not None
+            assert (update.error, update.error_changed) == ("core_unavailable", True)
+            await until(lambda: source.opened == 2)
+            source.queue.put_nowait(polaris_frame(1))
+            recovered = await viewer.next_update(5)
+            assert recovered is not None
+            assert recovered.error is None
+            assert recovered.frame is not None
+            assert recovered.frame.frame.state.seq == 1
+        await hub.close()
+
+    run(main())
+
+
+def test_the_polaris_hub_stops_its_stream_when_nobody_is_interested() -> None:
+    async def main() -> None:
+        clock = VirtualClock()
+        source = Source()
+        hub = make_polaris_hub(source, clock, idle_s=10.0)
+        hub.touch()
+        await until(lambda: source.opened == 1)
+        assert hub.name == "polaris"
+        clock.advance(11)
+        assert hub.check_idle() is True
+        await until(lambda: source.closed == 1)
         await hub.close()
 
     run(main())

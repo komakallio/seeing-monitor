@@ -257,3 +257,23 @@ def test_the_hash_stays_out_of_repr_and_the_effective_configuration(tmp_path: Pa
     effective = load_config(local_file=local, env={}).effective()
     assert HASH not in str(effective)
     assert effective["auth"] == {"token_hash": "<redacted>"}
+
+
+def test_the_video_of_polaris_has_its_own_cadence_and_shares_the_other_live_settings() -> None:
+    live = WebSettings().live
+    assert live.polaris_max_fps == 20.0
+    assert live.max_fps == 2.0  # the alignment preview keeps its own cadence
+    assert (live.max_clients, live.stall_s, live.idle_s) == (4, 5.0, 10.0)
+
+
+@pytest.mark.parametrize("value", [0, -1.0, 60.5])
+def test_the_cadence_of_the_video_has_bounds(value: float) -> None:
+    with pytest.raises(ValueError, match="polaris_max_fps"):
+        WebSettings.model_validate({"live": {"polaris_max_fps": value}})
+
+
+def test_a_local_file_sets_the_cadence_of_the_video(tmp_path: Path) -> None:
+    local = tmp_path / "local.toml"
+    local.write_text("[web.live]\npolaris_max_fps = 12.5\n", encoding="utf-8")
+    web = load_config(local_file=local, env={}).section("web", WebSettings)
+    assert web.live.polaris_max_fps == 12.5

@@ -25,9 +25,11 @@ from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
+    POLARIS_CHANNEL,
     RPC_CHANNEL,
     AlignmentFrameInfo,
     AlignmentState,
@@ -46,6 +48,7 @@ from seeingmon.services.web.contract import (
     decode_command,
     encode_result,
     pack_frame,
+    pack_polaris_frame,
 )
 from seeingmon.services.web.core_client import FakeCoreClient
 
@@ -174,8 +177,9 @@ def dark_set(name: str, temperature_c: float, age_days: float) -> DarkSetView:
 class ReferenceCore:
     """The server side of the web contract, on the real connection layer.
 
-    `frames` are the frames that every new `alignment` stream receives, in order. Set `handlers`
-    entries before `start` to replace a method, for example to make it fail.
+    `frames` are the frames that every new `alignment` stream receives, in order, and
+    `polaris_frames` are those of every new `polaris` stream. Set `handlers` entries before `start`
+    to replace a method, for example to make it fail.
     """
 
     def __init__(
@@ -185,10 +189,12 @@ class ReferenceCore:
         *,
         backend: FakeCoreClient | None = None,
         frames: list[tuple[AlignmentState, bytes]] | None = None,
+        polaris_frames: list[tuple[PolarisState, bytes]] | None = None,
         window: StreamWindow | None = None,
     ) -> None:
         self.backend = backend or FakeCoreClient(instance="reference-core")
         self.frames = frames or []
+        self.polaris_frames = polaris_frames or []
         self.handlers: dict[str, Handler] = {
             METHOD_PING: self._ping,
             METHOD_STATUS: self._status,
@@ -196,10 +202,14 @@ class ReferenceCore:
             METHOD_ALIGNMENT_STATE: self._alignment_state,
             METHOD_ALIGNMENT_RESET_FOCUS: self._alignment_reset_focus,
             METHOD_DARK_LIBRARY: self._dark_library,
+            METHOD_LIVE_SEEING: self._live_seeing,
         }
         self.raw_payloads: list[bytes] = []  # sent before the frames, to test a bad message
+        self.raw_polaris_payloads: list[bytes] = []
         self.streams_started = 0
+        self.polaris_streams_started = 0
         self.stream_senders: list[StreamSender] = []
+        self.polaris_senders: list[StreamSender] = []
         self.sending_done = threading.Event()
         self.endpoint = endpoint  # after `start`, the address that clients use
         self._key = key
@@ -227,17 +237,31 @@ class ReferenceCore:
     def _dark_library(self, params: Mapping[str, Any]) -> Any:
         return self.backend.dark_library().model_dump(mode="json")
 
+    def _live_seeing(self, params: Mapping[str, Any]) -> Any:
+        live = self.backend.live_seeing()
+        return None if live is None else live.model_dump(mode="json")
+
     def _on_sender(self, sender: StreamSender, params: Mapping[str, Any]) -> None:
         self.streams_started += 1
         self.stream_senders.append(sender)
         threading.Thread(target=self._send_frames, args=(sender,), daemon=True).start()
 
-    def _send_frames(self, sender: StreamSender) -> None:
+    def _on_polaris_sender(self, sender: StreamSender, params: Mapping[str, Any]) -> None:
+        self.polaris_streams_started += 1
+        self.polaris_senders.append(sender)
+        payloads = [
+            *self.raw_polaris_payloads,
+            *(pack_polaris_frame(state, image) for state, image in self.polaris_frames),
+        ]
+        threading.Thread(target=self._send_frames, args=(sender, payloads), daemon=True).start()
+
+    def _send_frames(self, sender: StreamSender, payloads: list[bytes] | None = None) -> None:
         try:
-            payloads = [
-                *self.raw_payloads,
-                *(pack_frame(state, jpeg) for state, jpeg in self.frames),
-            ]
+            if payloads is None:
+                payloads = [
+                    *self.raw_payloads,
+                    *(pack_frame(state, jpeg) for state, jpeg in self.frames),
+                ]
             for payload in payloads:
                 if not sender.wait_credit(len(payload), 5.0):
                     return
@@ -257,10 +281,13 @@ class ReferenceCore:
         )
         self._rpc.start()
         stream = StreamService(self._on_sender, max_window=self._window, name="reference-core")
+        polaris = StreamService(
+            self._on_polaris_sender, max_window=self._window, name="reference-core-polaris"
+        )
         server = IpcServer(
             self.endpoint,
             self._key,
-            {RPC_CHANNEL: self._rpc, ALIGNMENT_CHANNEL: stream},
+            {RPC_CHANNEL: self._rpc, ALIGNMENT_CHANNEL: stream, POLARIS_CHANNEL: polaris},
             handshake_timeout_s=2.0,
             **server_options,
         )
@@ -269,8 +296,8 @@ class ReferenceCore:
         return server
 
     def end_streams(self) -> None:
-        """Close every alignment stream from the server side, as a stopping `core` would."""
-        for sender in self.stream_senders:
+        """Close every live-view stream from the server side, as a stopping `core` would."""
+        for sender in (*self.stream_senders, *self.polaris_senders):
             sender.close()
 
     def stop(self) -> None:
