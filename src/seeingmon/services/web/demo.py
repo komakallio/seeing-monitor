@@ -7,7 +7,9 @@ sources, so that you can look at the UI on a laptop:
   real `Store`: seeing windows, sky quality, pointing, health, and events, and preview images with
   a few FITS frames. The data follow a made-up night (see `sun_elevation_deg`) with two cloud
   passes, a gust of wind, and a short camera fault. Nothing here describes a real place or a real
-  measurement. The records carry no zenith angle, and the station is `demo-station`.
+  measurement. The records carry no zenith angle, and the station is `demo-station`. The pointing
+  records put the pole 0.05 degree from the center of the frame, and Polaris circles it at 15
+  degrees an hour on a circle of 0.62 degree (see `pole_and_polaris`).
 - **A fake `core`.** `DemoCore` is a `FakeCoreClient` whose live view streams the frames of a
   synthetic star field (`StarField`) while the fake scheduler aligns. Start and stop the alignment
   in the UI with the demo token (`DEMO_TOKEN`). The pole starts 0.9 degrees right of and 0.4
@@ -117,6 +119,13 @@ POLE_DRIFT_PERIOD_S = 150.0
 ORBIT_RADIUS_PX = SKY_COLATITUDE_DEG * 3600.0 / PLATE_SCALE_ARCSEC_PX
 # The right ascension of Polaris in the demo, which only decides where the labels of the grid fall.
 POLARIS_RA_DEG = 45.0
+
+# The pole and Polaris in the pointing history. A rigid mount keeps the pole at one pixel, 47 pixels
+# (0.05 degree) from the center of the frame, and the sky turns once in a sidereal day. At the
+# newest record Polaris is 75 degrees from straight below the pole, toward the right.
+POLE_DISTANCE_PX = 47.0
+POLARIS_ANGLE_NOW_DEG = 75.0
+SIDEREAL_DEG_PER_HOUR = 360.98564736629 / 24.0
 
 
 class DemoClock:
@@ -267,25 +276,47 @@ def _sky_record(t_ns: int, now_ns: int, rng: random.Random) -> Record:
     )
 
 
+def pole_and_polaris(t_ns: int, now_ns: int, roll_deg: float) -> dict[str, float]:
+    """The pixels of the pole and of Polaris in a pointing record, as record fields.
+
+    The pole lies `POLE_DISTANCE_PX` from the center of the frame, in the direction that the roll
+    gives (the roll is the position angle of that direction, from image up toward image left).
+    Polaris lies `SKY_COLATITUDE_DEG` from the pole, which is `ORBIT_RADIUS_PX` in the image. Its
+    angle from straight below the pole toward the right grows by `SIDEREAL_DEG_PER_HOUR`, so
+    Polaris turns counterclockwise in the image, as the sky does for a camera that looks north.
+    """
+    roll = math.radians(roll_deg)
+    pole_x = FRAME_CENTER_X - POLE_DISTANCE_PX * math.sin(roll)
+    pole_y = FRAME_CENTER_Y - POLE_DISTANCE_PX * math.cos(roll)
+    hours_ago = (now_ns - t_ns) / HOUR_NS
+    angle = math.radians(POLARIS_ANGLE_NOW_DEG - SIDEREAL_DEG_PER_HOUR * hours_ago)
+    return {
+        "pole_x_px": round(pole_x, 2),
+        "pole_y_px": round(pole_y, 2),
+        "polaris_x_px": round(pole_x + ORBIT_RADIUS_PX * math.sin(angle), 2),
+        "polaris_y_px": round(pole_y + ORBIT_RADIUS_PX * math.cos(angle), 2),
+    }
+
+
 def _pointing_record(t_ns: int, now_ns: int, rng: random.Random) -> Record:
     hours = (now_ns - t_ns) / HOUR_NS
     offset = 0.55 + 0.25 * math.sin(hours / 3.1) + 0.05 * rng.random() + 0.01 * (24 - hours)
     cover = _cloud_cover(t_ns, now_ns)
     flags = ["few_stars"] if cover > 0.5 else []
+    roll = round(12.3 + 0.12 * math.sin(hours / 5.0), 3)
     return sample_record(
         "pointing",
         station_id=DEMO_STATION,
         profile_id=DEMO_PROFILE,
         t_utc_ns=t_ns,
         offset_arcmin=round(offset, 3),
-        roll_deg=round(12.3 + 0.12 * math.sin(hours / 5.0), 3),
+        roll_deg=roll,
         plate_scale_arcsec_px=PLATE_SCALE_ARCSEC_PX,
         attitude=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
         solve_rms_arcsec=round(2.9 + 0.4 * rng.random(), 3),
         n_matched=round(41 * (1 - 0.7 * cover)),
         focus_fwhm_px=round(2.35 + 0.1 * rng.random(), 3),
-        polaris_x_px=round(1036.0 + 6 * math.sin(hours / 2.2), 2),
-        polaris_y_px=round(691.0 + 4 * math.cos(hours / 2.7), 2),
+        **pole_and_polaris(t_ns, now_ns, roll),
         readout_mode="bin2",
         solver="demo-solver",
         solve_time_s=round(1.1 + 0.3 * rng.random(), 2),

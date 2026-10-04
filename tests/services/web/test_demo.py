@@ -9,6 +9,7 @@ import math
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from PIL import Image
 
 from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.records.base import Record
+from seeingmon.records.survey import PointingRecord
 from seeingmon.scheduler.commands import Pause, QueueDark, Resume, StartAlignment, StopAlignment
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import AlignmentState, pack_frame, unpack_frame
@@ -175,6 +177,74 @@ def test_the_same_seed_gives_the_same_records_and_another_seed_gives_others() ->
     other = [record.model_dump_json() for record in demo_records(seed=2)]
     assert first == again
     assert first != other
+
+
+# --- The pole and Polaris --------------------------------------------------------------------
+
+FRAME_CENTER = ((FRAME_WIDTH_PX - 1) / 2, (FRAME_HEIGHT_PX - 1) / 2)
+SIDEREAL_DEG_PER_HOUR = 360.98564736629 / 24.0
+COLATITUDE_PX = 0.62 * 3600 / PLATE_SCALE_ARCSEC_PX  # the circle of Polaris, about 584 pixels
+
+
+def polaris_angle_deg(record: Record) -> float:
+    """The position angle of Polaris around the pole, from image up toward image left."""
+    assert isinstance(record, PointingRecord)
+    assert None not in (record.polaris_x_px, record.polaris_y_px)
+    assert None not in (record.pole_x_px, record.pole_y_px)
+    dx = record.polaris_x_px - record.pole_x_px  # type: ignore[operator]
+    dy = record.polaris_y_px - record.pole_y_px  # type: ignore[operator]
+    return math.degrees(math.atan2(-dx, -dy))
+
+
+def test_the_pole_of_the_demo_lies_near_the_middle_of_the_frame_and_stays_put(
+    records: list[Record],
+) -> None:
+    pointing = of_type(records, "pointing")
+    assert len(pointing) >= 60
+    poles = [(r.pole_x_px, r.pole_y_px) for r in pointing]  # type: ignore[attr-defined]
+    assert None not in [value for pole in poles for value in pole]
+    for x, y in poles:
+        assert math.hypot(x - FRAME_CENTER[0], y - FRAME_CENTER[1]) == pytest.approx(47.0, abs=0.5)
+    assert max(x for x, _ in poles) - min(x for x, _ in poles) < 0.5  # a rigid mount
+    assert max(y for _, y in poles) - min(y for _, y in poles) < 0.5
+
+
+def test_the_roll_of_the_demo_is_the_direction_from_the_center_to_the_pole(
+    records: list[Record],
+) -> None:
+    for record in of_type(records, "pointing"):
+        dx = record.pole_x_px - FRAME_CENTER[0]  # type: ignore[attr-defined]
+        dy = record.pole_y_px - FRAME_CENTER[1]  # type: ignore[attr-defined]
+        assert math.degrees(math.atan2(-dx, -dy)) == pytest.approx(
+            record.roll_deg,  # type: ignore[attr-defined]
+            abs=0.05,
+        )
+
+
+def test_polaris_circles_the_pole_inside_the_frame_at_the_distance_of_its_colatitude(
+    records: list[Record],
+) -> None:
+    for record in of_type(records, "pointing"):
+        x, y = record.polaris_x_px, record.polaris_y_px  # type: ignore[attr-defined]
+        pole_x, pole_y = record.pole_x_px, record.pole_y_px  # type: ignore[attr-defined]
+        assert math.hypot(x - pole_x, y - pole_y) == pytest.approx(COLATITUDE_PX, abs=0.5)
+        assert 0.0 <= x <= FRAME_WIDTH_PX - 1
+        assert 0.0 <= y <= FRAME_HEIGHT_PX - 1
+
+
+def test_polaris_turns_counterclockwise_at_15_degrees_an_hour_in_the_demo(
+    records: list[Record],
+) -> None:
+    pointing = of_type(records, "pointing")
+    pairs = [
+        (first, second)
+        for first, second in pairwise(pointing)
+        if second.t_utc_ns - first.t_utc_ns == 600 * NS_PER_S
+    ]
+    assert len(pairs) >= 60
+    for first, second in pairs:
+        turn = (polaris_angle_deg(second) - polaris_angle_deg(first) + 180.0) % 360.0 - 180.0
+        assert turn == pytest.approx(SIDEREAL_DEG_PER_HOUR / 6.0, abs=0.02)  # 2.5 degrees
 
 
 # --- The star field --------------------------------------------------------------------------
@@ -483,6 +553,42 @@ def test_the_status_says_that_this_is_a_demo_with_a_healthy_station(
 )
 def test_every_read_route_answers_over_the_demo_data(demo_client: TestClient, path: str) -> None:
     assert demo_client.get(f"{API}{path}").status_code == 200
+
+
+def test_the_latest_demo_pointing_record_gives_the_pole_and_polaris(
+    demo_client: TestClient,
+) -> None:
+    latest = demo_client.get(f"{API}/pointing/latest").json()
+    for name in ("pole_x_px", "pole_y_px", "polaris_x_px", "polaris_y_px"):
+        assert isinstance(latest[name], float), name
+    assert latest["quality"] is None
+    radius = math.hypot(
+        latest["polaris_x_px"] - latest["pole_x_px"], latest["polaris_y_px"] - latest["pole_y_px"]
+    )
+    assert radius == pytest.approx(COLATITUDE_PX, abs=0.5)
+
+
+def test_the_demo_history_of_three_hours_shows_the_orbit(demo_client: TestClient) -> None:
+    params = {
+        "from": "2026-10-01T00:00:00Z",
+        "fields": "pole_x_px,pole_y_px,polaris_x_px,polaris_y_px",
+    }
+    items = demo_client.get(f"{API}/pointing", params=params).json()["items"]
+    assert len(items) == 18  # one record every 10 minutes, from 00:00 to 02:50
+    first, last = items[0], items[-1]
+    turn = 0.0
+    for before, after in pairwise(items):
+        angles = [
+            math.degrees(
+                math.atan2(
+                    -(i["polaris_x_px"] - i["pole_x_px"]), -(i["polaris_y_px"] - i["pole_y_px"])
+                )
+            )
+            for i in (before, after)
+        ]
+        turn += (angles[1] - angles[0] + 180.0) % 360.0 - 180.0
+    assert turn == pytest.approx(17 * SIDEREAL_DEG_PER_HOUR / 6.0, abs=0.2)  # 42.6 degrees
+    assert first["pole_x_px"] == pytest.approx(last["pole_x_px"], abs=0.5)
 
 
 def test_the_history_covers_the_night_in_pages_of_means(demo_client: TestClient) -> None:
