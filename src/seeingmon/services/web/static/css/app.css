@@ -1647,91 +1647,54 @@ label {
   font-weight: 700;
 }
 
-.polaris-plot {
-  width: 100%;
+/* The live image of Polaris reuses the frame of the Align live view (.live): a dark image in every
+   theme, with a cover that says what happens when the frames stop. */
+
+.polaris-live canvas {
+  aspect-ratio: 1 / 1;
+  max-width: 100%;
+  margin: 0 auto;
+  image-rendering: pixelated; /* nearest neighbor, never interpolated */
 }
 
-.polaris-svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 6px;
-  background: var(--surface-2);
+.polaris-live .tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 10px 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #d8dde8;
+  background: rgba(0, 0, 0, 0.6);
+  color: #d8dde8;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
-.polaris-svg * {
-  vector-effect: non-scaling-stroke;
+.polaris-live .tag::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--overlay-orbit-warn);
 }
 
-.pl-frame {
-  fill: none;
-  stroke: var(--border);
-  stroke-width: 1.5;
+.polaris-live .tag[data-level="good"]::before {
+  background: var(--overlay-orbit-good);
 }
 
-.pl-orbit {
-  fill: none;
-  stroke: var(--muted);
-  stroke-width: 1.5;
-  stroke-dasharray: 6 5;
+.polaris-live .cover[hidden] {
+  display: none;
 }
 
-.pl-trail {
-  stroke: var(--series-1);
-  stroke-width: 1.5;
-  opacity: 0.7;
-}
-
-.pl-dot {
-  fill: var(--series-1);
-  opacity: 0.8;
-}
-
-.pl-pole {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.5;
-}
-
-.pl-roi {
-  fill: none;
-  stroke: var(--good);
-  stroke-width: 1.5;
-}
-
-.pl-halo {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.5;
-  animation: pl-pulse 2.4s ease-in-out infinite;
-}
-
-.pl-star {
-  fill: var(--accent);
-}
-
-.pl-label {
-  fill: var(--muted);
-  font-family: var(--font);
-  paint-order: stroke;
-  stroke: var(--surface-2);
-  stroke-width: 3;
-  stroke-linejoin: round;
-}
-
-@keyframes pl-pulse {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-  50% {
-    opacity: 0.85;
-  }
+.polaris-zoom {
+  margin-top: 8px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .live-dot.ping,
-  .pl-halo,
   .activity .bar .fill {
     animation: none;
     transition: none;

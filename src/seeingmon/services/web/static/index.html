@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/app.css">
 <script src="js/common.js" defer></script>
 <script src="js/plot.js" defer></script>
+<script src="js/live.js" defer></script>
 <script src="js/polaris.js" defer></script>
 <script src="js/now.js" defer></script>
 </head>
@@ -34,6 +35,7 @@
     <div class="activity-times"><span id="act-since"></span><span id="act-left"></span></div>
     <div class="activity-next" id="act-next"></div>
     <p class="note" id="act-detail"></p>
+    <p class="note" id="act-reason"></p>
   </section>
 
   <div class="cards">
@@ -44,6 +46,17 @@
       <div class="chips" id="seeing-chips"></div>
       <dl class="facts" id="seeing-facts"></dl>
       <div id="seeing-plot"></div>
+    </article>
+
+    <article class="card" id="card-polaris" aria-labelledby="h-polaris">
+      <div class="card-head"><h2 id="h-polaris">Polaris</h2><span class="when" id="polaris-when"></span></div>
+      <div class="live polaris-live">
+        <canvas id="polaris-canvas" width="384" height="384" role="img" aria-label="Live image of Polaris from the fast stream"></canvas>
+        <span class="tag" id="polaris-tag" data-level="warn">NOT LIVE</span>
+        <div class="cover" id="polaris-cover">Connecting</div>
+      </div>
+      <div class="segmented polaris-zoom" id="polaris-zoom" role="group" aria-label="Zoom of the live image"></div>
+      <p class="note" id="polaris-note"></p>
     </article>
 
     <article class="card" id="card-sky" aria-labelledby="h-sky">
@@ -62,12 +75,6 @@
       <div class="chips" id="pointing-chips"></div>
       <dl class="facts" id="pointing-facts"></dl>
       <div id="pointing-plot"></div>
-    </article>
-
-    <article class="card" id="card-polaris" aria-labelledby="h-polaris">
-      <div class="card-head"><h2 id="h-polaris">Polaris</h2><span class="when" id="polaris-when"></span></div>
-      <div id="polaris-plot" class="polaris-plot"></div>
-      <p class="note" id="polaris-note"></p>
     </article>
 
     <article class="card" id="card-system" aria-labelledby="h-system">

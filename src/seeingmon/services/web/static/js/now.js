@@ -1,9 +1,9 @@
 "use strict";
 
 /*
- * The Now page: what the system is doing, the newest seeing, sky, and pointing records with a
- * sparkline of the last hours, Polaris on its orbit, the state of the system, the latest image,
- * and the latest events.
+ * The Now page: what the system is doing, the seeing (a live value and the stored records), the
+ * newest sky and pointing records with a sparkline of the last hours, a live image of Polaris,
+ * the state of the system, the latest image, and the latest events.
  *
  * The page polls the status every 2 seconds, and a card loads again only when a new record has
  * arrived. Every age ticks each second on the clock of the server, and it turns "late" and then
@@ -102,29 +102,76 @@
 
   // --- Cards ------------------------------------------------------------------------------------
 
-  async function loadSeeing(status) {
-    let record;
-    try {
-      record = await api.get("seeing/latest");
-    } catch (error) {
-      noData("seeing", error);
+  let seeingRecord = null; // the newest stored window
+  let liveSeeing = null; // the newest rolling estimate of the fast stream
+
+  /** How often a live value should arrive: every 2 s while the fast stream runs, else no verdict. */
+  const expectLive = () => (activity && activity.fast ? 6 : 0);
+
+  function renderSeeing() {
+    const record = seeingRecord;
+    const live = liveSeeing;
+    const liveAt = live ? (live.t_utc ? Date.parse(live.t_utc) : live.t_utc_ns / 1e6) : null;
+    const recordAt = record ? Date.parse(record.t_utc) + record.duration_s * 1000 : null;
+    // The newer of the two leads, so the number keeps its source when the fast stream pauses.
+    const useLive = live !== null && live.seeing_fwhm_arcsec !== null && (recordAt === null || liveAt >= recordAt);
+    if (!useLive) {
+      if (record === null) {
+        return;
+      }
+      const value = record.seeing_fwhm_arcsec;
+      setBig("seeing-value", fmt.num(value, 2), "″ FWHM", value === null);
+      $("seeing-note").textContent = value === null ? why(record, "seeing_fwhm_arcsec") || "No value in the newest window." : "Stored window of " + record.duration_s + " s.";
+      watchAge($("seeing-when"), Date.parse(record.t_utc), expect("seeing"));
+      setChips("seeing-chips", record.flags);
+      setFacts("seeing-facts", [
+        ["Fried parameter r0", value === null ? fmt.dash : fmt.num(record.r0_cm, 1) + " cm"],
+        ["Image motion rms", fmt.arcsec(record.image_motion_rms_x_arcsec, 2) + " x, " + fmt.arcsec(record.image_motion_rms_y_arcsec, 2) + " y"],
+        ["Star width", fmt.arcsec(record.width_fwhm_arcsec, 2)],
+        ["Scintillation index", fmt.num(record.scintillation_index, 4)],
+        ["Valid frames", fmt.percent(record.valid_fraction, 1) + " of " + record.n_frames],
+        ["Window", fmt.stamp(record.t_utc) + ", " + record.duration_s + " s"],
+        ["Camera", record.readout_mode + ", " + record.exposure_us / 1000 + " ms, gain " + record.gain],
+      ]);
       return;
     }
-    const value = record.seeing_fwhm_arcsec;
-    setBig("seeing-value", fmt.num(value, 2), "″ FWHM", value === null);
-    $("seeing-note").textContent = value === null ? why(record, "seeing_fwhm_arcsec") || "No value in the newest window." : "";
-    watchAge($("seeing-when"), Date.parse(record.t_utc), expect("seeing"));
-    setChips("seeing-chips", record.flags);
+    setBig("seeing-value", fmt.num(live.seeing_fwhm_arcsec, 2), "″ FWHM", false);
+    const stored = record && record.seeing_fwhm_arcsec !== null ? " Stored " + record.duration_s + " s window: " + fmt.arcsec(record.seeing_fwhm_arcsec, 2) + " at " + fmt.clock(record.t_utc) + " UTC." : "";
+    const paused = activity && !activity.fast && activity.state === "auto" ? " Paused: " + activity.label + "." : "";
+    $("seeing-note").textContent = "Live estimate over the last " + Math.round(live.span_s) + " s, not stored." + stored + paused;
+    watchAge($("seeing-when"), liveAt, expectLive, "live ");
+    setChips("seeing-chips", live.flags);
     setFacts("seeing-facts", [
-      ["Fried parameter r0", value === null ? fmt.dash : fmt.num(record.r0_cm, 1) + " cm"],
-      ["Image motion rms", fmt.arcsec(record.image_motion_rms_x_arcsec, 2) + " x, " + fmt.arcsec(record.image_motion_rms_y_arcsec, 2) + " y"],
-      ["Star width", fmt.arcsec(record.width_fwhm_arcsec, 2)],
-      ["Scintillation index", fmt.num(record.scintillation_index, 4)],
-      ["Valid frames", fmt.percent(record.valid_fraction, 1) + " of " + record.n_frames],
-      ["Window", fmt.stamp(record.t_utc) + ", " + record.duration_s + " s"],
-      ["Camera", record.readout_mode + ", " + record.exposure_us / 1000 + " ms, gain " + record.gain],
+      ["Structure function", fmt.arcsec(live.seeing_fwhm_structure_arcsec, 2)],
+      ["Fried parameter r0", fmt.num(live.r0_cm, 1) + " cm"],
+      ["Image motion rms", fmt.arcsec(live.image_motion_rms_x_arcsec, 2) + " x, " + fmt.arcsec(live.image_motion_rms_y_arcsec, 2) + " y"],
+      ["Star width", fmt.arcsec(live.width_fwhm_arcsec, 2)],
+      ["Valid frames", fmt.percent(live.valid_fraction, 1) + " of " + live.n_frames],
+      ["Camera", live.readout_mode + ", " + live.exposure_us / 1000 + " ms"],
     ]);
+  }
+
+  async function loadSeeing(status) {
+    try {
+      seeingRecord = await api.get("seeing/latest");
+    } catch (error) {
+      seeingRecord = null;
+      if (liveSeeing === null) {
+        noData("seeing", error);
+      }
+      return;
+    }
+    renderSeeing();
     await spark("seeing", "seeing", "seeing_fwhm_arcsec", sparkRange(status), { label: "Seeing FWHM, last " + SPARK_HOURS + " h", unit: "″", digits: 2 });
+  }
+
+  async function loadLive() {
+    try {
+      liveSeeing = await api.get("seeing/live");
+    } catch (error) {
+      liveSeeing = null; // an older server, or no value yet
+    }
+    renderSeeing();
   }
 
   async function loadSky(status) {
@@ -337,8 +384,10 @@
       ends: ms(a && a.ends_utc),
       nextLabel: (a && a.next_label) || null,
       next: ms(a && a.next_utc),
-      detail: (a && (a.detail || a.reason)) || (waiting ? "" : s.state_reason) || "",
+      detail: (a && a.detail) || "",
+      reason: (a && a.reason) || (waiting ? "" : s.state_reason) || "",
       degraded: Boolean(s.degraded),
+      fast: a ? a.phase === "fast" : purpose === "fast",
     };
   }
 
@@ -382,80 +431,12 @@
       }
     }
     $("act-detail").textContent = activity.detail || "";
+    $("act-reason").textContent = activity.reason ? "Why: " + activity.reason : "";
   }
 
   // --- Polaris ----------------------------------------------------------------------------------
 
   let polaris = null;
-  let polarisData = null;
-  let profileModes = null;
-  let poleFields = true;
-
-  async function loadPolaris(status) {
-    if (!profileModes) {
-      const profile = await api.get("profile");
-      profileModes = Object.fromEntries(profile.readout_modes.map((mode) => [mode.name, mode]));
-    }
-    const from = new Date(Status.nowMs() - 3 * 3600e3).toISOString();
-    const base = "polaris_x_px,polaris_y_px,plate_scale_arcsec_px,readout_mode";
-    let page;
-    try {
-      page = await api.get("pointing", { from, fields: poleFields ? base + ",pole_x_px,pole_y_px" : base, limit: 300 });
-    } catch (error) {
-      if (!poleFields || error.code !== "invalid_request") {
-        throw error;
-      }
-      // A server of an older release: its pointing record has no pole, so the widget extrapolates.
-      poleFields = false;
-      page = await api.get("pointing", { from, fields: base, limit: 300 });
-    }
-    const rows = page.items
-      .filter((item) => item.polaris_x_px !== null && item.polaris_x_px !== undefined && profileModes[item.readout_mode])
-      .sort((a, b) => Date.parse(a.t_utc) - Date.parse(b.t_utc));
-    if (rows.length === 0) {
-      polarisData = null;
-      polaris.update(null);
-      watchAge($("polaris-when"), null, 0);
-      $("polaris-note").textContent = "No solved pointing in the last 3 hours.";
-      return;
-    }
-    const last = rows[rows.length - 1];
-    const mode = profileModes[last.readout_mode];
-    const pole = (value) => (value === null || value === undefined ? null : value);
-    polarisData = {
-      frame: { width: mode.width_px, height: mode.height_px },
-      scale: last.plate_scale_arcsec_px,
-      fast: Boolean(status.scheduler && status.scheduler.stream && status.scheduler.stream.purpose === "fast"),
-      points: rows.map((row) => ({
-        t: Date.parse(row.t_utc),
-        x: row.polaris_x_px,
-        y: row.polaris_y_px,
-        px: pole(row.pole_x_px),
-        py: pole(row.pole_y_px),
-      })),
-    };
-    polaris.update(polarisData);
-    tickPolaris();
-    watchAge($("polaris-when"), Date.parse(last.t_utc), expect("pointing"));
-  }
-
-  function tickPolaris() {
-    if (!polaris || !polarisData) {
-      return;
-    }
-    const at = polaris.tick(Status.nowMs());
-    if (!at) {
-      return;
-    }
-    const orbit = polaris.orbit;
-    const perMinute = orbit ? orbit.radius * window.Polaris.SIDEREAL_RAD_PER_S * 60 : null;
-    const old = at.ageS > 600 ? " The marker rests on a solution that is " + fmt.duration(at.ageS) + " old." : "";
-    $("polaris-note").textContent =
-      "Polaris circles the pole at 15° an hour" +
-      (perMinute === null ? "" : ", " + fmt.num(perMinute, 1) + " px a minute in this frame") +
-      ". The green square is the ROI of the fast stream." +
-      old;
-  }
 
   // --- The banner and the refresh ---------------------------------------------------------------
 
@@ -531,22 +512,33 @@
     reload("pointing", stampOf(status.data.pointing) + "|" + minute, () => loadPointing(status));
     reload("events", stampOf(status.data.event) + "|" + minute, loadEvents);
     reload("image", String(Math.floor(nowMs / 30000)), loadImage);
-    const fast = Boolean(status.scheduler && status.scheduler.stream && status.scheduler.stream.purpose === "fast");
-    reload("polaris", stampOf(status.data.pointing) + "|" + Math.floor(nowMs / 20000) + "|" + fast, () => loadPolaris(status));
+    reload("live", String(Math.floor(nowMs / POLL_MS)), loadLive);
   }
 
   window.addEventListener("DOMContentLoaded", () => {
     window.Seeing.boot("now", { statusEvery: false });
-    polaris = window.Polaris.create($("polaris-plot"));
+    polaris = window.PolarisLive.create({
+      canvas: $("polaris-canvas"),
+      cover: $("polaris-cover"),
+      tag: $("polaris-tag"),
+      note: $("polaris-note"),
+      when: $("polaris-when"),
+      zoomBox: $("polaris-zoom"),
+      fastRunning: () => Boolean(activity && activity.fast),
+      reason: () => (activity ? activity.label : ""),
+      expect: expectLive,
+    });
     Ticker.add(renderLive);
     Ticker.add(renderActivity);
-    Ticker.add(tickPolaris);
+    Ticker.add(polaris.tick);
     renderLive();
+    polaris.start();
     const loop = poller(refresh, () => POLL_MS);
     window.addEventListener("seeing:token", () => {
       for (const key of Object.keys(seen)) {
         delete seen[key];
       }
+      polaris.restart();
       loop.now();
     });
     loop.start();

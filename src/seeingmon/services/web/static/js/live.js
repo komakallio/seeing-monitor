@@ -219,7 +219,7 @@
       }
       this.lastFrameAt = this.o.now();
       this.setName("live");
-      this.o.onFrame(new Blob([data], { type: "image/jpeg" }), state);
+      this.o.onFrame(new Blob([data], { type: state.image_type || "image/jpeg" }), state);
     }
 
     /** Call it about once a second: it notices that the frames stopped. */
