@@ -12,6 +12,7 @@ real time. Run it with `--slow`.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -36,6 +37,7 @@ def system(tmp_path_factory: pytest.TempPathFactory) -> Iterator[System]:
         tmp_path_factory.mktemp("real"),
         with_web=False,
         acquire_driver="asi",
+        log_level="info",  # the log of acquire says what priority its capture thread got
         acquire_overrides={"services": {"acquire": {"driver_options": {"fake_sdk": True}}}},
         core_overrides={
             # The Sun at the synthetic site must not keep the scheduler in `safe` at noon.
@@ -48,6 +50,16 @@ def system(tmp_path_factory: pytest.TempPathFactory) -> Iterator[System]:
 
 
 class TestTheRealCameraSetup:
+    def test_acquire_raises_the_priority_of_its_capture_thread_and_says_so(
+        self, system: System
+    ) -> None:
+        log = system.children["acquire"].spec.log.read_text(encoding="utf-8", errors="replace")
+        assert "capture thread priority: " in log
+        assert "capture thread priority: disabled" not in log  # the launcher turned it on
+        if sys.platform == "win32":
+            assert "capture thread priority: highest thread priority" in log
+            assert "timer resolution: 1 ms resolution" in log
+
     def test_core_opens_the_asi_driver_and_the_clock_is_real(self, system: System) -> None:
         assert system.plan.real
         system.wait_for(lambda: bool(system.records("run")), "the run record")
