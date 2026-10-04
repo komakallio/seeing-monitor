@@ -30,6 +30,9 @@ tables and applies the migrations.
 **Rows.** `row_to_sqlite` turns the output of `Record.to_row` into parameters for the
 statements, and `sqlite_to_row` turns a fetched row back into the input of `Record.from_row`.
 `insert_record` appends a record, and `fetch_after` reads the rows after a sink cursor.
+`select_columns_sql` builds the column list of a read. A reader that cannot migrate the database
+(`web` and the tools open it read-only) passes the columns that the table has, so a field that an
+older release did not store reads as `None` instead of failing the query.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from seeingmon.records.base import (
@@ -275,12 +278,30 @@ def upsert_sql(record: str | type[Record]) -> str:
     return f"{insert_sql(cls)} ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
 
 
-def select_after_sql(record: str | type[Record]) -> str:
-    """`SELECT` the rows after a cursor, in row order, with `:after` and `:limit` parameters."""
+def select_columns_sql(record: str | type[Record], present: Collection[str] | None = None) -> str:
+    """The column list of a `SELECT` that reads whole records: `row_id`, then each declared field.
+
+    `present` names the columns that the table has, as `PRAGMA table_info` lists them. A declared
+    field that the table lacks reads as `NULL`, so a database that an older release wrote still
+    reads before a migration adds the column. The result then has the key of the field with the
+    value `None`. Without `present`, the list assumes a current table and names every column.
+    """
     cls = _require_table(record)
-    columns = ", ".join(quote(name) for name in [ROW_ID, *(s.name for s in field_specs(cls))])
+    names = [ROW_ID, *(spec.name for spec in field_specs(cls))]
+    return ", ".join(
+        quote(name) if present is None or name in present else f"NULL AS {quote(name)}"
+        for name in names
+    )
+
+
+def select_after_sql(record: str | type[Record], present: Collection[str] | None = None) -> str:
+    """`SELECT` the rows after a cursor, in row order, with `:after` and `:limit` parameters.
+
+    `present` is the same as for `select_columns_sql`.
+    """
+    cls = _require_table(record)
     return (
-        f"SELECT {columns} FROM {quote(cls.record_type)} "
+        f"SELECT {select_columns_sql(cls, present)} FROM {quote(cls.record_type)} "
         f"WHERE {quote(ROW_ID)} > :after ORDER BY {quote(ROW_ID)} LIMIT :limit"
     )
 

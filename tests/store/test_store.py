@@ -376,6 +376,69 @@ class TestReads:
             assert reader.count("health") == 1
 
 
+class TestAnOlderDatabase:
+    """A database that an older release wrote lacks the columns of the fields added since.
+
+    `web` and the tools open the store read-only, so they cannot migrate it. They read the old
+    rows with `None` for the new fields. Only a writer (`core`) adds the columns.
+    """
+
+    @pytest.fixture
+    def old_db(self, db_path: Path) -> Path:
+        with Store.open(db_path) as writer:
+            writer.write_many(
+                [make_health(T0 + n, queue_depth=n, heater_duty=0.25) for n in range(3)]
+            )
+        with raw(db_path) as connection:  # what the table looked like before the fields
+            connection.execute('ALTER TABLE "health" DROP COLUMN "queue_depth"')
+            connection.execute('ALTER TABLE "health" DROP COLUMN "heater_duty"')
+            connection.commit()
+        return db_path
+
+    def test_every_read_gives_none_for_a_column_that_the_table_lacks(self, old_db: Path) -> None:
+        with StoreReader.open(old_db) as reader:
+            latest = reader.latest("health")
+            ranged = reader.range("health", T0, T0 + 10, descending=True)
+            after = reader.after("health", 1)
+            with reader.snapshot() as snapshot:
+                snapped = snapshot.latest("health")
+        assert latest is not None
+        assert snapped is not None
+        for row in [latest, snapped, *ranged, *after]:
+            assert row.values["queue_depth"] is None
+            assert row.values["heater_duty"] is None
+            assert row.values["state"] == make_health().state  # the other columns read as before
+        assert [row.values["t_utc_ns"] - T0 for row in ranged] == [2, 1, 0]
+        assert [row.row_id for row in after] == [2, 3]
+
+    def test_a_record_builds_from_a_row_of_the_old_table(self, old_db: Path) -> None:
+        with StoreReader.open(old_db) as reader:
+            latest = reader.latest("health")
+        assert latest is not None
+        record = record_from_row("health", latest)
+        assert (record.queue_depth, record.heater_duty) == (None, None)  # type: ignore[attr-defined]
+        assert record.t_utc_ns == T0 + 2
+
+    def test_a_table_that_does_not_exist_still_fails_the_read(self, old_db: Path) -> None:
+        with raw(old_db) as connection:
+            connection.execute('DROP TABLE "event"')
+            connection.commit()
+        with StoreReader.open(old_db) as reader, pytest.raises(sqlite3.OperationalError):
+            reader.latest("event")
+
+    def test_a_writer_adds_the_columns_and_the_old_rows_keep_their_place(
+        self, old_db: Path
+    ) -> None:
+        with Store.open(old_db) as store:
+            store.write(make_health(T0 + 3, queue_depth=7, heater_duty=0.5))
+            rows = store.range("health", T0, T0 + 10)
+        assert [row.values["queue_depth"] for row in rows] == [None, None, None, 7]
+        assert [row.values["heater_duty"] for row in rows] == [None, None, None, 0.5]
+        with raw(old_db) as connection:
+            names = [row[1] for row in connection.execute('PRAGMA table_info("health")')]
+        assert set(names[-2:]) == {"queue_depth", "heater_duty"}  # the migration appends them
+
+
 class TestCursors:
     def test_a_sink_without_a_cursor_starts_at_zero(self, store: Store) -> None:
         assert store.cursor("influx", "health") == 0

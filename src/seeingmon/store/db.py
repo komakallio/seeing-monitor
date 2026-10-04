@@ -11,7 +11,9 @@ last few commits and never corrupts the file. `Store.open` creates the tables an
 additive migrations of `seeingmon.records.sqlite_schema`. It also stamps the file with an
 application ID, so the store refuses to create tables inside an unrelated SQLite file. A
 database that a newer version of the software migrated still opens, because the store accepts
-columns that its declarations lack.
+columns that its declarations lack. A reader that opens the database read-only cannot migrate
+it, so a database that an older release wrote can lack a declared column until `core` opens it
+for writing. The reader reads such a column as `None`.
 
 **Records.** Every table record type is a table with an autoincrement row ID. Tables are
 append-only, so the cursor of a sink is the last row ID that the sink acknowledged, and a new
@@ -40,7 +42,6 @@ once, when no thread uses the store any more.
 from __future__ import annotations
 
 import contextlib
-import functools
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Iterator
@@ -49,13 +50,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from seeingmon.records.base import Record, field_specs, get_record_type
+from seeingmon.records.base import Record, get_record_type
 from seeingmon.records.sqlite_schema import (
     ROW_ID,
     ensure_schema,
     insert_record,
     quote,
     select_after_sql,
+    select_columns_sql,
     sqlite_to_row,
     table_record_types,
 )
@@ -165,10 +167,10 @@ def _rollback(connection: sqlite3.Connection) -> None:
             connection.execute("ROLLBACK")
 
 
-@functools.cache
-def _column_list(cls: type[Record]) -> str:
-    names = [ROW_ID, *(spec.name for spec in field_specs(cls))]
-    return ", ".join(quote(name) for name in names)
+def _present_columns(connection: sqlite3.Connection, cls: type[Record]) -> frozenset[str]:
+    """The columns that the table of a record type has now. It is empty for a missing table."""
+    info = connection.execute(f"PRAGMA table_info({quote(cls.record_type)})").fetchall()
+    return frozenset(str(row[1]) for row in info)
 
 
 def _stored_rows(cursor: sqlite3.Cursor, cls: type[Record]) -> list[StoredRow]:
@@ -310,8 +312,21 @@ class _ReadView:
             )
         return cls
 
-    def _select(self, cls: type[Record], sql: str, params: dict[str, Any]) -> list[StoredRow]:
+    def _select(
+        self,
+        cls: type[Record],
+        build_sql: Callable[[frozenset[str]], str],
+        params: dict[str, Any],
+    ) -> list[StoredRow]:
+        """Read whole records. `build_sql` takes the columns of the table and returns the query.
+
+        A table that an older release wrote can lack a declared column, and a reader cannot add
+        it. The query reads such a column as `NULL`, so the value is `None` in every build of
+        SQLite. A missing column name in double quotes is a text literal in some builds and an
+        error in others.
+        """
         with self._connection() as connection:
+            sql = build_sql(_present_columns(connection, cls))
             return _stored_rows(connection.execute(sql, params), cls)
 
     def _scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
@@ -329,11 +344,14 @@ class _ReadView:
         cls = self._table_type(record_type)
         table = quote(cls.record_type)
         where = ' WHERE "station_id" = :station' if station_id is not None else ""
-        sql = (
-            f"SELECT {_column_list(cls)} FROM {table}{where} "
-            f'ORDER BY "t_utc_ns" DESC, "revision" DESC, "{ROW_ID}" DESC LIMIT 1'
-        )
-        rows = self._select(cls, sql, {"station": station_id} if station_id is not None else {})
+
+        def build(present: frozenset[str]) -> str:
+            return (
+                f"SELECT {select_columns_sql(cls, present)} FROM {table}{where} "
+                f'ORDER BY "t_utc_ns" DESC, "revision" DESC, "{ROW_ID}" DESC LIMIT 1'
+            )
+
+        rows = self._select(cls, build, {"station": station_id} if station_id is not None else {})
         return rows[0] if rows else None
 
     def range(
@@ -371,12 +389,16 @@ class _ReadView:
                 f'AND newer."revision" > {table}."revision")'
             )
         direction = "DESC" if descending else "ASC"
-        sql = (
-            f"SELECT {_column_list(cls)} FROM {table} WHERE {' AND '.join(conditions)} "
-            f'ORDER BY "t_utc_ns" {direction}, "revision" {direction}, '
-            f'"{ROW_ID}" {direction} LIMIT :limit'
-        )
-        return self._select(cls, sql, params)
+
+        def build(present: frozenset[str]) -> str:
+            return (
+                f"SELECT {select_columns_sql(cls, present)} FROM {table} "
+                f"WHERE {' AND '.join(conditions)} "
+                f'ORDER BY "t_utc_ns" {direction}, "revision" {direction}, '
+                f'"{ROW_ID}" {direction} LIMIT :limit'
+            )
+
+        return self._select(cls, build, params)
 
     def after(self, record_type: str, row_id: int, limit: int = 1000) -> list[StoredRow]:
         """Return up to `limit` rows with a row ID greater than `row_id`, in row order.
@@ -388,7 +410,9 @@ class _ReadView:
         if limit < 1:
             raise ValueError("limit must be at least 1")
         cls = self._table_type(record_type)
-        return self._select(cls, select_after_sql(cls), {"after": row_id, "limit": limit})
+        return self._select(
+            cls, lambda present: select_after_sql(cls, present), {"after": row_id, "limit": limit}
+        )
 
     def count(self, record_type: str) -> int:
         """Return the number of rows in the table of a record type."""

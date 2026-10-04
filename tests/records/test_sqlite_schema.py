@@ -26,6 +26,7 @@ from seeingmon.records.sqlite_schema import (
     schema_sql,
     schema_statements,
     select_after_sql,
+    select_columns_sql,
     sqlite_to_row,
     table_record_types,
     upsert_sql,
@@ -317,6 +318,35 @@ class TestKeyAndCursor:
             insert(db, event(t_utc_ns=1))
             rows = db.execute(select_after_sql("event"), {"after": 0, "limit": 10}).fetchall()
         assert [row["row_id"] for row in rows] == [1]
+
+
+class TestSelectColumns:
+    def test_the_list_names_the_row_id_and_every_declared_field_in_order(self) -> None:
+        names = ["row_id", *(spec.name for spec in field_specs(EventRecord))]
+        assert select_columns_sql(EventRecord) == ", ".join(f'"{name}"' for name in names)
+        assert select_columns_sql("event", names) == select_columns_sql(EventRecord)
+
+    def test_a_column_that_the_table_lacks_reads_as_null_under_its_own_name(self) -> None:
+        present = ["row_id", "station_id", "level"]
+        listed = select_columns_sql("event", present).split(", ")
+        assert listed[:2] == ['"row_id"', '"station_id"']
+        assert 'NULL AS "message"' in listed
+        assert 'NULL AS "detail"' in listed
+        assert '"level"' in listed
+
+    def test_the_select_of_an_older_table_returns_every_declared_key(self) -> None:
+        with memory_db() as db:
+            db.execute(create_table_sql(EventRecord))
+            insert(db, event(t_utc_ns=1, detail={"a": 1}))
+            db.execute('ALTER TABLE "event" DROP COLUMN "detail"')
+            present = {row["name"] for row in table_info(db, "event")}
+            cursor = db.execute(select_after_sql("event", present), {"after": 0, "limit": 10})
+            names = [column[0] for column in cursor.description]
+            stored = cursor.fetchone()
+        assert names == ["row_id", *(spec.name for spec in field_specs(EventRecord))]
+        row = sqlite_to_row(EventRecord, stored)
+        assert row["detail"] is None
+        assert EventRecord.from_row(row, strict=True) == event(t_utc_ns=1)
 
 
 class TestUpsert:
