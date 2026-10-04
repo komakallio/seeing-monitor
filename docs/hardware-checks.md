@@ -115,6 +115,54 @@ The rows use the full width of the frame, so the pixels of a row stay the same a
 
 If a row fails with `CameraTimeoutError` and `the exposure did not finish within`, the camera is slower than twice the model plus 0.5 s, and the scheduler would time out there too. Raise the values in the profile until the row passes, and run the group again. Until the profile holds the new values, raise `read_timeout_margin_s` under `[scheduler.loop]` and `[services.acquire]` in `local/config.toml`. The setting stays available for a slow camera or host.
 
+## Measure the lost and late frames of the live system
+
+The first light on the Windows dev machine counted about 10% of the frames as lost at 82 frames per second, and almost every window carried `degraded`. The same camera on a Raspberry Pi 4 counted none. The windows held 82.1 frames per second, which is the rate that `seeingmon camera rates` measures, so the frames most likely arrived. This section says what changed and how to check it on the next run with the camera. The architecture explains the accounting ("Drops" under "Processes, data rates, and storage", and "The `degraded` rule" under "Seeing (fast)").
+
+**What changed.** The drop accounting of `acquire` waits for the next read before it counts a gap, because a read that comes late looks like a loss: when the host runs behind, the camera keeps the frames and hands them over one after the other. A read that follows within half a frame period of the late one clears the gap, and the health summary counts a late read. The accounting also stopped reading the frame period from the time fit, which counts the frames that the rule declares lost. On Windows, `acquire` now runs its capture thread at the highest thread priority and asks for a 1 ms system timer. On the dev machine, a fake camera at 82 frames per second that loses no frame showed 3 to 12% lost frames at normal priority with the old rule, and 0.1% with the new rule at normal priority. At the highest priority, the 99th percentile of the read intervals fell from 23 to 29 ms to 14 to 15 ms (the frame period is 12.2 ms). Nobody has run these changes on the real camera yet, so the next run decides whether they explain the 10%.
+
+**Run it.** Close other camera programs. Start the system on the camera, and let the fast stream run for 10 minutes or more. The scheduler runs the fast stream while it is in `auto`, which needs the Sun below the limit at your site.
+
+```bash
+uv run seeingmon dev --driver asi --real-sky --data-dir <data folder>
+```
+
+Without `--real-sky`, add `--log-level info --keep-data`, because the health line is an `info` line, and a run with no data folder removes its logs when it stops. Read the `health:` lines of `acquire.log` in the folder `logs/<start time>` of your data folder.
+
+**The health line.** `acquire` logs one summary a minute, and the same text goes to systemd as its status. This line is an example, not a measurement:
+
+```text
+health: streaming, 82.1 fps, 9413 frames, 12 dropped (driver 12, gap 0, queue 0), 0.1% lost and 0.4% late in the last minute, priority: highest thread priority, timer: 1 ms resolution
+```
+
+| Part | Meaning |
+|---|---|
+| `dropped (driver, gap, queue)` | Frames lost since the process started, by source. `driver` is the counter of the SDK. `gap` is a hole in the arrival times that no counter explains and that no catch-up read cleared. `queue` is the overflow of the frame queue. |
+| `lost` in the last minute | Lost frames as a share of the frames that should have arrived. A window carries `degraded` above 5%. |
+| `late` in the last minute | Reads that came more than 1.5 frame periods after the one before and that a catch-up read cleared, as a share of the frames. The host was late, and no frame was lost. |
+| `priority` | What the capture thread got: `highest thread priority` on Windows, `real-time round-robin priority 10` or `nice -10` on Linux, `disabled`, or the reason that the thread keeps its normal priority. |
+| `timer` | Windows only: `1 ms resolution`, `disabled`, or the reason that the timer keeps its default resolution of 15.6 ms. |
+
+**Read the result.**
+
+| You see | It means | Next step |
+|---|---|---|
+| `lost` under 1% and `late` under 5%, and the windows no longer carry `degraded` | The change explains the 10% | Put the numbers in the status |
+| `lost` is high, and `driver` holds almost all of it | The SDK counts the loss, so the camera or the USB path loses frames | Run `seeingmon camera rates`, and read the `dropped` column of its baseline row. Try another USB 3 port without a hub, and a shorter cable. Compare with the Pi |
+| `lost` is high, and `gap` holds almost all of it | The reads stalled for longer than the camera buffers frames, or the camera paused, and no catch-up followed | Read `late` and the load of the machine, close other programs, and check `priority` |
+| `late` is above 5%, and `lost` is low | The capture thread runs late, and the accounting absorbs it | Check that `priority` and `timer` show the raised values. If they do, look for a program that takes the CPU in bursts |
+| `priority` or `timer` names a failure | The platform refused the call | Read the reason in the text, and report it |
+
+**Compare two runs.** `--no-raise-priority` starts the same run with the capture thread at its normal priority and the timer at its default resolution, and the banner says so. Run both for 10 minutes, and compare `lost` and `late`. The new accounting applies to both runs. If the run with the default shows less lateness than the run with the option, the priority or the timer matters on your machine.
+
+**Check the windows.** Stop the run, and read the windows from the store (see `seeingmon store info` in the runbook for the path). Each row shows the share of lost frames of one window:
+
+```bash
+sqlite3 -readonly <data folder>/db/results.sqlite "select t_utc_ns, n_frames, n_dropped, round(100.0 * n_dropped / (n_frames + n_dropped), 1) as lost_pct, flags from seeing_window order by t_utc_ns"
+```
+
+A window with `lost_pct` above 5 carries `degraded`. A clean window of 20 s has a spectrum with about 36 degrees of freedom (`motion_psd_dof`), and the windows of the first light had 6 to 21.
+
 ## The camera takes up the high-speed flag late
 
 The ASI294MM does not apply the high-speed flag when you set it. The camera runs in a regime, normal or high-speed (another frame rate and another ADC depth), and it takes the value of the `HighSpeedMode` control into the regime in two cases only: at the first `ASISetROIFormat` after `ASIInitCamera`, and when `ASISetROIFormat` changes the image format (RAW8 to RAW16, or back). A change of the flag alone, or of the ROI size, leaves the regime as it is. The SDK reports no error, and it has no call that reports the regime. A new process starts in the normal regime. The measurements come from the camera on a Windows machine with SDK V1.41 on October 2, 2026. The behavior of the SDK for Linux is not measured.
