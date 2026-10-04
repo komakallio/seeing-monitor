@@ -10,7 +10,7 @@ import pytest
 from seeingmon.clock import SystemClock
 from seeingmon.config import REDACTED, ConfigError, load_config
 from seeingmon.services.config import AcquireSettings, ClockSettings, ServicesConfig
-from seeingmon.services.core.settings import AlignmentSettings, CoreSettings
+from seeingmon.services.core.settings import AlignmentSettings, CoreSettings, PolarisSettings
 from seeingmon.services.ipc.endpoint import PIPE_PREFIX
 from seeingmon.services.ipc.errors import IpcConfigError
 from seeingmon.services.ipc.keys import ConnectionKey
@@ -234,6 +234,50 @@ class TestSurveyFrameSettings:
     ) -> None:
         local = tmp_path / "local.toml"
         local.write_text(f"[services.core.survey_frames]\n{key} = {value}\n")
+        config = load_config(local_file=local, env={})
+        with pytest.raises(ConfigError, match=key):
+            config.section("services", ServicesConfig)
+
+
+class TestPolarisSettings:
+    """The live video of Polaris (`[services.core.polaris]`)."""
+
+    def test_the_defaults_follow_the_design(self, tmp_path: Path) -> None:
+        settings = load(tmp_path).core.polaris
+        assert settings.max_fps == 20.0
+        assert settings.time_constant_s == 3.0
+        assert settings.headroom == 1.15
+        assert settings.floor_sigmas == 8.0
+        assert settings.asinh_gain == 30.0
+        assert settings.disable_s == 60.0
+
+    def test_the_defaults_file_and_the_model_agree(self, repo_root: Path) -> None:
+        with (repo_root / "config" / "default.d" / "services.toml").open("rb") as handle:
+            table = tomllib.load(handle)["services"]["core"]["polaris"]
+        assert PolarisSettings.model_validate(table) == PolarisSettings()
+
+    def test_an_environment_variable_changes_a_key(self, tmp_path: Path) -> None:
+        services = load(tmp_path, {"SEEINGMON_SERVICES__CORE__POLARIS__MAX_FPS": "10"})
+        assert services.core.polaris.max_fps == 10.0
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("max_fps", "0"),
+            ("max_fps", "61"),
+            ("time_constant_s", "0"),
+            ("headroom", "0.9"),
+            ("floor_sigmas", "0"),
+            ("asinh_gain", "-1"),
+            ("disable_s", "-1"),
+            ("an_unknown_key", "1"),
+        ],
+    )
+    def test_a_value_out_of_range_or_an_unknown_key_fails_loudly(
+        self, tmp_path: Path, key: str, value: str
+    ) -> None:
+        local = tmp_path / "local.toml"
+        local.write_text(f"[services.core.polaris]\n{key} = {value}\n")
         config = load_config(local_file=local, env={})
         with pytest.raises(ConfigError, match=key):
             config.section("services", ServicesConfig)

@@ -116,6 +116,30 @@ class SurveyFrameSettings(SectionModel):
     event_background_fraction: float = Field(0.5, gt=0, le=1)
 
 
+class PolarisSettings(SectionModel):
+    """The live video of Polaris: how `core` thins, stretches, and encodes the fast stream.
+
+    While a person watches, `core` keeps about `max_fps` frames per second of frame time from the
+    fast stream (the camera runs at about 80), stretches each one, and encodes it as a PNG. The
+    stretch is black at the median of the frame, and white at `headroom` times the peak of the star
+    above the black level, which `core` follows with an exponential average over `time_constant_s`
+    seconds. The slow average keeps the flicker of the star visible, because a stretch that
+    followed every frame would normalize it away. The white level never falls below `floor_sigmas`
+    times the noise of the frame, so a frame with no star shows noise and not a stretched speck.
+    An `asinh` curve with the gain `asinh_gain` lifts the faint wings of the star.
+
+    After an error in the code that runs on the scheduler thread, `core` stops offering frames to
+    the video for `disable_s` seconds, so that a fault of the video never reaches the scheduler.
+    """
+
+    max_fps: float = Field(20.0, gt=0, le=60)
+    time_constant_s: float = Field(3.0, gt=0, le=60)
+    headroom: float = Field(1.15, ge=1.0, le=4.0)
+    floor_sigmas: float = Field(8.0, gt=0, le=1000)
+    asinh_gain: float = Field(30.0, gt=0, le=1000)
+    disable_s: float = Field(60.0, ge=0)
+
+
 class CoreSettings(SectionModel):
     """The `[services.core]` table."""
 
@@ -153,6 +177,7 @@ class CoreSettings(SectionModel):
 
     survey_worker: SurveyWorkerSettings = Field(default_factory=SurveyWorkerSettings)
     survey_frames: SurveyFrameSettings = Field(default_factory=SurveyFrameSettings)
+    polaris: PolarisSettings = Field(default_factory=PolarisSettings)
     escalation: EscalationSettings = Field(default_factory=EscalationSettings)
     commissioning: CommissioningSettings = Field(default_factory=CommissioningSettings)
     sky_flags: SkyFlagSettings = Field(default_factory=SkyFlagSettings)
