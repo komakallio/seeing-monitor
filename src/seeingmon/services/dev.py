@@ -810,8 +810,9 @@ def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str
         "each kind."
     )
     notes.append(
-        "No real star image has run through the detector and the plate solvers before, so read "
-        "the first results as a test of them."
+        "Real star images ran through the detector, the pointing tracker, and the sky quality "
+        "at the first light (October 4, 2026). ASTAP has solved real frames offline only, so "
+        "watch the first solve of your run."
     )
     notes.append(f"The logs of the children are in the folder {log_folder} of your data folder.")
     notes.append("Cover the camera by hand for a dark session.")

@@ -596,7 +596,7 @@ class TestTheBanner:
         assert "Nothing about the sky is simulated." in text
         assert "No pointing solution is seeded." in text
         assert "in this order: astrometry.net, astap." in text
-        assert "No real star image has run through the detector and the plate solvers" in text
+        assert "ASTAP has solved real frames offline only" in text
         assert "Cover the camera by hand for a dark session." in lines
         assert lines[-1] == "Press Ctrl+C to stop."
         assert not [line for line in lines if line.startswith("Warning:")]

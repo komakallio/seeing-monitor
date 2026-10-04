@@ -808,7 +808,7 @@ Set `flat_file` in the `[survey]` table of `local/config.toml` to the path of th
 
 `seeingmon dev --driver asi --real-sky --data-dir <data folder>` runs `acquire`, `core`, and `web` on the dev machine against the real sky: your camera in real time, the real star catalog, a real plate solver, and your site. It is the first test of the survey path on real stars, and it needs no Raspberry Pi. It is a development run and not an install: no systemd unit runs, and no sink, heater, SQM-LE reader, or power route takes part.
 
-**What is unverified.** No real star image has run through the detector and the plate solvers yet. The star detector, the pointing fit, and the sky quality have seen synthetic frames only. The solvers have solved synthetic star lists that the real catalog made (ASTAP in 0.7 to 0.8 s on the dev machine, and astrometry.net in 0.1 to 0.2 s in WSL), and the camera has run in this launcher only with a simulated sky, in a room or under a cover. This run is the first test of the whole chain, so read its first results as a test of the software and not as measurements. Commissioning (phase 3) chooses the exposures, the gain, and the cadence.
+**What the first light verified, and what is still open.** On October 4, 2026, real star images ran through the system for the first time. The detector found 3,000 stars (its limit) in each 30 s frame. The pointing tracker matched about 750 to 930 of them with a residual of 0.45 pixel, and the sky quality fitted a zero point from 430 to 600 stars. The fast stream ran at 82 frames per second and gave 40 seeing windows. ASTAP found no solution in any survey frame, because the adapter drew its star image at a quarter of the frame size. At half size, ASTAP solved the saved frames in 0.2 to 0.5 s, but no live run has used that yet, so watch the first solve of your run. The Align page found the first pointing at the first light. Read the numbers of a run as a test of the software and not as calibrated measurements. Commissioning (phase 3) chooses the exposures, the gain, and the cadence.
 
 ### Before you start
 
@@ -868,7 +868,7 @@ Real: the camera, the system clock, the star catalog, the plate solvers, and the
 No pointing solution is seeded. The first survey frame goes to the plate solvers, in this order: astap.
 The scheduler follows the real Sun at your site (by the clock of this machine). It stays in safe while the Sun is above -3 degrees, so by day it takes no survey frame and records no seeing window. The Align page and a dark session run in safe too.
 Of your local configuration, only [site], [survey], [alignment], [web], and [auth] reach the system: no sink, heater, SQM-LE, or power setting does. As in every dev run, the windows are 20 s and a dark session takes 5 frames of each kind.
-No real star image has run through the detector and the plate solvers before, so read the first results as a test of them.
+Real star images ran through the detector, the pointing tracker, and the sky quality at the first light (October 4, 2026). ASTAP has solved real frames offline only, so watch the first solve of your run.
 The logs of the children are in the folder logs/20261003T184500Z of your data folder.
 Cover the camera by hand for a dark session.
 API token for this run (shown once, never stored): <token>
