@@ -458,6 +458,35 @@ class TestTheChecksBeforeTheFrames:
         assert rig.camera.exposures_s == []
         assert rig.ser_files() == []
 
+    def test_memory_that_cannot_hold_the_combination_is_refused_before_the_frames(
+        self, rig: Rig
+    ) -> None:
+        needed = SHAPE[0] * SHAPE[1] * fs.MEMORY_BYTES_PER_PIXEL
+        with pytest.raises(fs.FlatSessionError, match="not enough free memory") as error:
+            rig.run(available_memory=lambda: needed - 1)
+        assert "the combination needs about" in str(error.value)
+        assert "restart core" in str(error.value)
+        assert rig.camera.exposures_s == []
+        assert rig.ser_files() == []
+        rig.run(available_memory=lambda: needed)  # exactly enough is enough
+
+    def test_a_system_that_does_not_know_its_free_memory_is_not_checked(self, rig: Rig) -> None:
+        rig.run(available_memory=lambda: None)
+
+    def test_the_memory_sentence_names_gigabytes_with_one_digit(self, tmp_path: Path) -> None:
+        # the frames of the survey mode (4144 x 2822) need about 0.6 GB, and 0.3 GB are free
+        geometry = fm.Geometry((2822, 4144), 3.82, 14)
+        with pytest.raises(fs.FlatSessionError) as error:
+            fs._check_memory(geometry, lambda: 300_000_000)
+        assert str(error.value) == (
+            "There is not enough free memory to combine the frames: the combination needs about "
+            "0.6 GB, and 0.3 GB are free. Stop other programs, or restart core, and try again."
+        )
+
+    def test_the_free_memory_of_this_machine_is_a_number_or_unknown(self) -> None:
+        value = fs.memory_available_bytes()
+        assert value is None or value > 0
+
     def test_the_reserve_counts_and_a_big_disk_is_fine(self, rig: Rig) -> None:
         need = FRAMES * (SHAPE[0] * SHAPE[1] * 2 + 8) + 4096
         with pytest.raises(fs.FlatSessionError, match="not enough free disk space"):

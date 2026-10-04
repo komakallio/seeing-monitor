@@ -81,6 +81,7 @@ from seeingmon.survey.flat_session import (
     FlatSessionResult,
     disk_free_bytes,
     format_exposure,
+    memory_available_bytes,
     record_flat,
 )
 
@@ -255,7 +256,8 @@ class FlatHandler:
     `capture_allowed` is the gate of the storage, and `reserve_bytes` is the free space that the
     frames must leave. `free_bytes` tells the free space of the partition that holds a path (the
     default asks the operating system). `make_options` replaces the options of `make_flat`, which
-    a test on a small sensor needs.
+    a test on a small sensor needs. `available_memory` tells the free memory (`None`: not known),
+    and the default asks the operating system.
     """
 
     def __init__(
@@ -272,6 +274,7 @@ class FlatHandler:
         reserve_bytes: int = 0,
         free_bytes: Callable[[Path], int] | None = None,
         make_options: MakeOptions | None = None,
+        available_memory: Callable[[], int | None] | None = None,
     ) -> None:
         self._flats = flats
         self._darks = darks
@@ -284,6 +287,7 @@ class FlatHandler:
         self._reserve_bytes = reserve_bytes
         self._free_bytes = free_bytes
         self._make_options = make_options
+        self._available_memory = available_memory
 
     def _result(
         self,
@@ -362,6 +366,7 @@ class FlatHandler:
                     free_bytes=self._free_bytes or disk_free_bytes,
                     reserve_bytes=self._reserve_bytes,
                     capture_allowed=self._capture_allowed,
+                    available_memory=self._available_memory or memory_available_bytes,
                 )
         except FlatAborted:
             return "aborted", ABORTED_SUMMARY, remove_light, (), None

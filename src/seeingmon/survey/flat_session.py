@@ -89,6 +89,10 @@ MIN_FRACTION = 0.002  # a level below this share does not tell how much light th
 MAX_STEP = 50.0  # the largest change of the exposure in one step of the search
 SAMPLE_STRIDE = 4  # the median of the middle looks at every fourth pixel in each direction
 READ_MARGIN_S = 30.0  # a frame read waits this long beyond the exposure (the camera adapter)
+# The combination holds a few images of the frame in memory, and one frame at a time. A run on
+# frames of 4144 x 2822 pixels peaked at 421 MB of arrays (36 bytes for each pixel), whatever the
+# number of frames, so a check asks for a third more.
+MEMORY_BYTES_PER_PIXEL = 48
 
 
 class FlatSessionError(Exception):
@@ -651,6 +655,21 @@ def disk_free_bytes(path: Path) -> int:
     return shutil.disk_usage(probe).free
 
 
+def memory_available_bytes() -> int | None:
+    """The memory that a program may use without swapping (`MemAvailable` of Linux), or `None`.
+
+    The answer is `None` where the system gives no such number, and then the session does not check.
+    """
+    try:
+        with open("/proc/meminfo", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def _mean(values: list[float]) -> float | None:
     return float(np.mean(values)) if values else None
 
@@ -672,16 +691,18 @@ def record_flat(
     free_bytes: Callable[[Path], int] = disk_free_bytes,
     reserve_bytes: int = 0,
     capture_allowed: Callable[[], bool] | None = None,
+    available_memory: Callable[[], int | None] = memory_available_bytes,
 ) -> FlatSessionResult:
     """Record one set of a flat, and add the flat to the library. See the module documentation.
 
     The camera is open already, and it stays open. `free_bytes` tells the free space of the
     partition that holds a path, and the session keeps `reserve_bytes` free besides the frames.
     `capture_allowed` is the gate of the storage (false when the free space is low), asked before
-    each frame. Raises `FlatSessionError` with one plain sentence when the session cannot go on,
-    `FlatAborted` when `should_stop` answers true, and `seeingmon.drivers.CameraError` for a camera
-    fault. The library keeps its flats in every case, and the frames of a set that did not finish
-    are deleted.
+    each frame. `available_memory` tells the memory that is free (`None`: it is not known), and the
+    session refuses to start when the combination would not fit. Raises `FlatSessionError` with one
+    plain sentence when the session cannot go on, `FlatAborted` when `should_stop` answers true,
+    and `seeingmon.drivers.CameraError` for a camera fault. The library keeps its flats in every
+    case, and the frames of a set that did not finish are deleted.
     """
     try:
         readout = profile.mode(options.mode)
@@ -717,6 +738,7 @@ def record_flat(
     flats.session.sweep(clock.utc_ns())
     first = _first_set(flats, options, geometry, clock.utc_ns())
     _check_disk(flats, options, geometry, first is None, free_bytes, reserve_bytes)
+    _check_memory(geometry, available_memory)
     session.report("setup", 1, 1, "The camera and the library are ready.")
 
     choice = session.find_exposure(options.start_exposure_s if first is None else first.exposure_s)
@@ -792,6 +814,21 @@ def _check_disk(
             "There is not enough free disk space for the frames: the set needs about "
             f"{_gigabytes(needed)}, and {_gigabytes(max(free - reserve_bytes, 0))} are free "
             "beyond the reserve."
+        )
+
+
+def _check_memory(geometry: Geometry, available_memory: Callable[[], int | None]) -> None:
+    """Refuse a session whose combination the free memory cannot hold, before the frames come."""
+    free = available_memory()
+    if free is None:
+        return
+    height, width = geometry.shape
+    needed = height * width * MEMORY_BYTES_PER_PIXEL
+    if free < needed:
+        raise FlatSessionError(
+            "There is not enough free memory to combine the frames: the combination needs about "
+            f"{_gigabytes(needed)}, and {_gigabytes(free)} are free. Stop other programs, or "
+            "restart core, and try again."
         )
 
 
@@ -991,5 +1028,6 @@ __all__ = [
     "disk_free_bytes",
     "format_exposure",
     "measure_frame",
+    "memory_available_bytes",
     "record_flat",
 ]

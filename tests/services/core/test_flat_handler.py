@@ -456,6 +456,18 @@ class TestWhatGoesWrong:
         assert result.summary.startswith("There is not enough free disk space for the frames")
         assert made.camera.exposures_s == []
 
+    def test_memory_that_cannot_hold_the_combination_fails_the_task_before_the_camera_moves(
+        self, tmp_path: Path
+    ) -> None:
+        made = Rig(tmp_path)
+        made.handler = made.make_handler(available_memory=lambda: 1_000)
+        result = made.run(SMALL)
+        assert result.status == "failed"
+        assert result.summary.startswith("There is not enough free memory to combine the frames")
+        assert result.summary.endswith("The library is unchanged.")
+        assert made.camera.exposures_s == []
+        assert made.flats.entries() == []
+
     def test_a_storage_that_stopped_raw_capture_fails_the_task(self, tmp_path: Path) -> None:
         made = Rig(tmp_path)
         made.handler = made.make_handler(capture_allowed=lambda: False)
