@@ -20,11 +20,20 @@ from PIL import Image
 from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.records.base import Record
 from seeingmon.records.survey import PointingRecord
-from seeingmon.scheduler.commands import Pause, QueueDark, Resume, StartAlignment, StopAlignment
+from seeingmon.scheduler.commands import (
+    CancelTask,
+    Pause,
+    QueueDark,
+    QueueFlat,
+    Resume,
+    StartAlignment,
+    StopAlignment,
+)
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import AlignmentState, pack_frame, unpack_frame
 from seeingmon.services.web.demo import (
     DEMO_DARK_SCRIPT,
+    DEMO_FLAT_SCRIPT,
     DEMO_NOW_NS,
     DEMO_SENSOR_TEMPERATURE_C,
     DEMO_STATION,
@@ -616,6 +625,7 @@ def test_the_demo_answers_match_the_documented_schemas(demo_client: TestClient) 
         ("/events", {}),
         ("/images", {}),
         ("/dark", {}),
+        ("/flat", {}),
     ]
     for path, params in cases:
         response = demo_client.get(f"{API}{path}", params=params)
@@ -687,6 +697,36 @@ def test_the_demo_serves_the_dark_library_and_a_session_that_the_demo_token_star
         demo_client.post(f"{API}/mode", json=paused, headers=bearer(DEMO_TOKEN))
         demo_client.post(f"{API}/mode", json={"mode": "auto"}, headers=bearer(DEMO_TOKEN))
     assert demo_client.get(f"{API}/dark").json()["task"]["state"] == "aborted"
+
+
+def test_the_demo_serves_the_flat_library_a_preview_and_a_session_that_the_demo_token_starts(
+    demo_client: TestClient,
+) -> None:
+    library = demo_client.get(f"{API}/flat").json()
+    assert len(library["flats"]) == 2
+    assert library["blocker"] is None  # the demo library holds dark sets
+    assert library["task"]["state"] == "idle"
+    assert library["active_version"] == library["flats"][0]["version"]
+    assert library["pending_version"] is None
+    preview = demo_client.get(library["flats"][0]["image_url"])
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/jpeg"
+    assert preview.content.startswith(b"\xff\xd8\xff")
+    refused = demo_client.post(f"{API}/flat/session", json={}, headers=bearer("wrong"))
+    assert refused.status_code == 401
+    started = demo_client.post(f"{API}/flat/session", json={}, headers=bearer(DEMO_TOKEN))
+    assert started.status_code == 200
+    try:
+        assert demo_client.get(f"{API}/flat").json()["task"]["state"] in {"queued", "running"}
+        again = demo_client.post(f"{API}/flat/session", json={}, headers=bearer(DEMO_TOKEN))
+        assert again.status_code == 409
+        assert again.json()["reason"] == "busy"
+        stopped = demo_client.post(f"{API}/flat/session/stop", headers=bearer(DEMO_TOKEN))
+        assert stopped.status_code == 200
+    finally:  # leave the shared demo as it was: a pause, and then a resume
+        demo_client.post(f"{API}/mode", json={"mode": "paused"}, headers=bearer(DEMO_TOKEN))
+        demo_client.post(f"{API}/mode", json={"mode": "auto"}, headers=bearer(DEMO_TOKEN))
+    assert demo_client.get(f"{API}/flat").json()["task"]["state"] == "aborted"
 
 
 def test_the_demo_token_is_a_fixed_word_and_not_a_secret() -> None:
@@ -848,3 +888,139 @@ def test_two_demo_sessions_in_a_row_name_their_sets_apart(
     names = [item.name for item in core.dark_library().sets]
     assert len(names) == 8
     assert len(set(names)) == 8
+
+
+# --- The flat library of the demo ------------------------------------------------------------
+
+
+@pytest.fixture
+def flat_core() -> tuple[DemoCore, VirtualClock]:
+    clock = VirtualClock(DEMO_NOW_NS)
+    return DemoCore(clock), clock
+
+
+def test_the_demo_flat_library_has_two_flats_and_the_newer_one_is_in_use(
+    flat_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, _ = flat_core
+    library = core.flat_library()
+    assert [item.age_days for item in library.flats] == pytest.approx([12.0, 47.0], abs=0.01)
+    in_use, older = library.flats
+    assert (in_use.active, in_use.state, in_use.second_set) == (True, "approved", True)
+    assert (older.active, older.state, older.second_set) == (False, "approved", False)
+    assert in_use.shadows == 3
+    assert older.shadows == 4  # before the lens was cleaned
+    assert library.active_version == in_use.version
+    assert (library.pending_version, library.session, library.blocker) == (None, None, None)
+    assert library.sensor_temperature_c == DEMO_SENSOR_TEMPERATURE_C
+    assert (library.mode, library.gain) == ("bin2", 120)
+    assert library.task.state == "idle"
+
+
+def test_the_demo_flat_library_can_start_empty_and_then_blocks_a_session() -> None:
+    core = DemoCore(VirtualClock(DEMO_NOW_NS), library=False)
+    library = core.flat_library()
+    assert library.flats == []
+    assert library.blocker is not None
+    assert "dark set" in library.blocker
+    assert not core.submit(QueueFlat()).accepted
+
+
+def test_a_demo_flat_session_follows_its_timeline_and_adds_a_pending_flat(
+    flat_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, clock = flat_core
+    script = DEMO_FLAT_SCRIPT
+    assert core.submit(QueueFlat()).accepted
+    assert core.flat_library().task.state == "queued"  # the queue lasts a few seconds
+    clock.advance(script.queued_s)
+    task = core.flat_library().task
+    assert (task.state, task.phase, task.steps) == ("running", "setup", 1)
+    clock.advance(script.setup_s + 0.1)  # the search for the exposure
+    task = core.flat_library().task
+    assert (task.phase, task.step, task.steps) == ("exposure", 1, 8)
+    assert task.exposure_s is not None
+    assert task.level_fraction is not None
+    assert task.level_fraction < 0.3  # the first try is too dark
+    clock.advance(script.exposure_s * 0.6)
+    task = core.flat_library().task
+    assert task.level_fraction == pytest.approx(0.5, abs=0.02)  # the second try lands
+    clock.advance(script.exposure_s * 0.4 + 0.1)  # the frames
+    task = core.flat_library().task
+    assert (task.phase, task.steps) == ("capture", 32)
+    assert task.warnings == []
+    clock.advance(script.capture_s * 0.6)  # the light drifts from the middle on
+    assert core.flat_library().task.warnings == list(script.warnings)
+    clock.advance(script.capture_s * 0.4)
+    assert core.flat_library().task.phase == "build"
+    clock.advance(script.build_s)
+    library = core.flat_library()
+    assert library.task.state == "ok"
+    assert library.task.version == library.flats[0].version
+    assert (library.flats[0].state, library.flats[0].pending) == ("pending", True)
+    assert library.pending_version == library.task.version
+    assert library.session is not None
+    assert len(library.flats) == 3
+    assert library.active_version == library.flats[1].version  # nothing changes until you decide
+    assert core.status().scheduler.state == "paused"
+
+
+def test_a_demo_second_set_replaces_the_flat_of_the_first_set(
+    flat_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, clock = flat_core
+    core.submit(QueueFlat())
+    clock.advance(60)
+    first = core.flat_library().flats[0]
+    core.submit(Resume())
+    assert core.submit(QueueFlat(set_number=2)).accepted
+    clock.advance(60)
+    library = core.flat_library()
+    assert len(library.flats) == 3  # the flat of the first set gave way
+    two_sets = library.flats[0]
+    assert two_sets.version != first.version
+    assert (two_sets.second_set, two_sets.source_turned) == (True, True)
+    assert library.session is None
+    assert two_sets.optics_tilt is not None
+
+
+def test_two_demo_sessions_in_a_row_keep_the_newest_flat_first(
+    flat_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    """The demo clock stands still in UTC, so two flats get the same time."""
+    core, clock = flat_core
+    for _ in range(2):
+        core.submit(QueueFlat(pause_after=False))
+        clock.advance(60)
+        newest = core.flat_library().task.version
+        assert core.flat_library().flats[0].version == newest
+    versions = [item.version for item in core.flat_library().flats]
+    assert len(versions) == len(set(versions)) == 4
+
+
+def test_a_pause_aborts_a_demo_flat_session_and_a_stop_removes_a_waiting_one(
+    flat_core: tuple[DemoCore, VirtualClock],
+) -> None:
+    core, clock = flat_core
+    core.submit(QueueFlat())
+    clock.advance(12)
+    assert core.flat_library().task.state == "running"
+    assert core.submit(Pause()).accepted
+    assert core.flat_library().task.state == "aborted"
+    core.submit(Resume())
+    core.submit(QueueFlat())
+    assert core.submit(CancelTask(kind="flat")).accepted
+    assert core.flat_library().task.state == "aborted"
+
+
+def test_the_demo_flats_have_previews(flat_core: tuple[DemoCore, VirtualClock]) -> None:
+    core, _ = flat_core
+    for item in core.flat_library().flats:
+        jpeg = core.flat_image(item.version)
+        assert jpeg is not None
+        image = Image.open(io.BytesIO(jpeg))
+        assert image.size == (518, 353)
+        pixels = np.asarray(image, dtype=np.float32)
+        center = pixels[150:200, 230:290].mean()
+        corner = pixels[:30, :40].mean()
+        assert center > corner + 40  # the corners get less light, and the stretch shows it

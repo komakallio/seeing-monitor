@@ -357,7 +357,8 @@ class FlatSimulator:
             warnings=warnings,
         )
         entry = _Entry(view, t_utc_ns, frames, exposure_s, target_fraction)
-        self._entries.append(entry)
+        # A clock that stands still gives two flats the same time, so the new one goes first.
+        self._entries.insert(0, entry)
         self._entries.sort(key=lambda item: item.t_utc_ns, reverse=True)
         self._prune()
         return entry

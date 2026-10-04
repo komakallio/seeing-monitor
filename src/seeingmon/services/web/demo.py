@@ -23,12 +23,18 @@ sources, so that you can look at the UI on a laptop:
   (see `DEMO_DARK_SCRIPT`): queued, bias frames, the wait for the cover, dark frames, and the
   build. The camera counts as covered a few seconds into the wait, so the session ends
   `ok`, adds a set at the sensor temperature, and pauses the fake scheduler, so that
-  Resume works. A session without the wait for the cover fails, and Pause aborts one. While the
-  fake scheduler is in `auto` or `safe`, the fake `core` also streams a synthetic video of Polaris
-  at about 20 frames a second (`PolarisSky`: a star that jitters with the seeing, flickers by a few
-  percent, and sits on a noisy sky, through the real stretch and PNG encoder of `core`), and it
-  serves a rolling seeing value that varies slowly around the seeing of the demo night
-  (`demo_live_seeing`). Pause the fake scheduler or start the alignment, and the video goes quiet.
+  Resume works. A session without the wait for the cover fails, and Pause aborts one. It also
+  holds a flat library of two flats (one in use), and it plays a flat session on a short timeline
+  (see `DEMO_FLAT_SCRIPT`): queued, the setup, the search for the exposure, the frames (with a
+  note that the light drifts), and the combination. The session adds a pending flat, which you
+  review on the Flat page, and the fake scheduler pauses at the end. A second set, with the source
+  turned, replaces the flat of the first set by a flat of both. Stop or Pause ends a session, and
+  Use this flat and Discard work on the library. While the fake scheduler is in `auto` or `safe`,
+  the fake `core` also streams a synthetic video of Polaris at about 20 frames a second
+  (`PolarisSky`: a star that jitters with the seeing, flickers by a few percent, and sits on a
+  noisy sky, through the real stretch and PNG encoder of `core`), and it serves a rolling seeing
+  value that varies slowly around the seeing of the demo night (`demo_live_seeing`). Pause the
+  fake scheduler or start the alignment, and the video goes quiet.
 - **A clock.** `DemoClock` stands still in UTC at `DEMO_NOW_NS`, so the newest record is always
   fresh, and it runs in monotonic time, so the rate limits, the timeouts, and the live view work.
 
@@ -91,6 +97,7 @@ from seeingmon.services.web.contract import (
 )
 from seeingmon.services.web.core_client import FakeCoreClient
 from seeingmon.services.web.fake_dark import DarkScript
+from seeingmon.services.web.fake_flat import FlatLook, FlatScript
 from seeingmon.store.db import Store, StoreReader
 from seeingmon.store.layout import DataLayout
 
@@ -130,6 +137,33 @@ DEMO_DARK_SETS = (
     (16.9, 25.0),
     (20.2, 12.0),
     (23.8, 3.0),
+)
+# The demo plays a flat session in about 40 seconds: the queue, 2 s of setup, 4 s of search for the
+# exposure, 16 s of frames (the light drifts a little from the middle on), and 3 s of build.
+DEMO_FLAT_SCRIPT = FlatScript(
+    queued_s=3.0,
+    setup_s=2.0,
+    exposure_s=4.0,
+    capture_s=16.0,
+    build_s=3.0,
+    warnings=("The light drifts: a frame is 3.4 % above the median level.",),
+)
+# The demo library: the flat in use (made from two sets, 12 days ago), and an older one from before
+# someone cleaned the lens (one more dust shadow).
+DEMO_FLATS = (
+    (
+        47.0,
+        FlatLook(
+            corner_percent=-9.9,
+            shadows=(
+                (1210, 802, 2.4, 38.0),
+                (2874, 1905, 1.6, 26.0),
+                (3420, 420, 1.1, 21.0),
+                (610, 2210, 1.3, 24.0),
+            ),
+        ),
+    ),
+    (12.0, FlatLook()),
 )
 
 # The sky of the live view. The pole starts `POLE_START_DEG` right of and above the field center,
@@ -1101,7 +1135,9 @@ class DemoCore(FakeCoreClient):
     `safe` states, one frame every `polaris_period_s` seconds of wall time (the video itself
     advances 50 ms for each frame). The dark library starts with six sets (`demo_dark_library`),
     or empty with `library=False`, and a dark session follows `dark_script` (`DEMO_DARK_SCRIPT`
-    by default).
+    by default). The flat library starts with two flats (`DEMO_FLATS`), or empty with
+    `library=False`, and a flat session follows `flat_script` (`DEMO_FLAT_SCRIPT` by default).
+    Without a dark set, no flat session can start.
 
     The status plays the activity of a scheduler on a short cycle (see `demo_activity`): the
     phases of `auto` follow the monotonic clock of the fake `core`, and the gate of `safe` opens
@@ -1116,6 +1152,7 @@ class DemoCore(FakeCoreClient):
         polaris_period_s: float = POLARIS_PERIOD_S,
         field: StarField | None = None,
         dark_script: DarkScript | None = None,
+        flat_script: FlatScript | None = None,
         library: bool = True,
     ) -> None:
         super().__init__(
@@ -1125,10 +1162,15 @@ class DemoCore(FakeCoreClient):
             instance="demo-core",
             state="auto",
             dark_script=dark_script or DEMO_DARK_SCRIPT,
+            flat_script=flat_script or DEMO_FLAT_SCRIPT,
         )
         self.dark.sensor_temperature_c = DEMO_SENSOR_TEMPERATURE_C
+        self.flat.sensor_temperature_c = DEMO_SENSOR_TEMPERATURE_C
         if library:
             self.dark.sets, self.dark.model = demo_dark_library(self._clock.utc_ns())
+            for index, (age_days, look) in enumerate(DEMO_FLATS):
+                newest = index == len(DEMO_FLATS) - 1
+                self.flat.seed(age_days=age_days, look=look, active=newest, second_set=newest)
         self._period_s = period_s
         self._polaris_period_s = polaris_period_s
         self._started_ns = self._clock.monotonic_ns()
