@@ -66,14 +66,14 @@ The timing model of the profile (a frame overhead plus a row time) comes from pu
 seeingmon camera rates --json local/camera-rates.json
 ```
 
-Close other camera programs first. The command reads the driver options from `[services.acquire.driver_options]`, so it needs the same configuration as the checks above (the path of the library). A run takes about two minutes. These options change it:
+Close other camera programs first. The command reads the driver options from `[services.acquire.driver_options]`, so it needs the same configuration as the checks above (the path of the library). A run takes about two and a half minutes. These options change it:
 
-- `--frames` and `--settle` set the frames that each row measures (default 150) and the frames that it reads and drops first (default 10).
+- `--frames` and `--settle` set the frames that each row measures (default 150) and the frames that it reads and drops first (default 10). A snapshot row takes at most 10 exposures after 2 that it drops, because one exposure takes about half a second.
 - `--gain` sets the gain of every row (default 120). The gain does not change the rate.
-- `--groups` runs a subset of `exposure,roi,format,bandwidth,speed,bin2`. The baseline always runs.
+- `--groups` runs a subset of `exposure,roi,format,bandwidth,speed,bin2,snapshot`. The baseline always runs.
 - `--json` also writes the table as JSON. The file holds the conditions (the camera model, the SDK version, the sensor temperature, the platform), the rows, and the fits. It carries no host name, serial number, or path, and it belongs in `local/`.
 
-The baseline is the fast stream of the profile: bin1, 128 × 128 pixels, 2 ms, RAW16, bandwidth 100, normal speed. The groups change one factor of it, except for `speed` and `bin2`, which add the high-speed mode and the second readout mode:
+The baseline is the fast stream of the profile: bin1, 128 × 128 pixels, 2 ms, RAW16, bandwidth 100, normal speed. The groups change one factor of it, except for `speed`, `bin2`, and `snapshot`, which add the high-speed mode, the second readout mode, and single exposures:
 
 | Group | Rows |
 |---|---|
@@ -83,12 +83,37 @@ The baseline is the fast stream of the profile: bin1, 128 × 128 pixels, 2 ms, R
 | `bandwidth` | 40 to 90 percent in steps of 10 |
 | `speed` | the high-speed mode, at each ROI size |
 | `bin2` | bin2 at 0.5 ms (so the readout sets the period), the same at 2 ms, the high-speed mode, and the 320 × 240, 10 ms, RAW8 stream of a recording |
+| `snapshot` | Single exposures of the survey readout mode (bin2) at 1 ms, in the full width of the frame at 64, 256, and 1024 rows and for the full frame (see [Measure single exposures](#measure-single-exposures)) |
 
 A high-speed row runs in the high-speed regime only with a driver that makes the camera take up the flag (see "The camera takes up the high-speed flag late"). A table that a driver made before that fix holds high-speed rows in the normal regime, and its high-speed fit equals its normal fit.
 
 Each row prints the measured rate, the rate of the model, the median, the standard deviation (jitter), and the maximum of the frame periods, the dropped frames, and the ADC depth of the readout mode. A rate far below the model on a bandwidth row shows the bandwidth limit, and a rate that follows the exposure shows an exposure limit. After the rows, the command prints `frame_overhead_ms` and `row_time_us` fitted to the rows at bandwidth 100, beside the values of the profile. Put the fitted values in the profile when they differ by more than a few percent, and keep a comment with the conditions.
 
 The command saves every writable control and the geometry of the camera before the first row, and it puts back what the rows changed, even when a row fails or you press Ctrl+C, because other programs such as SharpCap share the camera. It closes the camera at the end. A row that fails prints `FAILED` and the reason, and the table goes on. The exit code is 1 when a row failed or a control could not be restored.
+
+## Measure single exposures
+
+The scheduler takes its brightness frame and its survey frames as single exposures (a start, a status poll, and a read). It waits twice the time that the driver expects, plus 0.5 s (`read_timeout_margin_s`). The driver takes the expected time from the snapshot model of the readout mode in the profile: an overhead (`snapshot_overhead_s`, in seconds) and a row time (`snapshot_row_time_us`, in microseconds for each ROI row), which come on top of the exposure. The video model (`frame_overhead_ms` and `row_time_us`) cannot give that time, because the camera reads the whole frame out before the SDK returns a single exposure. A model that is too short makes the read time out, turns the `camera` component to `degraded`, and starts the recovery ladder.
+
+The values in the profile come from one run on a Raspberry Pi 4 on October 3, 2026, with an idle camera. A 1 ms exposure took 0.293 to 0.296 s for the 20 arcminute watch ROI (312 × 314 pixels in bin2) and 0.480 to 0.532 s for the full frame (4144 × 2822 pixels), and a 2 s exposure of the full frame took 2.52 s. Three runs agree within 0.02 s. A straight line through the two points gives 0.27 s plus 75 µs for each row, and the profile holds that for bin2. Bin1 is unmeasured: the profile states no snapshot values for it, and the software takes its video row time and an overhead of at least 0.3 s.
+
+Refit the model on the final hardware, and again after you change the host, the USB port, or the SDK:
+
+1. Stop the services that use the camera (`sudo systemctl stop seeingmon.target` on the Pi), and close other camera programs.
+2. Run the `snapshot` group. It takes about 20 seconds.
+
+   ```bash
+   seeingmon camera rates --groups snapshot --json local/camera-snapshots.json
+   ```
+
+   The group measures the survey readout mode, which is the mode of the brightness frame, the survey frames, and the dark sessions. Each row takes single exposures of 1 ms in the full width of the frame, at 64, 256, and 1024 rows and at the full height. It takes 2 exposures that it drops and 10 that it measures, and it times each exposure from the call that starts it to the returned frame.
+3. Read the rows. `med ms` is the median time of an exposure, `max ms` is the slowest one, and `model` is the rate that the profile predicts. A median above the model shows a model that is too short.
+4. Read the fit under the table. It prints `snapshot_overhead_s` and `snapshot_row_time_us` with the values of the profile beside them, and the largest error of the line against the medians.
+5. If a median lies above the model, or the fitted values differ from the profile by more than about 10%, put the fitted values in the entry of the survey mode in `profiles/<id>.toml`. Add a comment with the host, the date, the SDK version, and the conditions. Round the values up: a model that is too short brings the timeouts back, and a model that is a little long only lengthens the wait for a frame that never comes.
+
+The rows use the full width of the frame, so the pixels of a row stay the same and the times fall on a line against the height. A narrow ROI, such as the watch ROI, transfers fewer pixels for each row than the line says, so a refit errs on the long side for it, which is the safe side. The model also sets the time that `acquire` stamps on a snapshot (the arrival time minus the period, plus half the exposure), so the time of a survey frame is off by the error of the model.
+
+If a row fails with `CameraTimeoutError` and `the exposure did not finish within`, the camera is slower than twice the model plus 0.5 s, and the scheduler would time out there too. Raise the values in the profile until the row passes, and run the group again. Until the profile holds the new values, raise `read_timeout_margin_s` under `[scheduler.loop]` and `[services.acquire]` in `local/config.toml`. The setting stays available for a slow camera or host.
 
 ## The camera takes up the high-speed flag late
 

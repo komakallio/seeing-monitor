@@ -278,7 +278,12 @@ class LoopConfig(SectionModel):
 
     read_timeout_factor: Annotated[float, Field(ge=1, allow_inf_nan=False)] = 2.0
     read_timeout_margin_s: NonNegative = 0.5
-    """A frame read waits `factor` times the frame period plus this margin, in seconds."""
+    """A frame read waits `factor` times the frame period plus this margin, in seconds.
+
+    The driver reports the frame period. For a single exposure it follows the snapshot model of
+    the profile, which is much longer than the video model of the same ROI. Raise the margin only
+    for a camera or host that is slower than the profile says.
+    """
 
     context_refresh_s: Seconds = 30.0
     """How often the scheduler refreshes the context that it gives the fast analyzer."""

@@ -95,6 +95,10 @@ modes = []                  # An empty list means the profile's fast mode.
 max_cells = 200
 
 # The run loop.
+# A frame read waits `read_timeout_factor` frame periods plus `read_timeout_margin_s`. The driver
+# reports the period: the video model of the profile for a stream, and the snapshot model for a
+# single exposure (a brightness or survey frame), which is much longer. Raise the margin only for a
+# camera or host that is slower than the profile says.
 [scheduler.loop]
 max_sleep_s = 0.25
 poll_interval_s = 0.1

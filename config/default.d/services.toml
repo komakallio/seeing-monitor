@@ -62,7 +62,10 @@ queue_max_bytes = 100663296
 batch_delay_s = 0.06
 batch_bytes = 262144
 
-# A frame read waits this many frame periods plus a margin before it reports a timeout.
+# A frame read waits this many frame periods plus a margin before it reports a timeout. The driver
+# reports the period: the video model of the profile for a stream, and the snapshot model for a
+# single exposure, which is much longer. Raise the margin only for a camera or host that is slower
+# than the profile says.
 read_timeout_factor = 2.0
 read_timeout_margin_s = 0.5
 default_frame_period_s = 1.0
