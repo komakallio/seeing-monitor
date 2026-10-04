@@ -434,6 +434,75 @@
     };
   }
 
+  // --- Times that tick --------------------------------------------------------------------------
+
+  /** One timer for the whole page: each job runs once a second, and not while the tab is hidden. */
+  const Ticker = {
+    jobs: new Set(),
+    timer: null,
+    add(job) {
+      Ticker.jobs.add(job);
+      if (Ticker.timer === null) {
+        Ticker.timer = setInterval(Ticker.run, 1000);
+      }
+      return () => Ticker.jobs.delete(job);
+    },
+    run() {
+      if (document.hidden) {
+        return;
+      }
+      for (const job of Ticker.jobs) {
+        try {
+          job();
+        } catch (error) {
+          /* A job reports its own failures. */
+        }
+      }
+    },
+  };
+
+  function renderAge(node) {
+    const t = node.dataset.t === "" || node.dataset.t === undefined ? null : Number(node.dataset.t);
+    if (t === null || Number.isNaN(t)) {
+      node.textContent = "";
+      delete node.dataset.stale;
+      return;
+    }
+    const age = Math.max(0, (Status.nowMs() - t) / 1000);
+    const expect = (typeof node.expectS === "function" ? node.expectS() : Number(node.expectS)) || 0;
+    node.textContent = (node.dataset.prefix || "") + fmt.age(age);
+    const level = expect > 0 && age > 3 * expect ? "bad" : expect > 0 && age > 1.5 * expect ? "warn" : "";
+    if (level) {
+      node.dataset.stale = level;
+    } else {
+      delete node.dataset.stale;
+    }
+  }
+
+  /**
+   * Show how old a time is, and keep the age ticking each second, so that a value that stops
+   * arriving is easy to see. `expectedS` is how often a new value should come, in seconds, or a
+   * function that returns it (0: no limit). The age turns "late" at 1.5 times that and "stale" at
+   * 3 times, in words, because the night mode shows only red. `tMs` is the time in milliseconds on
+   * the server clock, or null for no value. A node that leaves the page stops ticking.
+   */
+  function watchAge(node, tMs, expectedS, prefix) {
+    node.dataset.t = tMs === null || tMs === undefined ? "" : String(tMs);
+    node.expectS = expectedS || 0;
+    node.dataset.prefix = prefix || "";
+    renderAge(node);
+    if (!node.dataset.watched) {
+      node.dataset.watched = "1";
+      const stop = Ticker.add(() => {
+        if (node.isConnected) {
+          renderAge(node);
+        } else {
+          stop();
+        }
+      });
+    }
+  }
+
   // --- The night mode ---------------------------------------------------------------------------
 
   const Night = {
@@ -475,6 +544,18 @@
 
   const Status = {
     current: null,
+    receivedAt: 0,
+
+    /**
+     * The server time in milliseconds: the time of the newest status plus the time that has passed
+     * since it arrived. The browser clock is never used, only the time that has elapsed.
+     */
+    nowMs() {
+      if (!Status.current) {
+        return Date.now();
+      }
+      return Date.parse(Status.current.now) + (performance.now() - Status.receivedAt);
+    },
 
     /** The server time as a Date, from the newest status. The browser clock is never used. */
     now() {
@@ -484,6 +565,7 @@
     async load() {
       const status = await api.get("status");
       Status.current = status;
+      Status.receivedAt = performance.now();
       Status.render();
       emit("seeing:status", status);
       return status;
@@ -729,7 +811,7 @@
   }
 
   window.Seeing = {
-    API, h, $, clear, emit, fmt, api, ApiError, failureFrom, Token, Night, Status, poller, boot, showImage,
+    API, h, $, clear, emit, fmt, api, ApiError, failureFrom, Token, Night, Status, poller, boot, showImage, Ticker, watchAge,
     openTokenPanel, readStorage, writeStorage, recall, remember, flagChip, explainReason, FLAG_HELP,
   };
 })();

@@ -9,16 +9,32 @@
 <link rel="stylesheet" href="css/app.css">
 <script src="js/common.js" defer></script>
 <script src="js/plot.js" defer></script>
+<script src="js/polaris.js" defer></script>
 <script src="js/now.js" defer></script>
 </head>
 <body>
 <main id="main">
   <div class="page-title">
     <h1>Now</h1>
-    <p class="page-note" id="updated" aria-live="polite">Loading the station.</p>
+    <div class="strip" id="live" data-level="warn" role="status">
+      <span class="live-dot" id="live-dot" aria-hidden="true"></span>
+      <span id="live-text">Connecting</span>
+      <span class="live-clock" id="live-clock"></span>
+    </div>
   </div>
   <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
   <div id="banner" class="banner" hidden role="status"></div>
+
+  <section class="activity" id="activity" aria-label="What the system is doing" hidden>
+    <div class="activity-head">
+      <span class="mode" id="act-mode"></span>
+      <span class="label" id="act-label"></span>
+    </div>
+    <div class="bar" id="act-bar" hidden><span class="fill" id="act-fill"></span></div>
+    <div class="activity-times"><span id="act-since"></span><span id="act-left"></span></div>
+    <div class="activity-next" id="act-next"></div>
+    <p class="note" id="act-detail"></p>
+  </section>
 
   <div class="cards">
     <article class="card" id="card-seeing" aria-labelledby="h-seeing">
@@ -46,6 +62,12 @@
       <div class="chips" id="pointing-chips"></div>
       <dl class="facts" id="pointing-facts"></dl>
       <div id="pointing-plot"></div>
+    </article>
+
+    <article class="card" id="card-polaris" aria-labelledby="h-polaris">
+      <div class="card-head"><h2 id="h-polaris">Polaris</h2><span class="when" id="polaris-when"></span></div>
+      <div id="polaris-plot" class="polaris-plot"></div>
+      <p class="note" id="polaris-note"></p>
     </article>
 
     <article class="card" id="card-system" aria-labelledby="h-system">

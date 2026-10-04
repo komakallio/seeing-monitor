@@ -1474,3 +1474,266 @@ label {
     display: none !important;
   }
 }
+
+/* --- The Now page: the live strip, the activity, late and stale marks, and Polaris ---------- */
+
+.strip {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--muted);
+  color: var(--muted);
+}
+
+.strip[data-level="good"] .live-dot {
+  background: var(--good);
+  color: var(--good);
+}
+
+.strip[data-level="warn"] .live-dot {
+  background: var(--warn);
+  color: var(--warn);
+}
+
+.strip[data-level="bad"] .live-dot {
+  background: var(--bad);
+  color: var(--bad);
+}
+
+.strip[data-level="warn"] #live-text,
+.strip[data-level="bad"] #live-text {
+  font-weight: 700;
+}
+
+.strip[data-level="bad"] #live-text {
+  color: var(--bad);
+}
+
+.live-dot.ping {
+  animation: live-ping 0.9s ease-out;
+}
+
+.live-clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+@keyframes live-ping {
+  from {
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  to {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+.activity {
+  display: grid;
+  gap: 6px;
+  margin-bottom: var(--gap);
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-left-width: 5px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.activity[data-level="good"] {
+  border-color: var(--good);
+}
+
+.activity[data-level="warn"] {
+  border-color: var(--warn);
+}
+
+.activity[data-level="bad"] {
+  border-color: var(--bad);
+}
+
+.activity-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.activity .mode {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.activity .label {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.activity .bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.activity .bar .fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.9s linear;
+}
+
+.activity-times {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-next strong {
+  font-weight: 700;
+}
+
+.when[data-stale="warn"] {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.when[data-stale="warn"]::after {
+  content: " · late";
+}
+
+.when[data-stale="bad"] {
+  color: var(--bad);
+  font-weight: 700;
+}
+
+.when[data-stale="bad"]::after {
+  content: " · stale";
+}
+
+.card:has(.when[data-stale="warn"]) {
+  border-color: var(--warn);
+}
+
+.card:has(.when[data-stale="bad"]) {
+  border-color: var(--bad);
+}
+
+.age[data-stale="warn"] {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.age[data-stale="bad"] {
+  color: var(--bad);
+  font-weight: 700;
+}
+
+.polaris-plot {
+  width: 100%;
+}
+
+.polaris-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.polaris-svg * {
+  vector-effect: non-scaling-stroke;
+}
+
+.pl-frame {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.pl-orbit {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.pl-trail {
+  stroke: var(--series-1);
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+
+.pl-dot {
+  fill: var(--series-1);
+  opacity: 0.8;
+}
+
+.pl-pole {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.pl-roi {
+  fill: none;
+  stroke: var(--good);
+  stroke-width: 1.5;
+}
+
+.pl-halo {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  animation: pl-pulse 2.4s ease-in-out infinite;
+}
+
+.pl-star {
+  fill: var(--accent);
+}
+
+.pl-label {
+  fill: var(--muted);
+  font-family: var(--font);
+  paint-order: stroke;
+  stroke: var(--surface-2);
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+
+@keyframes pl-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot.ping,
+  .pl-halo,
+  .activity .bar .fill {
+    animation: none;
+    transition: none;
+  }
+}
