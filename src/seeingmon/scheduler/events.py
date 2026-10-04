@@ -7,9 +7,10 @@ checks that the scheduler writes no code that this list leaves out.
 
 The result of a commissioning task has the kind `scheduler.<kind>_result`, with the kind of the
 task in place of `<kind>`: `scheduler.sweep_result`, `scheduler.burst_result`,
-`scheduler.replay_result`, and `scheduler.dark_result`, plus one for each kind that you register a
-handler for. A handler may write events of its own through `CommissionContext.emit_event`, and the
-list names those too (`scheduler.dark_phase`).
+`scheduler.replay_result`, `scheduler.dark_result`, and `scheduler.flat_result`, plus one for each
+kind that you register a handler for. A handler may write events of its own through
+`CommissionContext.emit_event`, and the list names those too (`scheduler.dark_phase` and
+`scheduler.flat_phase`). A task that `CancelTask` removes from the queue gets a result event too.
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.replay_result": "A replay finished.",
     "scheduler.dark_result": "A dark session finished. The detail holds the set and the dark rate.",
     "scheduler.dark_phase": "A dark session moved to another phase: bias, cover, dark, or build.",
+    "scheduler.flat_result": "A flat session finished. The detail holds the version of the flat.",
+    "scheduler.flat_phase": "A flat session began a phase: setup, exposure, capture, or build.",
     "scheduler.task_error": "A commissioning handler raised an error. The task failed.",
     "scheduler.result_sink_failed": "Storing a commissioning result failed.",
     "scheduler.alignment_sink_failed": "The consumer of the alignment frames raised an error.",

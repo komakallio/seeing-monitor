@@ -166,8 +166,10 @@ class TestTheEventList:
             "scheduler.burst_result",
             "scheduler.replay_result",
             "scheduler.dark_result",
+            "scheduler.flat_result",
         }  # built from the kind of the task
-        handlers = {"scheduler.dark_phase"}  # written through `emit_event` by the dark handler
+        # written through `emit_event` by the dark and flat handlers
+        handlers = {"scheduler.dark_phase", "scheduler.flat_phase"}
         assert set(EVENT_KINDS) - written == results | handlers
 
     def test_the_kinds_and_their_descriptions_are_well_formed(self) -> None:

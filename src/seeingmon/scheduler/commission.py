@@ -137,6 +137,14 @@ class TaskQueue:
         """Whether a waiting task satisfies `predicate`. It does not sort, so asking is cheap."""
         return any(predicate(entry[2]) for entry in self._heap)
 
+    def remove(self, predicate: Callable[[CommissionTask], bool]) -> tuple[CommissionTask, ...]:
+        """Remove the waiting tasks that satisfy `predicate`, in the order that they would run."""
+        gone = sorted(entry for entry in self._heap if predicate(entry[2]))
+        if gone:
+            self._heap = [entry for entry in self._heap if not predicate(entry[2])]
+            heapq.heapify(self._heap)
+        return tuple(entry[2] for entry in gone)
+
 
 # --- Frame statistics ----------------------------------------------------------------------------
 

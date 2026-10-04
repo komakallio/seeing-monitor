@@ -12,11 +12,13 @@ from pydantic import ValidationError
 
 from seeingmon.frames import PixelFormat, Roi, StreamConfig, StreamKind
 from seeingmon.scheduler.commands import (
+    CancelTask,
     Command,
     CommandResult,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -113,6 +115,18 @@ COMMANDS: list[Command] = [
     ),
     QueueDark(wait_for_cover_timeout_s=30.0),
     QueueDark(immediate=False),
+    QueueFlat(),
+    QueueFlat(
+        frames=64,
+        target_fraction=0.35,
+        set_number=2,
+        pause_after=False,
+        priority=-1,
+        immediate=False,
+    ),
+    QueueFlat(frames=8, target_fraction=0.7),
+    CancelTask(kind="flat"),
+    CancelTask(),
 ]
 
 
@@ -133,6 +147,8 @@ def test_the_names_of_the_commands_are_the_documented_ones() -> None:
         "queue_sweep",
         "queue_replay",
         "queue_dark",
+        "queue_flat",
+        "cancel_task",
     }
 
 
@@ -149,6 +165,12 @@ def test_a_command_without_optional_fields_takes_the_defaults() -> None:
     decoded = decode_command({"type": "queue_dark"})
     assert isinstance(decoded, QueueDark)
     assert (decoded.immediate, decoded.wait_for_cover_timeout_s) == (True, None)
+    assert decode_command({"type": "queue_flat"}) == QueueFlat()
+    flat = decode_command({"type": "queue_flat"})
+    assert isinstance(flat, QueueFlat)
+    assert (flat.frames, flat.target_fraction, flat.set_number) == (32, 0.5, 1)
+    assert (flat.pause_after, flat.immediate, flat.priority) == (True, True, 0)
+    assert decode_command({"type": "queue_flat", "frames": 16}) == QueueFlat(frames=16)
 
 
 def test_an_object_that_is_not_a_command_cannot_be_sent() -> None:
@@ -201,6 +223,23 @@ def test_an_object_that_is_not_a_command_cannot_be_sent() -> None:
         {"type": "queue_dark", "wait_for_cover_timeout_s": math.nan},
         {"type": "queue_dark", "wait_for_cover_timeout_s": math.inf},
         {"type": "queue_dark", "extra": 1},
+        {"type": "queue_flat", "frames": 12.5},
+        {"type": "queue_flat", "frames": True},
+        {"type": "queue_flat", "frames": None},
+        {"type": "queue_flat", "target_fraction": "half"},
+        {"type": "queue_flat", "target_fraction": math.nan},
+        {"type": "queue_flat", "target_fraction": math.inf},
+        {"type": "queue_flat", "target_fraction": True},
+        {"type": "queue_flat", "set_number": 1.5},
+        {"type": "queue_flat", "set_number": "2"},
+        {"type": "queue_flat", "pause_after": 0},
+        {"type": "queue_flat", "immediate": "yes"},
+        {"type": "queue_flat", "priority": 2.5},
+        {"type": "queue_flat", "label": "no label field"},
+        {"type": "cancel_task"},
+        {"type": "cancel_task", "kind": 7},
+        {"type": "cancel_task", "kind": None},
+        {"type": "cancel_task", "kind": "flat", "extra": 1},
     ],
 )
 def test_a_malformed_command_is_refused(value: Any) -> None:

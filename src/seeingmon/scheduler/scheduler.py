@@ -58,12 +58,18 @@ from seeingmon.profile import Profile
 from seeingmon.records import EventRecord, Record, SeeingWindowRecord, field_specs
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.commands import (
+    MAX_FLAT_FRAMES,
+    MAX_FLAT_TARGET,
+    MIN_FLAT_FRAMES,
+    MIN_FLAT_TARGET,
     TASK_KINDS,
+    CancelTask,
     Command,
     CommandResult,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -292,6 +298,7 @@ class Scheduler:
         self._running_task: CommissionTask | None = None  # popped from the queue, and not done
         self._task_started_mono = now_mono  # when `_running_task` began, for the activity
         self._task_phase: tuple[str, str] | None = None  # the phase and message that it reported
+        self._cancelled: set[int] = set()  # the running tasks that `CancelTask` asked to stop
         self._pause_after: str | None = None  # why a commission episode ends in `paused`
         self._next_watch_mono = now_mono
         self._closed = False
@@ -389,8 +396,10 @@ class Scheduler:
                 result = self._pause()
             elif isinstance(command, Resume):
                 result = self._resume()
-            elif isinstance(command, QueueBurst | QueueSweep | QueueReplay | QueueDark):
+            elif isinstance(command, QueueBurst | QueueSweep | QueueReplay | QueueDark | QueueFlat):
                 result = self._queue_task(command)
+            elif isinstance(command, CancelTask):
+                result = self._cancel_task(command)
             else:
                 result = self._reject(RejectReason.INVALID, f"unknown command {command!r}")
             self._record_command(command, result)
@@ -911,7 +920,7 @@ class Scheduler:
         return self._accept("the scheduler resumed in safe and checks the sky")
 
     def _queue_task(
-        self, command: QueueBurst | QueueSweep | QueueReplay | QueueDark
+        self, command: QueueBurst | QueueSweep | QueueReplay | QueueDark | QueueFlat
     ) -> CommandResult:
         kind = TASK_KINDS[type(command)]
         if kind not in self._handlers:
@@ -919,10 +928,10 @@ class Scheduler:
         problem = self._check_task(command)
         if problem is not None:
             return self._reject(RejectReason.INVALID, problem)
-        if isinstance(command, QueueDark) and self._dark_task_pending():
+        if isinstance(command, QueueDark | QueueFlat) and self._task_pending(kind):
             return self._reject(
                 RejectReason.BUSY,
-                "a dark session is already queued or running; wait until it ends",
+                f"a {kind} session is already queued or running; wait until it ends",
             )
         task = CommissionTask(
             task_id=self._next_task_id,
@@ -945,16 +954,54 @@ class Scheduler:
             return f"the {kind} is queued: it runs after the alignment helper ends"
         if self._faults.degraded:
             return f"the {kind} is queued: it runs after the camera recovers"
-        if isinstance(command, QueueDark) and command.immediate:
+        if isinstance(command, QueueDark | QueueFlat) and command.immediate:
             return f"the {kind} is queued and starts at the next step"
         return f"the {kind} is queued and runs at the next cycle boundary"
 
-    def _dark_task_pending(self) -> bool:
-        """Whether a dark task waits in the queue or runs. The caller holds the lock."""
+    def _task_pending(self, kind: str) -> bool:
+        """Whether a task of this kind waits in the queue or runs. The caller holds the lock."""
         running = self._running_task
-        return (running is not None and running.kind == "dark") or any(
-            task.kind == "dark" for task in self._queue.tasks()
+        return (running is not None and running.kind == kind) or self._queue.has(
+            lambda task: task.kind == kind
         )
+
+    def _cancel_task(self, command: CancelTask) -> CommandResult:
+        """Remove the waiting tasks of a kind, and ask the running one to stop."""
+        kind = command.kind
+        if kind not in TASK_KINDS.values():
+            return self._reject(RejectReason.INVALID, f"{kind!r} is not a kind of task")
+        removed = self._queue.remove(lambda task: task.kind == kind)
+        running = self._running_task
+        if running is not None and running.kind == kind:
+            self._cancelled.add(running.task_id)
+            message = f"the running {kind} stops at its next check"
+            task_id = running.task_id
+        elif removed:
+            message = f"the waiting {kind} is removed, and it never starts"
+            task_id = removed[0].task_id
+        else:
+            return self._reject(RejectReason.NO_TASK, f"no {kind} task waits or runs")
+        now = self._clock.utc_ns()
+        for task in removed:
+            self._finish_removed(task, now)
+        return self._accept(message, task_id=task_id)
+
+    def _finish_removed(self, task: CommissionTask, now_utc_ns: int) -> None:
+        """Give a task that left the queue unrun its `aborted` result. The caller holds the lock.
+
+        The task stored nothing, so the result sink does not hear about it.
+        """
+        result = CommissionResult(
+            task_id=task.task_id,
+            kind=task.kind,
+            status="aborted",
+            summary=f"The {task.kind} was cancelled before it started.",
+            started_utc_ns=now_utc_ns,
+            finished_utc_ns=now_utc_ns,
+            pinned=False,
+        )
+        self._results.append(result)
+        self._emit("info", f"scheduler.{result.kind}_result", result.summary, result.to_detail())
 
     def _check_dark(self, command: QueueDark) -> str | None:
         """Return a problem with the settings of a dark task. A `None` field takes the default."""
@@ -981,7 +1028,21 @@ class Scheduler:
             return f"the label has at most {limits.max_label_chars} characters"
         return None
 
-    def _check_task(self, command: QueueBurst | QueueSweep | QueueReplay | QueueDark) -> str | None:
+    @staticmethod
+    def _check_flat(command: QueueFlat) -> str | None:
+        """Return a problem with the settings of a flat task, or `None`."""
+        if not MIN_FLAT_FRAMES <= command.frames <= MAX_FLAT_FRAMES:
+            return f"frames must be between {MIN_FLAT_FRAMES} and {MAX_FLAT_FRAMES}"
+        target = command.target_fraction
+        if not (math.isfinite(target) and MIN_FLAT_TARGET <= target <= MAX_FLAT_TARGET):
+            return f"target_fraction must be between {MIN_FLAT_TARGET:g} and {MAX_FLAT_TARGET:g}"
+        if command.set_number not in (1, 2):
+            return "set_number must be 1 or 2"
+        return None
+
+    def _check_task(
+        self, command: QueueBurst | QueueSweep | QueueReplay | QueueDark | QueueFlat
+    ) -> str | None:
         """Return a problem with the task's settings, or `None` when they are fine."""
         if isinstance(command, QueueBurst):
             if not (command.duration_s > 0 and command.duration_s < float("inf")):
@@ -998,6 +1059,8 @@ class Scheduler:
                 return str(error)
         elif isinstance(command, QueueDark):
             return self._check_dark(command)
+        elif isinstance(command, QueueFlat):
+            return self._check_flat(command)
         elif not (command.speed >= 0 and command.speed < float("inf")):
             return "speed must be zero (as fast as possible) or a positive factor"
         return None
@@ -1494,7 +1557,7 @@ class Scheduler:
         if (
             phase is not Phase.BEGIN  # at a boundary, `_auto_begin` runs the tasks after the gates
             and self._immediate_task_waits()
-            and self._enter_commission(State.AUTO, "a dark session starts at once")
+            and self._enter_commission(State.AUTO, self._immediate_reason())
         ):
             # The fast stream, if one runs, ends in `_reconcile` on the next step, with its window
             # flushed. An exposure that was in progress has finished, because the step that reads
@@ -1956,6 +2019,12 @@ class Scheduler:
         with self._lock:
             return not self._faults.degraded and self._queue.has(_starts_at_once)
 
+    def _immediate_reason(self) -> str:
+        """Why `commission` starts before the boundary: the session that asks to start at once."""
+        with self._lock:
+            kinds = [task.kind for task in self._queue.tasks() if _starts_at_once(task)]
+        return f"a {kinds[0] if kinds else 'dark'} session starts at once"
+
     def _enter_commission(self, from_state: State, reason: str = "a task is queued") -> bool:
         if not self._transition(reason, State.COMMISSION, expect=from_state):
             return False
@@ -1976,6 +2045,10 @@ class Scheduler:
                 if isinstance(task.command, QueueDark) and task.command.pause_after:
                     self._pause_after = (
                         "the dark session is done, and the camera may still be covered"
+                    )
+                elif isinstance(task.command, QueueFlat) and task.command.pause_after:
+                    self._pause_after = (
+                        "the flat session is done, and the light source may still cover the camera"
                     )
         if task is None:
             self._finish_commission()
@@ -2027,6 +2100,7 @@ class Scheduler:
             with self._lock:
                 self._running_task = None
                 self._task_phase = None
+                self._cancelled.discard(task.task_id)
         self._counters.tasks_run += 1
         with self._lock:
             self._results.append(result)
@@ -2217,7 +2291,11 @@ class _TaskContext:
         return self._scheduler._config
 
     def should_stop(self) -> bool:
-        return self._scheduler._should_stop()
+        scheduler = self._scheduler
+        if scheduler._should_stop():
+            return True
+        with scheduler._lock:
+            return self._task.task_id in scheduler._cancelled
 
     def emit_event(
         self, level: str, kind: str, message: str, detail: Mapping[str, Any] | None = None
@@ -2300,8 +2378,8 @@ def build_scheduler(
 
 
 def _starts_at_once(task: CommissionTask) -> bool:
-    """Whether the task asks to start at the next step (`QueueDark.immediate`)."""
-    return isinstance(task.command, QueueDark) and task.command.immediate
+    """Whether the task asks to start at the next step (`immediate` of a dark or flat session)."""
+    return isinstance(task.command, QueueDark | QueueFlat) and task.command.immediate
 
 
 def _failed(task: CommissionTask, started: int, finished: int, summary: str) -> CommissionResult:

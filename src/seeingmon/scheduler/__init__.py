@@ -18,11 +18,13 @@ See the "Scheduler" section of `docs/architecture.md`. The modules are:
 from __future__ import annotations
 
 from seeingmon.scheduler.commands import (
+    CancelTask,
     Command,
     CommandResult,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -47,6 +49,7 @@ from seeingmon.scheduler.scheduler import Scheduler, StepKind, build_scheduler
 from seeingmon.scheduler.status import SchedulerStatus
 
 __all__ = [
+    "CancelTask",
     "Command",
     "CommandResult",
     "CommissionContext",
@@ -58,6 +61,7 @@ __all__ = [
     "Pause",
     "QueueBurst",
     "QueueDark",
+    "QueueFlat",
     "QueueReplay",
     "QueueSweep",
     "RejectReason",

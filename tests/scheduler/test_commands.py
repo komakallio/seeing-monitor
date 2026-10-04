@@ -11,11 +11,13 @@ from seeingmon.frames import StreamConfig
 from seeingmon.scheduler.commands import (
     QUEUE_COMMANDS,
     TASK_KINDS,
+    CancelTask,
     Command,
     CommandResult,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -33,6 +35,8 @@ ALL_COMMANDS = [
     QueueSweep(),
     QueueReplay(),
     QueueDark(),
+    QueueFlat(),
+    CancelTask(),
 ]
 
 
@@ -58,6 +62,8 @@ def test_the_commands_are_the_ones_that_the_brief_lists() -> None:
         "QueueSweep",
         "QueueReplay",
         "QueueDark",
+        "QueueFlat",
+        "CancelTask",
     }
 
 
@@ -67,6 +73,7 @@ def test_the_queue_commands_map_to_the_task_kinds() -> None:
     assert TASK_KINDS[QueueSweep] == "sweep"
     assert TASK_KINDS[QueueReplay] == "replay"
     assert TASK_KINDS[QueueDark] == "dark"
+    assert TASK_KINDS[QueueFlat] == "flat"
 
 
 def test_the_queue_commands_share_a_priority_that_defaults_to_zero() -> None:
@@ -84,6 +91,20 @@ def test_a_sweep_leaves_its_axes_empty_for_the_configured_defaults() -> None:
     sweep = QueueSweep()
     assert (sweep.exposure_us, sweep.gain, sweep.roi_arcmin, sweep.modes) == ((), (), (), ())
     assert sweep.window_s is None
+
+
+def test_a_flat_session_has_the_defaults_of_the_brief() -> None:
+    flat = QueueFlat()
+    assert (flat.frames, flat.target_fraction, flat.set_number) == (32, 0.5, 1)
+    assert flat.pause_after is True  # the light source may still cover the camera
+    assert flat.immediate is True  # someone holds the light source at the camera
+    assert flat.priority == 0
+
+
+def test_a_cancel_names_the_kind_of_task_and_has_no_priority() -> None:
+    assert CancelTask(kind="flat").kind == "flat"
+    assert CancelTask().kind == ""
+    assert not hasattr(CancelTask(), "priority")
 
 
 def test_replay_options_are_independent_between_instances() -> None:
@@ -113,4 +134,5 @@ def test_the_rejection_reasons_are_stable_codes() -> None:
         "busy",
         "invalid",
         "closed",
+        "no_task",
     }

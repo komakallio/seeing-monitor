@@ -70,6 +70,24 @@ class TestTaskQueue:
         assert popped.task_id == 1
         assert queue.push(task(3))  # room again after a pop
 
+    def test_remove_takes_the_tasks_that_match_in_the_order_that_they_would_run(self) -> None:
+        queue = TaskQueue(max_queued=10)
+        for task_id, priority in [(1, 0), (2, 5), (3, 0), (4, 5), (5, -1)]:
+            queue.push(task(task_id, priority))
+        gone = queue.remove(lambda queued: queued.task_id in (1, 4, 5))
+        assert [t.task_id for t in gone] == [4, 1, 5]
+        assert [t.task_id for t in queue.tasks()] == [2, 3]
+        assert len(queue) == 2
+        popped = queue.pop()
+        assert popped is not None
+        assert popped.task_id == 2  # the heap still works after the removal
+
+    def test_remove_with_no_match_changes_nothing(self) -> None:
+        queue = TaskQueue(max_queued=10)
+        queue.push(task(1))
+        assert queue.remove(lambda queued: False) == ()
+        assert len(queue) == 1
+
 
 class TestFrameStats:
     @staticmethod

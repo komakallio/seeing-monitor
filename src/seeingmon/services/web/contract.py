@@ -54,9 +54,9 @@ reach this channel.
 
 **Commands.** `encode_command` writes a command as `{"type": <name>, ...fields}`. The names are
 `start_alignment`, `stop_alignment`, `pause`, `resume`, `queue_burst`, `queue_sweep`,
-`queue_replay`, and `queue_dark`. A field that the command lacks takes the default of the
-dataclass. `queue_replay` names its source (`source`) as a recording name without a directory
-part, and `core` resolves it under the configured recordings folder.
+`queue_replay`, `queue_dark`, `queue_flat`, and `cancel_task`. A field that the command lacks takes
+the default of the dataclass. `queue_replay` names its source (`source`) as a recording name
+without a directory part, and `core` resolves it under the configured recordings folder.
 """
 
 from __future__ import annotations
@@ -70,11 +70,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from seeingmon.scheduler.commands import (
+    CancelTask,
     Command,
     CommandResult,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -208,6 +210,18 @@ def encode_command(command: Command) -> dict[str, Any]:
             "wait_for_cover_timeout_s": command.wait_for_cover_timeout_s,
             "immediate": command.immediate,
         }
+    if isinstance(command, QueueFlat):
+        return {
+            "type": "queue_flat",
+            "frames": command.frames,
+            "target_fraction": command.target_fraction,
+            "set_number": command.set_number,
+            "pause_after": command.pause_after,
+            "priority": command.priority,
+            "immediate": command.immediate,
+        }
+    if isinstance(command, CancelTask):
+        return {"type": "cancel_task", "kind": command.kind}
     raise TypeError(f"cannot send {type(command).__name__} to core")
 
 
@@ -294,6 +308,31 @@ def decode_command(value: Any) -> Command:
             wait_for_cover_timeout_s=get_opt_float(body, "wait_for_cover_timeout_s", what),
             immediate=get_bool(body, "immediate", what) if "immediate" in body else True,
         )
+    if kind == "queue_flat":
+        _expect_keys(
+            body,
+            what,
+            (),
+            ("frames", "target_fraction", "set_number", "pause_after", "priority", "immediate"),
+        )
+        defaults = QueueFlat()
+        return QueueFlat(
+            frames=get_int(body, "frames", what) if "frames" in body else defaults.frames,
+            target_fraction=(
+                get_float(body, "target_fraction", what)
+                if "target_fraction" in body
+                else defaults.target_fraction
+            ),
+            set_number=(
+                get_int(body, "set_number", what) if "set_number" in body else defaults.set_number
+            ),
+            pause_after=(get_bool(body, "pause_after", what) if "pause_after" in body else True),
+            priority=get_int(body, "priority", what) if "priority" in body else 0,
+            immediate=get_bool(body, "immediate", what) if "immediate" in body else True,
+        )
+    if kind == "cancel_task":
+        _expect_keys(body, what, ("kind",))
+        return CancelTask(kind=get_str(body, "kind", what))
     raise CodecError("command.type is not a command that core accepts")
 
 
