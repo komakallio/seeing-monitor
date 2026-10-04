@@ -438,6 +438,36 @@ class TestAnOlderDatabase:
             names = [row[1] for row in connection.execute('PRAGMA table_info("health")')]
         assert set(names[-2:]) == {"queue_depth", "heater_duty"}  # the migration appends them
 
+    def test_a_pointing_table_from_before_the_pole_fields_serves_them_as_none(
+        self, db_path: Path
+    ) -> None:
+        with Store.open(db_path) as writer:
+            writer.write(
+                sample_record("pointing", t_utc_ns=T0, polaris_x_px=2690.5, polaris_y_px=1400.25)
+            )
+        with raw(db_path) as connection:
+            connection.execute('ALTER TABLE "pointing" DROP COLUMN "pole_x_px"')
+            connection.execute('ALTER TABLE "pointing" DROP COLUMN "pole_y_px"')
+            connection.commit()
+        with StoreReader.open(db_path) as reader:  # `web` before `core` has migrated the table
+            old = reader.latest("pointing")
+        assert old is not None
+        assert (old.values["pole_x_px"], old.values["pole_y_px"]) == (None, None)
+        assert old.values["polaris_x_px"] == 2690.5
+        with Store.open(db_path) as store:  # `core` opens the store and adds the columns
+            store.write(
+                sample_record("pointing", t_utc_ns=T0 + 1, pole_x_px=2100.5, pole_y_px=1399.5)
+            )
+            rows = store.range("pointing", T0, T0 + 10)
+        assert [(r.values["pole_x_px"], r.values["pole_y_px"]) for r in rows] == [
+            (None, None),
+            (2100.5, 1399.5),
+        ]
+        with raw(db_path) as connection:
+            info = {row[1]: row for row in connection.execute('PRAGMA table_info("pointing")')}
+        for name in ("pole_x_px", "pole_y_px"):
+            assert (info[name][2], info[name][3]) == ("REAL", 0)  # a REAL column that allows NULL
+
 
 class TestCursors:
     def test_a_sink_without_a_cursor_starts_at_zero(self, store: Store) -> None:

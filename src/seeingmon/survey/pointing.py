@@ -21,6 +21,15 @@ in ICRS, multiply by the bias-precession-nutation matrix of that time (`R_icrs =
 The record's `center_ra_deg` and `center_dec_deg` are already in ICRS, with aberration removed.
 The Earth rotation angle uses UT1 = UTC, which can shift the roll of the Earth-fixed attitude by
 up to 14 arcsec when UT1 - UTC is 0.9 s. See `seeingmon.survey.apparent`.
+
+**The pole and Polaris in the record.** `pole_x_px` and `pole_y_px` are the pixel of the
+celestial pole of date: the CIRS vector `[0, 0, 1]` projected through the attitude of the record.
+`polaris_x_px` and `polaris_y_px` are the pixel of the apparent place of Polaris. Both pixels are
+in the readout mode of the record, with the center of the first pixel at 0. A rigid mount keeps
+the pole at one pixel, and Polaris follows a circle around it with the radius
+`tan(colatitude) / scale`, so a page can draw the orbit from the record. The record gives the
+pole pixel when the pole lies outside the frame. Each of the four fields is `None` with a
+`quality` entry when its point lies behind the camera, and in an unsolved record.
 """
 
 from __future__ import annotations
@@ -328,7 +337,8 @@ def build_pointing_record(
     With `attitude` set, the record carries the geometry. With `attitude` `None`, the record
     has the `unsolved` flag, `null` in every geometry field, and a `quality` entry for each
     that says why. `solution` is the Earth-fixed form of `attitude`, which the offset from the
-    reference needs.
+    reference needs. `polaris_xy` is the pixel of Polaris, or `None` when Polaris lies behind the
+    camera. The pole pixel follows from `attitude` alone, so the caller does not pass it.
     """
     cap = limits or PointingLimits()
     if attitude is None or epoch is None:
@@ -350,6 +360,8 @@ def build_pointing_record(
             "solve_rms_arcsec",
             "polaris_x_px",
             "polaris_y_px",
+            "pole_x_px",
+            "pole_y_px",
         )
         return PointingRecord(
             station_id=station_id,
@@ -367,6 +379,7 @@ def build_pointing_record(
         )
     ra, dec = attitude.center_icrs(epoch)
     roll = attitude.roll_deg()
+    pole_xy = attitude.pole_pixel()
     offset = (
         offset_between(solution, reference.solution)
         if solution is not None and reference is not None
@@ -388,6 +401,9 @@ def build_pointing_record(
     if polaris_xy is None:
         quality["polaris_x_px"] = "Polaris is not in front of the camera"
         quality["polaris_y_px"] = "Polaris is not in front of the camera"
+    if pole_xy is None:
+        quality["pole_x_px"] = "the pole is not in front of the camera"
+        quality["pole_y_px"] = "the pole is not in front of the camera"
     return PointingRecord(
         station_id=station_id,
         t_utc_ns=t_utc_ns,
@@ -410,4 +426,6 @@ def build_pointing_record(
         solve_time_s=solve_time_s,
         reference_id=None if reference is None else reference.reference_id,
         flags=flags,
+        pole_x_px=None if pole_xy is None else pole_xy[0],
+        pole_y_px=None if pole_xy is None else pole_xy[1],
     )

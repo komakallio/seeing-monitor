@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from seeingmon.records.base import field_specs
 from seeingmon.records.reference import REFERENCE_SOURCES, ReferenceRecord
 from seeingmon.records.survey import (
     POINTING_FLAGS,
@@ -152,6 +153,31 @@ class TestPointingRecord:
     def test_the_plate_scale_comes_with_its_readout_mode(self) -> None:
         record = self.make(plate_scale_arcsec_px=3.82)
         assert (record.readout_mode, record.plate_scale_arcsec_px) == ("bin2", 3.82)
+
+    def test_the_pole_position_is_optional_and_comes_after_the_flags(self) -> None:
+        record = self.make()
+        assert (record.pole_x_px, record.pole_y_px) == (None, None)
+        names = [spec.name for spec in field_specs(PointingRecord)]
+        assert names[-3:] == ["flags", "pole_x_px", "pole_y_px"]  # the declaration only grew
+
+    @pytest.mark.parametrize("position", [(2100.5, 1399.5), (-35.5, 3000.25), (-1e6, 1e6)])
+    def test_the_pole_may_lie_outside_the_frame(self, position: tuple[float, float]) -> None:
+        record = self.make(pole_x_px=position[0], pole_y_px=position[1])
+        assert (record.pole_x_px, record.pole_y_px) == position
+        assert PointingRecord.from_row(record.to_row(), strict=True) == record
+
+    def test_a_missing_pole_says_why_in_the_quality(self) -> None:
+        reason = "the pole is not in front of the camera"
+        record = self.make(quality={"pole_x_px": reason, "pole_y_px": reason})
+        assert record.to_row()["pole_x_px"] is None
+        assert record.to_row()["quality"] == {"pole_x_px": reason, "pole_y_px": reason}
+
+    @pytest.mark.parametrize(
+        "overrides", [{"pole_x_px": float("nan")}, {"pole_y_px": float("inf")}]
+    )
+    def test_the_pole_must_be_a_finite_number(self, overrides: dict[str, Any]) -> None:
+        with pytest.raises(ValidationError):
+            self.make(**overrides)
 
 
 class TestStarRecords:

@@ -1825,7 +1825,7 @@
         "type": "object"
       },
       "Pointing": {
-        "description": "The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
+        "description": "The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`, and so do the pixel positions of Polaris (`polaris_x_px` and `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the center of the first pixel at 0. The distance from the pole to Polaris is the radius of the circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
         "properties": {
           "attitude": {
             "description": "The rotation matrix of the attitude, as nine numbers in row-major order.",
@@ -1930,6 +1930,24 @@
           },
           "polaris_y_px": {
             "description": "The y coordinate of Polaris predicted at `t_utc_ns`, in sensor pixels.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "pole_x_px": {
+            "description": "The x coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, even when the pole lies outside the frame.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "pole_y_px": {
+            "description": "The y coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, even when the pole lies outside the frame.",
             "format": "double",
             "type": [
               "number",
@@ -2078,6 +2096,8 @@
           "solve_time_s",
           "reference_id",
           "flags",
+          "pole_x_px",
+          "pole_y_px",
           "t_utc"
         ],
         "title": "Pointing",
@@ -2157,7 +2177,7 @@
         "type": "object"
       },
       "PointingRow": {
-        "description": "An item of the history of `pointing` records. Without `fields`, an item holds every field except the arrays of numbers. With `fields`, it holds the named fields. The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
+        "description": "An item of the history of `pointing` records. Without `fields`, an item holds every field except the arrays of numbers. With `fields`, it holds the named fields. The pointing solution of one survey frame.\n\n`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`, and so do the pixel positions of Polaris (`polaris_x_px` and `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the center of the first pixel at 0. The distance from the pole to Polaris is the radius of the circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.",
         "properties": {
           "attitude": {
             "description": "The rotation matrix of the attitude, as nine numbers in row-major order.",
@@ -2267,6 +2287,24 @@
           },
           "polaris_y_px": {
             "description": "The y coordinate of Polaris predicted at `t_utc_ns`, in sensor pixels.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "pole_x_px": {
+            "description": "The x coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, even when the pole lies outside the frame.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "px"
+          },
+          "pole_y_px": {
+            "description": "The y coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, even when the pole lies outside the frame.",
             "format": "double",
             "type": [
               "number",

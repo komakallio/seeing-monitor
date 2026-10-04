@@ -172,7 +172,7 @@ Codes for `flags`:
 
 The pointing solution of one survey frame.
 
-`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.
+`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`, and so do the pixel positions of Polaris (`polaris_x_px` and `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the center of the first pixel at 0. The distance from the pole to Polaris is the radius of the circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.
 
 Storage: a row of a SQLite table. Retention: kept forever.
 
@@ -194,6 +194,8 @@ Storage: a row of a SQLite table. Retention: kept forever.
 | `solve_time_s` | `float` | `s` | The time that the solver took, in seconds. | Yes |
 | `reference_id` | `str` | none | The ID of the reference solution that `offset_arcmin` refers to. | Yes |
 | `flags` | `list[str]` | none | The conditions that apply to the solution, as documented codes. | No |
+| `pole_x_px` | `float` | `px` | The x coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, even when the pole lies outside the frame. | Yes |
+| `pole_y_px` | `float` | `px` | The y coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, even when the pole lies outside the frame. | Yes |
 
 Codes for `flags`:
 

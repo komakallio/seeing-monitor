@@ -220,6 +220,22 @@ def test_a_history_row_makes_every_field_optional_and_adds_the_sample_count(
     assert set(row["properties"]) == set(record["properties"]) | {"n_samples"}
 
 
+@pytest.mark.parametrize("component", ["Pointing", "PointingRow"])
+def test_the_pointing_schemas_document_the_pole_pixel(
+    document: dict[str, Any], component: str
+) -> None:
+    properties = document["components"]["schemas"][component]["properties"]
+    for name in ("pole_x_px", "pole_y_px"):
+        assert properties[name]["type"] == ["number", "null"]
+        assert properties[name]["x-unit"] == "px"
+        assert "celestial pole" in properties[name]["description"]
+    assert document["components"]["schemas"]["Pointing"]["required"][-3:] == [
+        "pole_x_px",
+        "pole_y_px",
+        "t_utc",
+    ]
+
+
 def test_the_quality_schema_is_the_generated_one(document: dict[str, Any]) -> None:
     generated = api_schema(["seeing_window"])["components"]["schemas"]["Quality"]
     assert document["components"]["schemas"]["Quality"] == generated

@@ -92,6 +92,11 @@ def seed_records(store: Store) -> None:
                     n_matched=40,
                     readout_mode="bin2",
                     solver="solver-a",
+                    # The pole stays near one pixel, and Polaris circles it at 590 pixels.
+                    pole_x_px=2100.0 + 10.0 * minute,
+                    pole_y_px=1400.0 - minute,
+                    polaris_x_px=2690.0 + 10.0 * minute,
+                    polaris_y_px=1400.0 - 20.0 * minute,
                 ),
             )
         )

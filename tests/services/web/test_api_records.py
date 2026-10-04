@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
+import sqlite3
+from collections.abc import Callable
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 
 from seeingmon.records.base import field_specs
+from seeingmon.store.db import Store
+from seeingmon.store.layout import DataLayout
 from tests.services.web.client import TestClient
 from tests.services.web.seed import at
 
@@ -37,6 +43,12 @@ def test_the_latest_record_has_every_declared_field_and_an_iso_time(
     assert set(record) == declared | {"t_utc"}
     assert record["t_utc"].endswith("Z")
     assert record["station_id"] == "test-station"
+
+
+def test_the_latest_pointing_record_has_the_pole_and_polaris_pixels(client: TestClient) -> None:
+    pointing = client.get(f"{API}/pointing/latest").json()
+    assert (pointing["pole_x_px"], pointing["pole_y_px"]) == (2160.0, 1394.0)
+    assert (pointing["polaris_x_px"], pointing["polaris_y_px"]) == (2750.0, 1280.0)
 
 
 def test_the_latest_seeing_record_is_the_newest(client: TestClient) -> None:
@@ -160,6 +172,45 @@ def test_fields_limits_each_item_to_the_named_fields(client: TestClient) -> None
     body = client.get(f"{API}/pointing", params={"fields": "offset_arcmin,roll_deg"}).json()
     assert set(body["items"][0]) == {"t_utc_ns", "t_utc", "offset_arcmin", "roll_deg", "quality"}
     assert [item["offset_arcmin"] for item in body["items"]] == [0.1, 0.3, 0.5]
+
+
+def test_fields_may_name_the_pole_pixel(client: TestClient) -> None:
+    body = client.get(f"{API}/pointing", params={"fields": "pole_x_px,pole_y_px"}).json()
+    assert set(body["items"][0]) == {"t_utc_ns", "t_utc", "pole_x_px", "pole_y_px", "quality"}
+    assert [(i["pole_x_px"], i["pole_y_px"]) for i in body["items"]] == [
+        (2100.0, 1400.0),
+        (2130.0, 1397.0),
+        (2160.0, 1394.0),
+    ]
+
+
+def test_a_ten_minute_step_gives_the_mean_pole_pixel(client: TestClient) -> None:
+    params = {"step": "10m", "fields": "pole_x_px,pole_y_px,polaris_x_px"}
+    items = client.get(f"{API}/pointing", params=params).json()["items"]
+    assert len(items) == 1
+    assert items[0]["pole_x_px"] == 2130.0  # (2100 + 2130 + 2160) / 3
+    assert items[0]["pole_y_px"] == 1397.0
+    assert items[0]["polaris_x_px"] == 2720.0
+    assert items[0]["n_samples"] == 3
+
+
+def test_a_store_from_before_the_pole_fields_serves_null_for_them(
+    app: FastAPI, seeded: Store, layout: DataLayout, open_client: Callable[..., TestClient]
+) -> None:
+    with contextlib.closing(sqlite3.connect(layout.db_path)) as connection:  # an old table
+        connection.execute('ALTER TABLE "pointing" DROP COLUMN "pole_x_px"')
+        connection.execute('ALTER TABLE "pointing" DROP COLUMN "pole_y_px"')
+        connection.commit()
+    client = open_client(app)
+    latest = client.get(f"{API}/pointing/latest").json()
+    assert set(latest) == {spec.name for spec in field_specs("pointing")} | {"t_utc"}
+    assert (latest["pole_x_px"], latest["pole_y_px"]) == (None, None)
+    assert latest["polaris_x_px"] == 2750.0  # the other fields read as before
+    items = client.get(f"{API}/pointing", params={"fields": "pole_x_px,offset_arcmin"}).json()[
+        "items"
+    ]
+    assert [item["pole_x_px"] for item in items] == [None, None, None]
+    assert [item["offset_arcmin"] for item in items] == [0.1, 0.3, 0.5]
 
 
 def test_fields_may_name_an_array_of_a_raw_history(client: TestClient) -> None:

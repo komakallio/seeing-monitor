@@ -297,6 +297,29 @@ def test_every_table_record_type_encodes_and_parses(cls: type[Record]) -> None:
             assert parsed == value
 
 
+def test_the_pole_pixel_of_a_pointing_record_is_two_float_fields() -> None:
+    record = sample_record(
+        "pointing",
+        t_utc_ns=T_NS,
+        polaris_x_px=2690.5,
+        polaris_y_px=1400.25,
+        pole_x_px=2100.5,
+        pole_y_px=-35.0,  # a pole outside the frame has a pixel too
+    )
+    fields = parse_line(format_point("pointing", record.to_row())).fields
+    assert (fields["pole_x_px"], fields["pole_y_px"]) == (2100.5, -35.0)
+    assert isinstance(fields["pole_y_px"], float)  # a whole number stays a float, so the type holds
+    assert "pole_x_px" in {field.name for field in sink_mapping("pointing").influx.fields}
+
+
+def test_a_pointing_record_without_a_pole_leaves_the_pole_fields_out() -> None:
+    record = sample_record("pointing", t_utc_ns=T_NS, polaris_x_px=2690.5)
+    fields = parse_line(format_point("pointing", record.to_row())).fields
+    assert "polaris_x_px" in fields
+    assert "pole_x_px" not in fields
+    assert "pole_y_px" not in fields
+
+
 def test_the_parser_rejects_a_malformed_line() -> None:
     with pytest.raises(ParseError):
         parse_line("measurement_without_fields")

@@ -103,6 +103,8 @@ BASELINE: dict[str, tuple[tuple[str, str, bool, str | None], ...]] = {
         ("solve_time_s", "float", True, "s"),
         ("reference_id", "str", True, None),
         ("flags", "list[str]", False, None),
+        ("pole_x_px", "float", True, "px"),
+        ("pole_y_px", "float", True, "px"),
     ),
     "star_list": (
         ("n_stars", "int", False, None),

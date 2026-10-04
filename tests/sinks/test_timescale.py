@@ -139,6 +139,19 @@ class TestGeneratedSql:
     def test_the_frame_type_has_no_table_in_the_forwarder_but_a_mapping_exists(self) -> None:
         assert sink_mapping("frame").timescale.table == "frame"  # a sink may still accept it
 
+    def test_the_pole_columns_exist_and_an_old_pointing_table_gains_them(self) -> None:
+        statements = schema_statements("pointing", hypertable=False)
+        create = statements[0]
+        alters = [statement for statement in statements if statement.startswith("ALTER TABLE")]
+        for name in ("pole_x_px", "pole_y_px"):
+            assert f'"{name}" DOUBLE PRECISION' in create
+            assert f'"{name}" DOUBLE PRECISION NOT NULL' not in create  # the pole is optional
+            assert (
+                f'ALTER TABLE "pointing" ADD COLUMN IF NOT EXISTS "{name}" DOUBLE PRECISION'
+                in alters
+            )
+        assert '"pole_x_px" = EXCLUDED."pole_x_px"' in upsert_sql("pointing")
+
 
 class TestRowParameters:
     def test_the_values_take_the_driver_types(self) -> None:
@@ -185,6 +198,15 @@ class TestRowParameters:
         names = [c.name for c in sink_mapping("event").timescale.columns]
         parameters = dict(zip(names, row_parameters("event", record.to_row()), strict=True))
         assert parameters["detail"] == '{"name":"Pohjantähti"}'
+
+    def test_the_pole_pixel_is_a_float_parameter_and_a_missing_pole_is_null(self) -> None:
+        names = [c.name for c in sink_mapping("pointing").timescale.columns]
+        pole = sample_record("pointing", t_utc_ns=T0, pole_x_px=2100.5, pole_y_px=-35.0)
+        parameters = dict(zip(names, row_parameters("pointing", pole.to_row()), strict=True))
+        assert (parameters["pole_x_px"], parameters["pole_y_px"]) == (2100.5, -35.0)
+        bare = sample_record("pointing", t_utc_ns=T0)
+        parameters = dict(zip(names, row_parameters("pointing", bare.to_row()), strict=True))
+        assert (parameters["pole_x_px"], parameters["pole_y_px"]) == (None, None)
 
     def test_a_non_finite_float_becomes_null(self) -> None:
         row = {**make_health(T0).to_row(), "heater_duty": float("nan")}

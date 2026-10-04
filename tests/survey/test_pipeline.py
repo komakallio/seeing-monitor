@@ -154,6 +154,12 @@ def test_a_solved_frame_gives_three_records_and_recovers_the_pointing(
     assert pointing.solve_rms_arcsec < 0.1
     assert pointing.focus_fwhm_px == pytest.approx(0.45 * 2.3548, rel=0.04)
     assert pointing.polaris_x_px is not None
+    # The pole lies outside this frame (0.9 degree from the center), and the record still has it.
+    assert pointing.pole_x_px is not None
+    assert pointing.pole_y_px is not None
+    assert (pointing.pole_x_px, pointing.pole_y_px) == pytest.approx(truth.pole_px, abs=0.05)
+    assert pointing.quality is not None
+    assert "pole_x_px" not in pointing.quality
     assert pointing.solve_time_s == 0.25  # the solver's own time
     assert star_list.catalog == "gaia-dr3+tycho-2"
     assert pointing.provenance["catalog"] == catalog.content_id

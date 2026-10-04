@@ -280,6 +280,116 @@ def test_polaris_behind_the_camera_is_a_quality_note() -> None:
     assert rec.polaris_x_px is None
     assert rec.quality is not None
     assert "Polaris" in rec.quality["polaris_x_px"]
+    assert "pole_x_px" not in rec.quality  # the pole is in front of this camera
+    assert rec.pole_x_px is not None
+
+
+def test_a_solved_record_carries_the_pole_pixel_of_its_attitude() -> None:
+    solution, attitude = make_solution(polar_distance=0.9, roll=25.0)
+    rec = record(solution=solution, attitude=attitude)
+    assert rec.pole_x_px is not None
+    assert rec.pole_y_px is not None
+    # The pole is 0.9 degree from the center, in the direction of the roll (up for a roll of 0).
+    distance_px = np.tan(np.radians(0.9)) / SCALE_RAD
+    expected = (
+        CENTER[0] - distance_px * np.sin(np.radians(25.0)),
+        CENTER[1] - distance_px * np.cos(np.radians(25.0)),
+    )
+    assert (rec.pole_x_px, rec.pole_y_px) == pytest.approx(expected, abs=1e-6)
+    assert (rec.pole_x_px, rec.pole_y_px) == attitude.pole_pixel()
+    at_the_time = solution.attitude_at(T0).pole_pixel()
+    assert at_the_time == pytest.approx((rec.pole_x_px, rec.pole_y_px), abs=1e-6)
+    assert rec.quality == {"offset_arcmin": "no reference solution"}  # nothing is missing
+
+
+def test_the_pole_pixel_follows_the_parity_of_the_camera() -> None:
+    plain, plain_attitude = make_solution(parity=1)
+    mirrored, mirrored_attitude = make_solution(parity=-1)
+    rec = record(solution=plain, attitude=plain_attitude)
+    flipped = record(solution=mirrored, attitude=mirrored_attitude)
+    assert rec.pole_x_px is not None
+    assert rec.pole_y_px is not None
+    assert flipped.pole_x_px == pytest.approx(rec.pole_x_px, abs=1e-6)
+    assert flipped.pole_y_px == pytest.approx(2.0 * CENTER[1] - rec.pole_y_px, abs=1e-6)
+
+
+def test_the_record_gives_a_pole_pixel_outside_the_frame() -> None:
+    solution, attitude = make_solution(polar_distance=3.0)  # 2,800 pixels from the center
+    rec = record(solution=solution, attitude=attitude)
+    assert rec.pole_x_px is not None
+    assert rec.pole_y_px is not None
+    assert not (0.0 <= rec.pole_x_px <= 4143.0 and 0.0 <= rec.pole_y_px <= 2821.0)
+    assert (rec.pole_x_px, rec.pole_y_px) == attitude.pole_pixel()
+    assert rec.quality == {"offset_arcmin": "no reference solution"}
+
+
+def test_a_pole_behind_the_camera_is_a_quality_note() -> None:
+    solution, attitude = make_solution(polar_distance=170.0)
+    rec = record(solution=solution, attitude=attitude, polaris_xy=None)
+    assert (rec.pole_x_px, rec.pole_y_px) == (None, None)
+    assert rec.quality is not None
+    for name in ("pole_x_px", "pole_y_px"):
+        assert rec.quality[name] == "the pole is not in front of the camera"
+    assert rec.flags == []  # a pole behind the camera is a fact about the mount, not a flag
+
+
+def mount_record(solution: pt.PointingSolution, t_utc_ns: int) -> PointingRecord:
+    """The record of a frame at a time, from the solution of a mount that does not move."""
+    return pt.build_pointing_record(
+        station_id="test",
+        profile_id="asi294mm-gs250",
+        t_utc_ns=t_utc_ns,
+        mode="bin2",
+        solver="astrometry.net",
+        provenance={"algo": pt.POINTING_ALGORITHM},
+        attitude=solution.attitude_at(t_utc_ns),
+        epoch=apparent.epoch_from_utc_ns(t_utc_ns),
+        solution=solution,
+        n_matched=300,
+        rms_arcsec=0.2,
+        polaris_xy=solution.polaris_pixel(t_utc_ns),
+    )
+
+
+def polaris_angle_deg(rec: PointingRecord) -> float:
+    """The position angle of Polaris around the pole in the image, from up toward left."""
+    assert None not in (rec.polaris_x_px, rec.polaris_y_px, rec.pole_x_px, rec.pole_y_px)
+    dx = rec.polaris_x_px - rec.pole_x_px  # type: ignore[operator]
+    dy = rec.polaris_y_px - rec.pole_y_px  # type: ignore[operator]
+    return float(np.degrees(np.arctan2(-dx, -dy)))
+
+
+@pytest.mark.parametrize("polar_distance", [0.05, 0.3, 1.0])
+def test_polaris_circles_the_pole_at_its_colatitude(polar_distance: float) -> None:
+    solution, _ = make_solution(polar_distance=polar_distance)
+    for hours in (0.0, 1.5, 7.0):
+        t = T0 + round(hours * 3600 * NS_PER_S)
+        rec = mount_record(solution, t)
+        assert rec.plate_scale_arcsec_px is not None
+        assert None not in (rec.polaris_x_px, rec.polaris_y_px, rec.pole_x_px, rec.pole_y_px)
+        radius_px = float(
+            np.hypot(rec.polaris_x_px - rec.pole_x_px, rec.polaris_y_px - rec.pole_y_px)  # type: ignore[operator]
+        )
+        # The colatitude of Polaris (0.63 degree), divided by the plate scale.
+        expected_px = pt.polaris_colatitude_deg(t) * 3600.0 / rec.plate_scale_arcsec_px
+        assert expected_px == pytest.approx(590.0, abs=5.0)
+        assert radius_px == pytest.approx(expected_px, abs=0.5)
+
+
+@pytest.mark.parametrize("parity", [1, -1])
+def test_polaris_turns_15_degrees_an_hour_around_a_pole_that_stays_put(parity: int) -> None:
+    solution, _ = make_solution(polar_distance=0.3, parity=parity)
+    first = mount_record(solution, T0)
+    second = mount_record(solution, T0 + 600 * NS_PER_S)  # 10 minutes later
+    assert (second.pole_x_px, second.pole_y_px) == pytest.approx(
+        (first.pole_x_px, first.pole_y_px), abs=1e-6
+    )  # a rigid mount keeps the pole at one pixel
+    turn = (polaris_angle_deg(second) - polaris_angle_deg(first) + 180.0) % 360.0 - 180.0
+    sidereal_deg_per_hour = 360.98564736629 / 24.0  # the Earth turns once in a sidereal day
+    assert abs(turn) == pytest.approx(sidereal_deg_per_hour / 6.0, abs=0.01)  # 2.5 degrees
+    assert abs(turn) == pytest.approx(2.5, abs=0.01)
+    # The sky turns counterclockwise in an image with the usual parity, which raises the angle.
+    assert np.sign(turn) == parity
 
 
 def test_an_unsolved_record_has_null_geometry_and_the_unsolved_flag() -> None:
@@ -295,10 +405,12 @@ def test_an_unsolved_record_has_null_geometry_and_the_unsolved_flag() -> None:
         "solve_rms_arcsec",
         "polaris_x_px",
         "polaris_y_px",
+        "pole_x_px",
+        "pole_y_px",
     ):
         assert getattr(rec, name) is None
         assert rec.quality is not None
-        assert name in rec.quality
+        assert rec.quality[name] == "no pointing solution"
     assert rec.focus_fwhm_px == 1.1  # the focus can exist without a solution
     assert set(rec.flags) <= set(POINTING_FLAGS)
 

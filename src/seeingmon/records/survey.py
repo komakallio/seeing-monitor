@@ -189,8 +189,11 @@ class PointingRecord(Record):
 
     `t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix,
     so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the
-    readout mode in `readout_mode`. A frame that the solver cannot solve has `null` in every
-    geometry field and the `unsolved` flag.
+    readout mode in `readout_mode`, and so do the pixel positions of Polaris (`polaris_x_px` and
+    `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the
+    center of the first pixel at 0. The distance from the pole to Polaris is the radius of the
+    circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that
+    the solver cannot solve has `null` in every geometry field and the `unsolved` flag.
     """
 
     record_type: ClassVar[str] = "pointing"
@@ -284,6 +287,22 @@ class PointingRecord(Record):
         default_factory=list,
         codes=POINTING_FLAGS,
         definition="The conditions that apply to the solution, as documented codes.",
+    )
+    pole_x_px: float | None = quantity(
+        unit="px",
+        default=None,
+        definition=(
+            "The x coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, "
+            "even when the pole lies outside the frame."
+        ),
+    )
+    pole_y_px: float | None = quantity(
+        unit="px",
+        default=None,
+        definition=(
+            "The y coordinate of the celestial pole of date at `t_utc_ns`, in sensor pixels, "
+            "even when the pole lies outside the frame."
+        ),
     )
 
 
