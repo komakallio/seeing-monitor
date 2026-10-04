@@ -660,6 +660,8 @@ The flat has a median of 1. The command floors a pixel that reads at or below ze
 1. Copy the file to the Pi, and set `flat_file` in the `[survey]` table of `local/config.toml` to its path.
 1. Restart `core`, which loads the flat when it starts. The `sky_quality` records carry `provenance.flat` with the name of the flat (`flat-` and a hash of its pixels), so you can see from which record on the pipeline used it. A unit flat shows `unit`.
 
+The previews use the flat too: the JPEGs of the survey frames (the **Images** page and the latest image on the **Now** page) and the live view of the **Align** page. When the dark library has a set for the readout mode and the gain of a frame, `core` replaces the hot pixels that the library lists, subtracts the dark level, and divides by the flat, so the vignetting and the dust shadows leave the image. A preview reads the flat file again when the file changes, so a new flat reaches the previews without a restart (the survey analysis still waits for the restart). The FITS files keep the raw counts. Without a dark set, the previews stay raw, because the division would print the inverse of the flat into the sky (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)). A flat that `core` cannot read gives one warning in the log, "the previews are not calibrated", and raw previews.
+
 ### When to take it again
 
 Take a new flat when the camera comes off the lens, when you change the spacing or the focus, and when you clean the sensor window, because each of them moves the shadows of the dust or changes the vignetting. Between panel flats, the night sky reports the small changes of the vignetting and of the dust (see [Compare the sky with your panel flat](#compare-the-sky-with-your-panel-flat)).
@@ -804,7 +806,7 @@ A light smoothing takes the noise out of a shadow that the update takes from the
 
 ### Use the flat
 
-Set `flat_file` in the `[survey]` table of `local/config.toml` to the path of the file on the Pi, and restart `core`. A unit flat stays the default until you do. The `sky_quality` records then carry `provenance.flat` with the name of the flat. Without a panel flat, the tilt of the optics, about 1% at the frame edges, stays in your sky quality values.
+Set `flat_file` in the `[survey]` table of `local/config.toml` to the path of the file on the Pi, and restart `core`. A unit flat stays the default until you do. The `sky_quality` records then carry `provenance.flat` with the name of the flat. Without a panel flat, the tilt of the optics, about 1% at the frame edges, stays in your sky quality values. The previews and the live view use this flat too, as they use a panel flat.
 
 ## Save the pointing reference
 
