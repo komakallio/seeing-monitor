@@ -15,7 +15,9 @@ what an operator and a later reanalysis want to see:
 - **Preview.** Every long frame (an exposure of at least `[survey.sky] min_exposure_s`, the frames
   that carry the sky quality) gets a JPEG of at most 1 megapixel under `previews/`, because the
   Images page of the web UI lists previews. A short frame (the 1 ms frame of the bright stars)
-  gets one only when it is also kept as a FITS file.
+  gets one only when it is also kept as a FITS file. When the writer has a `PreviewCalibrator`, the
+  preview shows the frame without its dark level, vignetting, and dust shadows
+  (`seeingmon.services.core.alignment.calibration`).
 - **FITS.** Every `keep_every`-th long frame (the first one included), and every event frame (long
   or short), goes to disk as a Rice-compressed FITS file under `survey/`
   (`seeingmon.survey.framefile`). An *event frame* is the first frame after one of these
@@ -66,6 +68,7 @@ from seeingmon.frames import Frame
 from seeingmon.profile import Profile
 from seeingmon.profile.errors import ProfileError
 from seeingmon.records import PointingRecord, Record, SkyQualityRecord, SurveyFrameRecord
+from seeingmon.services.core.alignment.calibration import PreviewCalibrator
 from seeingmon.services.core.alignment.preview import make_preview
 from seeingmon.services.core.settings import SurveyFrameSettings
 from seeingmon.store.layout import DataLayout
@@ -271,6 +274,7 @@ class SurveyFrames:
         long_min_exposure_s: float,
         capture_allowed: Callable[[], bool] | None = None,
         on_event: EventCallback | None = None,
+        calibrator: PreviewCalibrator | None = None,
     ) -> None:
         self._analyzer = analyzer
         self._layout = layout
@@ -280,6 +284,7 @@ class SurveyFrames:
         self._settings = settings
         self._capture_allowed = capture_allowed
         self._on_event = on_event
+        self._calibrator = calibrator
         self._policy = KeepPolicy(settings, profile, long_min_exposure_s=long_min_exposure_s)
         self._wake = threading.Condition()
         self._held: list[_Held] = []
@@ -480,6 +485,7 @@ class SurveyFrames:
                 frame.data,
                 max_pixels=self._settings.preview_max_pixels,
                 quality=self._settings.jpeg_quality,
+                calibration=None if self._calibrator is None else self._calibrator.for_frame(frame),
             )
         except ImportError:  # Pillow comes with the web extra, and this install lacks it
             self._previews_enabled = False

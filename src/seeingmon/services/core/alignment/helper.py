@@ -7,12 +7,13 @@ queues: the live view always shows the newest frame that the machine could handl
 stays at one exposure plus one encode. Each slot holds one frame, whatever the speed of its reader.
 
 **The encoder thread** takes the newest frame, makes the preview and the measures of the frame
-(`seeingmon.services.core.alignment.preview`), builds the `AlignmentState` with the latest solve,
-and sends `pack_frame(state, jpeg)` to every open live-view stream. The preview never waits for a
-solve: the state carries whatever solution exists when the frame comes out, and it says from which
-frame that solution is and how old (`TimingView`). A stream with no room in its window skips the
-frame, because a slow consumer must never make `core` buffer. While a stream is open, the thread
-tells the scheduler now and then that someone watches (`touch`), so the idle timer does not end
+(`seeingmon.services.core.alignment.preview`, with the dark level and the flat taken out when the
+helper has a `PreviewCalibrator`), builds the `AlignmentState` with the latest solve, and sends
+`pack_frame(state, jpeg)` to every open live-view stream. The preview never waits for a solve: the
+state carries whatever solution exists when the frame comes out, and it says from which frame that
+solution is and how old (`TimingView`). A stream with no room in its window skips the frame,
+because a slow consumer must never make `core` buffer. While a stream is open, the thread tells
+the scheduler now and then that someone watches (`touch`), so the idle timer does not end
 `align`.
 
 **The solver thread** takes the newest frame as soon as it has finished the previous solve, and
@@ -45,6 +46,7 @@ from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import Frame, FrameFlag, TimeQuality
 from seeingmon.profile import Profile
 from seeingmon.scheduler.config import SiteConfig
+from seeingmon.services.core.alignment.calibration import PreviewCalibrator
 from seeingmon.services.core.alignment.preview import (
     frame_saturation_dn,
     histogram_counts,
@@ -105,6 +107,7 @@ class AlignmentHelper:
         tracker: PointingTracker | None = None,
         touch: Callable[[], None] | None = None,
         site: SiteConfig | None = None,
+        calibrator: PreviewCalibrator | None = None,
     ) -> None:
         self._settings = settings
         self._site = site
@@ -114,6 +117,7 @@ class AlignmentHelper:
         self._solver = solver
         self._tracker = tracker
         self._touch = touch
+        self._calibrator = calibrator
 
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
@@ -284,6 +288,7 @@ class AlignmentHelper:
             frame.data,
             max_pixels=self._settings.max_preview_pixels,
             quality=self._settings.jpeg_quality,
+            calibration=None if self._calibrator is None else self._calibrator.for_frame(frame),
         )
         summary = replace(
             summary,

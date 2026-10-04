@@ -13,13 +13,17 @@ pytest.importorskip("PIL", reason="the previews need Pillow")
 pytest.importorskip("astropy", reason="the FITS files need astropy")
 
 from seeingmon.clock import ScaledClock
+from seeingmon.frames import Frame
 from seeingmon.records import Record, SurveyFrameRecord
+from seeingmon.services.core.alignment.preview import make_preview
 from seeingmon.services.core.survey_frames import SurveyFrames
+from seeingmon.services.web.contract import unpack_frame
 from seeingmon.store.retention import DiskUsage
 from seeingmon.survey import framefile
 from seeingmon.testing import FakeSurveyAnalyzer
 
-from .rig import NIGHT, CoreRig, build_rig
+from . import previewfx
+from .rig import NIGHT, SMALL_BIN2, CoreRig, build_rig
 
 GB = 1_000_000_000
 
@@ -83,6 +87,78 @@ class TestTheWiring:
         try:
             settings = rig.app.settings.survey_frames
             assert (settings.keep_every, settings.ram_frames, settings.jpeg_quality) == (3, 2, 60)
+        finally:
+            rig.app.stop()
+
+
+class TestThePreviewCalibration:
+    SHAPE = (SMALL_BIN2[1], SMALL_BIN2[0])  # (rows, columns) of the simulated camera in bin2
+
+    def rig(self, tmp_path: Path, *, files: bool) -> CoreRig:
+        """A rig whose configuration names a flat, and whose data directory holds a dark set."""
+        extra = ""
+        if files:
+            flat = previewfx.write_flat(tmp_path / "flat.npy", previewfx.sensitivity(self.SHAPE))
+            extra = f'[survey]\nflat_file = "{flat.as_posix()}"\n'
+        rig = build_rig(tmp_path, config_extra=extra)
+        if files:
+            previewfx.add_dark_set(rig.app.dark_library, self.SHAPE)
+        return rig
+
+    def frame(self) -> Frame:
+        return previewfx.make_survey_frame(
+            previewfx.sensitivity(self.SHAPE), t_utc_ns=NIGHT, exposure_s=30.0
+        )
+
+    def written_preview(self, rig: CoreRig, frame: Frame) -> bytes:
+        """Run the frame through the writer of the app, and read the preview that it wrote."""
+        frames = rig.app.frames
+        assert frames is not None
+        frames.submit(frame)
+        frames.poll()
+        frames.drain()
+        layout = rig.app.storage.layout  # type: ignore[union-attr]
+        return layout.preview_path(frame.t_utc_ns, kind="survey").read_bytes()
+
+    def test_one_calibrator_from_the_configuration_serves_the_previews_and_the_live_view(
+        self, tmp_path: Path
+    ) -> None:
+        rig = self.rig(tmp_path, files=True)
+        try:
+            frame = self.frame()
+            step = rig.app.preview_calibrator.for_frame(frame)
+            assert step is not None  # the flat file and the dark library reached the calibrator
+            settings = rig.app.settings.survey_frames
+            expected = make_preview(
+                frame.data,
+                max_pixels=settings.preview_max_pixels,
+                quality=settings.jpeg_quality,
+                calibration=step,
+            ).jpeg
+            assert self.written_preview(rig, frame) == expected
+            live = rig.app.alignment_settings
+            live_expected = make_preview(
+                frame.data,
+                max_pixels=live.max_preview_pixels,
+                quality=live.jpeg_quality,
+                calibration=step,
+            ).jpeg
+            assert unpack_frame(rig.app.alignment.process_frame(frame)).jpeg == live_expected
+        finally:
+            rig.app.stop()
+
+    def test_without_a_flat_and_a_dark_set_the_previews_stay_as_they_were(
+        self, tmp_path: Path
+    ) -> None:
+        rig = self.rig(tmp_path, files=False)
+        try:
+            frame = self.frame()
+            assert rig.app.preview_calibrator.for_frame(frame) is None
+            settings = rig.app.settings.survey_frames
+            plain = make_preview(
+                frame.data, max_pixels=settings.preview_max_pixels, quality=settings.jpeg_quality
+            ).jpeg
+            assert self.written_preview(rig, frame) == plain
         finally:
             rig.app.stop()
 

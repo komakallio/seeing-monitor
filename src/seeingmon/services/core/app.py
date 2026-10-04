@@ -12,6 +12,10 @@ right order. The parts, and where they come from:
   worker process at a low priority. The `PointingTracker` of the analyzer is the pointing provider.
 - **Survey frames:** `SurveyFrames` wraps the survey analyzer. It keeps the newest frames in RAM,
   and it writes the previews and the FITS files (`seeingmon.services.core.survey_frames`).
+- **Preview calibration:** one `PreviewCalibrator` takes the dark level, the vignetting, and the
+  dust shadows out of the previews of the survey frames and out of the live view of the alignment
+  helper (`seeingmon.services.core.alignment.calibration`). It reads `[survey] flat_file` and the
+  dark library of the survey analysis.
 - **Scheduler:** `build_scheduler(...)`, with the store as the record writer and the segment writer
   as the metrics writer.
 - **Heater, SQM-LE, power:** the sections `[heater]`, `[sqm]`, and `[power]`. Each stays off until
@@ -77,6 +81,7 @@ from seeingmon.scheduler import (
     load_site,
 )
 from seeingmon.services.config import ServicesConfig
+from seeingmon.services.core.alignment.calibration import PreviewCalibrator
 from seeingmon.services.core.alignment.helper import AlignmentHelper, Solver
 from seeingmon.services.core.alignment.solve import QuickSolver
 from seeingmon.services.core.alignment.worker import ProcessQuickSolver
@@ -320,6 +325,11 @@ class CoreApp:
             config.section("survey", SurveyConfig), self.storage.layout
         )
         self._build_dark()
+        # The previews of the survey frames and the live view share one calibrator, so that they
+        # share the flat and the dark model that it caches.
+        self.preview_calibrator = PreviewCalibrator(
+            self.survey_config, self.profile, library=self.dark_library, clock=self.clock
+        )
         transparency = QualityOptions.from_config(self.survey_config).transparency
         self.tracker: PointingTracker | None = parts.tracker
         self.survey: SurveyAnalyzer
@@ -371,6 +381,7 @@ class CoreApp:
                 long_min_exposure_s=self.survey_config.sky.min_exposure_s,
                 capture_allowed=self.storage.capture_allowed,
                 on_event=self.events.emit,
+                calibrator=self.preview_calibrator,
             )
             analyzer = self.frames
         # An analyzer with a nightly summary gets its nights closed on time and at shutdown.
@@ -473,6 +484,7 @@ class CoreApp:
             tracker=self.tracker,
             touch=lambda: self.scheduler.touch_alignment(),
             site=load_site(self.config),
+            calibrator=self.preview_calibrator,
         )
 
     def _make_quick_solver(self) -> Solver | None:

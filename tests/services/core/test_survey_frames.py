@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -23,12 +24,19 @@ from seeingmon.frames import Frame
 from seeingmon.profile import Profile, load_profile
 from seeingmon.records import SkyQualityRecord, SurveyFrameRecord
 from seeingmon.services.core import survey_frames
+from seeingmon.services.core.alignment.calibration import PreviewCalibrator
+from seeingmon.services.core.alignment.preview import make_preview
 from seeingmon.services.core.settings import SurveyFrameSettings
 from seeingmon.services.core.survey_frames import SurveyFrames
 from seeingmon.store.layout import DataLayout
 from seeingmon.survey import framefile
+from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.dark import DarkLibrary
+from seeingmon.survey.sky import SkyError
 from seeingmon.testing import FakeSurveyAnalyzer
 from tests.scheduler.helpers import make_frame
+
+from . import previewfx
 
 START_NS = 1_790_000_000 * NS_PER_S  # 2026-09-21T14:13:20Z
 STEP_NS = 180 * NS_PER_S
@@ -129,6 +137,7 @@ def build(
     *,
     gate: Callable[[], bool] | None = None,
     analyzer: FakeSurveyAnalyzer | None = None,
+    calibrator: PreviewCalibrator | None = None,
     **settings: Any,
 ) -> Built:
     layout = DataLayout(tmp_path / "data")
@@ -146,6 +155,7 @@ def build(
             long_min_exposure_s=5.0,
             capture_allowed=gate,
             on_event=lambda *args: built.events.append(args),
+            calibrator=calibrator,
         ),
         chosen,
         layout,
@@ -560,6 +570,83 @@ class TestTheWriter:
         assert (stats.previews, stats.fits_files) == (4, 2)  # the shorts get nothing
         assert stats.bytes_written > 0
         assert stats.failures == stats.dropped == stats.lost == 0
+
+
+class TestTheCalibratedPreview:
+    SHAPE = (120, 160)
+
+    def calibrator(self, tmp_path: Path, profile: Profile, **parts: Any) -> PreviewCalibrator:
+        """A calibrator for the sensor of `previewfx`: its flat and its dark library."""
+        flat = previewfx.write_flat(tmp_path / "flat.npy", previewfx.sensitivity(self.SHAPE))
+        library = DarkLibrary(tmp_path / "calibration" / "darks")
+        previewfx.add_dark_set(library, self.SHAPE)
+        config = SurveyConfig(flat_file=str(flat), calibration_dir=str(tmp_path / "calibration"))
+        return PreviewCalibrator(config, profile, **parts)
+
+    def frame(self, step: int = 0) -> Frame:
+        return previewfx.make_survey_frame(
+            previewfx.sensitivity(self.SHAPE), seq=step, t_utc_ns=START_NS + step * STEP_NS
+        )
+
+    def preview_bytes(self, built: Built, frame: Frame) -> bytes:
+        return built.layout.preview_path(frame.t_utc_ns, kind="survey").read_bytes()
+
+    def test_the_preview_shows_the_calibrated_frame_and_the_file_the_raw_one(
+        self, tmp_path: Path, profile: Profile
+    ) -> None:
+        calibrator = self.calibrator(tmp_path, profile)
+        built = build(tmp_path / "out", profile, calibrator=calibrator)
+        frame = self.frame()
+        built.run(frame)
+        settings = SurveyFrameSettings()
+        expected = make_preview(
+            frame.data,
+            max_pixels=settings.preview_max_pixels,
+            quality=settings.jpeg_quality,
+            calibration=calibrator.for_frame(frame),
+        )
+        plain = make_preview(
+            frame.data, max_pixels=settings.preview_max_pixels, quality=settings.jpeg_quality
+        )
+        assert self.preview_bytes(built, frame) == expected.jpeg
+        assert expected.jpeg != plain.jpeg
+        back = framefile.read_frame_fits(built.layout.survey_path(frame.t_utc_ns))
+        assert np.array_equal(back.pixels, frame.data >> 2)  # the FITS file keeps the raw counts
+
+    def test_a_calibration_that_fails_leaves_the_preview_as_it_was(
+        self, tmp_path: Path, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def broken() -> Any:
+            raise SkyError("the flat is broken")
+
+        calibrator = self.calibrator(tmp_path, profile, flat_provider=broken)
+        built = build(tmp_path / "out", profile, calibrator=calibrator)
+        frames = [self.frame(step) for step in range(3)]
+        with caplog.at_level(logging.WARNING, logger="seeingmon.services.core.alignment"):
+            for frame in frames:
+                built.run(frame)
+        settings = SurveyFrameSettings()
+        for frame in frames:
+            plain = make_preview(
+                frame.data, max_pixels=settings.preview_max_pixels, quality=settings.jpeg_quality
+            )
+            assert self.preview_bytes(built, frame) == plain.jpeg
+        assert built.frames.stats.failures == 0
+        assert built.frames.stats.previews == 3
+        assert built.events == []  # a calibration that fails is no failed write
+        assert len([r for r in caplog.records if "not calibrated" in r.getMessage()]) == 1
+
+    def test_a_calibrator_with_no_flat_and_no_dark_set_leaves_the_old_preview(
+        self, tmp_path: Path, profile: Profile
+    ) -> None:
+        built = build(tmp_path, profile, calibrator=PreviewCalibrator(SurveyConfig(), profile))
+        frame = self.frame()
+        built.run(frame)
+        settings = SurveyFrameSettings()
+        plain = make_preview(
+            frame.data, max_pixels=settings.preview_max_pixels, quality=settings.jpeg_quality
+        )
+        assert self.preview_bytes(built, frame) == plain.jpeg
 
 
 class TestTheAnalyzerInside:

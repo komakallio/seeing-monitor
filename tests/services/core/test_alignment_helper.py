@@ -7,6 +7,7 @@ import io
 import logging
 import threading
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -16,7 +17,9 @@ from seeingmon.clock import NS_PER_S, VirtualClock, utc_ns_to_iso
 from seeingmon.frames import Frame, FrameFlag
 from seeingmon.profile import Profile, load_profile
 from seeingmon.scheduler.config import SiteConfig
+from seeingmon.services.core.alignment.calibration import PreviewCalibrator
 from seeingmon.services.core.alignment.helper import AlignmentHelper
+from seeingmon.services.core.alignment.preview import make_preview
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.settings import AlignmentSettings
 from seeingmon.services.ipc.errors import IpcClosedError
@@ -31,12 +34,16 @@ from seeingmon.services.ipc.stream import (
     connect_stream,
 )
 from seeingmon.services.web.contract import unpack_frame
+from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.dark import DarkLibrary
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
+from seeingmon.survey.sky import SkyError
 from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
 from tests.scheduler.helpers import make_frame
 from tests.survey.synth import make_attitude
 
 from ..conftest import wait_until
+from . import previewfx
 from .rig import sky_frame
 
 PIL = pytest.importorskip("PIL.Image", reason="the preview needs Pillow")
@@ -242,6 +249,67 @@ class TestOneFrame:
         assert state.solved is None
         assert state.quality["solved"] == "too few stars"
         assert helper.solve_failures == 1
+
+
+class TestTheCalibratedLiveView:
+    def calibrator(self, tmp_path: Path, profile: Profile, **parts: Any) -> PreviewCalibrator:
+        """A calibrator for the sensor of `previewfx`: its flat and its dark library."""
+        flat = previewfx.write_flat(tmp_path / "flat.npy", previewfx.sensitivity())
+        library = DarkLibrary(tmp_path / "calibration" / "darks")
+        previewfx.add_dark_set(library)
+        config = SurveyConfig(flat_file=str(flat), calibration_dir=str(tmp_path / "calibration"))
+        return PreviewCalibrator(config, profile, **parts)
+
+    def plain(self, frame: Frame) -> bytes:
+        return make_preview(
+            frame.data,
+            max_pixels=SETTINGS.max_preview_pixels,
+            quality=SETTINGS.jpeg_quality,
+        ).jpeg
+
+    def test_the_jpeg_comes_from_the_calibrated_frame(
+        self, build: Build, tmp_path: Path, profile: Profile
+    ) -> None:
+        calibrator = self.calibrator(tmp_path, profile)
+        helper = build(calibrator=calibrator)
+        frame = previewfx.make_survey_frame(exposure_s=0.5)  # the exposure of the alignment view
+        jpeg = unpack_frame(helper.process_frame(frame)).jpeg
+        calibrated = make_preview(
+            frame.data,
+            max_pixels=SETTINGS.max_preview_pixels,
+            quality=SETTINGS.jpeg_quality,
+            calibration=calibrator.for_frame(frame),
+        )
+        assert jpeg == calibrated.jpeg
+        assert jpeg != self.plain(frame)
+
+    def test_the_measures_still_come_from_the_raw_frame(
+        self, build: Build, tmp_path: Path, profile: Profile
+    ) -> None:
+        frame = previewfx.make_survey_frame(exposure_s=0.5)
+        calibrated = unpack_frame(
+            build(calibrator=self.calibrator(tmp_path, profile)).process_frame(frame)
+        ).state
+        plain = unpack_frame(build().process_frame(frame)).state
+        assert calibrated.histogram == plain.histogram
+        assert calibrated.saturation == plain.saturation
+
+    def test_a_calibration_that_fails_leaves_the_live_view_as_it_was(
+        self, build: Build, tmp_path: Path, profile: Profile
+    ) -> None:
+        def broken() -> Any:
+            raise SkyError("the flat is broken")
+
+        helper = build(calibrator=self.calibrator(tmp_path, profile, flat_provider=broken))
+        frame = previewfx.make_survey_frame(exposure_s=0.5)
+        for _ in range(3):
+            assert unpack_frame(helper.process_frame(frame)).jpeg == self.plain(frame)
+        assert helper.frames_encoded == 3
+        assert helper.encode_errors == 0
+
+    def test_a_helper_without_a_calibrator_makes_the_old_jpeg(self, build: Build) -> None:
+        frame = previewfx.make_survey_frame(exposure_s=0.5)
+        assert unpack_frame(build().process_frame(frame)).jpeg == self.plain(frame)
 
 
 class TestTheState:
