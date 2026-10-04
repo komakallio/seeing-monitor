@@ -966,11 +966,18 @@ class TestTheFocusHistory:
 class Lifecycle(StubSolver):
     """A solver that has `release` and `close`, and counts the calls."""
 
-    def __init__(self, release_error: bool = False) -> None:
+    def __init__(self, release_error: bool = False, prepare_error: bool = False) -> None:
         super().__init__()
+        self.prepared = 0
         self.released = 0
         self.closed = 0
         self._release_error = release_error
+        self._prepare_error = prepare_error
+
+    def prepare(self) -> None:
+        self.prepared += 1
+        if self._prepare_error:
+            raise RuntimeError("cannot prepare")
 
     def release(self) -> None:
         self.released += 1
@@ -994,6 +1001,50 @@ class TestTheLifeOfTheSolver:
         assert helper.state().active is False
         helper.housekeeping()
         assert solver.released == 1  # once, not for every look at the state
+
+    def test_the_solver_is_told_once_when_the_alignment_starts(self, build: Build) -> None:
+        solver = Lifecycle()
+        helper = build(solver=solver)
+        helper.housekeeping()
+        helper.housekeeping()
+        assert solver.prepared == 1  # a worker loads while the first frames arrive
+
+    def test_a_new_alignment_prepares_the_solver_again(self, build: Build) -> None:
+        active = Active(True)
+        solver = Lifecycle()
+        helper = build(is_active=active, solver=solver)
+        helper.housekeeping()
+        active.value = False
+        helper.housekeeping()  # the alignment ended
+        active.value = True
+        helper.housekeeping()
+        assert (solver.prepared, solver.released) == (2, 1)
+
+    def test_an_alignment_that_ends_before_a_frame_arrived_still_releases_the_solver(
+        self, build: Build
+    ) -> None:
+        active = Active(True)
+        solver = Lifecycle()
+        helper = build(is_active=active, solver=solver)
+        helper.housekeeping()  # prepared, and no frame yet
+        active.value = False
+        helper.housekeeping()
+        assert (solver.prepared, solver.released) == (1, 1)
+
+    def test_a_solver_that_fails_to_prepare_does_not_stop_the_helper(
+        self, build: Build, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        solver = Lifecycle(prepare_error=True)
+        helper = build(solver=solver)
+        with caplog.at_level(logging.ERROR):
+            helper.housekeeping()
+            helper.housekeeping()
+        assert "failed to prepare" in caplog.text
+        assert solver.prepared == 1  # it does not try again for the same alignment
+
+    def test_a_helper_without_a_solver_prepares_nothing(self, build: Build) -> None:
+        helper = build()
+        helper.housekeeping()  # no solver, and nothing to call
 
     def test_the_stop_closes_the_solver(self, build: Build) -> None:
         solver = Lifecycle()

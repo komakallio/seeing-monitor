@@ -24,6 +24,7 @@ from seeingmon.services.core.alignment.worker import (
     install_pipeline,
     make_quick_executor,
     run_quick_job,
+    warm_up,
 )
 from seeingmon.survey.catalog import CapCatalog, write_catalog
 from seeingmon.survey.config import SurveyConfig
@@ -331,6 +332,84 @@ class TestLife:
         finally:
             solver.close()
 
+    def test_the_prepare_starts_the_worker_before_the_first_solve(self, scene: Scene) -> None:
+        made: list[Executor] = []
+        pipeline = pipeline_without_solver(scene)
+
+        def make() -> Executor:
+            made.append(thread_factory(pipeline)())
+            return made[-1]
+
+        solver = ProcessQuickSolver(
+            PointingTracker(scene.profile), VirtualClock(synth.NIGHT_UTC_NS), executor_factory=make
+        )
+        try:
+            solver.prepare()
+            running_after_prepare = solver.running
+            solver.prepare()  # a second call finds the worker
+            solver.solve(scene.first)
+        finally:
+            solver.close()
+        assert running_after_prepare is True
+        assert (len(made), solver.workers_started) == (1, 1)  # the solve used the same worker
+
+    def test_the_warm_up_answers_once_the_pipeline_exists(self, scene: Scene) -> None:
+        assert warm_up() is False
+        install_pipeline(pipeline_without_solver(scene))
+        assert warm_up() is True
+
+    def test_the_prepare_does_nothing_after_the_close_or_during_the_wait_after_a_failure(
+        self, scene: Scene
+    ) -> None:
+        clock = VirtualClock(synth.NIGHT_UTC_NS)
+        factory = Factory(lambda: failed_future(BrokenExecutor("the worker died")))
+        solver = ProcessQuickSolver(
+            PointingTracker(scene.profile), clock, executor_factory=factory, retry_s=5.0
+        )
+        solver.solve(scene.first)  # the worker breaks, and the solver waits
+        assert factory.made != []
+        started = solver.workers_started
+        solver.prepare()
+        assert solver.workers_started == started  # nothing starts in the wait
+        clock.advance(6.0)
+        solver.close()
+        solver.prepare()
+        assert solver.workers_started == started  # and nothing starts after the close
+
+    def test_a_pool_that_cannot_start_does_not_raise_in_the_prepare(self, scene: Scene) -> None:
+        def cannot_start() -> Executor:
+            raise OSError("no process")
+
+        solver = ProcessQuickSolver(
+            PointingTracker(scene.profile),
+            VirtualClock(synth.NIGHT_UTC_NS),
+            executor_factory=cannot_start,
+        )
+        solver.prepare()
+        assert solver.running is False
+
+    def test_a_worker_that_cannot_start_gives_an_unsolved_result_and_a_pause(
+        self, scene: Scene
+    ) -> None:
+        clock = VirtualClock(synth.NIGHT_UTC_NS)
+        calls: list[int] = []
+
+        def cannot_start() -> Executor:
+            calls.append(1)
+            raise OSError("no process")
+
+        solver = ProcessQuickSolver(
+            PointingTracker(scene.profile), clock, executor_factory=cannot_start, retry_s=5.0
+        )
+        first = solver.solve(scene.first)
+        assert not first.solved
+        assert first.note == "the solver process could not start"
+        solver.solve(scene.first)
+        assert len(calls) == 1  # the pause: no second try at once
+        clock.advance(6.0)
+        solver.solve(scene.first)
+        assert len(calls) == 2
+
     def test_a_closed_solver_starts_no_worker(self, scene: Scene) -> None:
         factory = Factory(lambda: Future())
         solver = ProcessQuickSolver(
@@ -420,12 +499,14 @@ def test_a_real_worker_process_solves_a_frame_and_the_tracker_follows(
     tracker = copy_of(seeded, scene)
     solver = ProcessQuickSolver(tracker, SystemClock(), spec=spec, timeout_s=240.0)
     try:
+        solver.prepare()  # the helper does this when the alignment starts: the worker loads early
         got = solver.solve(scene.second)
         states = [solver.running]
     finally:
         solver.close()
     states.append(solver.running)
     assert states == [True, False]
+    assert solver.workers_started == 1  # the prepare and the solve share one worker
     assert got.solved, got.note
     assert got.solver == "tracker"
     assert got.x_px == pytest.approx(expected.x_px, abs=1e-6)

@@ -9,15 +9,18 @@ reached `core` late, and read timeouts that the scheduler took for camera faults
 has its own GIL, so the live view keeps its pace whatever the detector does.
 
 **How it works.** `ProcessQuickSolver` is a `Solver` for the helper. It starts one worker process
-(with the `spawn` method, like the survey worker) at the first solve, and the worker builds its own
-`SurveyPipeline` from a `PipelineSpec`. Each solve sends the frame as the bytes of
-`encode_frame`, the latest pointing solution as a dictionary, and the reference as JSON, and it gets
-back a dictionary (`QuickSolution.to_dict` and the new `PointingSolution`). Only plain data crosses
-the boundary.
-The tracker stays in `core`: `adopt` applies the trust rule and updates it there.
+(with the `spawn` method, like the survey worker) when the helper calls `prepare` or, failing that,
+at the first solve, and the worker builds its own `SurveyPipeline` from a `PipelineSpec`. Each solve
+sends the frame as the bytes of `encode_frame`, the latest pointing solution as a dictionary, and
+the reference as JSON, and it gets back a dictionary with the quick solution
+(`QuickSolution.to_dict`) and the new pointing solution (`PointingSolution.to_dict`). Only plain
+data crosses the boundary. The tracker stays in `core`: `adopt` applies the trust rule and updates
+it there.
 
-**Life of the worker.** The helper calls `release` when the alignment ends, which stops the worker
-and gives its memory back (a Raspberry Pi 4 has 2 GB), and `close` when `core` stops. The next
+**Life of the worker.** The helper calls `prepare` when the alignment starts, so that the worker
+loads while the first frames arrive, `release` when the alignment ends, which stops the worker and
+gives its memory back (a Raspberry Pi 4 has 2 GB), and `close` when `core` stops. A worker takes
+about 100 MB while it waits, and it peaks at about 390 MB on a full bin2 frame. The next
 alignment starts a new worker, which takes a few seconds to import its modules and read the
 catalog. A worker that dies, or a solve that takes longer than `timeout_s`, ends the worker, and the
 solve returns an unsolved result with a note. After such a failure the solver waits `retry_s`
@@ -84,6 +87,11 @@ def init_quick_worker(spec: PipelineSpec, nice: int, oom_score_adj: int) -> None
     lower_process_priority(nice)
     raise_oom_score(oom_score_adj)
     install_pipeline(build_pipeline(spec))
+
+
+def warm_up() -> bool:
+    """A job that does nothing. The worker answers it after it has built its pipeline."""
+    return _PIPELINE is not None
 
 
 def run_quick_job(
@@ -203,11 +211,29 @@ class ProcessQuickSolver:
 
     @property
     def running(self) -> bool:
-        """Whether a worker exists. It starts at the first solve and ends with `release`."""
+        """Whether a worker exists.
+
+        It starts with `prepare` or at the first solve, and it ends with `release`.
+        """
         with self._lock:
             return self._executor is not None
 
     # --- Solving ---------------------------------------------------------------------------
+
+    def prepare(self) -> None:
+        """Start the worker now, so that the first solve does not wait for it to load.
+
+        The call returns at once. The worker needs a few seconds to import its modules and read
+        the catalog, and the helper calls this when the alignment starts. The call does nothing
+        after `close` or during the wait after a failure. A worker that cannot start shows in the
+        next solve.
+        """
+        if self._closed or self._clock.monotonic_ns() < self._retry_after_ns:
+            return
+        try:
+            self._executor_for_job().submit(warm_up)
+        except Exception:
+            _log.warning("the alignment worker could not start", exc_info=True)
 
     def solve(self, frame: Frame) -> QuickSolution:
         """Solve one frame in the worker. Never raises."""
@@ -226,6 +252,8 @@ class ProcessQuickSolver:
             return self._fail(frame, started, note, True)
         except CancelledError:
             return self._unsolved(frame, started, "the solver stopped")  # `release` cancelled it
+        except OSError:  # the system could not start the process, or its pipe broke
+            return self._fail(frame, started, "the solver process could not start", True)
         except Exception as error:
             _log.exception("the quick solve of frame %d failed", frame.seq)
             return self._unsolved(frame, started, f"analysis error: {type(error).__name__}")

@@ -23,8 +23,9 @@ the machine can handle. `solve_interval_s` (zero by default) spaces the starts o
 a machine that has no CPU to spare. The solver is a `QuickSolver` in this process or, in the
 default configuration, a `ProcessQuickSolver` in a worker process: the detector holds the GIL for
 seconds, and in this process it would freeze the encoder, the scheduler thread, and the connection
-layer (see `seeingmon.services.core.alignment.worker`). The helper calls `release` on a solver that
-has it when the alignment ends, and `close` when it stops.
+layer (see `seeingmon.services.core.alignment.worker`). The helper calls `prepare` on a solver
+that has it when the alignment starts (so a worker loads while the first frames arrive), `release`
+when the alignment ends, and `close` when it stops.
 
 **For tests.** `process_frame` and `solve_frame` do the work of one loop turn on the calling thread,
 so a test needs no threads and no waiting. `start` launches the two threads for a real run.
@@ -79,8 +80,9 @@ WAKE_S = 0.5  # the longest that a worker thread waits before it looks around
 class Solver(Protocol):
     """`QuickSolver` and `ProcessQuickSolver` fit.
 
-    A solver may also have `release()`, which the helper calls when the alignment ends, and
-    `close()`, which it calls when it stops. Both are optional.
+    A solver may also have `prepare()`, which the helper calls when the alignment starts (and
+    which must return at once), `release()`, which it calls when the alignment ends, and `close()`,
+    which it calls when it stops. All three are optional.
     """
 
     def solve(self, frame: Frame) -> QuickSolution: ...
@@ -134,6 +136,7 @@ class AlignmentHelper:
         self._focus = FocusHistory()
         self._senders: list[StreamSender] = []
         self._session = False
+        self._prepared = False  # whether the solver has been told that the alignment started
         self._generation = 0  # counts the sessions, so that a late solve cannot leak into the next
         self._logged_outcome: str | None = None
         self._last_publish_ns: int | None = None
@@ -225,9 +228,10 @@ class AlignmentHelper:
 
     def _end_session(self) -> None:
         with self._lock:
-            if not self._session and self._summary is None:
+            if not self._session and self._summary is None and not self._prepared:
                 return
             self._session = False
+            self._prepared = False
             self._summary = None
             self._solution = None
             self._last_good = None
@@ -238,6 +242,16 @@ class AlignmentHelper:
             self._logged_outcome = None
             self._generation += 1
         self._call_solver("release")
+
+    def _prepare_solver(self) -> None:
+        """Tell the solver once per alignment that it starts, so that a worker can load early."""
+        if self._solver is None:
+            return
+        with self._lock:
+            if self._prepared:
+                return
+            self._prepared = True
+        self._call_solver("prepare")
 
     def _call_solver(self, name: str) -> None:
         """Call `release` or `close` on a solver that has it. A failure goes to the log."""
@@ -415,6 +429,7 @@ class AlignmentHelper:
         if not self._is_active():
             self._end_session()
             return
+        self._prepare_solver()
         now = self._clock.monotonic_ns()
         if watched and self._touch is not None and now >= self._next_touch_ns:
             self._next_touch_ns = now + round(self._settings.touch_interval_s * NS_PER_S)
