@@ -22,8 +22,9 @@ class DetectConfig(SectionModel):
     max_saturated_pixels: int = 6  # a star with more is measured by moments, not fitted
     trail_flag_px: float = 1.5
     # 1 searches the frame itself. A larger value searches a copy that sums each block of this many
-    # pixels on a side, and fits only the brightest `refine_stars` stars at full resolution.
-    coarse_bin: int = 1
+    # pixels on a side, and fits only the brightest `refine_stars` stars at full resolution. The
+    # default 2 passed the comparison against the real catalog (see the architecture).
+    coarse_bin: int = 2
     refine_stars: int = 1200
 
 

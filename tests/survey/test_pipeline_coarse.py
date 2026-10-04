@@ -29,6 +29,7 @@ from tests.survey.test_pipeline import (
 )
 
 BINNED = SurveyConfig(detect=DetectConfig(coarse_bin=2))
+FULL = SurveyConfig(detect=DetectConfig(coarse_bin=1))  # the default is the binned search
 
 
 @pytest.fixture(scope="module")
@@ -79,7 +80,7 @@ def test_the_binned_search_gives_the_pointing_and_the_zero_point_of_the_full_sea
 ) -> None:
     _, _, start = first
     frame, truth = later
-    full = pipeline_for(profile, catalog).analyze(frame, previous=start.solution)
+    full = pipeline_for(profile, catalog, config=FULL).analyze(frame, previous=start.solution)
     binned = pipeline_for(profile, catalog, config=BINNED).analyze(frame, previous=start.solution)
     assert full.solved
     assert binned.solved
@@ -104,7 +105,7 @@ def test_the_brightest_stars_alone_give_the_same_pointing_and_zero_point(
 ) -> None:
     _, _, start = first
     frame, truth = later
-    full = pipeline_for(profile, catalog).analyze(frame, previous=start.solution)
+    full = pipeline_for(profile, catalog, config=FULL).analyze(frame, previous=start.solution)
     config = SurveyConfig(detect=DetectConfig(coarse_bin=2, refine_stars=150))
     limited = pipeline_for(profile, catalog, config=config).analyze(frame, previous=start.solution)
     assert limited.solved

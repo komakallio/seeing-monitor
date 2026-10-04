@@ -60,7 +60,7 @@ class TestTheQuickSolver:
             assert (detect["coarse_bin"], detect["refine_stars"]) == (2, 300)
             survey_detect = core.app.survey_config.detect  # the survey path keeps its own
             assert (survey_detect.threshold_sigma, survey_detect.max_stars) == (5.0, 3000)
-            assert survey_detect.coarse_bin == 1
+            assert survey_detect.coarse_bin == 2
         finally:
             core.app.stop()
 
