@@ -28,13 +28,15 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 import seeingmon
 from seeingmon.clock import NS_PER_S
-from seeingmon.scheduler.commands import Command, RejectReason, StopAlignment
+from seeingmon.scheduler.commands import CancelTask, Command, RejectReason, StopAlignment
 from seeingmon.services.web.context import WebContext
 from seeingmon.services.web.contract import (
     ActivityView,
     AlignmentFrame,
     AlignmentState,
     DarkLibraryView,
+    FlatActionView,
+    FlatLibraryView,
     PolarisFrame,
     SchedulerView,
 )
@@ -52,6 +54,7 @@ from seeingmon.services.web.health import HealthReport
 from seeingmon.services.web.images import ImageInfo, ImageKey, parse_image_id
 from seeingmon.services.web.live import FrameHub, HistoryCursor, Subscription
 from seeingmon.services.web.models import (
+    FLAT_VERSION_PATTERN,
     ActivityResponse,
     AlignmentStartRequest,
     ApiInfo,
@@ -67,6 +70,9 @@ from seeingmon.services.web.models import (
     ErrorResponse,
     EventLevel,
     FaultStatusView,
+    FlatActionResponse,
+    FlatLibraryResponse,
+    FlatSessionRequest,
     FocusResetResponse,
     HealthResponse,
     ImageFormat,
@@ -83,7 +89,7 @@ from seeingmon.services.web.models import (
     SweepRequest,
     UiSettings,
 )
-from seeingmon.services.web.privacy import scrub_text
+from seeingmon.services.web.privacy import scrub_json, scrub_text
 from seeingmon.services.web.schemas import json_response
 
 _log = logging.getLogger(__name__)
@@ -279,6 +285,30 @@ def dark_response(view: DarkLibraryView) -> DarkLibraryResponse:
         ),
         quality=quality or None,
     )
+
+
+def flat_response(view: FlatLibraryView) -> FlatLibraryResponse:
+    """The flat library as the API serves it. Free text from `core` goes through `scrub_json`."""
+    quality: dict[str, str] = {}
+    if view.sensor_temperature_c is None:
+        quality["sensor_temperature_c"] = "core reports no sensor temperature"
+    data = scrub_json(view.model_dump(mode="json"))
+    for flat in data["flats"]:
+        flat["image_url"] = f"{PREFIX}/flat/{flat['version']}/image" if flat["has_image"] else None
+    data["quality"] = quality or None
+    return FlatLibraryResponse.model_validate(data)
+
+
+def flat_action_reply(view: FlatActionView) -> JSONResponse:
+    """The answer to an activation or a deletion: a body when it worked, an error when not."""
+    message = scrub_text(view.message)
+    if view.ok:
+        body = FlatActionResponse(message=message, version=view.version or "")
+        return JSONResponse(body.model_dump(mode="json"))
+    if view.reason == "unknown":
+        raise ApiError(404, "unknown_flat", message)
+    codes = {"active": "flat_in_use", "busy": "session_busy", "invalid": "flat_unusable"}
+    raise ApiError(409, codes.get(view.reason or "", "conflict"), message)
 
 
 def build_status(ctx: WebContext) -> StatusResponse:
@@ -861,6 +891,162 @@ def get_dark(ctx: Ctx) -> JSONResponse:
     does not answer, because the library lives there.
     """
     return JSONResponse(dark_response(ctx.core.dark_library()).model_dump(mode="json"))
+
+
+# --- Flat ---
+
+FlatVersion = Annotated[
+    str,
+    Path(pattern=FLAT_VERSION_PATTERN, description="The version of a flat, from `GET /flat`."),
+]
+flat_action_responses: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": ErrorResponse,
+        "description": "The flat is in use, a flat session is queued or running, or the flat does "
+        "not fit the frame of the survey.",
+    },
+    **errors(401, 403, 404, 422, 429, 502, 503),
+}
+
+
+@router.get(
+    "/flat",
+    operation_id="get_flat",
+    summary="Get the flat library and the flat session",
+    tags=["flat"],
+    response_model=FlatLibraryResponse,
+    responses=errors(401, 429, 502, 503),
+    dependencies=READ,
+)
+def get_flat(ctx: Ctx) -> JSONResponse:
+    """Return the flats of the library with the numbers of their reports, the flat in use, the
+    flat that waits for a decision, the first set that waits for a second set, and the progress of
+    the latest flat session.
+
+    Poll it while a session is queued or running. It answers `503 core_unavailable` when `core`
+    does not answer, because the library lives there.
+    """
+    return JSONResponse(flat_response(ctx.core.flat_library()).model_dump(mode="json"))
+
+
+@router.post(
+    "/flat/session",
+    operation_id="post_flat_session",
+    summary="Queue a flat session",
+    tags=["commands", "flat"],
+    response_model=CommandResponse,
+    responses=command_responses,
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_flat_session(body: FlatSessionRequest, ctx: Ctx) -> JSONResponse:
+    """Queue a flat session: take frames of a light source over the aperture, and add a pending
+    flat to the library.
+
+    Cover the front of the guide scope with a uniform light source before you send it. The
+    session finds the exposure, takes the frames, combines them with the bias of the dark library,
+    and adds the flat. It needs a dark set (`422` without one), and a second set (`set_number` 2)
+    needs the first set of a session (`422` without one). With `pause_after`, it pauses the
+    scheduler at the end, so that nothing records data while the light source may still cover the
+    camera. `Resume` (`POST /mode`) continues. The session starts at the next step of the
+    scheduler, after a survey exposure in progress, and a paused scheduler or a running alignment
+    holds it back until you resume or the alignment ends. Only one session may be queued or
+    running (`409` with the reason `busy`). `GET /flat` shows its progress.
+    """
+    return command_reply(ctx, body.to_command())
+
+
+@router.post(
+    "/flat/session/stop",
+    operation_id="post_flat_session_stop",
+    summary="Stop the flat session",
+    tags=["commands", "flat"],
+    response_model=CommandResponse,
+    responses=command_responses,
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_flat_session_stop(ctx: Ctx) -> JSONResponse:
+    """Remove a flat session that waits, or stop the one that runs at its next frame.
+
+    The library stays as it was. The scheduler still pauses at the end when the session asked for
+    it. The answer is `409` with the reason `no_task` when no flat session is queued or running.
+    """
+    return command_reply(ctx, CancelTask(kind="flat"))
+
+
+@router.post(
+    "/flat/{version}/activate",
+    operation_id="post_flat_activate",
+    summary="Use a flat",
+    tags=["flat"],
+    response_model=FlatActionResponse,
+    responses={
+        200: {"model": FlatActionResponse, "description": "The survey uses the flat."},
+        413: {"model": ErrorResponse, "description": ERROR_TEXT[413]},
+        **flat_action_responses,
+    },
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_flat_activate(version: FlatVersion, ctx: Ctx) -> JSONResponse:
+    """Make a flat the one that the survey divides by.
+
+    The survey worker picks it up from its next frame, with no restart. The active flat of the
+    library wins over the setting `flat_file`. Using a pending flat approves it and ends the
+    session that made it. The answer is `404` for an unknown flat, and `409` while a flat session
+    is queued or running, or when the flat does not fit the frame of the survey.
+    """
+    return flat_action_reply(ctx.core.flat_activate(version))
+
+
+@router.delete(
+    "/flat/{version}",
+    operation_id="delete_flat",
+    summary="Delete a flat",
+    tags=["flat"],
+    response_model=FlatActionResponse,
+    responses={
+        200: {"model": FlatActionResponse, "description": "The flat is deleted."},
+        **flat_action_responses,
+    },
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def delete_flat(version: FlatVersion, ctx: Ctx) -> JSONResponse:
+    """Delete a flat that the survey does not use, with its report and its preview.
+
+    Deleting a pending flat discards it and ends the session that made it. The answer is `404`
+    for an unknown flat, and `409` for the flat in use, or while a flat session is queued or
+    running.
+    """
+    return flat_action_reply(ctx.core.flat_delete(version))
+
+
+@router.get(
+    "/flat/{version}/image",
+    operation_id="get_flat_image",
+    summary="Get the preview of a flat",
+    tags=["flat"],
+    response_model=None,
+    response_class=Response,
+    responses={
+        200: {
+            "description": "The preview as a JPEG, stretched to plus and minus 10 percent around "
+            "1: a lighter pixel gets more light than the median pixel.",
+            "content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}},
+        },
+        **errors(401, 404, 422, 429, 502, 503),
+    },
+    dependencies=READ,
+)
+def get_flat_image(version: FlatVersion, ctx: Ctx) -> Response:
+    """Return the preview image of a flat. A version never changes its picture, so a client may
+    keep it."""
+    jpeg = ctx.core.flat_image(version)
+    if jpeg is None:
+        raise ApiError(404, "unknown_flat", "There is no preview of a flat with that name.")
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": IMMUTABLE})
 
 
 # --- Alignment ---

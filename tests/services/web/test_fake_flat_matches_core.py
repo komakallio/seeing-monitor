@@ -19,8 +19,15 @@ from seeingmon.scheduler.commands import (
 )
 from seeingmon.services.core.commissioning import flat as real
 from seeingmon.services.web import fake_flat as fake
+from seeingmon.services.web.models import FLAT_VERSION_PATTERN
 from seeingmon.survey import flat_session
-from seeingmon.survey.flat_library import FLAT_IN_USE, UNKNOWN_FLAT, FlatLibrary, FlatLibraryError
+from seeingmon.survey.flat_library import (
+    FLAT_IN_USE,
+    UNKNOWN_FLAT,
+    VERSION_PATTERN,
+    FlatLibrary,
+    FlatLibraryError,
+)
 
 
 def test_the_limits_are_the_ones_of_the_scheduler() -> None:
@@ -57,3 +64,7 @@ def test_the_advice_of_a_failure_is_the_advice_of_the_real_session() -> None:
     assert bright in joined
     assert dim in fake.DIM_SUMMARY
     assert bright in fake.BRIGHT_SUMMARY
+
+
+def test_the_pattern_of_a_version_in_the_api_is_the_pattern_of_the_library() -> None:
+    assert VERSION_PATTERN.pattern == FLAT_VERSION_PATTERN

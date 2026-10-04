@@ -1650,6 +1650,907 @@
         "title": "FaultStatusView",
         "type": "object"
       },
+      "FlatActionResponse": {
+        "description": "The answer to the activation or the deletion of a flat.",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "version"
+        ],
+        "title": "FlatActionResponse",
+        "type": "object"
+      },
+      "FlatAgreementResponse": {
+        "description": "How well two sets agree, which shows what the light source adds to the flat.",
+        "properties": {
+          "expected_fine_rms_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Fine Rms Percent"
+          },
+          "fine_rms_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fine Rms Percent"
+          },
+          "plane": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlatTiltResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The difference in tilt between the sets."
+          },
+          "smooth_rms_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Smooth Rms Percent"
+          }
+        },
+        "required": [
+          "smooth_rms_percent",
+          "fine_rms_percent",
+          "expected_fine_rms_percent",
+          "plane"
+        ],
+        "title": "FlatAgreementResponse",
+        "type": "object"
+      },
+      "FlatLibraryResponse": {
+        "description": "The flat library, the flat in use, and the latest flat session.\n\n`mode` and `gain` are the settings of the survey, which the session uses. `blocker` is a\nsentence that says why no session can start (the dark library holds no set), or `null`.\n`active_version` is the flat in use, and `pending_version` the newest flat that waits for a\ndecision. `flat_file_pinned` is true when the configuration names `[survey] flat_file`, and\n`library_overrides` says that the active flat of the library wins over that file. `session`\nexists while the first set of a session waits for a second set. `flats` holds the newest flats\nfirst. A value that `core` does not report is `null`, and `quality` says why.",
+        "properties": {
+          "active_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Version"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker"
+          },
+          "flat_file_pinned": {
+            "title": "Flat File Pinned",
+            "type": "boolean"
+          },
+          "flats": {
+            "items": {
+              "$ref": "#/components/schemas/FlatResponse"
+            },
+            "title": "Flats",
+            "type": "array"
+          },
+          "gain": {
+            "title": "Gain",
+            "type": "integer"
+          },
+          "library_overrides": {
+            "title": "Library Overrides",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "pending_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Version"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "sensor_temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensor Temperature C"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlatSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "$ref": "#/components/schemas/FlatTaskResponse"
+          }
+        },
+        "required": [
+          "mode",
+          "gain",
+          "sensor_temperature_c",
+          "active_version",
+          "pending_version",
+          "flat_file_pinned",
+          "library_overrides",
+          "blocker",
+          "flats",
+          "session",
+          "task"
+        ],
+        "title": "FlatLibraryResponse",
+        "type": "object"
+      },
+      "FlatPointResponse": {
+        "description": "The flat at one radius from the optical center, against the center, in percent.",
+        "properties": {
+          "change_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Negative: this radius gets less light than the center.",
+            "title": "Change Percent"
+          },
+          "corner": {
+            "description": "True for the point at the corner of the frame.",
+            "title": "Corner",
+            "type": "boolean"
+          },
+          "radius_deg": {
+            "title": "Radius Deg",
+            "type": "number"
+          }
+        },
+        "required": [
+          "radius_deg",
+          "change_percent",
+          "corner"
+        ],
+        "title": "FlatPointResponse",
+        "type": "object"
+      },
+      "FlatResponse": {
+        "description": "One flat of the library, with the numbers of its report.\n\n`state` is `pending` (a session made it, and nothing uses it yet) or `approved` (you activated\nit once). `active` says that the survey divides by it now, and `pending` that it waits for your\ndecision. `corner_percent` is the change in the corners against the center (negative: the\ncorners get less light). `optics_tilt` and `source_tilt` exist for a flat of two sets: the tilt\nthat stays with the optics, and the one that turned with the light source. `image_url` is the\npreview, stretched to plus and minus 10 percent around 1, or `null` without one.",
+        "properties": {
+          "activated_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activated Utc"
+          },
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "age_days": {
+            "title": "Age Days",
+            "type": "number"
+          },
+          "agreement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlatAgreementResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bias_note": {
+            "title": "Bias Note",
+            "type": "string"
+          },
+          "bias_source": {
+            "title": "Bias Source",
+            "type": "string"
+          },
+          "corner_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corner Percent"
+          },
+          "edge_artifacts": {
+            "title": "Edge Artifacts",
+            "type": "integer"
+          },
+          "exposure_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "frames_taken": {
+            "title": "Frames Taken",
+            "type": "integer"
+          },
+          "frames_used": {
+            "title": "Frames Used",
+            "type": "integer"
+          },
+          "gain": {
+            "title": "Gain",
+            "type": "integer"
+          },
+          "has_image": {
+            "title": "Has Image",
+            "type": "boolean"
+          },
+          "height_px": {
+            "title": "Height Px",
+            "type": "integer"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "noise_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The noise of the flat, in percent.",
+            "title": "Noise Percent"
+          },
+          "optics_tilt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlatTiltResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "boolean"
+          },
+          "second_set": {
+            "title": "Second Set",
+            "type": "boolean"
+          },
+          "sensor_temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensor Temperature C"
+          },
+          "sets": {
+            "items": {
+              "$ref": "#/components/schemas/FlatSetResponse"
+            },
+            "title": "Sets",
+            "type": "array"
+          },
+          "shadow_items": {
+            "items": {
+              "$ref": "#/components/schemas/FlatShadowResponse"
+            },
+            "title": "Shadow Items",
+            "type": "array"
+          },
+          "shadow_min_depth_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Min Depth Percent"
+          },
+          "shadows": {
+            "description": "The number of dust shadows that the report found.",
+            "title": "Shadows",
+            "type": "integer"
+          },
+          "source_tilt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlatTiltResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_turned": {
+            "title": "Source Turned",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "t_utc": {
+            "title": "T Utc",
+            "type": "string"
+          },
+          "target_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Fraction"
+          },
+          "tilt": {
+            "$ref": "#/components/schemas/FlatTiltResponse"
+          },
+          "version": {
+            "description": "The name of the flat. It is also its ID in `/flat/{version}`.",
+            "title": "Version",
+            "type": "string"
+          },
+          "vignetting": {
+            "items": {
+              "$ref": "#/components/schemas/FlatPointResponse"
+            },
+            "title": "Vignetting",
+            "type": "array"
+          },
+          "warnings": {
+            "description": "What the session and the combination noticed.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "width_px": {
+            "title": "Width Px",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "t_utc",
+          "age_days",
+          "state",
+          "active",
+          "pending",
+          "mode",
+          "gain",
+          "width_px",
+          "height_px",
+          "sensor_temperature_c",
+          "exposure_s",
+          "target_fraction",
+          "second_set",
+          "source_turned",
+          "frames_taken",
+          "frames_used",
+          "noise_percent",
+          "bias_source",
+          "bias_note",
+          "corner_percent",
+          "vignetting",
+          "tilt",
+          "optics_tilt",
+          "source_tilt",
+          "shadows",
+          "shadow_min_depth_percent",
+          "shadow_items",
+          "edge_artifacts",
+          "agreement",
+          "sets",
+          "warnings",
+          "has_image",
+          "image_url",
+          "activated_utc"
+        ],
+        "title": "FlatResponse",
+        "type": "object"
+      },
+      "FlatSessionRequest": {
+        "additionalProperties": false,
+        "description": "Record a flat with a light source over the aperture. Leave a field out to use the default.\n\nThe session finds the exposure for the light, takes `frames` frames, combines them with the\nbias of the dark library, and adds a pending flat to the library. The survey divides by it\nonly after `POST /flat/{version}/activate`.",
+        "properties": {
+          "frames": {
+            "default": 32,
+            "description": "The number of frames of the set. More frames make a quieter flat.",
+            "maximum": 64.0,
+            "minimum": 8.0,
+            "title": "Frames",
+            "type": "integer"
+          },
+          "immediate": {
+            "default": true,
+            "description": "Start at the next step of the scheduler, because someone holds the light source at the camera. A survey exposure in progress finishes first. Without it, the session waits for the next cycle boundary, as the other tasks do.",
+            "title": "Immediate",
+            "type": "boolean"
+          },
+          "pause_after": {
+            "default": true,
+            "description": "Pause the scheduler when the task ends, so that nothing records data while the light source may still cover the camera. `Resume` continues.",
+            "title": "Pause After",
+            "type": "boolean"
+          },
+          "priority": {
+            "default": 0,
+            "maximum": 10.0,
+            "minimum": -10.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "set_number": {
+            "default": 1,
+            "description": "`1` starts a session. `2` is the second set, with the light source turned by 180 degrees since the first set, and it combines with the first set of the session. Take it within 24 hours of the first set.",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Set Number",
+            "type": "integer"
+          },
+          "target_fraction": {
+            "default": 0.5,
+            "description": "The level that the session aims at in the middle of the frame, as a fraction of the full scale of the sensor.",
+            "maximum": 0.7,
+            "minimum": 0.3,
+            "title": "Target Fraction",
+            "type": "number"
+          }
+        },
+        "title": "FlatSessionRequest",
+        "type": "object"
+      },
+      "FlatSessionResponse": {
+        "description": "The first set of a session, which waits for a second set with the source turned.",
+        "properties": {
+          "expires_utc": {
+            "description": "When the frames of the first set go.",
+            "title": "Expires Utc",
+            "type": "string"
+          },
+          "exposure_s": {
+            "title": "Exposure S",
+            "type": "number"
+          },
+          "frames": {
+            "title": "Frames",
+            "type": "integer"
+          },
+          "t_utc": {
+            "title": "T Utc",
+            "type": "string"
+          },
+          "version": {
+            "description": "The pending flat that the first set made.",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "t_utc",
+          "expires_utc",
+          "frames",
+          "exposure_s"
+        ],
+        "title": "FlatSessionResponse",
+        "type": "object"
+      },
+      "FlatSetResponse": {
+        "description": "One set of frames of a flat: its exposure, its level, and the frames that counted.",
+        "properties": {
+          "dropped": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "The frames that failed a check, counted for each reason.",
+            "title": "Dropped",
+            "type": "object"
+          },
+          "exposure_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "frames": {
+            "title": "Frames",
+            "type": "integer"
+          },
+          "level_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of the full scale, above the bias.",
+            "title": "Level Fraction"
+          },
+          "noise_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Noise Percent"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "tilt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlatTiltResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "used": {
+            "description": "The frames that passed the checks of the flat.",
+            "title": "Used",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "number",
+          "exposure_s",
+          "level_fraction",
+          "frames",
+          "used",
+          "dropped",
+          "noise_percent",
+          "tilt"
+        ],
+        "title": "FlatSetResponse",
+        "type": "object"
+      },
+      "FlatShadowResponse": {
+        "description": "A dust shadow: its place in pixels of the sensor, its depth in percent, and its width.",
+        "properties": {
+          "depth_percent": {
+            "title": "Depth Percent",
+            "type": "number"
+          },
+          "width_px": {
+            "title": "Width Px",
+            "type": "number"
+          },
+          "x_px": {
+            "title": "X Px",
+            "type": "integer"
+          },
+          "y_px": {
+            "title": "Y Px",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px",
+          "depth_percent",
+          "width_px"
+        ],
+        "title": "FlatShadowResponse",
+        "type": "object"
+      },
+      "FlatTaskResponse": {
+        "description": "The latest flat session of this `core` process.\n\n`state` is `idle` (none yet), `queued`, `running`, `ok`, `failed`, or `aborted`. While it\nruns, `phase` is `setup`, `exposure` (the search for the exposure, at most `steps` tries),\n`capture` (the frames), or `build` (the combination), with `step` of `steps` in that phase.\n`exposure_s` is the exposure in use, `level_fraction` the latest level above the bias as a\nfraction of the full scale (aim: `target_fraction`), and `saturated_fraction` the share of\nsaturated pixels of the latest frame. `warnings` list what the session noticed. A finished\nsession keeps its `summary` (one sentence) and the `version` of the flat that it added.",
+        "properties": {
+          "exposure_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exposure S"
+          },
+          "finished_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished Utc"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames"
+          },
+          "level_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level Fraction"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "pause_after": {
+            "title": "Pause After",
+            "type": "boolean"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "saturated_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saturated Fraction"
+          },
+          "set_number": {
+            "title": "Set Number",
+            "type": "integer"
+          },
+          "started_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started Utc"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "steps": {
+            "title": "Steps",
+            "type": "integer"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "target_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Fraction"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "state",
+          "task_id",
+          "phase",
+          "step",
+          "steps",
+          "message",
+          "set_number",
+          "frames",
+          "target_fraction",
+          "exposure_s",
+          "level_fraction",
+          "saturated_fraction",
+          "warnings",
+          "pause_after",
+          "started_utc",
+          "finished_utc",
+          "summary",
+          "version"
+        ],
+        "title": "FlatTaskResponse",
+        "type": "object"
+      },
+      "FlatTiltResponse": {
+        "description": "A plane across the frame: the change from one edge to the opposite edge, in percent.",
+        "properties": {
+          "height_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Percent"
+          },
+          "width_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Percent"
+          }
+        },
+        "required": [
+          "width_percent",
+          "height_percent"
+        ],
+        "title": "FlatTiltResponse",
+        "type": "object"
+      },
       "FocusHistoryView": {
         "description": "The last values of the focus measure, oldest first, as parallel lists of one length.\n\n`core` keeps the last 120 values with the capture times of their frames, so a page that\nreloads finds the whole curve at once. Parallel lists keep the message small: 120 values take\nabout 5 kilobytes in the state of `GET /alignment/state`. The live view sends the whole history\nin the first message of a viewer (`reset` is `true`), and after that only the points that this\nviewer lacks (`reset` is `false`). One rule serves every message: if `reset` is `true`, throw\naway the points that you hold, then append the points of the message, then keep the newest 120.\n`session` changes when the history restarts (a new alignment), and `index` counts the points of\na session from 1, so a reader can tell new points from old ones.",
         "properties": {
@@ -6040,14 +6941,14 @@
     },
     "securitySchemes": {
       "bearerAuth": {
-        "description": "The API token. The server stores only its hash. Every POST needs it, and a read needs it when the server sets `require_token_for_reads`.",
+        "description": "The API token. The server stores only its hash. Every POST and DELETE needs it, and a read needs it when the server sets `require_token_for_reads`.",
         "scheme": "bearer",
         "type": "http"
       }
     }
   },
   "info": {
-    "description": "The REST API of the seeing monitor: a fixed camera that points at Polaris, and a Raspberry Pi that\nmeasures the atmospheric seeing and the sky quality unattended.\n\n**Versioning.** The API lives under `/api/v1`. Within `v1`, a change only adds a field or an\nendpoint. A breaking change creates `/api/v2`, and `v1` stays for at least one release.\n\n**Access.** Reads are open on the LAN by default, and a setting can require the token for reads\ntoo. Every `POST` needs the token as `Authorization: Bearer <token>`. The server refuses every\ncommand when no token is configured. A client that sends too many requests gets 429 with a\n`Retry-After` header.\n\n**Hosts.** The server answers a request only when its `Host` header names an allowed host: the\nloopback names, the addresses that the server listens on, and the entries of the `allowed_hosts`\nsetting. Any other host gets `400 host_not_allowed`, and the message names the setting. A WebSocket\nhandshake with an `Origin` header needs an allowed host there too. This rule does not change who\nmay read or send commands.\n\n**Values.** Times are ISO 8601 UTC strings. A field name carries its unit, such as\n`seeing_fwhm_arcsec`. A missing value is `null`, and the `quality` object says why. Every error\nhas the same shape: `{\"error\": {\"code\": ..., \"message\": ..., \"details\": ...}}`.\n\n**History.** A history route takes `from` (included) and `to` (excluded), and `step` (`raw`, `1m`,\n`10m`, or `1h`). A numeric field of a bucket is the mean, and a list of flags is the union. A page\nholds at most `limit` items, and `next_cursor` points to the next page.\n",
+    "description": "The REST API of the seeing monitor: a fixed camera that points at Polaris, and a Raspberry Pi that\nmeasures the atmospheric seeing and the sky quality unattended.\n\n**Versioning.** The API lives under `/api/v1`. Within `v1`, a change only adds a field or an\nendpoint. A breaking change creates `/api/v2`, and `v1` stays for at least one release.\n\n**Access.** Reads are open on the LAN by default, and a setting can require the token for reads\ntoo. Every `POST` and `DELETE` needs the token as `Authorization: Bearer <token>`. The server\nrefuses every command when no token is configured. A client that sends too many requests gets 429\nwith a `Retry-After` header.\n\n**Hosts.** The server answers a request only when its `Host` header names an allowed host: the\nloopback names, the addresses that the server listens on, and the entries of the `allowed_hosts`\nsetting. Any other host gets `400 host_not_allowed`, and the message names the setting. A WebSocket\nhandshake with an `Origin` header needs an allowed host there too. This rule does not change who\nmay read or send commands.\n\n**Values.** Times are ISO 8601 UTC strings. A field name carries its unit, such as\n`seeing_fwhm_arcsec`. A missing value is `null`, and the `quality` object says why. Every error\nhas the same shape: `{\"error\": {\"code\": ..., \"message\": ..., \"details\": ...}}`.\n\n**History.** A history route takes `from` (included) and `to` (excluded), and `step` (`raw`, `1m`,\n`10m`, or `1h`). A numeric field of a bucket is the mean, and a list of flags is the union. A page\nholds at most `limit` items, and `next_cursor` points to the next page.\n",
     "summary": "Seeing, sky quality, pointing, images, and commands.",
     "title": "Seeing monitor API",
     "version": "1.0.0"
@@ -7280,6 +8181,643 @@
         "summary": "List events",
         "tags": [
           "records"
+        ]
+      }
+    },
+    "/api/v1/flat": {
+      "get": {
+        "description": "Return the flats of the library with the numbers of their reports, the flat in use, the\nflat that waits for a decision, the first set that waits for a second set, and the progress of\nthe latest flat session.\n\nPoll it while a session is queued or running. It answers `503 core_unavailable` when `core`\ndoes not answer, because the library lives there.",
+        "operationId": "get_flat",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlatLibraryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the flat library and the flat session",
+        "tags": [
+          "flat"
+        ]
+      }
+    },
+    "/api/v1/flat/session": {
+      "post": {
+        "description": "Queue a flat session: take frames of a light source over the aperture, and add a pending\nflat to the library.\n\nCover the front of the guide scope with a uniform light source before you send it. The\nsession finds the exposure, takes the frames, combines them with the bias of the dark library,\nand adds the flat. It needs a dark set (`422` without one), and a second set (`set_number` 2)\nneeds the first set of a session (`422` without one). With `pause_after`, it pauses the\nscheduler at the end, so that nothing records data while the light source may still cover the\ncamera. `Resume` (`POST /mode`) continues. The session starts at the next step of the\nscheduler, after a survey exposure in progress, and a paused scheduler or a running alignment\nholds it back until you resume or the alignment ends. Only one session may be queued or\nrunning (`409` with the reason `busy`). `GET /flat` shows its progress.",
+        "operationId": "post_flat_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlatSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Queue a flat session",
+        "tags": [
+          "commands",
+          "flat"
+        ]
+      }
+    },
+    "/api/v1/flat/session/stop": {
+      "post": {
+        "description": "Remove a flat session that waits, or stop the one that runs at its next frame.\n\nThe library stays as it was. The scheduler still pauses at the end when the session asked for\nit. The answer is `409` with the reason `no_task` when no flat session is queued or running.",
+        "operationId": "post_flat_session_stop",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stop the flat session",
+        "tags": [
+          "commands",
+          "flat"
+        ]
+      }
+    },
+    "/api/v1/flat/{version}": {
+      "delete": {
+        "description": "Delete a flat that the survey does not use, with its report and its preview.\n\nDeleting a pending flat discards it and ends the session that made it. The answer is `404`\nfor an unknown flat, and `409` for the flat in use, or while a flat session is queued or\nrunning.",
+        "operationId": "delete_flat",
+        "parameters": [
+          {
+            "description": "The version of a flat, from `GET /flat`.",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "description": "The version of a flat, from `GET /flat`.",
+              "pattern": "^flat-[0-9a-f]{8}$",
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlatActionResponse"
+                }
+              }
+            },
+            "description": "The flat is deleted."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The flat is in use, a flat session is queued or running, or the flat does not fit the frame of the survey."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Delete a flat",
+        "tags": [
+          "flat"
+        ]
+      }
+    },
+    "/api/v1/flat/{version}/activate": {
+      "post": {
+        "description": "Make a flat the one that the survey divides by.\n\nThe survey worker picks it up from its next frame, with no restart. The active flat of the\nlibrary wins over the setting `flat_file`. Using a pending flat approves it and ends the\nsession that made it. The answer is `404` for an unknown flat, and `409` while a flat session\nis queued or running, or when the flat does not fit the frame of the survey.",
+        "operationId": "post_flat_activate",
+        "parameters": [
+          {
+            "description": "The version of a flat, from `GET /flat`.",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "description": "The version of a flat, from `GET /flat`.",
+              "pattern": "^flat-[0-9a-f]{8}$",
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlatActionResponse"
+                }
+              }
+            },
+            "description": "The survey uses the flat."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The flat is in use, a flat session is queued or running, or the flat does not fit the frame of the survey."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Use a flat",
+        "tags": [
+          "flat"
+        ]
+      }
+    },
+    "/api/v1/flat/{version}/image": {
+      "get": {
+        "description": "Return the preview image of a flat. A version never changes its picture, so a client may\nkeep it.",
+        "operationId": "get_flat_image",
+        "parameters": [
+          {
+            "description": "The version of a flat, from `GET /flat`.",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "description": "The version of a flat, from `GET /flat`.",
+              "pattern": "^flat-[0-9a-f]{8}$",
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The preview as a JPEG, stretched to plus and minus 10 percent around 1: a lighter pixel gets more light than the median pixel."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resource does not exist."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "summary": "Get the preview of a flat",
+        "tags": [
+          "flat"
         ]
       }
     },
@@ -8710,6 +10248,10 @@
     {
       "description": "The dark library, and the dark session that adds a set to it.",
       "name": "dark"
+    },
+    {
+      "description": "The flat library, and the flat session that adds a flat to it.",
+      "name": "flat"
     },
     {
       "description": "The hardware profile and the configuration.",

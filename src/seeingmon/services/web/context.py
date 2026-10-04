@@ -5,8 +5,8 @@
 helper and the video of Polaris). It also decides who may do what. The access rule has two levels:
 
 - **Reads** are open on the LAN. With `require_token_for_reads`, a read needs the token too.
-- **Every `POST`** needs the token as `Authorization: Bearer <token>`. Without a token hash in the
-  configuration, the server refuses every command with `403 commands_disabled`.
+- **Every `POST` and `DELETE`** needs the token as `Authorization: Bearer <token>`. Without a
+  token hash in the configuration, the server refuses every command with `403 commands_disabled`.
 
 **Order of the checks.** A command first counts against the per-client limit of commands, so a
 flood gets `429` before the server does any work. The server then refuses the command if no token
@@ -116,7 +116,7 @@ class WebContext:
             self.check_token(self.client_key(request), request.headers.get("authorization"))
 
     def authorize_command(self, request: Request) -> None:
-        """The dependency of a `POST` route. See the module documentation for the order."""
+        """The dependency of a `POST` or `DELETE` route. See the module documentation."""
         client = self.client_key(request)
         wait = self.command_limiter.acquire(client)
         if wait is not None:

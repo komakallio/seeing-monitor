@@ -18,10 +18,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from seeingmon.frames import PixelFormat, Roi, StreamConfig
 from seeingmon.scheduler.commands import (
+    MAX_FLAT_FRAMES,
+    MAX_FLAT_TARGET,
+    MIN_FLAT_FRAMES,
+    MIN_FLAT_TARGET,
     Command,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     Resume,
@@ -48,6 +53,7 @@ MAX_DARK_FRAMES = 50
 MAX_DARK_EXPOSURE_S = 600.0
 MAX_LABEL_CHARS = 80
 MAX_COVER_WAIT_S = 7200.0
+FLAT_VERSION_PATTERN = r"^flat-[0-9a-f]{8}$"
 
 _Gain = Annotated[int, Field(ge=0, le=MAX_GAIN)]
 _ExposureUs = Annotated[int, Field(ge=1, le=MAX_EXPOSURE_US)]
@@ -245,6 +251,57 @@ class DarkRequest(_Request):
         )
 
 
+class FlatSessionRequest(_Request):
+    """Record a flat with a light source over the aperture. Leave a field out to use the default.
+
+    The session finds the exposure for the light, takes `frames` frames, combines them with the
+    bias of the dark library, and adds a pending flat to the library. The survey divides by it
+    only after `POST /flat/{version}/activate`.
+    """
+
+    frames: int = Field(
+        32,
+        ge=MIN_FLAT_FRAMES,
+        le=MAX_FLAT_FRAMES,
+        description="The number of frames of the set. More frames make a quieter flat.",
+    )
+    target_fraction: float = Field(
+        0.5,
+        ge=MIN_FLAT_TARGET,
+        le=MAX_FLAT_TARGET,
+        description="The level that the session aims at in the middle of the frame, as a fraction "
+        "of the full scale of the sensor.",
+    )
+    set_number: Literal[1, 2] = Field(
+        1,
+        description="`1` starts a session. `2` is the second set, with the light source turned by "
+        "180 degrees since the first set, and it combines with the first set of the session. "
+        "Take it within 24 hours of the first set.",
+    )
+    pause_after: bool = Field(
+        True,
+        description="Pause the scheduler when the task ends, so that nothing records data while "
+        "the light source may still cover the camera. `Resume` continues.",
+    )
+    immediate: bool = Field(
+        True,
+        description="Start at the next step of the scheduler, because someone holds the light "
+        "source at the camera. A survey exposure in progress finishes first. Without it, the "
+        "session waits for the next cycle boundary, as the other tasks do.",
+    )
+    priority: int = Field(0, ge=-MAX_PRIORITY, le=MAX_PRIORITY)
+
+    def to_command(self) -> QueueFlat:
+        return QueueFlat(
+            frames=self.frames,
+            target_fraction=self.target_fraction,
+            set_number=self.set_number,
+            pause_after=self.pause_after,
+            priority=self.priority,
+            immediate=self.immediate,
+        )
+
+
 class ModeRequest(_Request):
     """Pause the scheduler, or resume it."""
 
@@ -375,6 +432,184 @@ class DarkLibraryResponse(_Response):
     sets: list[DarkSetResponse]
     task: DarkTaskResponse
     quality: dict[str, str] | None = None
+
+
+# --- Flat ------------------------------------------------------------------------------------
+
+
+class FlatPointResponse(_Response):
+    """The flat at one radius from the optical center, against the center, in percent."""
+
+    radius_deg: float
+    change_percent: float | None = Field(
+        description="Negative: this radius gets less light than the center."
+    )
+    corner: bool = Field(description="True for the point at the corner of the frame.")
+
+
+class FlatTiltResponse(_Response):
+    """A plane across the frame: the change from one edge to the opposite edge, in percent."""
+
+    width_percent: float | None
+    height_percent: float | None
+
+
+class FlatShadowResponse(_Response):
+    """A dust shadow: its place in pixels of the sensor, its depth in percent, and its width."""
+
+    x_px: int
+    y_px: int
+    depth_percent: float
+    width_px: float
+
+
+class FlatSetResponse(_Response):
+    """One set of frames of a flat: its exposure, its level, and the frames that counted."""
+
+    number: int
+    exposure_s: float | None
+    level_fraction: float | None = Field(description="Of the full scale, above the bias.")
+    frames: int
+    used: int = Field(description="The frames that passed the checks of the flat.")
+    dropped: dict[str, int] = Field(
+        description="The frames that failed a check, counted for each reason."
+    )
+    noise_percent: float | None
+    tilt: FlatTiltResponse | None
+
+
+class FlatAgreementResponse(_Response):
+    """How well two sets agree, which shows what the light source adds to the flat."""
+
+    smooth_rms_percent: float | None
+    fine_rms_percent: float | None
+    expected_fine_rms_percent: float | None
+    plane: FlatTiltResponse | None = Field(description="The difference in tilt between the sets.")
+
+
+class FlatResponse(_Response):
+    """One flat of the library, with the numbers of its report.
+
+    `state` is `pending` (a session made it, and nothing uses it yet) or `approved` (you activated
+    it once). `active` says that the survey divides by it now, and `pending` that it waits for your
+    decision. `corner_percent` is the change in the corners against the center (negative: the
+    corners get less light). `optics_tilt` and `source_tilt` exist for a flat of two sets: the tilt
+    that stays with the optics, and the one that turned with the light source. `image_url` is the
+    preview, stretched to plus and minus 10 percent around 1, or `null` without one.
+    """
+
+    version: str = Field(
+        description="The name of the flat. It is also its ID in `/flat/{version}`."
+    )
+    t_utc: str
+    age_days: float
+    state: str
+    active: bool
+    pending: bool
+    mode: str
+    gain: int
+    width_px: int
+    height_px: int
+    sensor_temperature_c: float | None
+    exposure_s: float | None
+    target_fraction: float | None
+    second_set: bool
+    source_turned: bool
+    frames_taken: int
+    frames_used: int
+    noise_percent: float | None = Field(description="The noise of the flat, in percent.")
+    bias_source: str
+    bias_note: str
+    corner_percent: float | None
+    vignetting: list[FlatPointResponse]
+    tilt: FlatTiltResponse
+    optics_tilt: FlatTiltResponse | None
+    source_tilt: FlatTiltResponse | None
+    shadows: int = Field(description="The number of dust shadows that the report found.")
+    shadow_min_depth_percent: float | None
+    shadow_items: list[FlatShadowResponse]
+    edge_artifacts: int
+    agreement: FlatAgreementResponse | None
+    sets: list[FlatSetResponse]
+    warnings: list[str] = Field(description="What the session and the combination noticed.")
+    has_image: bool
+    image_url: str | None
+    activated_utc: str | None
+
+
+class FlatSessionResponse(_Response):
+    """The first set of a session, which waits for a second set with the source turned."""
+
+    version: str = Field(description="The pending flat that the first set made.")
+    t_utc: str
+    expires_utc: str = Field(description="When the frames of the first set go.")
+    frames: int
+    exposure_s: float
+
+
+class FlatTaskResponse(_Response):
+    """The latest flat session of this `core` process.
+
+    `state` is `idle` (none yet), `queued`, `running`, `ok`, `failed`, or `aborted`. While it
+    runs, `phase` is `setup`, `exposure` (the search for the exposure, at most `steps` tries),
+    `capture` (the frames), or `build` (the combination), with `step` of `steps` in that phase.
+    `exposure_s` is the exposure in use, `level_fraction` the latest level above the bias as a
+    fraction of the full scale (aim: `target_fraction`), and `saturated_fraction` the share of
+    saturated pixels of the latest frame. `warnings` list what the session noticed. A finished
+    session keeps its `summary` (one sentence) and the `version` of the flat that it added.
+    """
+
+    state: str
+    task_id: int | None
+    phase: str | None
+    step: int
+    steps: int
+    message: str
+    set_number: int
+    frames: int | None
+    target_fraction: float | None
+    exposure_s: float | None
+    level_fraction: float | None
+    saturated_fraction: float | None
+    warnings: list[str]
+    pause_after: bool
+    started_utc: str | None
+    finished_utc: str | None
+    summary: str
+    version: str | None
+
+
+class FlatLibraryResponse(_Response):
+    """The flat library, the flat in use, and the latest flat session.
+
+    `mode` and `gain` are the settings of the survey, which the session uses. `blocker` is a
+    sentence that says why no session can start (the dark library holds no set), or `null`.
+    `active_version` is the flat in use, and `pending_version` the newest flat that waits for a
+    decision. `flat_file_pinned` is true when the configuration names `[survey] flat_file`, and
+    `library_overrides` says that the active flat of the library wins over that file. `session`
+    exists while the first set of a session waits for a second set. `flats` holds the newest flats
+    first. A value that `core` does not report is `null`, and `quality` says why.
+    """
+
+    mode: str
+    gain: int
+    sensor_temperature_c: float | None
+    active_version: str | None
+    pending_version: str | None
+    flat_file_pinned: bool
+    library_overrides: bool
+    blocker: str | None
+    flats: list[FlatResponse]
+    session: FlatSessionResponse | None
+    task: FlatTaskResponse
+    quality: dict[str, str] | None = None
+
+
+class FlatActionResponse(_Response):
+    """The answer to the activation or the deletion of a flat."""
+
+    message: str
+    version: str
 
 
 # --- Errors ----------------------------------------------------------------------------------

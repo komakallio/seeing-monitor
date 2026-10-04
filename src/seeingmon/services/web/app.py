@@ -74,9 +74,9 @@ measures the atmospheric seeing and the sky quality unattended.
 endpoint. A breaking change creates `/api/v2`, and `v1` stays for at least one release.
 
 **Access.** Reads are open on the LAN by default, and a setting can require the token for reads
-too. Every `POST` needs the token as `Authorization: Bearer <token>`. The server refuses every
-command when no token is configured. A client that sends too many requests gets 429 with a
-`Retry-After` header.
+too. Every `POST` and `DELETE` needs the token as `Authorization: Bearer <token>`. The server
+refuses every command when no token is configured. A client that sends too many requests gets 429
+with a `Retry-After` header.
 
 **Hosts.** The server answers a request only when its `Host` header names an allowed host: the
 loopback names, the addresses that the server listens on, and the entries of the `allowed_hosts`
@@ -106,6 +106,10 @@ TAGS = [
     {
         "name": "dark",
         "description": "The dark library, and the dark session that adds a set to it.",
+    },
+    {
+        "name": "flat",
+        "description": "The flat library, and the flat session that adds a flat to it.",
     },
     {"name": "reference", "description": "The hardware profile and the configuration."},
 ]
@@ -149,8 +153,8 @@ def _install_openapi(app: FastAPI) -> None:
                 "type": "http",
                 "scheme": "bearer",
                 "description": (
-                    "The API token. The server stores only its hash. Every POST needs it, and a "
-                    "read needs it when the server sets `require_token_for_reads`."
+                    "The API token. The server stores only its hash. Every POST and DELETE needs "
+                    "it, and a read needs it when the server sets `require_token_for_reads`."
                 ),
             }
         }

@@ -15,11 +15,13 @@ from fastapi.routing import APIRoute
 
 from seeingmon.clock import VirtualClock
 from seeingmon.records.api_schema import api_schema, schema_name
-from seeingmon.scheduler.commands import QueueDark
+from seeingmon.scheduler.commands import QueueDark, QueueFlat
 from seeingmon.services.web.api import router
+from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import DarkModelView, PolarisFrame, PolarisState
 from seeingmon.services.web.core_client import FakeCoreClient
 from seeingmon.services.web.fake_dark import DarkScript
+from seeingmon.services.web.fake_flat import FlatScript
 from seeingmon.services.web.openapi import COMMAND, render_openapi
 from seeingmon.services.web.schemas import SERVED_RECORD_TYPES
 from seeingmon.store.db import Store
@@ -121,7 +123,7 @@ def test_every_operation_has_an_id_a_summary_a_description_and_a_tag(
 
 def test_every_post_names_the_token_and_the_documented_failures(document: dict[str, Any]) -> None:
     posts = [(path, op) for method, path, op in operations(document) if method == "post"]
-    assert len(posts) == 8
+    assert len(posts) == 11
     for path, operation in posts:
         assert operation["security"] == [{"bearerAuth": []}], path
         # The reset of the best focus value takes no body and is no scheduler command.
@@ -130,6 +132,16 @@ def test_every_post_names_the_token_and_the_documented_failures(document: dict[s
             required |= {"409", "413", "422"}
         assert required <= set(operation["responses"]), path
     assert document["components"]["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
+
+
+def test_every_delete_names_the_token_and_the_documented_failures(document: dict[str, Any]) -> None:
+    deletes = [(path, op) for method, path, op in operations(document) if method == "delete"]
+    assert [path for path, _ in deletes] == [f"{API}/flat/{{version}}"]
+    for path, operation in deletes:
+        assert operation["security"] == [{"bearerAuth": []}], path
+        assert {"200", "401", "403", "404", "409", "422", "429"} <= set(operation["responses"]), (
+            path
+        )
 
 
 def test_a_read_route_does_not_claim_a_token(document: dict[str, Any]) -> None:
@@ -187,6 +199,14 @@ def test_the_documented_endpoints_are_the_ones_of_the_architecture(
         "/alignment/focus/reset",
         "/seeing/live",
         "/polaris/frame",
+        "/dark",
+        "/commands/dark",
+        "/flat",
+        "/flat/session",
+        "/flat/session/stop",
+        "/flat/{version}/activate",
+        "/flat/{version}",
+        "/flat/{version}/image",
     }
     assert {f"{API}{path}" for path in required} <= paths
 
@@ -276,12 +296,20 @@ CASES: list[tuple[str, str, str, int, dict[str, Any]]] = [
     ("get", "/api/v1/alignment/state", "/api/v1/alignment/state", 200, {}),
     ("get", "/api/v1/seeing/live", "/api/v1/seeing/live", 404, {}),
     ("get", "/api/v1/dark", "/api/v1/dark", 200, {}),
+    ("get", "/api/v1/flat", "/api/v1/flat", 200, {}),
     ("get", "/api/v1/profile", "/api/v1/profile", 200, {}),
     ("get", "/api/v1/config", "/api/v1/config", 200, {}),
     ("post", "/api/v1/commands/burst", "/api/v1/commands/burst", 200, {"json": {}}),
     ("post", "/api/v1/alignment/stop", "/api/v1/alignment/stop", 409, {}),
     ("post", "/api/v1/commands/dark", "/api/v1/commands/dark", 200, {"json": {}}),
     ("post", "/api/v1/commands/dark", "/api/v1/commands/dark", 422, {"json": {"frames": 2}}),
+    ("post", "/api/v1/flat/session", "/api/v1/flat/session", 422, {"json": {}}),  # no dark set
+    ("post", "/api/v1/flat/session", "/api/v1/flat/session", 422, {"json": {"frames": 7}}),
+    ("post", "/api/v1/flat/session/stop", "/api/v1/flat/session/stop", 409, {}),
+    ("post", "/api/v1/flat/{version}/activate", "/api/v1/flat/flat-00000000/activate", 404, {}),
+    ("post", "/api/v1/flat/{version}/activate", "/api/v1/flat/short/activate", 422, {}),
+    ("delete", "/api/v1/flat/{version}", "/api/v1/flat/flat-00000000", 404, {}),
+    ("get", "/api/v1/flat/{version}/image", "/api/v1/flat/flat-00000000/image", 404, {}),
     ("post", "/api/v1/mode", "/api/v1/mode", 401, {"no_token": True, "json": {"mode": "auto"}}),
     ("post", "/api/v1/mode", "/api/v1/mode", 422, {"json": {"mode": "reboot"}}),
     ("get", "/api/v1/seeing", "/api/v1/seeing", 422, {"params": {"limit": 0}}),
@@ -437,6 +465,102 @@ def test_the_state_of_a_polaris_frame_is_documented_and_the_header_matches_it(
     assert "204" in operation["responses"]
     assert operation["tags"] == ["live"]
     assert document["paths"][f"{API}/seeing/live"]["get"]["tags"] == ["live"]
+
+
+def flat_core(clock: VirtualClock) -> FakeCoreClient:
+    core = FakeCoreClient(
+        clock=clock,
+        flat_script=FlatScript(queued_s=0.0, setup_s=1.0, exposure_s=2.0, capture_s=10.0),
+    )
+    core.dark.sets = [dark_set("dark-a", 12.0, 3.0)]
+    core.flat.seed(age_days=30.0, active=True)
+    core.flat.seed(age_days=1.0, state="pending", second_set=True)
+    return core
+
+
+def test_a_populated_flat_library_matches_the_documented_schema(
+    make_app: Callable[..., FastAPI],
+    open_client: Callable[..., TestClient],
+    seeded: Store,
+    clock: VirtualClock,
+    document: dict[str, Any],
+) -> None:
+    core = flat_core(clock)
+    chosen = open_client(make_app(core=core))
+    core.submit(QueueFlat(frames=16))
+    clock.advance(5.0)  # the session takes its frames
+    answer = chosen.get(f"{API}/flat")
+    body = answer.json()
+    assert body["task"]["phase"] == "capture"
+    assert body["flats"][0]["second_set"] is True  # the two-set fields are documented too
+    validate(body, documented_schema(document, "get", f"{API}/flat", 200), document)
+    components = document["components"]["schemas"]
+    assert set(components["FlatLibraryResponse"]["properties"]) == {
+        "mode",
+        "gain",
+        "sensor_temperature_c",
+        "active_version",
+        "pending_version",
+        "flat_file_pinned",
+        "library_overrides",
+        "blocker",
+        "flats",
+        "session",
+        "task",
+        "quality",
+    }
+    assert set(components["FlatResponse"]["properties"]) >= {
+        "version",
+        "state",
+        "corner_percent",
+        "vignetting",
+        "shadow_items",
+        "optics_tilt",
+        "agreement",
+        "warnings",
+        "image_url",
+    }
+
+
+def test_the_answers_of_the_flat_commands_match_the_documented_schemas(
+    make_app: Callable[..., FastAPI],
+    open_client: Callable[..., TestClient],
+    seeded: Store,
+    clock: VirtualClock,
+    document: dict[str, Any],
+) -> None:
+    core = flat_core(clock)
+    generous = WebSettings.model_validate({"rate_limit": {"commands_per_window": 100}})
+    chosen = open_client(make_app(settings=generous, core=core))
+    pending = core.flat.flats[0].version
+    old = core.flat.flats[1].version  # in use until the pending flat takes over
+
+    def check(method: str, path: str, url: str, status: int, **kwargs: Any) -> None:
+        response = getattr(chosen, method)(url, headers=bearer(), **kwargs)
+        assert response.status_code == status, response.text
+        validate(response.json(), documented_schema(document, method, path, status), document)
+
+    session = f"{API}/flat/session"
+    action = f"{API}/flat/{{version}}"
+    check("post", session, session, 200, json={"frames": 16})
+    check("post", session, session, 409, json={"frames": 16})  # a session is queued or running
+    check(
+        "post", f"{action}/activate", f"{API}/flat/{pending}/activate", 409
+    )  # and holds the library
+    check("post", f"{session}/stop", f"{session}/stop", 200)
+    check("post", f"{action}/activate", f"{API}/flat/{pending}/activate", 200)
+    check("delete", action, f"{API}/flat/{pending}", 409)  # the flat in use
+    check("delete", action, f"{API}/flat/{old}", 200)
+
+
+def test_the_image_of_a_flat_is_documented_as_a_jpeg_with_a_pattern_for_the_version(
+    document: dict[str, Any],
+) -> None:
+    operation = document["paths"][f"{API}/flat/{{version}}/image"]["get"]
+    assert set(operation["responses"]["200"]["content"]) == {"image/jpeg"}
+    (parameter,) = operation["parameters"]
+    assert (parameter["name"], parameter["in"], parameter["required"]) == ("version", "path", True)
+    assert parameter["schema"]["pattern"] == r"^flat-[0-9a-f]{8}$"
 
 
 def test_an_image_answer_matches_the_documented_schema(
