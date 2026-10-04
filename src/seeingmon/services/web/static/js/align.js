@@ -15,7 +15,7 @@
  * closes the connection while its tab stays hidden.
  */
 (function () {
-  const { h, $, fmt, api, ApiError, Status, Token, poller, LiveLink, recall, remember, SkyGrid, AlignText } = window.Seeing;
+  const { h, $, fmt, api, ApiError, Status, Token, poller, LiveLink, recall, remember, SkyGrid, AlignText, FocusCurve } = window.Seeing;
 
   const HIDDEN_CLOSE_MS = 20000;
   const FAMILY = "system-ui, sans-serif";
@@ -602,18 +602,80 @@
     $("frame-info").textContent = frame ? "Frame " + frame.seq + " at " + fmt.clock(state.t_utc) + " UTC" : "";
   }
 
+  // The points of the focus history that the live view has sent, and the curve that draws them.
+  const focusHeld = { session: null, points: [] };
+  let focusCurve = null;
+
+  /** The words about the value, so that the state never rests on a color alone. */
+  function focusVerdict(focus, arcsec, best) {
+    if (focus.spike) {
+      return "This value is a spike: the stars widened for a moment, as they do when you touch the telescope. The curve leaves it out of its scale.";
+    }
+    const value = arcsec ? focus.fwhm_arcsec : focus.fwhm_px;
+    if (!best || !value) {
+      return "";
+    }
+    const wider = Math.round((value / best - 1) * 100);
+    if (value / best <= 1.05) {
+      return "At the best value of this session.";
+    }
+    return value / best <= 1.2 ? "Close to the best value: " + wider + " % wider." : "Wider than the best value by " + wider + " %.";
+  }
+
   function renderFocus(focus) {
-    const fill = $("focus-fill");
-    if (!focus || focus.fwhm_px === null) {
-      fill.style.width = "0";
-      $("focus-note").textContent = "No focus measure yet.";
+    if (focus && focus.history) {
+      const next = FocusCurve.merge(focusHeld, focus.history);
+      focusHeld.session = next.session;
+      focusHeld.points = next.points;
+    }
+    const value = $("focus-value");
+    const sub = $("focus-sub");
+    const note = $("focus-note");
+    const arcsec = Boolean(focus) && focus.fwhm_arcsec !== null && focus.fwhm_arcsec !== undefined;
+    const best = focus ? (arcsec ? focus.best_fwhm_arcsec : focus.best_fwhm_px) : null;
+    if (focusCurve) {
+      focusCurve.update(focusHeld.points, best === undefined ? null : best);
+      $("focus-from").textContent = focusHeld.points.length > 1 ? "\u2212" + Math.round(focusCurve.spanS()) + " s" : "";
+    }
+    if (!focus || focus.fwhm_px === null || focus.fwhm_px === undefined) {
+      value.textContent = fmt.dash;
+      value.classList.remove("spike");
+      sub.replaceChildren();
+      note.textContent = focusHeld.points.length > 0 ? "The newest frame has too few usable stars for a value. It needs 3." : "No focus measure yet.";
       return;
     }
-    const ratio = focus.best_fwhm_px ? Math.max(0, Math.min(1, focus.best_fwhm_px / focus.fwhm_px)) : Math.max(0, Math.min(1, 3 / focus.fwhm_px));
-    fill.style.width = Math.round(ratio * 100) + "%";
-    fill.dataset.level = ratio >= 0.9 ? "good" : ratio >= 0.7 ? "warn" : "bad";
-    $("focus-note").textContent =
-      "Star width " + fmt.num(focus.fwhm_px, 2) + " px" + (focus.best_fwhm_px ? " (best " + fmt.num(focus.best_fwhm_px, 2) + " px)" : "") + (focus.n_stars ? ", " + focus.n_stars + " stars" : "") + ". A narrower star is better.";
+    value.textContent = arcsec ? fmt.num(focus.fwhm_arcsec, 1) + "\u2033" : fmt.num(focus.fwhm_px, 2) + " px";
+    value.classList.toggle("spike", Boolean(focus.spike));
+    const stars = focus.n_stars === null || focus.n_stars === undefined ? null : focus.n_stars;
+    sub.replaceChildren(
+      h("strong", { text: (stars === null ? "?" : stars) + (stars === 1 ? " star" : " stars") }),
+      " measured" + (arcsec ? ", " + fmt.num(focus.fwhm_px, 2) + " px" : "") + (best ? ", best " + (arcsec ? fmt.num(best, 1) + "\u2033" : fmt.num(best, 2) + " px") : "")
+    );
+    const few = stars !== null && stars < 8 ? " Few stars make the value less reliable." : "";
+    note.textContent = (focusVerdict(focus, arcsec, best) + " A narrower star is better." + few).trim();
+  }
+
+  async function resetFocusBest() {
+    const note = $("focus-reset-note");
+    if (!Token.has()) {
+      note.textContent = "Enter the token first: the commands need it.";
+      window.Seeing.openTokenPanel();
+      return;
+    }
+    try {
+      await api.post("alignment/focus/reset", {});
+      note.textContent = "The best value restarts with the next frame.";
+    } catch (error) {
+      if (error.status === 429) {
+        note.textContent = "Too many requests. Wait " + (error.retryAfter || 60) + " s and try again.";
+      } else if (error.status === 401) {
+        note.textContent = "The token is not right.";
+      } else if (error.status === 503) {
+        note.textContent = "Core does not answer, so nothing changed.";
+      } else {
+        note.textContent = error.message;
+      }
+    }
   }
 
   function renderSaturation(saturation) {
@@ -785,9 +847,13 @@
     $("copy-target").addEventListener("click", () => {
       copyTarget();
     });
+    $("focus-reset").addEventListener("click", () => {
+      resetFocusBest();
+    });
     window.addEventListener("seeing:status", () => {
       const enabled = commandsEnabled();
       $("start").disabled = !enabled;
+      $("focus-reset").disabled = !enabled;
       $("start").title = enabled ? "" : "The server has no token hash, so it refuses every command.";
       if (!enabled) {
         $("command-note").textContent = "The server has no API token configured, so it refuses every command.";
@@ -815,6 +881,7 @@
   window.addEventListener("DOMContentLoaded", async () => {
     window.Seeing.boot("align");
     live = createLink();
+    focusCurve = FocusCurve.create($("focus-curve"));
     setupCanvases();
     buildControls();
     drawHistogram(null);

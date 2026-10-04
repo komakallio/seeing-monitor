@@ -1737,3 +1737,37 @@ label {
     transition: none;
   }
 }
+
+/* --- The Align page: the focus value and its curve ------------------------------------------- */
+
+.focus-read {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+
+.focus-value {
+  font-size: 2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-value.spike {
+  color: var(--muted);
+}
+
+.focus-sub {
+  color: var(--muted);
+}
+
+.focus-sub strong {
+  color: var(--text);
+}
+
+#focus-curve {
+  display: block;
+  width: 100%;
+  height: 150px;
+}

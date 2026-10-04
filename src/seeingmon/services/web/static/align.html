@@ -11,6 +11,7 @@
 <script src="js/live.js" defer></script>
 <script src="js/skygrid.js" defer></script>
 <script src="js/aligntext.js" defer></script>
+<script src="js/focus.js" defer></script>
 <script src="js/align.js" defer></script>
 </head>
 <body>
@@ -80,9 +81,17 @@
       </section>
       <section class="panel" aria-labelledby="h-focus">
         <h2 id="h-focus">Focus</h2>
-        <div class="gauge" aria-hidden="true"><div class="fill" id="focus-fill"></div></div>
-        <div class="scale"><span>poor</span><span>best of this session</span></div>
+        <div class="focus-read">
+          <span class="focus-value" id="focus-value">—</span>
+          <span class="focus-sub" id="focus-sub"></span>
+        </div>
+        <canvas id="focus-curve" role="img" aria-label="Width of the star in the last frames, with the best value"></canvas>
+        <div class="scale"><span id="focus-from"></span><span>now</span></div>
         <p class="note" id="focus-note"></p>
+        <div class="row">
+          <button type="button" id="focus-reset">Restart the best value</button>
+          <span class="hint" id="focus-reset-note" aria-live="polite"></span>
+        </div>
       </section>
       <section class="panel" aria-labelledby="h-solution">
         <h2 id="h-solution">Solution and frame</h2>
@@ -90,7 +99,7 @@
       </section>
       <section class="panel" aria-labelledby="h-help">
         <h2 id="h-help">How to align</h2>
-        <p class="note">Start the alignment with the token. In a first alignment, move the mount until the marker labeled pole sits on the cross labeled aim at the center of the image. The dashed circle is the orbit of Polaris around the pole. It is green when the whole circle fits in the frame with room to spare, amber when it fits tightly, and red when it leaves the frame. Check the focus bar too.</p>
+        <p class="note">Start the alignment with the token. In a first alignment, move the mount until the marker labeled pole sits on the cross labeled aim at the center of the image. The dashed circle is the orbit of Polaris around the pole. It is green when the whole circle fits in the frame with room to spare, amber when it fits tightly, and red when it leaves the frame. Check the focus curve too.</p>
         <p class="note">When a target is set, the cross labeled target shows where Polaris belongs, and the ring labeled Polaris shows where the solver finds it. Move the mount until the ring sits on the cross, and until the roll is near zero. Stop the alignment when you finish, so that the camera goes back to measuring.</p>
       </section>
     </div>

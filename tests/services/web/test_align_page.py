@@ -47,6 +47,7 @@ def test_the_page_loads_the_geometry_and_the_words_before_its_own_script() -> No
         "js/live.js",
         "js/skygrid.js",
         "js/aligntext.js",
+        "js/focus.js",
         "js/align.js",
     ]
 
