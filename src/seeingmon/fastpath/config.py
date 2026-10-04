@@ -70,7 +70,7 @@ class FastPathConfig(SectionModel):
     max_interp_fraction: Fraction = 0.1
     vibration_threshold: Annotated[float, Field(gt=1)] = 5.0
     vibration_local_bins: Annotated[int, Field(ge=3)] = 15
-    vibration_min_hz: NonNegative = 1.0
+    vibration_min_hz: NonNegative = 4.0
 
     # --- scintillation ---
     scintillation_trend_s: Positive = 1.0

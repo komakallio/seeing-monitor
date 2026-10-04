@@ -50,7 +50,7 @@ max_interp_gap_frames = 3        # A gap of up to this many frames is interpolat
 max_interp_fraction = 0.1        # A segment with a larger share of interpolated frames is skipped.
 vibration_threshold = 5.0        # A line is a bin above this multiple of the local median.
 vibration_local_bins = 15        # Bins on each side that give the local median.
-vibration_min_hz = 1.0           # Lines below this frequency are not searched.
+vibration_min_hz = 4.0           # Lines below this frequency are not searched: the spectrum is red there.
 
 # --- scintillation ---
 scintillation_trend_s = 1.0      # Moving-average length that removes slow flux changes, in seconds.

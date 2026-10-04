@@ -21,6 +21,7 @@ FloatArray = npt.NDArray[np.float64]
 RATE_HZ = 88.5
 PERIOD_S = 1.0 / RATE_HZ
 SAMPLES = 5310  # a 60 s window of bin1 frames
+RED_PERIOD_S = 0.01218  # the frame period of the first light (82.1 frames per second)
 
 
 @pytest.fixture(scope="module")
@@ -162,6 +163,104 @@ class TestLines:
         loose = compute_spectrum(x, y, PERIOD_S, threshold=1.5)
         assert loose is not None
         assert len(loose.lines_hz) >= 1
+
+
+def red_series(rng: np.random.Generator, seconds: float, slope: float) -> FloatArray:
+    """Image motion in arcseconds with a red spectrum, at the frame period of the first light.
+
+    The one-sided spectrum is 0.15 f^-slope arcsec^2/Hz up to 4 Hz, and then it falls as 1/f from
+    there. A slope of 1.7 is the median of the 42 windows of the first light between 1 and 4 Hz, and
+    the real windows are steeper than the median. The series comes from random Fourier components,
+    so its estimate scatters as a spectrum of real data does.
+    """
+    n = round(seconds / RED_PERIOD_S)
+    frequency = np.fft.rfftfreq(n, RED_PERIOD_S)
+    f = np.maximum(frequency, 0.05)
+    spectrum = np.where(f < 4.0, 0.15 * f**-slope, 0.15 * 4.0**-slope * (f / 4.0) ** -1.0)
+    sigma = np.sqrt(spectrum * frequency[1])  # the variance of one component is S df
+    cosine = rng.normal(size=len(frequency)) * sigma
+    sine = rng.normal(size=len(frequency)) * sigma
+    cosine[0] = sine[0] = 0.0
+    return np.asarray(np.fft.irfft(0.5 * n * (cosine - 1j * sine), n=n), dtype=np.float64)
+
+
+def red_lines(
+    seed: int,
+    seconds: float,
+    *,
+    slope: float = 1.7,
+    line: tuple[float, float] | None = None,
+    min_line_hz: float | None = None,
+) -> tuple[float, ...]:
+    """The lines that the search finds in two red series, and a line of a given strength.
+
+    `line` is a frequency and the power of the line in its bin, as a multiple of the continuum
+    there (a bin of a 2 s Hann segment spans 0.75 Hz). `min_line_hz` replaces the default of the
+    search.
+    """
+    rng = np.random.default_rng(seed)
+    x = red_series(rng, seconds, slope)
+    y = red_series(rng, seconds, slope)
+    if line is not None:
+        frequency, multiple = line
+        f = max(frequency, 0.05)
+        continuum = 0.15 * f**-slope if f < 4.0 else 0.15 * 4.0**-slope * (f / 4.0) ** -1.0
+        amplitude = np.sqrt(2.0 * multiple * 0.75 * continuum)
+        t = np.arange(len(x)) * RED_PERIOD_S
+        x = x + amplitude * np.sin(2.0 * np.pi * frequency * t + 0.7)
+    spectrum = (
+        compute_spectrum(x, y, RED_PERIOD_S)
+        if min_line_hz is None
+        else compute_spectrum(x, y, RED_PERIOD_S, min_line_hz=min_line_hz)
+    )
+    assert spectrum is not None
+    return spectrum.lines_hz
+
+
+class TestTheRedPart:
+    """The motion of a real sky is red below about 4 Hz, and a bump of the noise there is no line.
+
+    At the first light, 18 of 42 windows carried a line at a frequency from 0.8 to 2.9 Hz, and no
+    frequency repeated.
+    """
+
+    def test_the_search_starts_at_4_hz_by_default(self) -> None:
+        import inspect
+
+        from seeingmon.fastpath import FastPathConfig
+
+        assert inspect.signature(compute_spectrum).parameters["min_line_hz"].default == 4.0
+        assert FastPathConfig().vibration_min_hz == 4.0
+
+    @pytest.mark.parametrize("seconds", [6.0, 20.0])
+    def test_red_noise_without_a_line_gets_no_flag(self, seconds: float) -> None:
+        assert [seed for seed in range(100) if red_lines(seed, seconds)] == []
+
+    def test_the_old_minimum_of_1_hz_flagged_such_noise(self) -> None:
+        """The reason for the new minimum: 61% of the 6 s windows and 23% of the 20 s windows."""
+        short = sum(bool(red_lines(seed, 6.0, min_line_hz=1.0)) for seed in range(100))
+        long = sum(bool(red_lines(seed, 20.0, min_line_hz=1.0)) for seed in range(100))
+        assert short >= 40
+        assert long >= 10
+
+    @pytest.mark.parametrize("frequency", [5.0, 8.0, 12.0, 20.0])
+    def test_a_line_between_5_and_20_hz_is_found_in_red_noise(self, frequency: float) -> None:
+        """A line that carries 20 times the continuum in its bin shows in every window of 20 s."""
+        for seed in range(30):
+            (line,) = red_lines(seed, 20.0, line=(frequency, 20.0))  # and nothing else shows
+            assert line == pytest.approx(frequency, abs=0.3)
+
+    def test_a_line_that_is_barely_there_stays_a_matter_of_chance(self) -> None:
+        """The detection limit did not move: 12 times the continuum is found, 3 times is not."""
+        strong = sum(bool(red_lines(s, 20.0, line=(12.0, 12.0))) for s in range(60))
+        faint = sum(bool(red_lines(s, 20.0, line=(12.0, 3.0))) for s in range(60))
+        assert strong >= 57
+        assert faint <= 6
+
+    def test_a_strong_line_at_3_hz_is_below_the_search(self) -> None:
+        lines = red_lines(1, 20.0, line=(3.0, 200.0))
+        assert lines == ()
+        assert red_lines(1, 20.0, line=(3.0, 200.0), min_line_hz=1.0) != ()
 
 
 class TestGaps:

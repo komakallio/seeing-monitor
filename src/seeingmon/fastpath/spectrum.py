@@ -27,6 +27,20 @@ because folding keeps the total.
 (`local_bins` on each side), above `min_line_hz`, and a local maximum. A line spreads over a few
 bins in a Hann spectrum, so the code merges adjacent bins and refines the frequency of the peak by
 a parabola through the logarithm of the three highest bins.
+
+**The red part.** The image motion of a real sky is red below about 4 Hz: wind and the mount add
+slow motion to the turbulence. The neighbors of a bin there reach out to 8 Hz, and the spectrum
+falls steeply across them, so the bin stands 10 to 50 times above its median, and any bump of the
+noise on the slope is a local maximum above the threshold. The search therefore starts at 4 Hz
+(`min_line_hz`), which is eight bins above zero at the 0.5 Hz resolution of a segment of 2 s.
+
+At the first light, 18 of 42 windows carried a line, 21 of the 22 lines lay between 0.8 and 2.9 Hz,
+and no frequency repeated: the parabola moves the line of one bin by up to a bin width, so the bin
+at 1.0 Hz alone gave lines from 0.83 to 1.1 Hz. Above 4 Hz, the search found one line in the 42
+windows (at 41 Hz, in a window of 6 degrees of freedom). Red noise without any line gives the same
+result: a minimum of 1 Hz flags 23% of the windows of 20 s and 59% of the windows of 6 s of a
+spectrum that falls as f^-1.7 below 4 Hz, and a minimum of 4 Hz flags none. A line above 4 Hz is
+found as before: one that carries 20 times the continuum in its bin shows in every window.
 """
 
 from __future__ import annotations
@@ -232,7 +246,7 @@ def compute_spectrum(
     bins: int = 24,
     threshold: float = 5.0,
     local_bins: int = 15,
-    min_line_hz: float = 1.0,
+    min_line_hz: float = 4.0,
     min_segments: int = 3,
 ) -> MotionSpectrum | None:
     """Compute the spectrum of two motion series, or return `None` when no segment fits.
