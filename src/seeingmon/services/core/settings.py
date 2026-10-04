@@ -184,9 +184,12 @@ class AlignmentSettings(SectionModel):
     view, and `thread` in a thread of `core` (for a machine that cannot spare the memory of a
     second process). A solve that takes longer than `solve_timeout_s` ends the worker. The quick
     solve detects only the bright stars: a star must stand out by `detect_threshold_sigma` times
-    the noise, and the detector keeps the `detect_max_stars` brightest. The survey analysis keeps
-    its own settings (`[survey.detect]`), and a lower threshold and more stars only make the quick
-    solve slower.
+    the noise, the detector keeps the `detect_max_stars` brightest, and it searches a copy of the
+    frame that sums each `detect_coarse_bin` x `detect_coarse_bin` block (1 searches the frame
+    itself) and fits the brightest `detect_refine_stars` stars at full resolution (see
+    `seeingmon.survey.detect`). A frame without a trail model, such as the first one after a
+    start, takes the full search. The survey analysis keeps its own settings (`[survey.detect]`),
+    and a lower threshold, more stars, and a smaller bin only make the quick solve slower.
     """
 
     target_x_px: float | None = None
@@ -206,6 +209,8 @@ class AlignmentSettings(SectionModel):
     solution_max_age_s: float = Field(10.0, gt=0)
     detect_threshold_sigma: float = Field(8.0, gt=0)
     detect_max_stars: int = Field(300, ge=8)
+    detect_coarse_bin: int = Field(2, ge=1, le=16)
+    detect_refine_stars: int = Field(300, ge=1)
 
     histogram_bins: int = Field(64, ge=8, le=256)
     saturation_level: float = Field(0.98, gt=0, le=1)

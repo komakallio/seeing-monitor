@@ -541,8 +541,8 @@ class CoreApp:
 
         It follows the survey worker: in a worker process when both `[alignment] solver_mode` and
         `[services.core.survey_worker] mode` say `process`, and in a thread of `core` otherwise.
-        The quick solve detects only the bright stars (`[alignment] detect_threshold_sigma` and
-        `detect_max_stars`), because the live view needs a few dozen stars and a fast answer.
+        The quick solve detects only the bright stars and searches a binned copy of the frame
+        (`[alignment] detect_*`), because the live view needs a few dozen stars and a fast answer.
         """
         from seeingmon.survey.analyzer import analyzer_spec
         from seeingmon.survey.catalog import read_info
@@ -554,6 +554,8 @@ class CoreApp:
             update={
                 "threshold_sigma": settings.detect_threshold_sigma,
                 "max_stars": settings.detect_max_stars,
+                "coarse_bin": settings.detect_coarse_bin,
+                "refine_stars": settings.detect_refine_stars,
             }
         )
         config = self.survey_config.model_copy(update={"detect": detect})

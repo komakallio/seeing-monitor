@@ -171,6 +171,7 @@ class TestCoreSettings:
         assert settings.solve_interval_s == 0.0  # the solver takes the newest frame when it is free
         assert settings.solve_timeout_s == 60.0
         assert (settings.detect_threshold_sigma, settings.detect_max_stars) == (8.0, 300)
+        assert (settings.detect_coarse_bin, settings.detect_refine_stars) == (2, 300)
 
     def test_the_solver_mode_is_one_of_two(self, tmp_path: Path) -> None:
         local = tmp_path / "local.toml"

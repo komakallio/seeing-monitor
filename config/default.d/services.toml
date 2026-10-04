@@ -256,10 +256,15 @@ solver_mode = "process"
 solve_timeout_s = 60.0
 
 # The quick solve detects only the bright stars: a star must stand out by this many times the
-# noise, and the detector keeps this many of the brightest. Lower values find more stars and take
-# longer. The survey analysis keeps its own settings in [survey.detect].
+# noise, and the detector keeps this many of the brightest. The detector searches a copy of the
+# frame that sums each detect_coarse_bin x detect_coarse_bin block (1 searches the frame itself),
+# and it fits this many stars at full resolution. A frame with no trail model (the first one after
+# a start) takes the full search. Lower values find more stars and take longer. The survey
+# analysis keeps its own settings in [survey.detect].
 detect_threshold_sigma = 8.0
 detect_max_stars = 300
+detect_coarse_bin = 2
+detect_refine_stars = 300
 
 # The histogram, and the saturation warning: the share of pixels that reach `saturation_level` of
 # the saturation level of the readout mode.

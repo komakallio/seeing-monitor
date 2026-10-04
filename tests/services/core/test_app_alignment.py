@@ -57,8 +57,10 @@ class TestTheQuickSolver:
             assert solver.spec is not None
             detect = solver.spec.config["detect"]
             assert (detect["threshold_sigma"], detect["max_stars"]) == (8.0, 300)
+            assert (detect["coarse_bin"], detect["refine_stars"]) == (2, 300)
             survey_detect = core.app.survey_config.detect  # the survey path keeps its own
             assert (survey_detect.threshold_sigma, survey_detect.max_stars) == (5.0, 3000)
+            assert survey_detect.coarse_bin == 1
         finally:
             core.app.stop()
 
@@ -66,7 +68,7 @@ class TestTheQuickSolver:
         core = rig(
             tmp_path,
             "[alignment]\ndetect_threshold_sigma = 6.5\ndetect_max_stars = 120\n"
-            "solve_timeout_s = 30.0\n",
+            "detect_coarse_bin = 4\ndetect_refine_stars = 90\nsolve_timeout_s = 30.0\n",
         )
         try:
             solver = quick_solver(core)
@@ -74,6 +76,7 @@ class TestTheQuickSolver:
             assert solver.spec is not None
             detect = solver.spec.config["detect"]
             assert (detect["threshold_sigma"], detect["max_stars"]) == (6.5, 120)
+            assert (detect["coarse_bin"], detect["refine_stars"]) == (4, 90)
             assert solver._timeout_s == 30.0
         finally:
             core.app.stop()
@@ -85,6 +88,7 @@ class TestTheQuickSolver:
             assert isinstance(solver, QuickSolver)
             options = solver._pipeline._detect_options  # type: ignore[attr-defined]
             assert (options.threshold_sigma, options.max_stars) == (8.0, 300)
+            assert (options.coarse_bin, options.refine_stars) == (2, 300)
         finally:
             core.app.stop()
 
