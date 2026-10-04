@@ -212,6 +212,8 @@ class TestThePlanOfTheRealSky:
     def test_the_windows_stay_20_s_long(self, tmp_path: Path) -> None:
         core = configuration(real_plan(tmp_path), "core", tmp_path)
         assert core.section("scheduler", SchedulerConfig).fast.analysis_window_s == 20.0
+        # seven windows and the survey step fill the 180 s cadence
+        assert core.section("scheduler", SchedulerConfig).fast.window_s == 140.0
         assert core.section("fastpath", FastPathConfig).window_s == 20.0
 
     def test_the_cloud_limits_are_the_production_defaults(self, tmp_path: Path) -> None:

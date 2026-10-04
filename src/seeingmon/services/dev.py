@@ -121,6 +121,11 @@ SIM_LONGITUDE_DEG = 0.0
 # sustains. The windows are short, so that the UI has data half a minute after the start.
 DEV_FAST_EXPOSURE_US = 50_000
 DEV_WINDOW_S = 20.0
+# The fast period, in windows. A simulated run keeps three. A real camera runs seven (140 s), so
+# that the fast period and the survey step (about 40 s) fill the 180 s cadence: the camera idles
+# less, and a seeing reading is at most one window plus the survey step old, about a minute.
+DEV_FAST_WINDOWS = 3
+REAL_FAST_WINDOWS = 7
 DEFAULT_SPEED = 1.0
 DEV_POLARIS_MAG = 6.0
 # The simulator of the full sensor renders a survey frame inside the camera read, which takes
@@ -450,7 +455,7 @@ def build_plan(
     )
     fast_table: dict[str, Any] = {
         "analysis_window_s": options.window_s,
-        "window_s": options.window_s * 3,
+        "window_s": options.window_s * (REAL_FAST_WINDOWS if real else DEV_FAST_WINDOWS),
     }
     if not real:
         fast_table["exposure_us"] = options.fast_exposure_us  # the real one keeps its 2 ms

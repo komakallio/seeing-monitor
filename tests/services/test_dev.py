@@ -279,6 +279,7 @@ class TestTheIsolationOfTheRun:
             local_file=tmp_path / "absent.toml", env=seeingmon_env(child(owner_plan, "core"))
         )
         assert core.section("scheduler", SchedulerConfig).fast.analysis_window_s == 20.0
+        assert core.section("scheduler", SchedulerConfig).fast.window_s == 60.0  # a simulated run
         assert core.section("fastpath", FastPathConfig).window_s == 20.0
 
     def test_no_child_reads_the_local_file_of_the_owner(self, owner_plan: DevPlan) -> None:
