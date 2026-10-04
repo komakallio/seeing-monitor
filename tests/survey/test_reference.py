@@ -265,6 +265,87 @@ def test_dut1_moves_the_earth_fixed_attitude_about_the_pole_only() -> None:
     assert offset.boresight_arcmin * 60.0 == pytest.approx(expected_arcsec, rel=2e-3)
 
 
+# --- Seeding the tracker ------------------------------------------------------------------------
+
+
+def seed(
+    store: Store,
+    *,
+    now: int = NOW,
+    max_age_s: float = 12 * 3600.0,
+    min_matched: int = 8,
+    max_rms_px: float = 1.5,
+) -> pt.PointingSolution:
+    with StoreReader.open(store.path) as reader:
+        return ref.seed_solution(
+            reader,
+            PROFILE,
+            now_utc_ns=now,
+            max_age_s=max_age_s,
+            min_matched=min_matched,
+            max_rms_px=max_rms_px,
+        )
+
+
+def test_the_seed_is_the_solution_of_the_newest_good_record(store: Store) -> None:
+    newest = made(T0 + 4 * MINUTE_NS, n_matched=853, solver="tracker")
+    write(
+        store,
+        made(T0),
+        newest,
+        made(T0 + 5 * MINUTE_NS, n_matched=7),  # too thin to seed a tracker
+        made(T0 + 6 * MINUTE_NS, solved=False),
+        made(T0 + 7 * MINUTE_NS, time_invalid=True),
+    )
+    solution = seed(store)
+    assert solution.t_utc_ns == T0 + 4 * MINUTE_NS
+    assert (solution.solver, solution.n_matched) == ("tracker", 853)
+    np.testing.assert_allclose(
+        solution.rotation_earth_fixed, newest.solution.rotation_earth_fixed, atol=1e-13
+    )
+
+
+def test_a_seed_that_is_older_than_the_limit_is_refused_with_the_age(store: Store) -> None:
+    write(store, made(T0))
+    assert seed(store, now=T0 + 12 * HOUR_NS).t_utc_ns == T0  # exactly at the limit
+    with pytest.raises(ref.NoSolutionError) as raised:
+        seed(store, now=T0 + 12 * HOUR_NS + 2 * 1_000_000_000)
+    assert str(raised.value) == (
+        "the newest pointing record is 12.0 h old, and the limit is 720 minutes"
+    )
+
+
+def test_a_seed_with_too_few_stars_is_refused(store: Store) -> None:
+    write(store, made(T0, n_matched=7))
+    with pytest.raises(ref.NoSolutionError, match="the best has 7") as raised:
+        seed(store)
+    assert "--" not in str(raised.value)  # the hint names an option of the command, not of core
+
+
+def test_a_seed_with_a_large_residual_is_refused_and_a_looser_limit_takes_it(
+    store: Store,
+) -> None:
+    write(store, made(T0, rms_arcsec=6.0))  # 1.57 px at 3.82 arcsec per pixel
+    with pytest.raises(ref.PointingReferenceError, match=r"residual of 1\.57 px.*limit is 1\.5 px"):
+        seed(store)
+    assert seed(store, max_rms_px=2.0).t_utc_ns == T0
+
+
+def test_a_record_from_the_future_does_not_seed_unless_the_clock_is_within_a_minute(
+    store: Store,
+) -> None:
+    write(store, made(NOW + 59 * 1_000_000_000))
+    assert seed(store).t_utc_ns == NOW + 59 * 1_000_000_000
+    write(store, made(NOW + 2 * MINUTE_NS))
+    with pytest.raises(ref.PointingReferenceError, match="which is ahead of the clock"):
+        seed(store)
+
+
+def test_a_seed_from_an_empty_store_says_so(store: Store) -> None:
+    with pytest.raises(ref.NoSolutionError, match="the store holds no pointing record"):
+        seed(store)
+
+
 # --- The text -----------------------------------------------------------------------------------
 
 

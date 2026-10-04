@@ -7,17 +7,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 pytest.importorskip("sep", reason="the survey path needs the survey extra")
 
 from seeingmon.analysis import SurveyOutput
-from seeingmon.clock import iso_to_utc_ns
+from seeingmon.clock import Clock, ClockStatus, VirtualClock, iso_to_utc_ns
 from seeingmon.records import EventRecord, Record
 from seeingmon.records.survey import SkyQualityRecord
 from seeingmon.services.core.app import CoreApp
+from seeingmon.services.simsky import write_seed
 from seeingmon.store.db import Store
 from seeingmon.testing import FakeSurveyAnalyzer
+from tests.survey.pointfx import HOUR_NS, MINUTE_NS, made, mount
 
 from .rig import CoreRig, build_rig, events_of, read_all
 
@@ -281,9 +284,14 @@ class TestTheStartWithoutAPointing:
         assert [(r.levelname, r.getMessage()) for r in lines] == [
             (
                 "INFO",
+                "the pointing tracker has no stored solution to start with: "
+                "the store holds no pointing record",
+            ),
+            (
+                "INFO",
                 "no pointing solution yet: the survey frames go to the plate solvers "
                 "astrometry.net, astap, in this order, until one solves",
-            )
+            ),
         ]
 
     def test_a_start_without_a_solver_warns_that_nothing_can_find_polaris(
@@ -292,8 +300,9 @@ class TestTheStartWithoutAPointing:
         with caplog.at_level("INFO", logger=self.LOGGER):
             rig = self.rig(tmp_path, "[]")
         rig.app.stop()
-        (record,) = [r for r in caplog.records if r.name == self.LOGGER]
-        assert record.levelname == "WARNING"
+        (record,) = [
+            r for r in caplog.records if r.name == self.LOGGER and r.levelname == "WARNING"
+        ]
         assert "names no plate solver" in record.getMessage()
 
     def test_a_tracker_that_holds_a_solution_adds_no_line(
@@ -303,3 +312,140 @@ class TestTheStartWithoutAPointing:
         with caplog.at_level("INFO", logger=self.LOGGER):
             CoreApp._log_pointing_start(seeded, ["astap"])
         assert not [r for r in caplog.records if r.name == self.LOGGER]
+
+
+class TestTheStartWithAStoredPointing:
+    """A restart starts the tracker with the newest solved pointing record of the store."""
+
+    LOGGER = "seeingmon.services.core.app"
+    START = iso_to_utc_ns("2026-01-01T22:00:00Z")
+
+    @classmethod
+    def restart(
+        cls,
+        tmp_path: Path,
+        records: Sequence[Record],
+        *,
+        settings: str = "",
+        clock: Clock | None = None,
+        caplog: pytest.LogCaptureFixture | None = None,
+    ) -> CoreRig:
+        """Start `core`, put `records` in its store, stop it, and start it again.
+
+        With `caplog`, the log holds the second start only.
+        """
+        from seeingmon.survey.analyzer import InlineExecutor
+        from seeingmon.survey.catalog import write_catalog
+        from tests.survey import synth
+
+        catalog = tmp_path / "catalog.bin"
+        write_catalog(catalog, synth.synthetic_catalog(cap_radius_deg=5.0, density_scale=0.05))
+        extra = f'[survey]\ncatalog_path = "{catalog.as_posix()}"\nsolvers = ["astap"]\n{settings}'
+
+        def parts() -> dict[str, Any]:
+            return {"survey": None, "pointing": None, "survey_executor": InlineExecutor()}
+
+        first = build_rig(tmp_path, start_utc_ns=cls.START, config_extra=extra, parts=parts())
+        assert first.app.storage is not None
+        for record in records:
+            first.app.storage.store.write(record)
+        first.app.stop()
+        if caplog is not None:
+            caplog.clear()
+        return build_rig(
+            tmp_path, start_utc_ns=cls.START, config_extra=extra, parts=parts(), clock=clock
+        )
+
+    def test_the_tracker_starts_with_the_newest_good_solution_and_the_log_says_so(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        newest = made(self.START - 10 * MINUTE_NS, n_matched=853, solver="tracker")
+        records: list[Record] = [
+            made(self.START - 40 * MINUTE_NS).record,
+            newest.record,
+            made(self.START - 5 * MINUTE_NS, n_matched=7).record,  # too thin
+            made(self.START - 3 * MINUTE_NS, solved=False).record,
+        ]
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            rig = self.restart(tmp_path, records, caplog=caplog)
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        solution = rig.app.tracker.solution
+        assert solution is not None
+        assert solution.t_utc_ns == newest.solution.t_utc_ns
+        assert (solution.solver, solution.n_matched) == ("tracker", 853)
+        np.testing.assert_allclose(
+            solution.rotation_earth_fixed, newest.solution.rotation_earth_fixed, atol=1e-12
+        )
+        # The scheduler can place Polaris at once, so the first cycle needs no survey step.
+        assert rig.app.tracker.polaris_position(self.START, "bin2") is not None
+        messages = [r.getMessage() for r in caplog.records if r.name == self.LOGGER]
+        assert messages == [
+            "the pointing tracker starts with the stored solution of 2026-01-01T21:50:00Z "
+            "(10 min old, solved by tracker with 853 matched stars)"
+        ]
+
+    def test_a_solution_that_the_tracker_could_no_longer_use_does_not_seed_it(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            rig = self.restart(tmp_path, [made(self.START - 13 * HOUR_NS).record], caplog=caplog)
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        assert rig.app.tracker.solution is None
+        messages = [r.getMessage() for r in caplog.records if r.name == self.LOGGER]
+        assert messages[0] == (
+            "the pointing tracker has no stored solution to start with: "
+            "the newest pointing record is 13.0 h old, and the limit is 720 minutes"
+        )
+        assert messages[1].startswith("no pointing solution yet")
+
+    def test_a_record_that_a_bad_clock_wrote_is_skipped_for_the_one_before_it(
+        self, tmp_path: Path
+    ) -> None:
+        good = made(self.START - 30 * MINUTE_NS)
+        records: list[Record] = [
+            good.record,
+            made(self.START - 5 * MINUTE_NS, time_invalid=True).record,
+        ]
+        rig = self.restart(tmp_path, records)
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        solution = rig.app.tracker.solution
+        assert solution is not None
+        assert solution.t_utc_ns == good.solution.t_utc_ns
+
+    def test_a_setting_turns_the_seed_off(self, tmp_path: Path) -> None:
+        records: list[Record] = [made(self.START - 10 * MINUTE_NS).record]
+        rig = self.restart(tmp_path, records, settings="[services.core]\nseed_from_store = false\n")
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        assert rig.app.tracker.solution is None
+
+    def test_a_seed_file_goes_before_the_store(self, tmp_path: Path) -> None:
+        stored = made(self.START - 10 * MINUTE_NS)
+        filed = made(self.START - 2 * HOUR_NS, rotation_tirs=mount(0.7))
+        seed_file = tmp_path / "seed.json"
+        write_seed(seed_file, filed.solution)
+        settings = f'[services.core]\nseed_solution_file = "{seed_file.as_posix()}"\n'
+        rig = self.restart(tmp_path, [stored.record], settings=settings)
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        solution = rig.app.tracker.solution
+        assert solution is not None
+        assert solution.t_utc_ns == filed.solution.t_utc_ns
+
+    def test_a_clock_that_is_not_synchronized_starts_the_tracker_empty(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        unsynchronized = VirtualClock(
+            self.START, status=ClockStatus(synchronized=False, error_bound_ns=None, source="test")
+        )
+        records: list[Record] = [made(self.START - 10 * MINUTE_NS).record]
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            rig = self.restart(tmp_path, records, clock=unsynchronized, caplog=caplog)
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        assert rig.app.tracker.solution is None
+        messages = [r.getMessage() for r in caplog.records if r.name == self.LOGGER]
+        assert "the pointing tracker starts empty: the clock is not synchronized" in messages

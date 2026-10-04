@@ -146,6 +146,11 @@ class CoreSettings(SectionModel):
     # solver, and a development run on a simulated sky needs no solver with this file.
     seed_solution_file: str = ""
 
+    # At start, with no seed file, `core` gives the pointing tracker the newest solved `pointing`
+    # record of the store that the tracker could still use (`[survey.pointing] validity_s`), so
+    # that a restart goes on with the solution of the last run and skips the blind first solve.
+    seed_from_store: bool = True
+
     survey_worker: SurveyWorkerSettings = Field(default_factory=SurveyWorkerSettings)
     survey_frames: SurveyFrameSettings = Field(default_factory=SurveyFrameSettings)
     escalation: EscalationSettings = Field(default_factory=EscalationSettings)

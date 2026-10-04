@@ -366,6 +366,7 @@ class CoreApp:
             )
             self.tracker = analyzer.tracker
             self._load_seed(self.tracker)
+            self._seed_from_store(self.tracker)
             self._log_pointing_start(self.tracker, [solver.kind for solver in spec.solvers])
         # The frames of the survey path: a ring in RAM, the previews, and the FITS files.
         self.frames: SurveyFrames | None = None
@@ -426,6 +427,54 @@ class CoreApp:
                 f"cannot read the seed solution: {type(error).__name__}: {error}"
             ) from None
         _log.info("the pointing tracker starts with the seed solution")
+
+    def _seed_from_store(self, tracker: Any) -> None:
+        """Start the tracker with the newest usable solution of the store, after a restart.
+
+        A tracker that a seed file started keeps its solution. A solution that is too old, too
+        thin, or from another profile, and a clock that does not know the time, leave the tracker
+        empty, and the first survey frame goes to the plate solvers. Nothing here stops `core`.
+        """
+        if not self.settings.seed_from_store or tracker.solution is not None:
+            return
+        assert self.storage is not None
+        if self.clock.status().synchronized is False:
+            _log.info("the pointing tracker starts empty: the clock is not synchronized")
+            return
+        from seeingmon.survey.reference import (
+            PointingReferenceError,
+            format_age,
+            format_time,
+            seed_solution,
+        )
+
+        pointing = self.survey_config.pointing
+        now_ns = self.clock.utc_ns()
+        try:
+            solution = seed_solution(
+                self.storage.store,
+                self.profile,
+                now_utc_ns=now_ns,
+                max_age_s=pointing.validity_s,
+                min_matched=pointing.tracker_min_stars,
+                max_rms_px=pointing.tracker_max_rms_px,
+                dut1_s=self.survey_config.dut1_s,
+            )
+        except PointingReferenceError as error:
+            _log.info("the pointing tracker has no stored solution to start with: %s", error)
+            return
+        except Exception:
+            _log.exception("could not read a stored pointing solution, so the tracker starts empty")
+            return
+        tracker.update(solution)
+        _log.info(
+            "the pointing tracker starts with the stored solution of %s (%s old, solved by %s "
+            "with %d matched stars)",
+            format_time(solution.t_utc_ns),
+            format_age((now_ns - solution.t_utc_ns) / NS_PER_S),
+            solution.solver or "a solver",
+            solution.n_matched,
+        )
 
     @staticmethod
     def _log_pointing_start(tracker: Any, solvers: Sequence[str]) -> None:

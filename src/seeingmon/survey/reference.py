@@ -27,6 +27,13 @@ fit from them:
 
 The function checks its own result: the model that it builds must put Polaris where the record says,
 to 0.01 pixel. A record that fails the check came from another profile, and the function refuses it.
+
+**Seeding the tracker.** `seed_solution` gives `core` the solution that starts a `PointingTracker`
+after a restart. It takes the newest record that `newest_solution_record` accepts within the
+validity limit of the tracker (a solution older than that predicts nothing), at least the stars and
+at most the residual that the analyzer asks of a solution that updates the tracker, and no record
+from the future, which a clock that stepped back would give. The first solve then starts from where
+Polaris was, and not from a blind search around the pole.
 """
 
 from __future__ import annotations
@@ -61,6 +68,9 @@ ROTATION_TOLERANCE = 1e-6
 # The most records that one search reads, newest first: about ten days of a survey cadence.
 SCAN_LIMIT = 10_000
 _END_OF_TIME_NS = 2**63 - 1  # the largest integer that SQLite stores
+# A record this far ahead of the clock means that the clock stepped back since the record.
+FUTURE_TOLERANCE_NS = 60 * NS_PER_S
+_OPTION_HINT = re.compile(r" \(see --[a-z-]+\)")
 
 
 class PointingReferenceError(Exception):
@@ -255,6 +265,50 @@ def solution_from_record(
         rms_arcsec=record.solve_rms_arcsec,
         solver=record.solver,
     )
+
+
+# --- Seeding the tracker -----------------------------------------------------------------------
+
+
+def seed_solution(
+    reader: StoreReader,
+    profile: Profile,
+    *,
+    now_utc_ns: int,
+    max_age_s: float,
+    min_matched: int,
+    max_rms_px: float,
+    dut1_s: float = 0.0,
+) -> PointingSolution:
+    """The newest stored solution that can start a pointing tracker.
+
+    The record is the newest that `newest_solution_record` accepts: solved, timed, finite, with at
+    least `min_matched` stars, and not older than `max_age_s` before `now_utc_ns`. Its residual
+    must not exceed `max_rms_px`, and its time must not lie more than a minute ahead of the clock.
+    Raises `PointingReferenceError` with a one-line reason when no record fits, or when the
+    newest one cannot be rebuilt (see `solution_from_record`).
+    """
+    try:
+        record = newest_solution_record(
+            reader, now_utc_ns=now_utc_ns, min_matched=min_matched, max_age_s=max_age_s
+        )
+    except NoSolutionError as error:  # the hints name options of the command, not of `core`
+        raise NoSolutionError(_OPTION_HINT.sub("", str(error))) from None
+    if record.t_utc_ns > now_utc_ns + FUTURE_TOLERANCE_NS:
+        raise PointingReferenceError(
+            "the newest pointing solution is from "
+            f"{format_time(record.t_utc_ns)}, which is ahead of the clock"
+        )
+    rms_arcsec, scale = record.solve_rms_arcsec, record.plate_scale_arcsec_px
+    if rms_arcsec is None or scale is None:  # the search has ruled this out
+        raise PointingReferenceError("the newest pointing solution has no residual")
+    rms_px = rms_arcsec / scale
+    if rms_px > max_rms_px:
+        raise PointingReferenceError(
+            f"the newest pointing solution has a residual of {rms_px:.2f} px, "
+            f"and the limit is {max_rms_px:g} px"
+        )
+    return solution_from_record(record, profile, dut1_s=dut1_s)
 
 
 # --- Describing a reference --------------------------------------------------------------------
