@@ -79,6 +79,21 @@ def test_show_prints_the_derived_values_of_each_mode_by_name(
     assert "an estimate good to +-30%" in out
 
 
+def test_show_prints_the_single_exposure_timing_of_each_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["profile", "show", "asi294mm-gs250"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    (bin2,) = [line for line in lines if line.startswith("  Single exposure in bin2")]
+    assert bin2 == (
+        "  Single exposure in bin2: 0.27 s plus 75 us per row beyond the exposure, "
+        "0.48 s for the full frame"
+    )
+    (bin1,) = [line for line in lines if line.startswith("  Single exposure in bin1")]
+    assert bin1.endswith("(assumed: nobody measured this mode)")  # the floor and the video row time
+    assert "0.3 s plus 37.6 us per row" in bin1
+
+
 def test_show_prints_plain_ascii(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["profile", "show", "asi294mm-gs250"]) == 0
     assert capsys.readouterr().out.isascii()

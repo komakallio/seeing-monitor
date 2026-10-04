@@ -16,6 +16,12 @@ is never stated twice. See `seeingmon.profile.derived` for how the rows interpol
 **High-speed mode.** A camera can trade ADC bits for speed. A mode states the high-speed ADC
 bits, row time, and frame overhead when they differ, and `ReadoutMode.high_speed_variant`
 returns the mode as it runs in high-speed mode.
+
+**Single exposures.** A snapshot takes longer than a video frame of the same ROI. A mode can state
+a second timing line for it, an overhead and a row time (`snapshot_overhead_s` and
+`snapshot_row_time_us`). A mode that states none gets the video row time and an overhead of at
+least 0.3 s from `seeingmon.profile.derived`, so the timeouts that follow the model are never too
+short for a mode that nobody measured.
 """
 
 from __future__ import annotations
@@ -71,6 +77,13 @@ class ReadoutMode(_Model):
     `name` is the label that frames carry. `sdk_bin` is the binning factor that the vendor
     SDK takes. `width_px`, `height_px`, and `pixel_size_um` describe the mode after binning.
     The `*_gain0_*` fields hold the values at gain 0, and `gain_points` hold the rows above it.
+
+    `row_time_us` and `frame_overhead_ms` model a video stream: the frame period is the larger
+    of the exposure and the frame overhead plus the ROI rows times the row time. A single
+    exposure (a snapshot) has its own model, `snapshot_overhead_s` plus the ROI rows times
+    `snapshot_row_time_us`, which comes on top of the exposure and runs from the call that starts
+    the exposure to the returned frame. State both or neither. Without them, a snapshot takes the
+    video row time and an overhead of at least 0.3 s (see `seeingmon.profile.derived`).
     """
 
     name: str
@@ -87,6 +100,8 @@ class ReadoutMode(_Model):
     frame_overhead_ms: NonNegative
     row_time_us_high_speed: Positive | None = None
     frame_overhead_ms_high_speed: NonNegative | None = None
+    snapshot_overhead_s: NonNegative | None = None
+    snapshot_row_time_us: Positive | None = None
     gain_points: tuple[GainPoint, ...] = ()
 
     @field_validator("name")
@@ -117,6 +132,20 @@ class ReadoutMode(_Model):
             previous = point.gain
         return self
 
+    @model_validator(mode="after")
+    def _check_snapshot_model(self) -> Self:
+        if (self.snapshot_overhead_s is None) != (self.snapshot_row_time_us is None):
+            raise ValueError(
+                "snapshot_overhead_s and snapshot_row_time_us go together: state both, from one "
+                "line through the times of single exposures at several ROI heights, or neither"
+            )
+        return self
+
+    @property
+    def has_snapshot_model(self) -> bool:
+        """Whether the mode states a timing line for single exposures of its own."""
+        return self.snapshot_overhead_s is not None
+
     @property
     def has_high_speed(self) -> bool:
         """Whether the mode states anything that differs in high-speed mode."""
@@ -132,8 +161,9 @@ class ReadoutMode(_Model):
         The variant takes the high-speed ADC bits, row time, and frame overhead where the mode
         states them. With fewer ADC bits, electrons per ADU grows by 2^(bits lost), because the
         ADC covers the same analog range with fewer steps. That scaling is an assumption: the
-        vendor does not publish the high-speed gain charts. Raises `ProfileError` when the mode
-        has no high-speed variant.
+        vendor does not publish the high-speed gain charts. The snapshot model carries over
+        unchanged, because nobody measured a single exposure in high-speed mode. Raises
+        `ProfileError` when the mode has no high-speed variant.
         """
         if not self.has_high_speed:
             raise ProfileError(f"readout mode {self.name!r} has no high-speed variant")
@@ -427,6 +457,16 @@ class Profile(_Model):
     ) -> float:
         """The highest frame rate for an ROI height and an exposure."""
         return derived.max_frame_rate_hz(self._resolve(mode), roi_height_px, exposure_us)
+
+    def snapshot_readout_time_s(self, mode: str | ReadoutMode, roi_height_px: int) -> float:
+        """The time of a single exposure beyond the exposure, for an ROI height."""
+        return derived.snapshot_readout_time_s(self._resolve(mode), roi_height_px)
+
+    def snapshot_period_s(
+        self, mode: str | ReadoutMode, roi_height_px: int, exposure_us: float
+    ) -> float:
+        """The time of a single exposure, from the call that starts it to the returned frame."""
+        return derived.snapshot_period_s(self._resolve(mode), roi_height_px, exposure_us)
 
     def data_rate_bytes_per_s(
         self,

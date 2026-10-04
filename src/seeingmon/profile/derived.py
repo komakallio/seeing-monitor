@@ -20,6 +20,14 @@ per ADU times the ADC full scale. The saturation level in native ADC counts foll
 The vendor SDK places the ADC value in the high bits of a 16-bit container, so the level in
 container counts is the native level times 2^(16 - ADC bits). The levels ignore the black-level
 offset, and they give no RAW8 level because the vendor does not document the RAW8 scaling rule.
+
+**Single exposures.** A snapshot (one `start_exposure`, a status poll, and one
+`get_data_after_exposure`) takes far longer than a video frame of the same ROI, because the camera
+reads the whole frame out before the SDK returns it. The video line model (the frame overhead plus
+the rows times the row time) cannot describe that. A readout mode can state a second line for single
+exposures, `snapshot_overhead_s` and `snapshot_row_time_us`. A mode without one takes its video row
+time and an overhead of at least `SNAPSHOT_OVERHEAD_FLOOR_S`, so that the model of a mode that
+nobody measured is never shorter than the camera that was.
 """
 
 from __future__ import annotations
@@ -37,6 +45,10 @@ if TYPE_CHECKING:
 ARCSEC_PER_RAD = 206264.80624709636
 AIRY_FWHM_FACTOR = 1.029  # the FWHM of an Airy pattern is 1.029 lambda / D
 CONTAINER_BITS = 16  # RAW16 carries the ADC value in the high bits of 16 bits
+# The least overhead of a single exposure in a mode that states no snapshot model. The reference
+# camera on a Raspberry Pi 4 needs 0.27 s (see `profiles/asi294mm-gs250.toml`), and this value
+# adds some margin for another host.
+SNAPSHOT_OVERHEAD_FLOOR_S = 0.3
 _MM_PER_UM = 1e-3
 _M_PER_NM = 1e-9
 _M_PER_MM = 1e-3
@@ -331,6 +343,45 @@ def frame_period_s(mode: ReadoutMode, roi_height_px: int, exposure_us: float) ->
 def max_frame_rate_hz(mode: ReadoutMode, roi_height_px: int, exposure_us: float) -> float:
     """The highest frame rate for an ROI height and an exposure, in frames per second."""
     return 1.0 / frame_period_s(mode, roi_height_px, exposure_us)
+
+
+def snapshot_overhead_s(mode: ReadoutMode) -> float:
+    """The fixed time of a single exposure beyond the exposure and the rows, in seconds.
+
+    A mode that states `snapshot_overhead_s` gives it. Any other mode gives its frame overhead,
+    raised to `SNAPSHOT_OVERHEAD_FLOOR_S` when it is smaller.
+    """
+    if mode.snapshot_overhead_s is not None:
+        return mode.snapshot_overhead_s
+    return max(mode.frame_overhead_ms * _S_PER_MS, SNAPSHOT_OVERHEAD_FLOOR_S)
+
+
+def snapshot_row_time_us(mode: ReadoutMode) -> float:
+    """The time that each ROI row adds to a single exposure, in microseconds.
+
+    A mode that states `snapshot_row_time_us` gives it. Any other mode gives its video row time.
+    """
+    if mode.snapshot_row_time_us is not None:
+        return mode.snapshot_row_time_us
+    return mode.row_time_us
+
+
+def snapshot_readout_time_s(mode: ReadoutMode, roi_height_px: int) -> float:
+    """The time of a single exposure beyond the exposure: the snapshot overhead plus the ROI rows
+    times the snapshot row time."""
+    _require_rows(mode, roi_height_px)
+    return snapshot_overhead_s(mode) + roi_height_px * snapshot_row_time_us(mode) * _S_PER_US
+
+
+def snapshot_period_s(mode: ReadoutMode, roi_height_px: int, exposure_us: float) -> float:
+    """The time of a single exposure from the call that starts it to the returned frame: the
+    exposure plus the snapshot readout time.
+
+    The drivers report it as the frame period of a snapshot stream, and the read timeouts of the
+    scheduler follow it.
+    """
+    _require_positive("exposure_us", exposure_us)
+    return exposure_us * _S_PER_US + snapshot_readout_time_s(mode, roi_height_px)
 
 
 def frame_bytes(

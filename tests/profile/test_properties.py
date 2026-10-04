@@ -330,6 +330,48 @@ def test_the_frame_period_is_the_larger_of_the_exposure_and_the_readout(
 
 
 @given(
+    rows=st.integers(1, 1500),
+    more_rows=st.integers(0, 100),
+    exposure_us=st.floats(1, 1e7, allow_nan=False),
+    overhead_s=st.floats(0, 2, allow_nan=False),
+    row_time_us=st.floats(1, 200, allow_nan=False),
+)
+def test_a_single_exposure_takes_the_exposure_plus_the_snapshot_readout(
+    rows: int, more_rows: int, exposure_us: float, overhead_s: float, row_time_us: float
+) -> None:
+    mode = make_mode(snapshot_overhead_s=overhead_s, snapshot_row_time_us=row_time_us)
+    readout = overhead_s + rows * row_time_us * 1e-6
+    assert d.snapshot_readout_time_s(mode, rows) == pytest.approx(readout)
+    period = d.snapshot_period_s(mode, rows, exposure_us)
+    assert period == pytest.approx(exposure_us * 1e-6 + readout)
+    assert period >= exposure_us * 1e-6  # the exposure always comes on top
+    # More rows never make a single exposure faster.
+    taller = min(rows + more_rows, mode.height_px)
+    assert d.snapshot_period_s(mode, taller, exposure_us) >= period * (1 - 1e-12)
+    # The snapshot values leave the video model alone.
+    video = make_mode()
+    assert d.frame_period_s(mode, rows, exposure_us) == d.frame_period_s(video, rows, exposure_us)
+
+
+@given(
+    rows=st.integers(1, 1500),
+    row_time_us=st.floats(1, 200, allow_nan=False),
+    overhead_ms=st.floats(0, 2000, allow_nan=False),
+)
+def test_a_mode_without_a_snapshot_model_is_never_shorter_than_the_floor_or_the_video_model(
+    rows: int, row_time_us: float, overhead_ms: float
+) -> None:
+    mode = make_mode(row_time_us=row_time_us, frame_overhead_ms=overhead_ms)
+    assert not mode.has_snapshot_model
+    overhead = d.snapshot_overhead_s(mode)
+    assert overhead == max(overhead_ms * 1e-3, d.SNAPSHOT_OVERHEAD_FLOOR_S)
+    assert d.snapshot_row_time_us(mode) == row_time_us
+    readout = d.snapshot_readout_time_s(mode, rows)
+    assert readout >= d.SNAPSHOT_OVERHEAD_FLOOR_S  # a camera that nobody measured is never faster
+    assert readout >= d.readout_time_s(mode, rows) * (1 - 1e-12)  # than its video model
+
+
+@given(
     width=st.integers(1, 2000),
     height=st.integers(1, 1500),
     exposure_us=st.floats(1, 1e6, allow_nan=False),

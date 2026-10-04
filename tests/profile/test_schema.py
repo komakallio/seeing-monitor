@@ -136,6 +136,7 @@ POSITIVE_FIELDS = [
     "readout_modes.0.row_time_us",
     "readout_modes.0.row_time_us_high_speed",
     "readout_modes.1.row_time_us",
+    "readout_modes.1.snapshot_row_time_us",
     "readout_modes.0.gain_points.0.e_per_adu",
     "readout_modes.0.gain_points.1.read_noise_e",
     "limits.roi_width_multiple",
@@ -171,6 +172,51 @@ def test_a_negative_frame_overhead_is_rejected_and_zero_is_allowed(data: dict[st
 def test_non_finite_values_are_rejected(data: dict[str, Any], bad: float) -> None:
     message = failure(set_path(data, "readout_modes.0.pixel_size_um", bad))
     assert "finite" in message
+
+
+# --- The snapshot model ------------------------------------------------------------------------
+
+
+def test_a_negative_snapshot_overhead_is_rejected_and_zero_is_allowed(data: dict[str, Any]) -> None:
+    message = failure(set_path(data, "readout_modes.1.snapshot_overhead_s", -0.1))
+    assert (
+        "readout_modes[bin2].snapshot_overhead_s: Input should be greater than or equal to 0"
+        in message
+    )
+    assert parse_profile(set_path(data, "readout_modes.1.snapshot_overhead_s", 0)).id
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan")], ids=["inf", "nan"])
+@pytest.mark.parametrize("path", ["snapshot_overhead_s", "snapshot_row_time_us"])
+def test_a_non_finite_snapshot_value_is_rejected(
+    data: dict[str, Any], path: str, bad: float
+) -> None:
+    assert "finite" in failure(set_path(data, f"readout_modes.1.{path}", bad))
+
+
+@pytest.mark.parametrize("missing", ["snapshot_overhead_s", "snapshot_row_time_us"])
+def test_the_two_snapshot_values_go_together(data: dict[str, Any], missing: str) -> None:
+    message = failure(delete_path(data, f"readout_modes.1.{missing}"))
+    assert "readout_modes[bin2]: " in message
+    assert "snapshot_overhead_s and snapshot_row_time_us go together" in message
+
+
+def test_a_mode_may_state_both_snapshot_values_or_neither(data: dict[str, Any]) -> None:
+    bare = delete_path(
+        delete_path(data, "readout_modes.1.snapshot_overhead_s"),
+        "readout_modes.1.snapshot_row_time_us",
+    )
+    assert parse_profile(bare).mode("bin2").has_snapshot_model is False
+    both = set_path(
+        set_path(data, "readout_modes.0.snapshot_overhead_s", 1.0),
+        "readout_modes.0.snapshot_row_time_us",
+        90.0,
+    )
+    assert parse_profile(both).mode("bin1").has_snapshot_model is True
+
+
+def test_the_snapshot_model_is_optional_in_a_profile(synthetic: Profile) -> None:
+    assert not any(mode.has_snapshot_model for mode in synthetic.readout_modes)
 
 
 @pytest.mark.parametrize(

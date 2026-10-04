@@ -51,6 +51,10 @@ pixel_format = "RAW16"
 # quote gave 6.5 ms and 37.6 us for bin1 and 1.4 ms and 21.3 us for bin2. The high-speed values
 # are those of the 10-bit readout. The camera takes up the high-speed flag only at an image format
 # change, and the driver handles that.
+# Single exposures: bin1 is unmeasured, so it states no snapshot_overhead_s and no
+# snapshot_row_time_us. The software then takes the video row time and an overhead of at least
+# 0.3 s. A bin1 frame has four times the pixels of a bin2 frame, so expect a longer time than
+# that for a large ROI, and measure it with `seeingmon camera rates --groups snapshot`.
 [[readout_modes]]
 name = "bin1"
 sdk_bin = 1
@@ -81,6 +85,15 @@ read_noise_e = 1.38
 
 # Research notes, "Read modes of the IMX492 cameras": bin2 sums 2 x 2 pixels on the sensor.
 # The high-speed flag changes no timing in bin2, so both pairs are the measured one.
+# Single exposures (a snapshot: one start, a status poll, and one read) take much longer than a
+# video frame of the same ROI, because the camera reads the whole frame out first. The values come
+# from a Raspberry Pi 4 on an idle camera on October 3, 2026: a 1 ms exposure took 0.293 to 0.296 s
+# for the 20 arcminute watch ROI (312 x 314 px, width by height) and 0.480 to 0.532 s for the full
+# frame (4144 x 2822 px), in three runs that agree within 0.02 s. A straight line through the two
+# points gives 0.27 s plus 75 us for each row, and the exposure comes on top. The line sits at the
+# low end of the full-frame range, and the scheduler's wait of two periods plus 0.5 s covers the
+# rest. The fit rests on two ROI sizes of one run on one host, so refit it with
+# `seeingmon camera rates --groups snapshot` on the final hardware.
 [[readout_modes]]
 name = "bin2"
 sdk_bin = 2
@@ -96,6 +109,8 @@ row_time_us = 18.5
 frame_overhead_ms = 1.22
 row_time_us_high_speed = 18.5
 frame_overhead_ms_high_speed = 1.22
+snapshot_overhead_s = 0.27
+snapshot_row_time_us = 75.0
 
 # Gain rows: gain 119 is the last gain below the high-conversion-gain (HCG) step, and gain 120
 # is the first gain with HCG on. The values jump there, so the second row sets step = true.

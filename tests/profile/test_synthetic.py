@@ -110,6 +110,36 @@ def test_the_frame_period_follows_the_row_time_and_the_overhead(synthetic: Profi
     assert synthetic.frame_period_s("bin2", 50, exposure_us=5000) == pytest.approx(5e-3)  # exposure
 
 
+def test_a_mode_without_a_snapshot_model_takes_its_video_row_time_and_the_overhead_floor(
+    synthetic: Profile,
+) -> None:
+    """The synthetic modes state no snapshot values, and their video overheads (2 ms and 0.8 ms)
+    sit below the floor of 0.3 s, so the floor applies."""
+    assert synthetic.snapshot_readout_time_s("native", 100) == pytest.approx(0.3 + 100 * 10e-6)
+    assert synthetic.snapshot_readout_time_s("bin2", 50) == pytest.approx(0.3 + 50 * 6e-6)
+    assert synthetic.snapshot_period_s("native", 100, exposure_us=2000) == pytest.approx(
+        0.002 + 0.3 + 100 * 10e-6
+    )
+
+
+def test_a_snapshot_model_in_another_profile_follows_that_profile(synthetic: Profile) -> None:
+    slow = synthetic.model_copy(
+        update={
+            "readout_modes": tuple(
+                mode.model_copy(update={"snapshot_overhead_s": 1.5, "snapshot_row_time_us": 200.0})
+                for mode in synthetic.readout_modes
+            )
+        }
+    )
+    assert slow.snapshot_readout_time_s("native", 100) == pytest.approx(1.5 + 100 * 200e-6)
+    assert slow.snapshot_period_s("bin2", 50, exposure_us=5000) == pytest.approx(
+        0.005 + 1.5 + 50 * 200e-6
+    )
+    assert slow.frame_period_s("native", 100, exposure_us=100) == pytest.approx(
+        2.0e-3 + 100 * 10e-6  # the video model does not change
+    )
+
+
 def test_the_data_rate_follows_the_pixel_format(synthetic: Profile) -> None:
     rate16 = synthetic.data_rate_bytes_per_s("native", 64, 64, 100)
     rate8 = synthetic.data_rate_bytes_per_s("native", 64, 64, 100, PixelFormat.RAW8)

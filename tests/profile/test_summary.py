@@ -23,6 +23,7 @@ MODE_DERIVED_KEYS = {
     "adc_full_scale",
     "row_time_ns",
     "full_frame",
+    "snapshot",
     "gain_curve",
     "high_speed",
 }
@@ -96,6 +97,37 @@ def test_the_adc_full_scales_and_the_full_frame_sizes(reference: Profile) -> Non
     # so plan the large frames with the published rate.
     assert bin2["full_frame"]["max_frame_rate_hz"] == pytest.approx(18.7, abs=0.05)
     assert bin1["full_frame"]["max_frame_rate_hz"] == pytest.approx(4.6, abs=0.05)
+
+
+def test_the_summary_gives_the_snapshot_timing_that_the_software_uses(reference: Profile) -> None:
+    summary = profile_summary(reference)
+    bin2 = mode_of(summary, "bin2")
+    assert (bin2["snapshot_overhead_s"], bin2["snapshot_row_time_us"]) == (0.27, 75.0)
+    assert bin2["derived"]["snapshot"] == {
+        "modeled": True,
+        "overhead_s": 0.27,
+        "row_time_us": 75.0,
+        "full_frame_readout_s": pytest.approx(0.27 + 2822 * 75e-6),
+    }
+    bin1 = mode_of(summary, "bin1")
+    assert (bin1["snapshot_overhead_s"], bin1["snapshot_row_time_us"]) == (None, None)
+    assert bin1["derived"]["snapshot"] == {
+        "modeled": False,  # the values below are the assumption for a mode that nobody measured
+        "overhead_s": 0.3,
+        "row_time_us": 37.6,
+        "full_frame_readout_s": pytest.approx(0.3 + 5644 * 37.6e-6),
+    }
+
+
+def test_the_snapshot_summary_equals_the_profile_methods(
+    reference: Profile, synthetic: Profile
+) -> None:
+    for profile in (reference, synthetic):
+        for mode in profile.readout_modes:
+            item = mode_of(profile_summary(profile), mode.name)["derived"]["snapshot"]
+            readout = profile.snapshot_readout_time_s(mode, mode.height_px)
+            assert item["full_frame_readout_s"] == readout
+            assert item["modeled"] is mode.has_snapshot_model
 
 
 def test_the_gain_curve_lists_gain_0_the_rows_and_the_end_of_the_range(reference: Profile) -> None:

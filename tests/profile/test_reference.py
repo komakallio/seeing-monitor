@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from seeingmon.frames import PixelFormat
-from seeingmon.profile import Profile, ProfileError
+from seeingmon.profile import Profile, ProfileError, derived
 from seeingmon.profile.derived import (
     adc_full_scale,
     sensor_diagonal_mm,
@@ -84,6 +84,15 @@ def test_the_readout_modes_carry_the_documented_values(reference: Profile) -> No
     )
     assert (bin1.row_time_us, bin1.frame_overhead_ms) == (37.6, 7.37)
     assert (bin2.row_time_us, bin2.frame_overhead_ms) == (18.5, 1.22)
+
+
+def test_only_bin2_states_the_snapshot_model(reference: Profile) -> None:
+    """From a Raspberry Pi 4 on October 3, 2026. Bin1 is unmeasured, so it states none."""
+    bin1, bin2 = reference.mode("bin1"), reference.mode("bin2")
+    assert (bin1.snapshot_overhead_s, bin1.snapshot_row_time_us) == (None, None)
+    assert (bin2.snapshot_overhead_s, bin2.snapshot_row_time_us) == (0.27, 75.0)
+    assert bin2.has_snapshot_model
+    assert not bin1.has_snapshot_model
 
 
 def test_the_hcg_step_is_marked_at_gain_120_in_bin2_only(reference: Profile) -> None:
@@ -239,6 +248,80 @@ def test_frame_rates_match_the_measured_table_within_2_percent(
     assert reference.max_frame_rate_hz(readout, rows, exposure_us=500) == pytest.approx(
         measured, rel=0.02
     )
+
+
+# --- Single exposures ----------------------------------------------------------------------
+
+
+def test_a_bin2_snapshot_of_the_watch_roi_takes_what_the_camera_measured(
+    reference: Profile,
+) -> None:
+    """A 1 ms exposure of the 20 arcminute ROI (312 x 314 pixels in bin2) took 0.293 to 0.296 s on
+    a Raspberry Pi 4. The video line gives 7 ms for it."""
+    assert reference.roi_size_px("bin2", 20.0) == (312, 314)
+    period = reference.snapshot_period_s("bin2", 314, exposure_us=1000)
+    assert 0.293 <= period <= 0.296
+    assert period == pytest.approx(0.001 + 0.27 + 314 * 75e-6)
+    assert reference.frame_period_s("bin2", 314, exposure_us=1000) == pytest.approx(
+        7.0e-3, abs=0.1e-3
+    )
+
+
+def test_a_bin2_snapshot_of_the_full_frame_is_not_shorter_than_the_camera_measured(
+    reference: Profile,
+) -> None:
+    """A 1 ms exposure of the full frame took 0.480 to 0.532 s. The video line gives 53 ms, which
+    left the scheduler about 0.1 s of its 0.61 s."""
+    period = reference.snapshot_period_s("bin2", 2822, exposure_us=1000)
+    assert period == pytest.approx(0.4827, abs=1e-4)
+    assert 0.480 <= period <= 0.532
+    assert reference.frame_period_s("bin2", 2822, exposure_us=1000) == pytest.approx(
+        53.4e-3, abs=0.1e-3
+    )
+
+
+def test_a_2_s_snapshot_of_the_full_frame_takes_the_exposure_plus_the_readout(
+    reference: Profile,
+) -> None:
+    """The camera took 2.52 s: the exposure plus about 0.52 s."""
+    period = reference.snapshot_period_s("bin2", 2822, exposure_us=2_000_000)
+    assert period == pytest.approx(2.0 + reference.snapshot_readout_time_s("bin2", 2822))
+    assert period == pytest.approx(2.48, abs=0.01)
+
+
+def test_the_snapshot_readout_grows_with_the_rows(reference: Profile) -> None:
+    times = [reference.snapshot_readout_time_s("bin2", rows) for rows in (2, 314, 1000, 2822)]
+    assert times == sorted(times)
+    assert times[0] == pytest.approx(0.27 + 2 * 75e-6)
+
+
+def test_bin1_takes_the_video_row_time_and_the_overhead_floor_for_a_snapshot(
+    reference: Profile,
+) -> None:
+    bin1 = reference.mode("bin1")
+    assert derived.snapshot_overhead_s(bin1) == 0.3 == derived.SNAPSHOT_OVERHEAD_FLOOR_S
+    assert derived.snapshot_row_time_us(bin1) == 37.6
+    assert reference.snapshot_readout_time_s("bin1", 128) == pytest.approx(0.3 + 128 * 37.6e-6)
+    # Never shorter than the video model, and never below the overhead that the camera showed.
+    assert reference.snapshot_readout_time_s("bin1", 128) >= derived.readout_time_s(bin1, 128)
+    assert derived.snapshot_overhead_s(bin1) >= 0.27
+
+
+def test_the_high_speed_variant_keeps_the_snapshot_model(reference: Profile) -> None:
+    fast = reference.mode("bin2", high_speed=True)
+    assert (fast.snapshot_overhead_s, fast.snapshot_row_time_us) == (0.27, 75.0)
+    fast1 = reference.mode("bin1", high_speed=True)
+    assert derived.snapshot_overhead_s(fast1) == 0.3  # the floor applies to the high-speed mode too
+    assert derived.snapshot_row_time_us(fast1) == 30.0  # and the video row time of that mode
+
+
+def test_a_snapshot_asks_for_a_valid_roi_height_and_exposure(reference: Profile) -> None:
+    with pytest.raises(ValueError, match="ROI height must be 1 to 2822"):
+        reference.snapshot_period_s("bin2", 2824, exposure_us=1000)
+    with pytest.raises(ValueError, match="ROI height must be 1 to 2822"):
+        reference.snapshot_readout_time_s("bin2", 0)
+    with pytest.raises(ValueError, match="exposure_us must be positive"):
+        reference.snapshot_period_s("bin2", 64, exposure_us=0)
 
 
 def test_the_data_rate_of_a_fast_bin1_stream(reference: Profile) -> None:

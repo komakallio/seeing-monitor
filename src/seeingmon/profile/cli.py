@@ -167,6 +167,13 @@ def _render_mode(summary: dict[str, Any], mode: dict[str, Any]) -> list[str]:
         f"  Full frame: {full['max_frame_rate_hz']:.2f} fps at the shortest exposure, "
         f"{full['frame_bytes']['RAW16'] / 1e6:.1f} MB as RAW16"
     )
+    snapshot = d["snapshot"]
+    assumed = "" if snapshot["modeled"] else " (assumed: nobody measured this mode)"
+    lines.append(
+        f"  Single exposure in {name}: {snapshot['overhead_s']:g} s plus "
+        f"{snapshot['row_time_us']:g} us per row beyond the exposure, "
+        f"{snapshot['full_frame_readout_s']:.2f} s for the full frame{assumed}"
+    )
     high_speed = d["high_speed"]
     if high_speed:
         lines.append(

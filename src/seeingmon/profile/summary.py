@@ -20,9 +20,9 @@ def profile_summary(profile: Profile) -> dict[str, Any]:
     The result holds every field of the profile. `optics` gains a `derived` table with the
     f-number and the Airy FWHM at the effective wavelength. Each readout mode gains a
     `derived` table with its sensor size, plate scale, field of view, sampling, ADC full scale,
-    row time, full-frame timing, a gain curve, and the high-speed variant when the mode has one.
-    Every value that depends on a readout mode sits in that mode's table, so a plate scale
-    always names its mode.
+    row time, full-frame timing, the timing of single exposures, a gain curve, and the
+    high-speed variant when the mode has one. Every value that depends on a readout mode sits in
+    that mode's table, so a plate scale always names its mode.
     """
     summary: dict[str, Any] = profile.model_dump(mode="json")
     summary["optics"]["derived"] = {
@@ -62,8 +62,24 @@ def _mode_summary(profile: Profile, mode: ReadoutMode) -> dict[str, Any]:
             "frame_period_s": full_period_s,
             "max_frame_rate_hz": 1.0 / full_period_s,
         },
+        "snapshot": _snapshot(mode),
         "gain_curve": _gain_curve(profile, mode),
         "high_speed": _high_speed(profile, mode),
+    }
+
+
+def _snapshot(mode: ReadoutMode) -> dict[str, Any]:
+    """The timing of a single exposure, as the software uses it.
+
+    `modeled` is true when the mode states the model, and false when the values are the ones that
+    the software assumes for a mode that nobody measured. `full_frame_readout_s` is the time that
+    a full-frame exposure takes beyond its exposure.
+    """
+    return {
+        "modeled": mode.has_snapshot_model,
+        "overhead_s": derived.snapshot_overhead_s(mode),
+        "row_time_us": derived.snapshot_row_time_us(mode),
+        "full_frame_readout_s": derived.snapshot_readout_time_s(mode, mode.height_px),
     }
 
 
