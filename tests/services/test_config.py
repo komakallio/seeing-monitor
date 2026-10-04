@@ -246,7 +246,7 @@ class TestPolarisSettings:
         settings = load(tmp_path).core.polaris
         assert settings.max_fps == 20.0
         assert settings.time_constant_s == 3.0
-        assert settings.headroom == 1.15
+        assert settings.headroom == 1.5
         assert settings.floor_sigmas == 8.0
         assert settings.asinh_gain == 30.0
         assert settings.disable_s == 60.0

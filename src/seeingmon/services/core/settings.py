@@ -124,9 +124,12 @@ class PolarisSettings(SectionModel):
     stretch is black at the median of the frame, and white at `headroom` times the peak of the star
     above the black level, which `core` follows with an exponential average over `time_constant_s`
     seconds. The slow average keeps the flicker of the star visible, because a stretch that
-    followed every frame would normalize it away. The white level never falls below `floor_sigmas`
-    times the noise of the frame, so a frame with no star shows noise and not a stretched speck.
-    An `asinh` curve with the gain `asinh_gain` lifts the faint wings of the star.
+    followed every frame would normalize it away. The brightest pixel of a star that the pixels
+    undersample varies by tens of percent as the star moves across them, so `headroom` is 1.5:
+    with 1.15, a third of the frames of a simulated star clip at white. The white level never falls
+    below `floor_sigmas` times the noise of the frame, so a frame with no star shows noise and not
+    a stretched speck. An `asinh` curve with the gain `asinh_gain` lifts the faint wings of the
+    star.
 
     After an error in the code that runs on the scheduler thread, `core` stops offering frames to
     the video for `disable_s` seconds, so that a fault of the video never reaches the scheduler.
@@ -134,7 +137,7 @@ class PolarisSettings(SectionModel):
 
     max_fps: float = Field(20.0, gt=0, le=60)
     time_constant_s: float = Field(3.0, gt=0, le=60)
-    headroom: float = Field(1.15, ge=1.0, le=4.0)
+    headroom: float = Field(1.5, ge=1.0, le=4.0)
     floor_sigmas: float = Field(8.0, gt=0, le=1000)
     asinh_gain: float = Field(30.0, gt=0, le=1000)
     disable_s: float = Field(60.0, ge=0)

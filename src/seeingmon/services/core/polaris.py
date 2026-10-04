@@ -14,9 +14,9 @@ period can spare. The steps:
    level clips. White never falls below `floor_sigmas` times the noise, so a frame with no star
    shows its noise and not a stretched speck. An `asinh` curve with the gain `asinh_gain` is linear
    for the faint pixels and logarithmic for the bright ones, so the wings of the star show and the
-   core does not clip. The curve is the same for every frame, so a table of 4,096 entries holds it,
-   and the stretch of a frame is one subtraction, one scaling, and one lookup. The table differs
-   from the exact curve by at most one gray level.
+   core does not clip. The curve is the same for every frame, so a table holds it (at least 4,096
+   entries, and more for a steep curve), and the stretch of a frame is one subtraction, one
+   scaling, and one lookup. The table differs from the exact curve by at most one gray level.
 3. **Width.** The second moments of the star inside the aperture of the fast analysis (a soft
    circular aperture around the centroid that the analysis found) give the width of this frame,
    with the formula of the stored windows: the mean of both axes times 2.355 times the plate scale.
@@ -60,7 +60,7 @@ from seeingmon.services.web.contract import (
 MAD_TO_SIGMA = 1.4826
 FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 MIN_RANGE_DN = 4.0
-LUT_SIZE = 4096
+LUT_MIN_SIZE = 4096
 NOISE_STRIDE = 2
 DEFAULT_APERTURE_PX = 16.0
 FPS_SMOOTHING = 0.3
@@ -106,7 +106,7 @@ class Autostretch:
         self,
         *,
         time_constant_s: float = 3.0,
-        headroom: float = 1.15,
+        headroom: float = 1.5,
         floor_sigmas: float = 8.0,
         asinh_gain: float = 30.0,
     ) -> None:
@@ -116,9 +116,12 @@ class Autostretch:
         self.headroom = headroom
         self.floor_sigmas = floor_sigmas
         self.asinh_gain = asinh_gain
-        levels = np.arange(LUT_SIZE, dtype=np.float64) / (LUT_SIZE - 1)
-        self._lut = np.rint(255.0 * np.arcsinh(asinh_gain * levels) / math.asinh(asinh_gain))
-        self._lut = self._lut.astype(np.uint8)
+        # One entry step moves the curve by at most one gray level at its steepest point, which
+        # is its start: `asinh_gain / asinh(asinh_gain)` gray levels per unit of the input.
+        self._size = max(LUT_MIN_SIZE, math.ceil(255.0 * asinh_gain / math.asinh(asinh_gain)) + 1)
+        levels = np.arange(self._size, dtype=np.float64) / (self._size - 1)
+        curve = np.rint(255.0 * np.arcsinh(asinh_gain * levels) / math.asinh(asinh_gain))
+        self._lut = curve.astype(np.uint8)
         self._peak = 0.0
         self._last_ns: int | None = None
 
@@ -159,9 +162,9 @@ class Autostretch:
         span = max(self.headroom * self._peak, self.floor_sigmas * sigma, MIN_RANGE_DN)
         work = data.astype(np.float32)
         work -= np.float32(black)
-        work *= np.float32((LUT_SIZE - 1) / span)
+        work *= np.float32((self._size - 1) / span)
         work += np.float32(0.5)  # the lookup rounds to the nearest entry
-        np.clip(work, 0.0, LUT_SIZE - 1, out=work)
+        np.clip(work, 0.0, self._size - 1, out=work)
         return Stretched(self._lut[work.astype(np.intp)], black, black + span)
 
 

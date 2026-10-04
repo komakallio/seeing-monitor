@@ -114,8 +114,8 @@ def test_black_is_the_median_and_the_star_stays_below_white() -> None:
     result = Autostretch().apply(data, T0)
     assert result.black_dn == float(np.median(data))
     peak_above = float(data.max()) - result.black_dn
-    assert result.white_dn == pytest.approx(result.black_dn + 1.15 * peak_above)
-    assert 230 <= int(result.image.max()) < 255  # the headroom keeps the core below white
+    assert result.white_dn == pytest.approx(result.black_dn + 1.5 * peak_above)
+    assert 200 <= int(result.image.max()) < 250  # the headroom keeps the core below white
     assert int(result.image[0, 0]) <= 5  # the sky is nearly black
 
 
@@ -130,7 +130,7 @@ def test_a_saturated_star_reaches_white_and_a_saturated_frame_does_not_fail() ->
     assert Autostretch().apply(full, T0).image.shape == (128, 128)
 
 
-@pytest.mark.parametrize("gain", [5.0, 30.0, 200.0])
+@pytest.mark.parametrize("gain", [5.0, 30.0, 200.0, 1000.0])
 def test_the_table_follows_the_exact_asinh_curve_within_one_gray_level(gain: float) -> None:
     stretch = Autostretch(asinh_gain=gain, floor_sigmas=0.1)
     data = np.tile(np.arange(0, 20_000, 40, dtype=np.uint16), (4, 1))  # a ramp of 500 counts
@@ -147,9 +147,9 @@ def test_the_curve_lifts_the_faint_wings() -> None:
     data[64, 64] = 20_500  # the peak, 20,000 above the sky
     data[64, 66] = 700  # a wing at 1% of the peak
     result = Autostretch(floor_sigmas=1.0).apply(data, T0)
-    linear = 255 * 200 / (1.15 * 20_000)
-    assert linear < 9
-    assert int(result.image[64, 66]) >= 15  # asinh shows the wing at more than twice the level
+    linear = 255 * 200 / (1.5 * 20_000)
+    assert linear < 2
+    assert int(result.image[64, 66]) >= 10  # asinh shows the wing at five times the level
 
 
 def test_a_star_that_flickers_by_five_percent_still_flickers_in_the_output() -> None:
