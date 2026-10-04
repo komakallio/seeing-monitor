@@ -16,13 +16,44 @@
    trail, and the flux. The trail comes from the `TrailModel` (the pole position from the
    latest solution) or, with no solution, from the star's own second moments.
 
+**Coarse search.** Steps 1 and 2 take most of the time on a frame of 11.7 megapixels, and the
+pointing and the zero point use only the brightest 1,000 or so of the 3,000 stars that a 30 s
+frame shows. With `DetectOptions.coarse_bin` above 1 (`[survey.detect] coarse_bin`), the
+detector searches a copy of the frame in which each block of `coarse_bin` x `coarse_bin` pixels
+is one pixel that holds the sum of the block, and it fits only the brightest `refine_stars` stars
+(1,200 by default) at full resolution:
+
+- *Trail model.* The model fit starts from the trail of each star, and the second moments of a
+  binned star are too coarse to give it, so the binned search runs only when you pass a trail
+  model (`trail`). Without one, for example in the first frame after a start, the detector
+  searches the full frame.
+- *Binning.* A block that has one masked pixel is masked, because a hot pixel adds its excess to
+  the sum of its block. A frame whose height or width is not a multiple of `coarse_bin` loses
+  its last rows or columns in the search, and a star there is within the edge margin and
+  unreliable anyway. The mesh of the background shrinks with the frame (`mesh_px` divided by
+  `coarse_bin`), so it covers the same patch of sky.
+- *Filter.* A binned pixel is about as wide as a star, so the search uses no matched filter. It
+  keeps the threshold and `min_pixels`, which now count binned pixels. A hot pixel that the mask
+  misses fills one binned pixel only, and `min_pixels` rejects it. The search also lists fewer
+  faint stars than the full search does.
+- *Units.* Positions, widths, `n_pixels`, the bounding boxes, the background level, and the
+  noise follow the pixels of the full frame, so the rest of the detector and its callers see no
+  difference. `peak` is the highest pixel of the full frame within `coarse_bin` pixels of the
+  center, and `background` is `None`, because its map belongs to the binned frame.
+- *Measurement.* The fit starts from the coarse position and measures the brightest
+  `refine_stars` stars that it can handle (a star with many saturated pixels it cannot). The
+  other stars keep their coarse position, which is good to about 0.1 pixel (to a pixel for a
+  faint star), and they carry `StarFlag.COARSE`. `UNRELIABLE` includes the flag, so the pointing
+  fit, the photometry, and the focus ignore them, and the cloud fraction, the star list, and the
+  sky mask still use them.
+
 **Hot pixels.** Shape cannot tell an undersampled bin2 star from a hot pixel unless the
 detector is careful: a star with the sharpest PSF that the 50 mm aperture allows (FWHM 0.66
 pixel) still holds at most 86% of its flux in its brightest pixel, and the typical star holds
 less. So the detector does not reject narrow sources. It takes a mask of the hot pixels that
 the dark frames found (`hot_pixels`) and keeps those pixels out of the detection. A bright
-source with more than `DetectOptions.spike_peak_fraction` of its flux in one pixel (a hot
-pixel that the dark library has not seen yet) gets the flag `HOT_PIXEL`, which the pointing fit
+source with more than `DetectOptions.spike_peak_fraction` of its flux in one pixel (a hot pixel
+that the dark library has not seen yet) gets the flag `HOT_PIXEL`, which the pointing fit
 ignores.
 
 **Coordinates.** Pixel coordinates follow `StarList`: the center of the first pixel is (0, 0),
@@ -33,7 +64,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -44,6 +75,9 @@ from seeingmon.survey import _scipy
 from seeingmon.survey.centroid import FWHM_PER_SIGMA, fit_stars
 from seeingmon.survey.geometry import FloatArray
 from seeingmon.survey.trail import TrailModel, trail_from_moments
+
+if TYPE_CHECKING:
+    from seeingmon.survey.config import DetectConfig
 
 # SEP stops when one object holds more pixels than its stack. A saturated star with a halo can
 # hold hundreds of thousands.
@@ -76,6 +110,7 @@ class StarFlag(enum.IntFlag):
     BLENDED = 16  # another detection lies inside the stamp
     STREAK = 32  # more elongated than the trail model allows (a satellite, an aircraft)
     MOMENTS_ONLY = 64  # the model fit did not apply or did not converge; the position is SEP's
+    COARSE = 128  # the position is from the binned search, and no model fit refined it
 
 
 # The flags that make a star a poor reference for the pointing fit.
@@ -86,6 +121,7 @@ UNRELIABLE = (
     | StarFlag.BLENDED
     | StarFlag.STREAK
     | StarFlag.MOMENTS_ONLY
+    | StarFlag.COARSE
 )
 
 
@@ -109,10 +145,33 @@ class DetectOptions:
     fit_max_chi2: float = 6.0  # a fit with a larger reduced chi-square keeps the SEP position
     fit_max_shift_px: float = 2.0  # a fit that moves farther than this keeps the SEP position
     min_trail_px: float = 1.0  # a moment trail shorter than this counts as no trail
+    coarse_bin: int = 1  # 1 searches the frame itself; more searches a binned copy (see above)
+    refine_stars: int = 1200  # with a binned search, the brightest stars that get the model fit
 
     def __post_init__(self) -> None:
-        if self.threshold_sigma <= 0 or self.min_pixels < 1 or self.max_stars < 1:
+        if (
+            self.threshold_sigma <= 0
+            or self.min_pixels < 1
+            or self.max_stars < 1
+            or self.coarse_bin < 1
+            or self.refine_stars < 1
+        ):
             raise ValueError("invalid detector options")
+
+    @classmethod
+    def from_config(cls, config: DetectConfig) -> DetectOptions:
+        """The options of the `[survey.detect]` section. The other options keep their defaults."""
+        return cls(
+            threshold_sigma=config.threshold_sigma,
+            min_pixels=config.min_pixels,
+            mesh_px=config.mesh_px,
+            edge_margin_px=config.edge_margin_px,
+            max_stars=config.max_stars,
+            max_saturated_pixels=config.max_saturated_pixels,
+            trail_flag_px=config.trail_flag_px,
+            coarse_bin=config.coarse_bin,
+            refine_stars=config.refine_stars,
+        )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -124,7 +183,7 @@ class Detections:
     the width of the PSF across the trail. `elongation` is the ratio of the major to the minor
     second-moment axis, and `trail_length_px` and `trail_angle_rad` describe the trail that the
     fit used. `background` is the `sep.Background` object, which later steps (the sky quality)
-    use for the background map.
+    use for the background map. A binned search leaves it `None`.
     """
 
     shape: tuple[int, int]
@@ -350,6 +409,141 @@ def _blended_by_neighbors(x: FloatArray, y: FloatArray, reach: FloatArray) -> Bo
     return blended
 
 
+def _bin_sum(frame: npt.NDArray[np.float32], factor: int) -> npt.NDArray[np.float32]:
+    """The sum of each `factor` x `factor` block. A partial block at the edge is dropped."""
+    rows, columns = frame.shape[0] // factor, frame.shape[1] // factor
+    view = frame[: rows * factor, : columns * factor]
+    total = np.array(view[::factor, ::factor], dtype=np.float32)
+    for i in range(factor):
+        for j in range(factor):
+            if i or j:
+                total += view[i::factor, j::factor]
+    return total
+
+
+def _bin_any(mask: BoolArray, factor: int) -> BoolArray:
+    """Whether any pixel of each `factor` x `factor` block is set, without the partial blocks."""
+    rows, columns = mask.shape[0] // factor, mask.shape[1] // factor
+    view = mask[: rows * factor, : columns * factor]
+    anyone = np.array(view[::factor, ::factor], dtype=np.bool_)
+    for i in range(factor):
+        for j in range(factor):
+            if i or j:
+                anyone |= view[i::factor, j::factor]
+    return anyone
+
+
+def _subtract_blocks(frame: npt.NDArray[np.float32], levels: npt.NDArray[Any], factor: int) -> None:
+    """Subtract a map with one value for each `factor` x `factor` block of `frame`, in place.
+
+    The rows and columns of a partial block at the edge take the value of the nearest block.
+    """
+    height, width = frame.shape
+    shape = (-(-height // factor), -(-width // factor))
+    if levels.shape != shape:
+        padding = ((0, shape[0] - levels.shape[0]), (0, shape[1] - levels.shape[1]))
+        levels = np.pad(levels, padding, mode="edge")
+    for i in range(factor):
+        for j in range(factor):
+            part = frame[i::factor, j::factor]
+            part -= levels[: part.shape[0], : part.shape[1]]
+
+
+def _window_peak(
+    frame: npt.NDArray[np.float32], x: FloatArray, y: FloatArray, reach: int
+) -> FloatArray:
+    """The highest pixel within `reach` pixels of each position (the edge repeats)."""
+    height, width = frame.shape
+    steps = np.arange(-reach, reach + 1)
+    columns = np.clip(np.rint(x).astype(np.intp)[:, None] + steps, 0, width - 1)
+    rows = np.clip(np.rint(y).astype(np.intp)[:, None] + steps, 0, height - 1)
+    return np.asarray(
+        frame[rows[:, :, None], columns[:, None, :]].max(axis=(1, 2)), dtype=np.float64
+    )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Search:
+    """What the background and extraction steps found.
+
+    `objects` is SEP's list, in the pixels of the searched frame. `level` and `rms` are the
+    background and its noise per pixel of the full-resolution frame, and `rms_map` is the noise
+    map of the searched frame in its own units. `scale` is the number of full-resolution pixels
+    along one side of a pixel of the searched frame: 1, or `coarse_bin`.
+    """
+
+    objects: Any
+    level: float
+    rms: float
+    rms_map: npt.NDArray[np.float32]
+    scale: int
+    background: Any
+
+
+def _extract(
+    image: npt.NDArray[np.float32],
+    rms: float,
+    rms_map: npt.NDArray[np.float32],
+    mask: BoolArray | None,
+    kernel: npt.NDArray[np.float32] | None,
+    opts: DetectOptions,
+) -> Any:
+    """Run `sep.extract` on a background-subtracted image."""
+    varied = float(rms_map.max()) > 1.3 * max(float(rms_map.min()), 1e-6)
+    return sep.extract(
+        image,
+        opts.threshold_sigma,
+        err=rms_map if varied else rms,
+        minarea=opts.min_pixels,
+        filter_kernel=kernel,
+        deblend_cont=1.0,
+        clean=True,
+        mask=mask,
+    )
+
+
+def _search_full(
+    frame: npt.NDArray[np.float32], hot: BoolArray | None, opts: DetectOptions
+) -> _Search:
+    """Estimate the background, subtract it from `frame` in place, and extract the sources."""
+    background = sep.Background(
+        frame,
+        mask=hot,
+        bw=opts.mesh_px,
+        bh=opts.mesh_px,
+        fw=opts.filter_px,
+        fh=opts.filter_px,
+    )
+    level = float(background.globalback)
+    rms = float(background.globalrms)
+    rms_map = np.asarray(background.rms(), dtype=np.float32)
+    background.subfrom(frame)
+    objects = _extract(frame, rms, rms_map, hot, _MATCHED_KERNEL, opts)
+    return _Search(objects, level, rms, rms_map, 1, background)
+
+
+def _search_binned(
+    frame: npt.NDArray[np.float32], hot: BoolArray | None, opts: DetectOptions
+) -> _Search:
+    """The same on a binned copy, and the background subtracted from `frame` in place too."""
+    factor = opts.coarse_bin
+    binned = _bin_sum(frame, factor)
+    mask = None if hot is None else _bin_any(hot, factor)
+    mesh = max(1, min(opts.mesh_px // factor, binned.shape[0], binned.shape[1]))
+    background = sep.Background(
+        binned, mask=mask, bw=mesh, bh=mesh, fw=opts.filter_px, fh=opts.filter_px
+    )
+    level = float(background.globalback)
+    rms = float(background.globalrms)
+    rms_map = np.asarray(background.rms(), dtype=np.float32)
+    levels = np.asarray(background.back(), dtype=np.float32)
+    background.subfrom(binned)
+    objects = _extract(binned, rms, rms_map, mask, None, opts)
+    _subtract_blocks(frame, levels / np.float32(factor * factor), factor)
+    # A sum of `factor`^2 pixels has the mean and the variance of that many pixels together.
+    return _Search(objects, level / factor**2, rms / factor, rms_map, factor, None)
+
+
 def detect_stars(
     data: npt.NDArray[Any],
     *,
@@ -377,35 +571,24 @@ def detect_stars(
         raise DetectionError("the frame is constant, so it holds no signal")
     saturated = frame >= opts.saturation_fraction * saturation_dn
 
+    # The fit starts from the trail of each star, and the second moments of a binned star are too
+    # coarse to give it (a sharp star fills one or two binned pixels). The binned search therefore
+    # needs a trail model. Without one, for example in the first frame after a start, the
+    # detector searches the full frame.
+    binned = opts.coarse_bin > 1 and trail is not None
     try:
-        background = sep.Background(
-            frame,
-            mask=hot_pixels,
-            bw=opts.mesh_px,
-            bh=opts.mesh_px,
-            fw=opts.filter_px,
-            fh=opts.filter_px,
-        )
-        level = float(background.globalback)
-        rms = float(background.globalrms)
-        rms_map = np.asarray(background.rms(), dtype=np.float32)
-        background.subfrom(frame)
-        varied = float(rms_map.max()) > 1.3 * max(float(rms_map.min()), 1e-6)
-        objects = sep.extract(
-            frame,
-            opts.threshold_sigma,
-            err=rms_map if varied else rms,
-            minarea=opts.min_pixels,
-            filter_kernel=_MATCHED_KERNEL,
-            deblend_cont=1.0,
-            clean=True,
-            mask=hot_pixels,
+        search = (
+            _search_binned(frame, hot_pixels, opts)
+            if binned
+            else _search_full(frame, hot_pixels, opts)
         )
     except Exception as error:  # SEP raises a plain Exception for its internal limits
         raise DetectionError(f"the source extraction failed: {error}") from error
+    level, rms, rms_map, scale = search.level, search.rms, search.rms_map, search.scale
     if rms <= 0.0 or not np.isfinite(rms):
         raise DetectionError("the background noise is zero, so the frame holds no signal")
 
+    objects = search.objects
     keep = np.flatnonzero(
         (objects["flux"] > 0) & np.isfinite(objects["x"]) & np.isfinite(objects["y"])
     )
@@ -414,14 +597,26 @@ def detect_stars(
     objects = objects[order]
     n = len(objects)
 
-    x = np.asarray(objects["x"], dtype=np.float64)
-    y = np.asarray(objects["y"], dtype=np.float64)
+    # From here on, every size is in the pixels of the full-resolution frame. A pixel of the
+    # binned search covers `scale` pixels, and its center lies at (scale - 1) / 2 pixels from
+    # the center of its first pixel.
+    x = scale * np.asarray(objects["x"], dtype=np.float64) + 0.5 * (scale - 1)
+    y = scale * np.asarray(objects["y"], dtype=np.float64) + 0.5 * (scale - 1)
     flux = np.asarray(objects["flux"], dtype=np.float64)
-    peak = np.asarray(objects["peak"], dtype=np.float64)
-    major = np.asarray(objects["a"], dtype=np.float64)
-    minor = np.maximum(np.asarray(objects["b"], dtype=np.float64), 1e-3)
+    if scale > 1:
+        peak = _window_peak(frame, x, y, scale)
+    else:
+        peak = np.asarray(objects["peak"], dtype=np.float64)
+    major = scale * np.asarray(objects["a"], dtype=np.float64)
+    minor = np.maximum(scale * np.asarray(objects["b"], dtype=np.float64), 1e-3)
     theta = np.asarray(objects["theta"], dtype=np.float64)
-    n_pixels = np.asarray(objects["npix"], dtype=np.int32)
+    n_pixels = np.asarray(objects["npix"], dtype=np.int32) * (scale * scale)
+    boxes = {
+        "xmin": scale * np.asarray(objects["xmin"], dtype=np.intp),
+        "xmax": scale * np.asarray(objects["xmax"], dtype=np.intp) + (scale - 1),
+        "ymin": scale * np.asarray(objects["ymin"], dtype=np.intp),
+        "ymax": scale * np.asarray(objects["ymax"], dtype=np.intp) + (scale - 1),
+    }
     # SEP gives a NaN shape to an object whose second moments a masked pixel leaves undefined. It
     # happened at first light, next to hot pixels of the dark library, and a NaN size then failed
     # the whole frame. Such an object gets the circle of its area and no angle.
@@ -443,10 +638,10 @@ def detect_stars(
         (x < margin) | (x > width - 1 - margin) | (y < margin) | (y > height - 1 - margin),
         StarFlag.NEAR_EDGE,
     )
-    saturated_pixels = _bounding_box_any(saturated, objects) if n else np.zeros(0, dtype=np.intp)
+    saturated_pixels = _bounding_box_any(saturated, boxes) if n else np.zeros(0, dtype=np.intp)
     mark(saturated_pixels > 0, StarFlag.SATURATED)
     if hot_pixels is not None and n:
-        mark(_bounding_box_any(hot_pixels, objects) > 0, StarFlag.HOT_PIXEL)
+        mark(_bounding_box_any(hot_pixels, boxes) > 0, StarFlag.HOT_PIXEL)
     mark((np.asarray(objects["flag"]) & 3) != 0, StarFlag.BLENDED)
 
     # A bright source that has nearly all its flux in one pixel is a hot pixel.
@@ -464,20 +659,29 @@ def detect_stars(
         trail_dx, trail_dy = length * np.cos(angle), length * np.sin(angle)
     mark(length > opts.trail_flag_px, StarFlag.TRAILED)
 
-    # The model fit, for stars that are not heavily saturated.
-    sigma0 = np.sqrt(np.maximum(minor**2 - _PIXEL_VARIANCE, 0.09))
+    # The model fit, for stars that are not heavily saturated. A binned search fits the
+    # brightest stars only. The stars are in flux order, so they come first.
+    sigma0 = np.sqrt(np.maximum(minor**2 - _PIXEL_VARIANCE * scale**2, 0.09))
     fit_these = saturated_pixels <= opts.max_saturated_pixels
     fwhm = FWHM_PER_SIGMA * sigma0
     x_error = np.full(n, 0.5)
     y_error = np.full(n, 0.5)
-    noise_at_star = rms_map[
-        np.clip(np.rint(y).astype(np.intp), 0, height - 1),
-        np.clip(np.rint(x).astype(np.intp), 0, width - 1),
-    ].astype(np.float64)
+    noise_row = np.clip(np.rint(y).astype(np.intp), 0, height - 1) // scale
+    noise_column = np.clip(np.rint(x).astype(np.intp), 0, width - 1) // scale
+    noise_at_star = (
+        rms_map[
+            np.minimum(noise_row, rms_map.shape[0] - 1),
+            np.minimum(noise_column, rms_map.shape[1] - 1),
+        ].astype(np.float64)
+        / scale
+    )
     snr = flux / np.sqrt(
         np.maximum(flux, 0.0) / e_per_adu + np.maximum(n_pixels, 9) * noise_at_star**2
     )
     index = np.flatnonzero(fit_these)
+    if scale > 1:
+        index = index[: opts.refine_stars]
+    refined = np.zeros(n, dtype=np.bool_)
     if index.size:
         bad = saturated if hot_pixels is None else (saturated | hot_pixels)
         fit = fit_stars(
@@ -506,8 +710,11 @@ def detect_stars(
         fwhm[used] = FWHM_PER_SIGMA * fit.sigma[good]
         x_error[used] = np.maximum(fit.x_error[good], 1e-3)
         y_error[used] = np.maximum(fit.y_error[good], 1e-3)
+        refined[used] = True
         mark(np.isin(np.arange(n), index[~good]), StarFlag.MOMENTS_ONLY)
     mark(~fit_these, StarFlag.MOMENTS_ONLY)
+    if scale > 1:
+        mark(~refined, StarFlag.COARSE)
     mark(
         (peak_fraction > opts.spike_peak_fraction) & (snr > opts.spike_min_snr),
         StarFlag.HOT_PIXEL,
@@ -543,6 +750,6 @@ def detect_stars(
         n_pixels=n_pixels,
         background_level=level,
         background_rms=rms,
-        background=background,
+        background=search.background,
     )
     return detections.select(order)

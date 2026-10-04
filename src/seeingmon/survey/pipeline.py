@@ -329,15 +329,7 @@ class SurveyPipeline:
         self._clock = clock or SystemClock()
         cfg = self._config
         self._quality = QualityOptions.from_config(cfg)
-        self._detect_options = DetectOptions(
-            threshold_sigma=cfg.detect.threshold_sigma,
-            min_pixels=cfg.detect.min_pixels,
-            mesh_px=cfg.detect.mesh_px,
-            edge_margin_px=cfg.detect.edge_margin_px,
-            max_stars=cfg.detect.max_stars,
-            max_saturated_pixels=cfg.detect.max_saturated_pixels,
-            trail_flag_px=cfg.detect.trail_flag_px,
-        )
+        self._detect_options = DetectOptions.from_config(cfg.detect)
         self._fit_options = FitOptions(
             match_radius_px=cfg.fit.match_radius_px,
             clip_sigma=cfg.fit.clip_sigma,

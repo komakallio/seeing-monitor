@@ -673,16 +673,7 @@ def detect_options(survey: SurveyConfig) -> DetectOptions:
     """The detector settings of the survey configuration."""
     from seeingmon.survey.detect import DetectOptions
 
-    cfg = survey.detect
-    return DetectOptions(
-        threshold_sigma=cfg.threshold_sigma,
-        min_pixels=cfg.min_pixels,
-        mesh_px=cfg.mesh_px,
-        edge_margin_px=cfg.edge_margin_px,
-        max_stars=cfg.max_stars,
-        max_saturated_pixels=cfg.max_saturated_pixels,
-        trail_flag_px=cfg.trail_flag_px,
-    )
+    return DetectOptions.from_config(survey.detect)
 
 
 def process_frame(

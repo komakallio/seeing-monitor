@@ -46,6 +46,13 @@ edge_margin_px = 6.0
 max_stars = 3000
 max_saturated_pixels = 6   # A star with more saturated pixels is measured by moments only.
 trail_flag_px = 1.5
+# 1 searches the full frame for stars. 2 searches a copy that sums each 2 x 2 block, which takes
+# a quarter of the time, and fits only the brightest refine_stars stars at full resolution. The
+# other stars keep a coarse position and the `COARSE` flag, and the pointing fit, the photometry,
+# and the focus leave them out. A frame with no trail model (the first one after a start) always
+# takes the full search.
+coarse_bin = 1
+refine_stars = 1200
 
 # The pointing fit.
 [survey.fit]

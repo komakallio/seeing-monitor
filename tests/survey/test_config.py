@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from seeingmon.config import ConfigError, load_config
 from seeingmon.survey.config import SurveyConfig, TransparencyConfig
+from seeingmon.survey.detect import DetectOptions
 from seeingmon.survey.quality import QualityOptions
 from seeingmon.survey.transparency import TransparencyOptions
 
@@ -79,6 +80,29 @@ def test_the_fallback_hours_reach_the_options_of_the_quality_step(tmp_path: Path
     assert QualityOptions.from_config(off.section("survey", SurveyConfig)).transparency == (
         TransparencyOptions(fallback_hours=0.0)
     )
+
+
+def test_the_binned_search_is_off_by_default_and_a_local_file_turns_it_on(tmp_path: Path) -> None:
+    default = load_config(local_file=tmp_path / "missing.toml", env={})
+    options = DetectOptions.from_config(default.section("survey", SurveyConfig).detect)
+    assert (options.coarse_bin, options.refine_stars) == (1, 1200)
+    local = tmp_path / "config.toml"
+    local.write_text("[survey.detect]\ncoarse_bin = 2\nrefine_stars = 900\n", encoding="utf-8")
+    config = load_config(local_file=local, env={})
+    options = DetectOptions.from_config(config.section("survey", SurveyConfig).detect)
+    assert (options.coarse_bin, options.refine_stars) == (2, 900)
+    env = load_config(
+        local_file=tmp_path / "missing.toml", env={"SEEINGMON_SURVEY__DETECT__COARSE_BIN": "3"}
+    )
+    assert env.section("survey", SurveyConfig).detect.coarse_bin == 3
+
+
+def test_a_bin_below_one_is_an_error_when_the_options_are_built(tmp_path: Path) -> None:
+    local = tmp_path / "config.toml"
+    local.write_text("[survey.detect]\ncoarse_bin = 0\n", encoding="utf-8")
+    section = load_config(local_file=local, env={}).section("survey", SurveyConfig)
+    with pytest.raises(ValueError, match="invalid detector options"):
+        DetectOptions.from_config(section.detect)
 
 
 def test_a_negative_fallback_is_an_error_when_the_options_are_built() -> None:
