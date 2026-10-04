@@ -73,6 +73,7 @@ Use the fakes in `seeingmon.testing` for code that depends on a driver, a sink, 
 
 - Start every module with `from __future__ import annotations`.
 - Never read the time or sleep directly in library code (`time.time`, `time.sleep`, `datetime.now`). Take a `Clock`, so tests can run a night in seconds.
+- Never let a pause decide how many frames, drops, or events a test sees. On Windows, a wait with a timeout (`Event.wait`, `Condition.wait`) ends on a timer tick of 15.6 ms (a wait of 1 ms took 14 ms on the dev machine), and before Python 3.13 `time.monotonic()` and `time.time()` tick at the same period. Code that paces itself on them runs slower there than on Linux. Use the virtual clock, or wait until the condition holds, for example until the queue has dropped 20 frames.
 - Locate repository files in tests through the `repo_root` fixture, never through the working directory. Tests must pass from any directory.
 - Put the tests of a package in `tests/<package>/` with an `__init__.py`.
 - Add a command by defining `register(subparsers)` in `seeingmon/<package>/cli.py` (see `seeingmon/cli.py`). The entry point finds it, so no shared file changes.

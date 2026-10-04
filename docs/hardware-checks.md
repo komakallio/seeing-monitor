@@ -119,7 +119,7 @@ If a row fails with `CameraTimeoutError` and `the exposure did not finish within
 
 The first light on the Windows dev machine counted about 10% of the frames as lost at 82 frames per second, and almost every window carried `degraded`. The same camera on a Raspberry Pi 4 counted none. The windows held 82.1 frames per second, which is the rate that `seeingmon camera rates` measures, so the frames most likely arrived. This section says what changed and how to check it on the next run with the camera. The architecture explains the accounting ("Drops" under "Processes, data rates, and storage", and "The `degraded` rule" under "Seeing (fast)").
 
-**What changed.** The drop accounting of `acquire` waits for the next read before it counts a gap, because a read that comes late looks like a loss: when the host runs behind, the camera keeps the frames and hands them over one after the other. A read that follows within half a frame period of the late one clears the gap, and the health summary counts a late read. The accounting also stopped reading the frame period from the time fit, which counts the frames that the rule declares lost. On Windows, `acquire` now runs its capture thread at the highest thread priority and asks for a 1 ms system timer. On the dev machine, a fake camera at 82 frames per second that loses no frame showed 3 to 12% lost frames at normal priority with the old rule, and 0.1% with the new rule at normal priority. At the highest priority, the 99th percentile of the read intervals fell from 23 to 29 ms to 14 to 15 ms (the frame period is 12.2 ms). Nobody has run these changes on the real camera yet, so the next run decides whether they explain the 10%.
+**What changed.** The drop accounting of `acquire` waits for the next read before it counts a gap, because a read that comes late looks like a loss: when the host runs behind, the camera keeps the frames and hands them over one after the other. A read that follows within half a frame period of the late one clears the gap, and the health summary counts a late read. The accounting also stopped reading the frame period from the time fit, which counts the frames that the rule declares lost. On Windows, `acquire` now runs its capture thread at the highest thread priority and asks for a 1 ms system timer. On the dev machine, a fake camera at 82 frames per second that loses no frame showed 3 to 12% lost frames at normal priority with the old rule, and 0.1% with the new rule at normal priority. At the highest priority, the 99th percentile of the read intervals fell from 23 to 29 ms to 14 to 15 ms (the frame period is 12.2 ms). The Python work of the capture loop does not explain the lateness: it costs about 0.1 ms per frame on the dev machine (the two guards 9 µs, the copy and the `Frame` 20 µs, the replacement of the frame 16 µs, the time stamp 15 µs, the queue 10 µs), under 1% of the frame period. Nobody has run these changes on the real camera yet, so the next run decides whether they explain the 10%.
 
 **Run it.** Close other camera programs. Start the system on the camera, and let the fast stream run for 10 minutes or more. The scheduler runs the fast stream while it is in `auto`, which needs the Sun below the limit at your site.
 
@@ -127,7 +127,7 @@ The first light on the Windows dev machine counted about 10% of the frames as lo
 uv run seeingmon dev --driver asi --real-sky --data-dir <data folder>
 ```
 
-Without `--real-sky`, add `--log-level info --keep-data`, because the health line is an `info` line, and a run with no data folder removes its logs when it stops. Read the `health:` lines of `acquire.log` in the folder `logs/<start time>` of your data folder.
+A real-sky run logs at the level `info` into the folder `logs/<start time>` of your data folder, and the health line is an `info` line. Without `--real-sky`, add `--log-level info --keep-data` to get the same lines: the logs go to the run folder, which stays, and the launcher prints its path when you stop. Read the `health:` lines of `acquire.log`.
 
 **The health line.** `acquire` logs one summary a minute, and the same text goes to systemd as its status. This line is an example, not a measurement:
 
@@ -158,10 +158,12 @@ health: streaming, 82.1 fps, 9413 frames, 12 dropped (driver 12, gap 0, queue 0)
 **Check the windows.** Stop the run, and read the windows from the store (see `seeingmon store info` in the runbook for the path). Each row shows the share of lost frames of one window:
 
 ```bash
-sqlite3 -readonly <data folder>/db/results.sqlite "select t_utc_ns, n_frames, n_dropped, round(100.0 * n_dropped / (n_frames + n_dropped), 1) as lost_pct, flags from seeing_window order by t_utc_ns"
+uv run python -c "import sqlite3; db = sqlite3.connect('file:<data folder>/db/results.sqlite?mode=ro', uri=True); [print(*row) for row in db.execute('select t_utc_ns, n_frames, n_dropped, round(100.0 * n_dropped / (n_frames + n_dropped), 1), flags from seeing_window order by t_utc_ns')]"
 ```
 
-A window with `lost_pct` above 5 carries `degraded`. A clean window of 20 s has a spectrum with about 36 degrees of freedom (`motion_psd_dof`), and the windows of the first light had 6 to 21.
+The columns are the start time of the window, the frames that arrived, the frames that it lost, the share of lost frames in percent, and the flags.
+
+A window with a share above 5 carries `degraded`. A clean window of 20 s has a spectrum with about 36 degrees of freedom (`motion_psd_dof`), and the windows of the first light had 6 to 21.
 
 ## The camera takes up the high-speed flag late
 
