@@ -16,6 +16,7 @@ from seeingmon.scheduler.commands import (
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -33,6 +34,10 @@ from seeingmon.services.web.config import CoreLinkSettings
 from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_DARK_LIBRARY,
+    METHOD_FLAT_ACTIVATE,
+    METHOD_FLAT_DELETE,
+    METHOD_FLAT_IMAGE,
+    METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
@@ -51,6 +56,7 @@ from seeingmon.services.web.core_client import (
     RpcCoreClient,
 )
 from seeingmon.services.web.fake_dark import DarkScript
+from seeingmon.services.web.fake_flat import FlatScript
 from tests.services.conftest import wait_until
 from tests.services.web.helpers import (
     ReferenceCore,
@@ -463,6 +469,80 @@ def test_the_client_reads_the_dark_library_and_queues_a_dark_task(
     assert busy.reason is RejectReason.BUSY
 
 
+def test_the_client_reads_the_flat_library_and_queues_a_flat_task(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    backend = FakeCoreClient(instance="reference-core", flat_script=FlatScript(queued_s=3600.0))
+    backend.dark.sets = [dark_set("set-a", 12.0, 5.0)]
+    old = backend.flat.seed(age_days=12.0, active=True)
+    core = start_core(backend=backend)
+    client = make_client(clients, core.endpoint, key)
+    library = client.flat_library()
+    assert [item.version for item in library.flats] == [old.version]
+    assert (library.active_version, library.blocker) == (old.version, None)
+    assert library.task.state == "idle"
+    command = QueueFlat(frames=16, target_fraction=0.4, set_number=1, pause_after=False)
+    queued = client.submit(command)
+    assert queued.accepted
+    assert queued.task_id == 1
+    assert core.backend.submitted == [command]  # the command crossed the wire unchanged
+    task = client.flat_library().task
+    assert (task.state, task.task_id) == ("queued", 1)
+    assert (task.frames, task.target_fraction, task.pause_after) == (16, 0.4, False)
+    busy = client.submit(QueueFlat())
+    assert not busy.accepted
+    assert busy.reason is RejectReason.BUSY
+
+
+def test_the_client_activates_deletes_and_shows_a_flat(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    backend = FakeCoreClient(instance="reference-core")
+    older = backend.flat.seed(age_days=40.0, active=True)
+    newer = backend.flat.seed(age_days=2.0, state="pending")
+    core = start_core(backend=backend)
+    client = make_client(clients, core.endpoint, key)
+    jpeg = client.flat_image(newer.version)
+    assert jpeg is not None
+    assert jpeg.startswith(b"\xff\xd8\xff")
+    assert client.flat_image("flat-00000000") is None
+    activated = client.flat_activate(newer.version)
+    assert (activated.ok, activated.version) == (True, newer.version)
+    assert client.flat_library().active_version == newer.version
+    refused = client.flat_delete(newer.version)
+    assert (refused.ok, refused.reason) == (False, "active")
+    deleted = client.flat_delete(older.version)
+    assert deleted.ok is True
+    assert [item.version for item in client.flat_library().flats] == [newer.version]
+    unknown = client.flat_activate("flat-00000000")
+    assert (unknown.ok, unknown.reason) == (False, "unknown")
+
+
+def test_a_core_without_the_flat_methods_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    def remove(core: ReferenceCore) -> None:
+        for method in (
+            METHOD_FLAT_LIBRARY,
+            METHOD_FLAT_ACTIVATE,
+            METHOD_FLAT_DELETE,
+            METHOD_FLAT_IMAGE,
+        ):
+            core.handlers.pop(method)
+
+    core = start_core(remove)
+    client = make_client(clients, core.endpoint, key)
+    calls: list[Callable[[], object]] = [
+        client.flat_library,
+        lambda: client.flat_activate("flat-1a2b3c4d"),
+        lambda: client.flat_delete("flat-1a2b3c4d"),
+        lambda: client.flat_image("flat-1a2b3c4d"),
+    ]
+    for call in calls:
+        with pytest.raises(CoreProtocolError, match="versions differ"):
+            call()
+
+
 def test_a_core_without_the_dark_method_is_a_protocol_error(
     start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
 ) -> None:
@@ -694,6 +774,10 @@ UNREADABLE = {
     "alignment_state": {"active": "yes"},
     "alignment_reset_focus": {"reset": False},
     "dark_library": {"mode": 5},
+    "flat_library": {"mode": 5},
+    "flat_activate": {"ok": "yes"},
+    "flat_delete": {"message": 7},
+    "flat_image": {"found": True, "jpeg": "plain text"},
 }
 
 
@@ -715,6 +799,10 @@ def test_an_unreadable_answer_is_a_protocol_error(
         "alignment_state": client.alignment_state,
         "alignment_reset_focus": client.alignment_reset_focus,
         "dark_library": client.dark_library,
+        "flat_library": client.flat_library,
+        "flat_activate": lambda: client.flat_activate("flat-1a2b3c4d"),
+        "flat_delete": lambda: client.flat_delete("flat-1a2b3c4d"),
+        "flat_image": lambda: client.flat_image("flat-1a2b3c4d"),
     }
     with pytest.raises(CoreProtocolError):
         calls[method]()

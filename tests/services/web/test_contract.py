@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 import math
@@ -36,11 +37,13 @@ from seeingmon.scheduler.status import (
 from seeingmon.services.ipc.codec import CodecError, decode_json, encode_json
 from seeingmon.services.web.contract import (
     FRAME_MAGIC,
+    MAX_FLAT_JPEG_BYTES,
     METHODS,
     POLARIS_MAGIC,
     ActivityView,
     AlignmentState,
     CoreStatus,
+    FlatTiltView,
     FocusHistoryView,
     FocusView,
     LiveSeeingView,
@@ -48,10 +51,14 @@ from seeingmon.services.web.contract import (
     decode_alignment_state,
     decode_command,
     decode_dark_library,
+    decode_flat_action,
+    decode_flat_image,
+    decode_flat_library,
     decode_live_seeing,
     decode_result,
     decode_status,
     encode_command,
+    encode_flat_image,
     encode_result,
     encode_status,
     pack_frame,
@@ -528,6 +535,10 @@ def test_the_methods_are_the_documented_ones() -> None:
         "dark_library",
         "alignment_reset_focus",
         "live_seeing",
+        "flat_library",
+        "flat_activate",
+        "flat_delete",
+        "flat_image",
     )
 
 
@@ -954,3 +965,263 @@ def test_a_status_from_an_older_core_has_a_fault_without_a_cause() -> None:
         del wire["scheduler"]["fault"][name]
     fault = decode_status(wire).scheduler.fault
     assert (fault.cause, fault.reason, fault.since_utc_ns) == (None, None, None)
+
+
+# --- The flat library ------------------------------------------------------------------------
+
+
+def flat_library_example() -> dict[str, Any]:
+    return {
+        "mode": "bin2",
+        "gain": 120,
+        "sensor_temperature_c": 12.4,
+        "active_version": "flat-1a2b3c4d",
+        "pending_version": "flat-5e6f7a8b",
+        "flat_file_pinned": True,
+        "library_overrides": True,
+        "blocker": None,
+        "flats": [
+            {
+                "version": "flat-5e6f7a8b",
+                "t_utc": "2026-10-04T20:15:00Z",
+                "age_days": 0.02,
+                "state": "pending",
+                "active": False,
+                "pending": True,
+                "mode": "bin2",
+                "gain": 120,
+                "width_px": 4144,
+                "height_px": 2822,
+                "sensor_temperature_c": 12.4,
+                "exposure_s": 0.039,
+                "target_fraction": 0.5,
+                "second_set": False,
+                "source_turned": False,
+                "frames_taken": 32,
+                "frames_used": 31,
+                "noise_percent": 0.11,
+                "bias_source": "dark library",
+                "bias_note": "from the dark library (6 sets of bin2 at gain 120)",
+                "corner_percent": -9.6,
+                "vignetting": [
+                    {"radius_deg": 0.5, "change_percent": -0.4, "corner": False},
+                    {"radius_deg": 2.66, "change_percent": -9.6, "corner": True},
+                ],
+                "tilt": {"width_percent": -0.62, "height_percent": 0.41},
+                "optics_tilt": None,
+                "source_tilt": None,
+                "shadows": 1,
+                "shadow_min_depth_percent": 2.4,
+                "shadow_items": [{"x_px": 1210, "y_px": 802, "depth_percent": 2.4, "width_px": 38}],
+                "edge_artifacts": 2,
+                "agreement": None,
+                "sets": [
+                    {
+                        "number": 1,
+                        "exposure_s": 0.039,
+                        "level_fraction": 0.5,
+                        "frames": 32,
+                        "used": 31,
+                        "dropped": {"flicker": 1},
+                        "noise_percent": 0.15,
+                        "tilt": {"width_percent": -0.62, "height_percent": 0.41},
+                    }
+                ],
+                "warnings": ["The light drifts: a frame is 3.4 % above the median level."],
+                "has_image": True,
+                "activated_utc": None,
+            }
+        ],
+        "session": {
+            "version": "flat-5e6f7a8b",
+            "t_utc": "2026-10-04T20:15:00Z",
+            "expires_utc": "2026-10-05T20:15:00Z",
+            "frames": 32,
+            "exposure_s": 0.039,
+        },
+        "task": {
+            "state": "running",
+            "task_id": 7,
+            "phase": "capture",
+            "step": 12,
+            "steps": 32,
+            "message": "Frame 12 of 32: 50 % of full scale.",
+            "set_number": 1,
+            "frames": 32,
+            "target_fraction": 0.5,
+            "exposure_s": 0.039,
+            "level_fraction": 0.498,
+            "saturated_fraction": 0.0,
+            "warnings": ["The light drifts: a frame is 3.4 % above the median level."],
+            "pause_after": True,
+            "started_utc": "2026-10-04T20:10:00Z",
+            "finished_utc": None,
+            "summary": "",
+            "version": None,
+        },
+    }
+
+
+def test_a_flat_library_survives_the_round_trip_through_json() -> None:
+    view = decode_flat_library(decode_json(encode_json(flat_library_example())))
+    assert (view.mode, view.gain, view.active_version) == ("bin2", 120, "flat-1a2b3c4d")
+    assert view.pending_version == "flat-5e6f7a8b"
+    assert (view.flat_file_pinned, view.library_overrides) == (True, True)
+    (flat,) = view.flats
+    assert (flat.state, flat.pending, flat.active) == ("pending", True, False)
+    assert flat.corner_percent == -9.6
+    assert flat.vignetting[-1].corner is True
+    assert flat.tilt.width_percent == -0.62
+    assert flat.shadow_items[0].x_px == 1210
+    assert flat.sets[0].dropped == {"flicker": 1}
+    assert view.session is not None
+    assert view.session.expires_utc == "2026-10-05T20:15:00Z"
+    assert (view.task.phase, view.task.step, view.task.steps) == ("capture", 12, 32)
+    assert json.loads(view.model_dump_json())["task"]["level_fraction"] == 0.498
+
+
+def test_an_empty_flat_library_decodes_with_an_idle_task() -> None:
+    view = decode_flat_library({"mode": "bin2", "gain": 120})
+    assert view.flats == []
+    assert view.session is None
+    assert view.blocker is None
+    assert view.active_version is None
+    assert (view.task.state, view.task.phase, view.task.task_id) == ("idle", None, None)
+    assert (view.task.set_number, view.task.pause_after) == (1, True)
+
+
+def test_a_flat_of_two_sets_carries_the_split_and_the_agreement() -> None:
+    example = flat_library_example()
+    flat = example["flats"][0]
+    flat["second_set"] = True
+    flat["source_turned"] = True
+    flat["optics_tilt"] = {"width_percent": -0.4, "height_percent": 0.3}
+    flat["source_tilt"] = {"width_percent": -0.22, "height_percent": 0.11}
+    flat["agreement"] = {
+        "smooth_rms_percent": 0.09,
+        "fine_rms_percent": 0.13,
+        "expected_fine_rms_percent": 0.12,
+        "plane": {"width_percent": -0.44, "height_percent": 0.22},
+    }
+    view = decode_flat_library(example).flats[0]
+    assert view.optics_tilt == FlatTiltView(width_percent=-0.4, height_percent=0.3)
+    assert view.source_tilt == FlatTiltView(width_percent=-0.22, height_percent=0.11)
+    assert view.agreement is not None
+    assert view.agreement.plane == FlatTiltView(width_percent=-0.44, height_percent=0.22)
+
+
+def test_a_newer_core_may_add_flat_fields() -> None:
+    example = flat_library_example()
+    example["something_new"] = 1
+    example["task"]["something_new"] = "x"
+    example["flats"][0]["something_new"] = [1]
+    example["flats"][0]["vignetting"][0]["something_new"] = True
+    assert decode_flat_library(example).task.task_id == 7
+
+
+def test_flat_numbers_that_json_writes_without_a_fraction_still_decode() -> None:
+    example = flat_library_example()
+    example["sensor_temperature_c"] = 12
+    example["flats"][0]["exposure_s"] = 1
+    example["flats"][0]["corner_percent"] = -10
+    example["task"]["level_fraction"] = 1
+    view = decode_flat_library(decode_json(encode_json(example)))
+    assert view.flats[0].exposure_s == 1.0
+    assert view.flats[0].corner_percent == -10.0
+    assert view.task.level_fraction == 1.0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d.pop("mode"),
+        lambda d: d.update(gain="120"),
+        lambda d: d.update(flats="none"),
+        lambda d: d.update(flats=[{"version": "flat-1a2b3c4d"}]),
+        lambda d: d.update(flats=d["flats"] * 300),
+        lambda d: d.update(blocker=7),
+        lambda d: d.update(flat_file_pinned="yes"),
+        lambda d: d["task"].update(step="3"),
+        lambda d: d["task"].update(level_fraction=math.inf),
+        lambda d: d["task"].update(warnings="drift"),
+        lambda d: d["task"].update(warnings=["x"] * 40),
+        lambda d: d["flats"][0].update(has_image="yes"),
+        lambda d: d["flats"][0].update(vignetting=[{"change_percent": 1.0}]),
+        lambda d: d["flats"][0].update(vignetting=[{"radius_deg": 1.0}] * 40),
+        lambda d: d["flats"][0].update(shadow_items=[{"x_px": 1}]),
+        lambda d: d["flats"][0].update(sets=d["flats"][0]["sets"] * 9),
+        lambda d: d["flats"][0].update(warnings=[1]),
+        lambda d: d["session"].pop("expires_utc"),
+    ],
+)
+def test_a_malformed_flat_library_is_refused(change: Any) -> None:
+    example = flat_library_example()
+    change(example)
+    with pytest.raises(CodecError):
+        decode_flat_library(example)
+
+
+def test_the_error_of_a_malformed_flat_library_names_the_fields_and_not_the_values() -> None:
+    example = flat_library_example()
+    example["task"]["message"] = 5
+    example["gain"] = "a-secret-value"
+    with pytest.raises(CodecError) as error:
+        decode_flat_library(example)
+    assert "gain" in str(error.value)
+    assert "a-secret-value" not in str(error.value)
+
+
+def test_a_flat_answer_survives_the_round_trip_and_a_refusal_has_its_reason() -> None:
+    done = decode_flat_action(
+        decode_json(encode_json({"ok": True, "message": "In use.", "version": "flat-1a2b3c4d"}))
+    )
+    assert (done.ok, done.reason, done.version) == (True, None, "flat-1a2b3c4d")
+    refused = decode_flat_action({"ok": False, "reason": "active", "message": "In use."})
+    assert (refused.ok, refused.reason, refused.version) == (False, "active", None)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, {}, {"ok": "yes"}, {"ok": True, "reason": 5}, {"ok": True, "message": 1}, [True]],
+)
+def test_a_malformed_flat_answer_is_refused(value: Any) -> None:
+    with pytest.raises(CodecError):
+        decode_flat_action(value)
+
+
+def test_a_flat_image_survives_the_round_trip() -> None:
+    jpeg = tiny_jpeg(90)
+    wire = decode_json(encode_json(encode_flat_image(jpeg)))
+    assert wire["found"] is True
+    assert base64.b64decode(wire["jpeg"]) == jpeg
+    assert decode_flat_image(wire) == jpeg
+
+
+def test_a_flat_without_an_image_answers_not_found() -> None:
+    wire = encode_flat_image(None)
+    assert wire == {"found": False, "jpeg": ""}
+    assert decode_flat_image(wire) is None
+
+
+def test_the_core_side_refuses_to_send_what_is_not_a_small_jpeg() -> None:
+    with pytest.raises(ValueError, match="not a JPEG"):
+        encode_flat_image(b"plain bytes")
+    with pytest.raises(ValueError, match="not a JPEG"):
+        encode_flat_image(tiny_jpeg() + b"\0" * MAX_FLAT_JPEG_BYTES)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {},
+        {"found": "yes"},
+        {"found": True, "jpeg": "not base64!"},
+        {"found": True, "jpeg": base64.b64encode(b"plain bytes").decode()},
+        {"found": True, "jpeg": 7},
+        {"found": True, "jpeg": base64.b64encode(b"\xff\xd8\xff" + b"\0" * 700_000).decode()},
+    ],
+)
+def test_a_malformed_flat_image_is_refused(value: Any) -> None:
+    with pytest.raises(CodecError):
+        decode_flat_image(value)

@@ -1,9 +1,10 @@
 """The seam between the web process and `core`: the `CoreClient` protocol and its two clients.
 
-The API needs seven things from `core`: the status of the scheduler, a way to submit a scheduler
+The API needs these things from `core`: the status of the scheduler, a way to submit a scheduler
 command, the state of the alignment helper, the dark library with the progress of the dark task,
-the rolling seeing value, and the frames of the two live views (the alignment helper and the video
-of Polaris). `CoreClient` names them.
+the flat library with the progress of the flat task (and a way to use a flat, to delete one, and to
+read its preview), the rolling seeing value, and the frames of the two live views (the alignment
+helper and the video of Polaris). `CoreClient` names them.
 
 - `RpcCoreClient` is the production client. It connects to `core` over the local connection layer
   and speaks the methods that `seeingmon.services.web.contract` documents. It connects when the
@@ -15,9 +16,9 @@ of Polaris). `CoreClient` names them.
 - `FakeCoreClient` answers in memory, for tests and for the demo. It follows the rules of the real
   scheduler for the commands, and it streams the frames of a source that you give it.
 
-The calls `status`, `submit`, `alignment_state`, `dark_library`, and `live_seeing` block, so call
-them from a thread (FastAPI runs a plain `def` endpoint in its thread pool). `alignment_frames` and
-`polaris_frames` are async iterators.
+The calls `status`, `submit`, `alignment_state`, `dark_library`, `live_seeing`, and the four flat
+calls block, so call them from a thread (FastAPI runs a plain `def` endpoint in its thread pool).
+`alignment_frames` and `polaris_frames` are async iterators.
 
 **Errors.** A call raises `CoreUnavailableError` when `core` cannot be reached or does not answer in
 time, and `CoreProtocolError` when `core` answers something that this client cannot use. Neither
@@ -35,11 +36,13 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 from seeingmon.clock import Clock, SystemClock
 from seeingmon.scheduler.commands import (
     TASK_KINDS,
+    CancelTask,
     Command,
     CommandResult,
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueReplay,
     QueueSweep,
     RejectReason,
@@ -68,6 +71,10 @@ from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_FLAT_ACTIVATE,
+    METHOD_FLAT_DELETE,
+    METHOD_FLAT_IMAGE,
+    METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
@@ -80,12 +87,17 @@ from seeingmon.services.web.contract import (
     CoreStatus,
     DarkLibraryView,
     FaultView,
+    FlatActionView,
+    FlatLibraryView,
     LiveSeeingView,
     PolarisFrame,
     SchedulerView,
     StreamView,
     decode_alignment_state,
     decode_dark_library,
+    decode_flat_action,
+    decode_flat_image,
+    decode_flat_library,
     decode_live_seeing,
     decode_result,
     decode_status,
@@ -94,6 +106,7 @@ from seeingmon.services.web.contract import (
     unpack_polaris_frame,
 )
 from seeingmon.services.web.fake_dark import DarkScript, DarkSimulator
+from seeingmon.services.web.fake_flat import FlatScript, FlatSimulator
 
 MIB = 1024 * 1024
 # A frame of the video of Polaris is a few kilobytes, and the stream sends 20 of them a second, so
@@ -144,6 +157,22 @@ class CoreClient(Protocol):
 
     def live_seeing(self) -> LiveSeeingView | None:
         """The rolling seeing value of the fast stream, or `None` while `core` has none."""
+        ...
+
+    def flat_library(self) -> FlatLibraryView:
+        """The flat library, the flat in use, and the latest flat task. Raises `CoreError`."""
+        ...
+
+    def flat_activate(self, version: str) -> FlatActionView:
+        """Make a flat the one that the survey uses. A refusal is a result with `ok` false."""
+        ...
+
+    def flat_delete(self, version: str) -> FlatActionView:
+        """Delete a flat that is not in use. A refusal is a result with `ok` false."""
+        ...
+
+    def flat_image(self, version: str) -> bytes | None:
+        """The JPEG preview of a flat, or `None` when `core` has none. Raises `CoreError`."""
         ...
 
     def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
@@ -360,6 +389,40 @@ class RpcCoreClient:
             _log.warning("core sent an unreadable live seeing value: %s", error)
             raise CoreProtocolError("core sent an unreadable live seeing value") from None
 
+    def flat_library(self) -> FlatLibraryView:
+        """The flat library and the flat task, from the `flat_library` method."""
+        answer = self._call(METHOD_FLAT_LIBRARY, None, self._rpc_timeout_s)
+        try:
+            return decode_flat_library(answer)
+        except CodecError as error:
+            _log.warning("core sent an unreadable flat library: %s", error)
+            raise CoreProtocolError("core sent an unreadable flat library") from None
+
+    def _flat_action(self, method: str, version: str) -> FlatActionView:
+        answer = self._call(method, {"version": version}, self._rpc_timeout_s)
+        try:
+            return decode_flat_action(answer)
+        except CodecError as error:
+            _log.warning("core sent an unreadable flat answer: %s", error)
+            raise CoreProtocolError("core sent an unreadable flat answer") from None
+
+    def flat_activate(self, version: str) -> FlatActionView:
+        """Activate a flat, with the `flat_activate` method."""
+        return self._flat_action(METHOD_FLAT_ACTIVATE, version)
+
+    def flat_delete(self, version: str) -> FlatActionView:
+        """Delete a flat, with the `flat_delete` method."""
+        return self._flat_action(METHOD_FLAT_DELETE, version)
+
+    def flat_image(self, version: str) -> bytes | None:
+        """The preview of a flat, from the `flat_image` method."""
+        answer = self._call(METHOD_FLAT_IMAGE, {"version": version}, self._rpc_timeout_s)
+        try:
+            return decode_flat_image(answer)
+        except CodecError as error:
+            _log.warning("core sent an unreadable flat image: %s", error)
+            raise CoreProtocolError("core sent an unreadable flat image") from None
+
     def _open_stream(self, channel: str, window: StreamWindow, name: str) -> StreamReceiver:
         try:
             receiver, _ = connect_stream(
@@ -446,7 +509,10 @@ class FakeCoreClient:
 
     The dark library lives in `dark`, a `DarkSimulator`: set its `sets`, `model`, and
     `sensor_temperature_c`, and pass `dark_script` to set how long each part of a dark task lasts.
-    `QueueDark` starts a scripted task that follows the clock (see `fake_dark`).
+    `QueueDark` starts a scripted task that follows the clock (see `fake_dark`). The flat library
+    lives in `flat`, a `FlatSimulator`, and `flat_script` scripts its task (see `fake_flat`). A
+    flat session needs a dark set, as in the real `core`. `CancelTask` works for the kinds `dark`
+    and `flat`.
 
     The status answers with the `activity` that you set, which is `None` at first. A subclass can
     compute the activity and the fault from the clock instead (`_activity_view` and `_fault_view`).
@@ -463,9 +529,13 @@ class FakeCoreClient:
         max_queued: int = 8,
         alignment_state: AlignmentState | None = None,
         dark_script: DarkScript | None = None,
+        flat_script: FlatScript | None = None,
     ) -> None:
         self._clock = SystemClock() if clock is None else clock
         self.dark = DarkSimulator(self._clock, script=dark_script)
+        self.flat = FlatSimulator(
+            self._clock, script=flat_script, dark_ready=lambda: bool(self.dark.sets)
+        )
         self._frames = frames
         self._polaris = polaris
         self.live: LiveSeeingView | None = None
@@ -514,8 +584,10 @@ class FakeCoreClient:
         self._since_ns = self._clock.utc_ns()
 
     def _settle_dark(self) -> None:
-        """Let the dark task follow the clock, and apply what it does to the scheduler."""
+        """Let the dark task and the flat task follow the clock, and apply what they do."""
         for change in self.dark.settle(state=self._state):
+            self._transition(change.state, change.reason)
+        for change in self.flat.settle(state=self._state):
             self._transition(change.state, change.reason)
 
     def _activity_view(self, now_ns: int) -> ActivityView | None:
@@ -545,7 +617,11 @@ class FakeCoreClient:
                         stream_id=1, purpose="fast", mode="bin1", exposure_us=2000, gain=0
                     ),
                     fault=self._fault_view(now_ns),
-                    queued_tasks=self._queued + (1 if self.dark.queued else 0),
+                    queued_tasks=(
+                        self._queued
+                        + (1 if self.dark.queued else 0)
+                        + (1 if self.flat.queued else 0)
+                    ),
                     counters={
                         "commands_accepted": self._accepted,
                         "commands_rejected": self._rejected,
@@ -590,6 +666,7 @@ class FakeCoreClient:
             if self._state == "paused":
                 return self._reject(RejectReason.ALREADY_PAUSED, "the scheduler is already paused")
             self.dark.abort()
+            self.flat.abort()
             self._transition("paused")
             return self._result(True, "the scheduler paused, and nothing runs until you resume it")
         if isinstance(command, Resume):
@@ -616,13 +693,63 @@ class FakeCoreClient:
             task_id = self._next_task_id
             self._next_task_id += 1
             return self._result(True, message, task_id=task_id)
+        if isinstance(command, QueueFlat):
+            accepted, reason, message = self.flat.submit(command, self._next_task_id, self._state)
+            if not accepted:
+                assert reason is not None
+                return self._reject(reason, message)
+            task_id = self._next_task_id
+            self._next_task_id += 1
+            return self._result(True, message, task_id=task_id)
+        if isinstance(command, CancelTask):
+            return self._cancel(command)
         return self._reject(RejectReason.INVALID, "unknown command")
+
+    def _cancel(self, command: CancelTask) -> CommandResult:
+        """Cancel the task of a kind. The fake tracks the kinds `dark` and `flat` only."""
+        kind = command.kind
+        if kind not in TASK_KINDS.values():
+            return self._reject(RejectReason.INVALID, f"{kind!r} is not a kind of task")
+        if kind == "flat":
+            outcome = self.flat.cancel(self._state)
+            if not outcome.accepted:
+                assert outcome.reason is not None
+                return self._reject(outcome.reason, outcome.message)
+            for change in outcome.changes:
+                self._transition(change.state, change.reason)
+            return self._result(True, outcome.message, task_id=outcome.task_id)
+        if kind == "dark" and self.dark.abort():
+            return self._result(True, "the dark task is removed or stops at its next check")
+        return self._reject(RejectReason.NO_TASK, f"no {kind} task waits or runs")
 
     def dark_library(self) -> DarkLibraryView:
         self._check()
         with self._lock:
             self._settle_dark()
             return self.dark.library()
+
+    def flat_library(self) -> FlatLibraryView:
+        self._check()
+        with self._lock:
+            self._settle_dark()
+            return self.flat.library()
+
+    def flat_activate(self, version: str) -> FlatActionView:
+        self._check()
+        with self._lock:
+            self._settle_dark()
+            return self.flat.activate(version)
+
+    def flat_delete(self, version: str) -> FlatActionView:
+        self._check()
+        with self._lock:
+            self._settle_dark()
+            return self.flat.delete(version)
+
+    def flat_image(self, version: str) -> bytes | None:
+        self._check()
+        with self._lock:
+            return self.flat.image(version)
 
     def alignment_state(self) -> AlignmentState:
         self._check()

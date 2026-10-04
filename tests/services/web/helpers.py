@@ -25,6 +25,10 @@ from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_FLAT_ACTIVATE,
+    METHOD_FLAT_DELETE,
+    METHOD_FLAT_IMAGE,
+    METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
@@ -34,6 +38,7 @@ from seeingmon.services.web.contract import (
     AlignmentFrameInfo,
     AlignmentState,
     DarkSetView,
+    FlatActionView,
     FocusView,
     HistogramView,
     LiveSeeingView,
@@ -46,6 +51,7 @@ from seeingmon.services.web.contract import (
     SolvedView,
     TargetView,
     decode_command,
+    encode_flat_image,
     encode_result,
     pack_frame,
     pack_polaris_frame,
@@ -203,6 +209,10 @@ class ReferenceCore:
             METHOD_ALIGNMENT_RESET_FOCUS: self._alignment_reset_focus,
             METHOD_DARK_LIBRARY: self._dark_library,
             METHOD_LIVE_SEEING: self._live_seeing,
+            METHOD_FLAT_LIBRARY: self._flat_library,
+            METHOD_FLAT_ACTIVATE: self._flat_activate,
+            METHOD_FLAT_DELETE: self._flat_delete,
+            METHOD_FLAT_IMAGE: self._flat_image,
         }
         self.raw_payloads: list[bytes] = []  # sent before the frames, to test a bad message
         self.raw_polaris_payloads: list[bytes] = []
@@ -240,6 +250,30 @@ class ReferenceCore:
     def _live_seeing(self, params: Mapping[str, Any]) -> Any:
         live = self.backend.live_seeing()
         return None if live is None else live.model_dump(mode="json")
+
+    def _flat_library(self, params: Mapping[str, Any]) -> Any:
+        return self.backend.flat_library().model_dump(mode="json")
+
+    @staticmethod
+    def _version(params: Mapping[str, Any]) -> str | None:
+        version = as_mapping(params, "params").get("version")
+        return version if isinstance(version, str) else None
+
+    def _flat_activate(self, params: Mapping[str, Any]) -> Any:
+        version = self._version(params)
+        if version is None:
+            return FlatActionView(ok=False, reason="unknown", message="No such flat.").model_dump()
+        return self.backend.flat_activate(version).model_dump(mode="json")
+
+    def _flat_delete(self, params: Mapping[str, Any]) -> Any:
+        version = self._version(params)
+        if version is None:
+            return FlatActionView(ok=False, reason="unknown", message="No such flat.").model_dump()
+        return self.backend.flat_delete(version).model_dump(mode="json")
+
+    def _flat_image(self, params: Mapping[str, Any]) -> Any:
+        version = self._version(params)
+        return encode_flat_image(None if version is None else self.backend.flat_image(version))
 
     def _on_sender(self, sender: StreamSender, params: Mapping[str, Any]) -> None:
         self.streams_started += 1

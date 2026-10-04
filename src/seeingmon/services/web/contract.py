@@ -24,6 +24,14 @@ value. A call that fails raises an exception that the connection layer sends bac
 - `live_seeing` takes no parameters and answers with the `LiveSeeingView` as JSON: the rolling
   seeing value of the fast stream. The answer is `null` while `core` has no value, which is the
   case before the first fast period has gathered `live_min_span_s` seconds of frames.
+- `flat_library` takes no parameters and answers with the `FlatLibraryView` as JSON: the flats of
+  the library with the numbers of their reports, the flat in use, the flat that waits for a
+  decision, the first set that waits for a second set, and the progress of the latest flat
+  session (`FlatTaskView`).
+- `flat_activate` and `flat_delete` take `{"version": "flat-<8 hex digits>"}` and answer with a
+  `FlatActionView`: `ok`, or a `reason` (`unknown`, `active`, `invalid`, or `busy`) and a sentence.
+- `flat_image` takes `{"version": ...}` and answers `{"found": bool, "jpeg": "<base64>"}`, the
+  preview of a flat as a JPEG of at most `MAX_FLAT_JPEG_BYTES`.
 
 `submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
 normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
@@ -61,11 +69,12 @@ without a directory part, and `core` resolves it under the configured recordings
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import struct
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -109,6 +118,10 @@ METHOD_ALIGNMENT_STATE = "alignment_state"
 METHOD_DARK_LIBRARY = "dark_library"
 METHOD_ALIGNMENT_RESET_FOCUS = "alignment_reset_focus"
 METHOD_LIVE_SEEING = "live_seeing"
+METHOD_FLAT_LIBRARY = "flat_library"
+METHOD_FLAT_ACTIVATE = "flat_activate"
+METHOD_FLAT_DELETE = "flat_delete"
+METHOD_FLAT_IMAGE = "flat_image"
 METHODS = (
     METHOD_PING,
     METHOD_STATUS,
@@ -117,6 +130,10 @@ METHODS = (
     METHOD_DARK_LIBRARY,
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_LIVE_SEEING,
+    METHOD_FLAT_LIBRARY,
+    METHOD_FLAT_ACTIVATE,
+    METHOD_FLAT_DELETE,
+    METHOD_FLAT_IMAGE,
 )
 
 FRAME_MAGIC = b"SMAF"
@@ -127,6 +144,7 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 POLARIS_IMAGE_TYPE = "image/png"
 MAX_LIST_ITEMS = 256
 MAX_TEXT_CHARS = 4000
+MAX_FLAT_JPEG_BYTES = 600_000
 
 
 # --- Commands --------------------------------------------------------------------------------
@@ -1297,3 +1315,236 @@ def decode_dark_library(value: Any) -> DarkLibraryView:
             sorted({".".join(str(part) for part in e["loc"]) for e in error.errors()})
         )
         raise CodecError(f"the dark library is not valid: {fields}") from None
+
+
+# --- The flat library ------------------------------------------------------------------------
+
+
+class FlatPointView(_View):
+    """The flat at one radius from the optical center, against the center, in percent."""
+
+    radius_deg: float
+    change_percent: float | None = None
+    corner: bool = False
+
+
+class FlatTiltView(_View):
+    """A plane across the frame: the change from one edge to the other, in percent."""
+
+    width_percent: float | None = None
+    height_percent: float | None = None
+
+
+class FlatShadowView(_View):
+    """A dust shadow: its place in sensor pixels, its depth in percent, and its width."""
+
+    x_px: int
+    y_px: int
+    depth_percent: float
+    width_px: float
+
+
+class FlatSetView(_View):
+    """One set of frames of a flat: its exposure, its level, and the frames that counted."""
+
+    number: int
+    exposure_s: float | None = None
+    level_fraction: float | None = None
+    frames: int = 0
+    used: int = 0
+    dropped: dict[str, int] = Field(default_factory=dict, max_length=16)
+    noise_percent: float | None = None
+    tilt: FlatTiltView | None = None
+
+
+class FlatAgreementView(_View):
+    """How well two sets of frames agree, which shows what the light source adds."""
+
+    smooth_rms_percent: float | None = None
+    fine_rms_percent: float | None = None
+    expected_fine_rms_percent: float | None = None
+    plane: FlatTiltView | None = None
+
+
+class FlatView(_View):
+    """One flat of the library, with the numbers of its report.
+
+    `state` is `pending` (a session made it, and nothing uses it yet) or `approved` (you activated
+    it once). `active` says that the survey divides by it now, and `pending` says that it waits for
+    your decision. `corner_percent` is the change in the corners against the center (negative: the
+    corners get less light). `optics_tilt` and `source_tilt` exist for a flat of two sets. The
+    image of the flat is at `GET /flat/{version}/image` when `has_image` is true.
+    """
+
+    version: str
+    t_utc: str
+    age_days: float = 0.0
+    state: str
+    active: bool = False
+    pending: bool = False
+    mode: str
+    gain: int
+    width_px: int
+    height_px: int
+    sensor_temperature_c: float | None = None
+    exposure_s: float | None = None
+    target_fraction: float | None = None
+    second_set: bool = False
+    source_turned: bool = False
+    frames_taken: int = 0
+    frames_used: int = 0
+    noise_percent: float | None = None
+    bias_source: str = ""
+    bias_note: str = ""
+    corner_percent: float | None = None
+    vignetting: list[FlatPointView] = Field(default_factory=list, max_length=16)
+    tilt: FlatTiltView = Field(default_factory=FlatTiltView)
+    optics_tilt: FlatTiltView | None = None
+    source_tilt: FlatTiltView | None = None
+    shadows: int = 0
+    shadow_min_depth_percent: float | None = None
+    shadow_items: list[FlatShadowView] = Field(default_factory=list, max_length=32)
+    edge_artifacts: int = 0
+    agreement: FlatAgreementView | None = None
+    sets: list[FlatSetView] = Field(default_factory=list, max_length=4)
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+    has_image: bool = False
+    activated_utc: str | None = None
+
+
+class FlatSessionView(_View):
+    """The first set of a session, which waits for a second set with the source turned.
+
+    `version` is the pending flat that the first set made. `expires_utc` is when the frames of the
+    first set go (24 hours after the first set).
+    """
+
+    version: str
+    t_utc: str
+    expires_utc: str
+    frames: int
+    exposure_s: float
+
+
+class FlatTaskView(_View):
+    """The latest flat session of this `core` process.
+
+    `state` is `idle` (none yet), `queued`, `running`, `ok`, `failed`, or `aborted`. While it runs,
+    `phase` is `setup`, `exposure` (the search for the exposure), `capture` (the frames), or `build`
+    (the combination), with `step` of `steps` in that phase. `exposure_s` is the exposure in use or
+    found, `level_fraction` is the latest level above the bias as a fraction of the full scale (the
+    page draws it against `target_fraction`), and `saturated_fraction` is the share of saturated
+    pixels of the latest frame. `warnings` list what the session noticed: a drifting light, a
+    saturating one, a light that does not cover the corners. A finished session keeps its
+    `summary` (one sentence) and the `version` of the flat that it added.
+    """
+
+    state: str = "idle"
+    task_id: int | None = None
+    phase: str | None = None
+    step: int = 0
+    steps: int = 0
+    message: str = ""
+    set_number: int = 1
+    frames: int | None = None
+    target_fraction: float | None = None
+    exposure_s: float | None = None
+    level_fraction: float | None = None
+    saturated_fraction: float | None = None
+    warnings: list[str] = Field(default_factory=list, max_length=16)
+    pause_after: bool = True
+    started_utc: str | None = None
+    finished_utc: str | None = None
+    summary: str = ""
+    version: str | None = None
+
+
+class FlatLibraryView(_View):
+    """The answer of the `flat_library` method: the flats, the one in use, and the latest session.
+
+    `mode` and `gain` are the settings of the flat session (the ones of the survey). `blocker` is a
+    sentence that says why a session cannot start now (no dark set), or `null`. `pending_version`
+    names the newest flat that waits for a decision, `active_version` the flat in use. A
+    configuration that names `[survey] flat_file` has `flat_file_pinned` true, and
+    `library_overrides` is true when the active flat of the library wins over that file. `session`
+    exists while the first set of a session waits for a second set. `flats` holds the newest flats
+    first.
+    """
+
+    mode: str
+    gain: int
+    sensor_temperature_c: float | None = None
+    active_version: str | None = None
+    pending_version: str | None = None
+    flat_file_pinned: bool = False
+    library_overrides: bool = False
+    blocker: str | None = None
+    flats: list[FlatView] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+    session: FlatSessionView | None = None
+    task: FlatTaskView = Field(default_factory=FlatTaskView)
+
+
+class FlatActionView(_View):
+    """The answer of `flat_activate` and `flat_delete`.
+
+    `reason` is `null` when the action worked. Otherwise it is `unknown` (no such flat), `active`
+    (the flat is in use), `invalid` (the flat cannot be used), or `busy` (a session runs).
+    """
+
+    ok: bool
+    reason: str | None = None
+    message: str = ""
+    version: str | None = None
+
+
+class FlatImageView(_View):
+    """The answer of `flat_image`: the JPEG preview of a flat as base64 text, or `found` false."""
+
+    found: bool
+    jpeg: str = Field("", max_length=MAX_FLAT_JPEG_BYTES * 2)
+
+
+ModelT = TypeVar("ModelT", bound=_View)
+
+
+def _decode_view(model: type[ModelT], value: Any, what: str) -> ModelT:
+    try:
+        return model.model_validate(value)
+    except ValidationError as error:
+        fields = ", ".join(
+            sorted({".".join(str(part) for part in e["loc"]) for e in error.errors()})
+        )
+        raise CodecError(f"{what} is not valid: {fields}") from None
+
+
+def decode_flat_library(value: Any) -> FlatLibraryView:
+    """The answer of `flat_library` as a model. Raises `CodecError` for anything malformed."""
+    return _decode_view(FlatLibraryView, value, "the flat library")
+
+
+def decode_flat_action(value: Any) -> FlatActionView:
+    """The answer of `flat_activate` or `flat_delete`. Raises `CodecError`."""
+    return _decode_view(FlatActionView, value, "the flat answer")
+
+
+def encode_flat_image(jpeg: bytes | None) -> dict[str, Any]:
+    """The answer of `flat_image` for a JPEG, or for none."""
+    if jpeg is None:
+        return {"found": False, "jpeg": ""}
+    if len(jpeg) > MAX_FLAT_JPEG_BYTES or not jpeg.startswith(JPEG_MAGIC):
+        raise ValueError("the flat preview is not a JPEG image of a size that the RPC carries")
+    return {"found": True, "jpeg": base64.b64encode(jpeg).decode("ascii")}
+
+
+def decode_flat_image(value: Any) -> bytes | None:
+    """The JPEG of a `flat_image` answer, or `None` when `core` has none. Raises `CodecError`."""
+    view = _decode_view(FlatImageView, value, "the flat image")
+    if not view.found:
+        return None
+    try:
+        jpeg = base64.b64decode(view.jpeg, validate=True)
+    except ValueError:
+        raise CodecError("the flat image is not valid: jpeg") from None
+    if len(jpeg) > MAX_FLAT_JPEG_BYTES or not jpeg.startswith(JPEG_MAGIC):
+        raise CodecError("the flat image is not a JPEG image")
+    return jpeg
