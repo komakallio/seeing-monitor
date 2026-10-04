@@ -162,14 +162,18 @@ class TestBinding:
             api.get_video_data(0, bytearray(256), 100)
         assert raised.value.function == "ASIGetVideoData"
 
-    def test_single_exposures(self, api: CtypesAsiApi, clock: VirtualClock) -> None:
+    def test_single_exposures(
+        self, api: CtypesAsiApi, clock: VirtualClock, sdk: FakeAsiSdk
+    ) -> None:
         api.open_camera(0)
         api.init_camera(0)
         api.set_control_value(0, AsiControl.EXPOSURE, 1_000_000)
         api.set_roi_format(0, 16, 8, 2, RAW16)
         api.start_exposure(0, dark=False)
         assert api.get_exposure_status(0) is AsiExposureStatus.WORKING
-        clock.advance(1.01)
+        clock.advance(1.01)  # the exposure is over, and the camera still reads the frame out
+        assert api.get_exposure_status(0) is AsiExposureStatus.WORKING
+        clock.advance(sdk.snapshot_period_s())
         assert api.get_exposure_status(0) is AsiExposureStatus.SUCCESS
         buffer = bytearray(256)
         api.get_data_after_exposure(0, buffer)

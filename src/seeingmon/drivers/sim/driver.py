@@ -11,7 +11,8 @@ where `t0` is the time of `start` and `P` is the frame period: the larger of the
 readout time (the frame overhead plus the rows times the row time). The frame arrives at the end
 of its period. `t_utc_ns` is the middle of the exposure of the first row, so it is exact
 (`TimeQuality.EXACT`), and row `r` of the ROI exposes `r` row times later. A snapshot exposes
-once, and its period is the exposure plus the readout.
+once, and its period is the exposure plus the snapshot readout of the mode (`SimParams`: the
+single-exposure model of the profile, which is much longer than the video readout).
 
 **Faults.** `SimOptions.faults` injects drops, timeouts, slow reads, a disconnect, a stall that
 only a recovery clears, and a silent change of geometry. A reader that falls more than
@@ -426,10 +427,9 @@ class SimDriver:
     @staticmethod
     def _period_s(config: StreamConfig, params: SimParams, roi: Roi) -> float:
         exposure_s = config.exposure_us * 1e-6
-        readout_s = params.readout_time_s(roi.height)
         if config.kind is StreamKind.SNAPSHOT:
-            return exposure_s + readout_s
-        return max(exposure_s, readout_s)
+            return exposure_s + params.snapshot_readout_time_s(roi.height)
+        return max(exposure_s, params.readout_time_s(roi.height))
 
 
 def _apply_change(params: SimParams, roi: Roi, change: GeometryChange) -> Roi:

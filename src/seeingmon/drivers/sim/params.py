@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
 from seeingmon.frames import Roi
+from seeingmon.profile.derived import SNAPSHOT_OVERHEAD_FLOOR_S
 
 if TYPE_CHECKING:
     from seeingmon.profile.models import Profile, ReadoutMode
@@ -80,6 +81,11 @@ class SimParams:
     the end segments. With no table, the dark current is `dark_current_e_per_s` at
     `dark_reference_c`, and it doubles every `dark_doubling_c` degrees. `high_speed` holds the
     same mode in the camera's high-speed readout, or `None` when there is none.
+
+    `row_time_s` and `frame_overhead_s` time a video stream. A single exposure (a snapshot) takes
+    `snapshot_overhead_s` plus the rows times `snapshot_row_time_s` beyond the exposure, as the
+    profile states for the mode. A `None` field means that the profile states none: the video
+    row time, and a frame overhead of at least `SNAPSHOT_OVERHEAD_FLOOR_S`.
     """
 
     mode: str = "bin1"
@@ -106,6 +112,8 @@ class SimParams:
     dark_table: tuple[tuple[float, float], ...] = ()
     roi_width_multiple: int = 8
     roi_height_multiple: int = 2
+    snapshot_overhead_s: float | None = None
+    snapshot_row_time_s: float | None = None
     high_speed: SimParams | None = None
 
     def __post_init__(self) -> None:
@@ -115,6 +123,10 @@ class SimParams:
             raise ValueError("pixel size, focal length, and aperture must be positive")
         if self.wavelength_m <= 0 or self.row_time_s < 0 or self.frame_overhead_s < 0:
             raise ValueError("wavelength and timing must not be negative")
+        if (self.snapshot_overhead_s is None) != (self.snapshot_row_time_s is None):
+            raise ValueError("snapshot_overhead_s and snapshot_row_time_s go together")
+        if (self.snapshot_overhead_s or 0.0) < 0 or (self.snapshot_row_time_s or 0.0) < 0:
+            raise ValueError("the snapshot timing must not be negative")
         if not 8 <= self.adc_bits <= 16:
             raise ValueError("adc_bits must be between 8 and 16")
         gains = [point.gain for point in self.gain_points]
@@ -181,6 +193,18 @@ class SimParams:
     def readout_time_s(self, rows: int) -> float:
         """Time to read `rows` rows: the frame overhead plus the row time for each row."""
         return self.frame_overhead_s + rows * self.row_time_s
+
+    def snapshot_readout_time_s(self, rows: int) -> float:
+        """Time that a single exposure of `rows` rows takes beyond the exposure.
+
+        It is the snapshot overhead plus the snapshot row time for each row. A mode without a
+        snapshot model takes its video row time and a frame overhead of at least
+        `SNAPSHOT_OVERHEAD_FLOOR_S`, as `seeingmon.profile.derived` does.
+        """
+        if self.snapshot_overhead_s is None or self.snapshot_row_time_s is None:
+            overhead_s = max(self.frame_overhead_s, SNAPSHOT_OVERHEAD_FLOOR_S)
+            return overhead_s + rows * self.row_time_s
+        return self.snapshot_overhead_s + rows * self.snapshot_row_time_s
 
     # --- sensor ---
 
@@ -276,6 +300,8 @@ class SimParams:
                 read_noise_gain0_e=8.0,
                 full_well_gain0_e=66_387.0,
                 gain_points=BIN2_GAIN_POINTS,
+                snapshot_overhead_s=0.27,
+                snapshot_row_time_s=75.0e-6,
             )
             fast = replace(
                 normal,
@@ -345,6 +371,10 @@ class SimParams:
             dark_table=dark_table,
             roi_width_multiple=profile.limits.roi_width_multiple,
             roi_height_multiple=profile.limits.roi_height_multiple,
+            snapshot_overhead_s=mode.snapshot_overhead_s,
+            snapshot_row_time_s=(
+                None if mode.snapshot_row_time_us is None else mode.snapshot_row_time_us * 1e-6
+            ),
         )
 
 

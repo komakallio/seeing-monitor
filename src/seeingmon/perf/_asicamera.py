@@ -23,7 +23,12 @@ import numpy.typing as npt
 from seeingmon.clock import Clock
 from seeingmon.drivers.asi.driver import AsiDriver
 from seeingmon.drivers.asi.options import AsiOptions
-from seeingmon.hardware.asi.fake import DEFAULT_TIMING, FakeAsiSdk, FakeTiming
+from seeingmon.hardware.asi.fake import (
+    DEFAULT_SNAPSHOT_TIMING,
+    DEFAULT_TIMING,
+    FakeAsiSdk,
+    FakeTiming,
+)
 from seeingmon.hardware.asi.watchdog import CallWatchdog
 from seeingmon.profile import load_profile
 
@@ -36,6 +41,7 @@ class StubSdk(FakeAsiSdk):
         super().__init__(
             clock,
             timing={key: FakeTiming(0.0, 0.0) for key in DEFAULT_TIMING},
+            snapshot_timing={key: FakeTiming(0.0, 0.0) for key in DEFAULT_SNAPSHOT_TIMING},
             temperature_warmup_s=0.0,
         )
         self._pools = pools

@@ -16,6 +16,10 @@ own bound raises `CameraTimeoutError` too, and `acquire` then climbs the recover
 
 **Video and snapshot.** With `StreamKind.VIDEO`, frames flow after `start` until `stop`.
 With `StreamKind.SNAPSHOT`, each `start` takes one exposure, and one `read_frame` returns it.
+`ActiveStream.frame_period_s` of a snapshot stream is the time from `start` to the frame: the
+exposure plus a readout time that can be far longer than a video frame of the same ROI (the `asi`
+driver takes it from the snapshot model of the profile). The scheduler and `acquire` derive their
+read timeouts from it.
 
 **Factory convention.** `seeingmon.drivers.<name>` defines
 `create(*, profile, clock, options) -> CameraDriver`, and `seeingmon.drivers.create_driver`

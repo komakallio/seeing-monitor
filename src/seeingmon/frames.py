@@ -135,7 +135,11 @@ class ActiveStream:
     """What the camera confirmed after `configure`: the settings it applied and the geometry.
 
     `config` carries the settings as applied, with `roi` filled in. `stream_id` is new for
-    every `configure`, so a window of analysis never spans a reconfiguration.
+    every `configure`, so a window of analysis never spans a reconfiguration. `frame_period_s`
+    is the time between the frames of a video stream. For a snapshot stream it is the time from
+    the call that starts the exposure to the returned frame, which is the exposure plus a readout
+    time that is much longer than a video frame of the same ROI. Callers derive their read
+    timeouts from it.
     """
 
     stream_id: int

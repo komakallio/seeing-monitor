@@ -35,6 +35,7 @@ from seeingmon.hardware.asi.fake import (
     FakeAsiSdk,
     FakeCameraState,
     FakeFrameInfo,
+    FakeTiming,
     default_pixels,
 )
 from seeingmon.profile import derived
@@ -969,7 +970,7 @@ class TestSnapshots:
         assert frame.dropped_before == 0
         assert frame.adc_bits == 14
 
-    def test_a_snapshot_period_includes_the_readout(self) -> None:
+    def test_a_snapshot_period_includes_the_snapshot_readout(self) -> None:
         rig = make_rig().opened()
         active = rig.driver.configure(
             StreamConfig(
@@ -981,7 +982,103 @@ class TestSnapshots:
             )
         )
         survey = reference_profile().mode("bin2")
-        assert active.frame_period_s == pytest.approx(2.0 + derived.readout_time_s(survey, 64))
+        assert active.frame_period_s == pytest.approx(
+            2.0 + derived.snapshot_readout_time_s(survey, 64)
+        )
+        assert active.frame_period_s == pytest.approx(2.0 + 0.27 + 64 * 75e-6)
+
+    @pytest.mark.parametrize(
+        ("roi", "period_s"),
+        [
+            (Roi(1916, 1254, 312, 314), 0.001 + 0.27 + 314 * 75e-6),  # the watch ROI, 20 arcmin
+            (None, 0.001 + 0.27 + 2822 * 75e-6),  # the full frame, as the survey step takes it
+        ],
+        ids=["watch-roi", "full-frame"],
+    )
+    def test_a_snapshot_of_1_ms_takes_what_the_camera_measured(
+        self, roi: Roi | None, period_s: float
+    ) -> None:
+        """The Raspberry Pi 4 took 0.29 s for the watch ROI and 0.48 to 0.53 s for the full frame.
+        The video model gave 7 ms and 53 ms, which left the scheduler 0.1 s for the full frame."""
+        rig = make_rig().opened()
+        config = StreamConfig(
+            mode="bin2", exposure_us=1000, gain=0, kind=StreamKind.SNAPSHOT, roi=roi
+        )
+        active = rig.driver.configure(config)
+        assert active.frame_period_s == pytest.approx(period_s)
+        assert active.frame_period_s is not None
+        assert 0.29 <= active.frame_period_s <= 0.53
+        video = rig.driver.configure(replace(config, kind=StreamKind.VIDEO))
+        assert video.frame_period_s is not None
+        assert video.frame_period_s < 0.06  # the video model is unchanged
+
+    def test_a_video_stream_keeps_the_video_model(self) -> None:
+        rig = make_rig().opened()
+        config = StreamConfig(mode="bin2", exposure_us=1000, gain=0, roi=Roi(0, 0, 64, 64))
+        survey = reference_profile().mode("bin2")
+        assert rig.driver.configure(config).frame_period_s == pytest.approx(
+            derived.frame_period_s(survey, 64, 1000)
+        )
+
+    def test_a_snapshot_read_waits_for_the_frame_that_the_model_expects(self) -> None:
+        rig = make_rig().opened()
+        rig.driver.configure(
+            StreamConfig(mode="bin2", exposure_us=1000, gain=0, kind=StreamKind.SNAPSHOT)
+        )
+        rig.driver.start()
+        started = rig.clock.monotonic_ns()
+        with pytest.raises(CameraTimeoutError):  # the frame needs 0.48 s
+            rig.driver.read_frame(0.3)
+        assert (rig.clock.monotonic_ns() - started) / NS_PER_S == pytest.approx(0.3, abs=0.01)
+        frame = rig.driver.read_frame(1.0)
+        assert frame.roi == Roi(0, 0, 4144, 2822)
+        assert (rig.clock.monotonic_ns() - started) / NS_PER_S == pytest.approx(0.4827, abs=0.01)
+
+    def test_the_bound_of_a_snapshot_read_follows_the_snapshot_period(self) -> None:
+        """A camera that is far slower than the model ends the read at twice the period plus
+        0.5 s, and a snapshot period of 0.48 s makes that 1.5 s, not the 0.6 s of the video
+        model."""
+        slow = {2: FakeTiming(75e-6, 5.0)}  # five seconds of overhead
+        rig = make_rig(sdk={"snapshot_timing": slow}).opened()
+        rig.driver.configure(
+            StreamConfig(mode="bin2", exposure_us=1000, gain=0, kind=StreamKind.SNAPSHOT)
+        )
+        rig.driver.start()
+        started = rig.clock.monotonic_ns()
+        with pytest.raises(CameraTimeoutError, match=r"within 1\.5 s"):
+            rig.driver.read_frame(60.0)
+        waited_s = (rig.clock.monotonic_ns() - started) / NS_PER_S
+        assert waited_s == pytest.approx(2 * (0.001 + 0.27 + 2822 * 75e-6) + 0.5, abs=0.01)
+
+    def test_a_mode_without_a_snapshot_model_never_gets_less_than_the_overhead_floor(self) -> None:
+        profile = reference_profile()
+        bare = profile.model_copy(
+            update={
+                "readout_modes": tuple(
+                    mode.model_copy(
+                        update={"snapshot_overhead_s": None, "snapshot_row_time_us": None}
+                    )
+                    for mode in profile.readout_modes
+                )
+            }
+        )
+        clock = VirtualClock()
+        driver = AsiDriver(api=FakeAsiSdk(clock), profile=bare, clock=clock)
+        driver.open()
+        active = driver.configure(
+            StreamConfig(
+                mode="bin2",
+                exposure_us=1000,
+                gain=0,
+                kind=StreamKind.SNAPSHOT,
+                roi=Roi(1916, 1254, 312, 314),
+            )
+        )
+        # The video row time and an overhead of 0.3 s: more than the 0.29 s that the camera took.
+        period_s = active.frame_period_s
+        assert period_s is not None
+        assert period_s == pytest.approx(0.001 + 0.3 + 314 * 18.5e-6)
+        assert period_s > 0.296
 
     def test_an_exposure_that_does_not_finish_in_time_times_out_and_can_be_awaited_again(
         self,

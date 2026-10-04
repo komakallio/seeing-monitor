@@ -21,6 +21,7 @@ from seeingmon.hardware.asi.api import (
     AsiTimeoutError,
 )
 from seeingmon.hardware.asi.fake import (
+    DEFAULT_SNAPSHOT_TIMING,
     DEFAULT_TIMING,
     FakeAsiSdk,
     FakeCameraState,
@@ -29,6 +30,7 @@ from seeingmon.hardware.asi.fake import (
     default_pixels,
     pixel_bytes,
 )
+from seeingmon.profile import derived, load_profile
 
 RAW8, RAW16 = AsiImageType.RAW8, AsiImageType.RAW16
 
@@ -660,22 +662,87 @@ class TestVideo:
 
 
 class TestExposures:
-    def test_an_exposure_completes_after_the_exposure_and_the_readout(
+    def test_an_exposure_completes_after_the_exposure_and_the_snapshot_readout(
         self, sdk: FakeAsiSdk, camera: int, clock: VirtualClock
     ) -> None:
         sdk.set_control_value(camera, AsiControl.EXPOSURE, 1_000_000)
         sdk.set_roi_format(camera, 16, 8, 2, RAW16)
         sdk.start_exposure(camera)
         assert sdk.get_exposure_status(camera) is AsiExposureStatus.WORKING
-        clock.advance(1.0)  # the readout of 8 rows takes about 1.6 ms more
+        clock.advance(1.0)  # the readout of 8 rows takes 0.27 s plus 0.6 ms more
         assert sdk.get_exposure_status(camera) is AsiExposureStatus.WORKING
-        clock.advance(0.002)
+        clock.advance(0.2)
+        assert sdk.get_exposure_status(camera) is AsiExposureStatus.WORKING
+        clock.advance(0.071)
         assert sdk.get_exposure_status(camera) is AsiExposureStatus.SUCCESS
         buffer = frame_bytes(16, 8)
         sdk.get_data_after_exposure(camera, buffer)
         assert sdk.get_exposure_status(camera) is AsiExposureStatus.IDLE
         with pytest.raises(AsiStateError):  # the data came out once
             sdk.get_data_after_exposure(camera, buffer)
+
+    @pytest.mark.parametrize(
+        ("binning", "width", "height", "overhead_s", "row_time_s"),
+        [
+            (2, 312, 314, 0.27, 75.0e-6),
+            (2, 4144, 2822, 0.27, 75.0e-6),
+            (1, 128, 128, 0.3, 37.6e-6),
+        ],
+        ids=["bin2-watch-roi", "bin2-full-frame", "bin1-assumed"],
+    )
+    def test_a_single_exposure_takes_the_snapshot_model_of_the_binning(
+        self,
+        sdk: FakeAsiSdk,
+        camera: int,
+        clock: VirtualClock,
+        binning: int,
+        width: int,
+        height: int,
+        overhead_s: float,
+        row_time_s: float,
+    ) -> None:
+        """The numbers are those of the snapshot model of the reference profile, which the camera
+        measured: 0.27 s plus 75 us a row in bin2. Bin1 holds the assumption of the profile."""
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 1000)
+        sdk.set_roi_format(camera, width, height, binning, RAW16)
+        expected_s = 0.001 + overhead_s + height * row_time_s
+        assert sdk.snapshot_period_s() == pytest.approx(expected_s, abs=1e-6)
+        sdk.start_exposure(camera)
+        clock.advance(expected_s - 0.001)
+        assert sdk.get_exposure_status(camera) is AsiExposureStatus.WORKING
+        clock.advance(0.002)
+        assert sdk.get_exposure_status(camera) is AsiExposureStatus.SUCCESS
+
+    def test_a_snapshot_takes_longer_than_a_video_frame_of_the_same_roi(
+        self, sdk: FakeAsiSdk, camera: int
+    ) -> None:
+        """What the line model of the video stream missed: 53 ms against about 0.5 s."""
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 1000)
+        sdk.set_roi_format(camera, 4144, 2822, 2, RAW16)
+        assert sdk.frame_period_s() == pytest.approx(0.0534, abs=1e-3)
+        assert sdk.snapshot_period_s() == pytest.approx(0.4827, abs=1e-3)
+
+    def test_the_default_snapshot_timing_is_the_snapshot_model_of_the_reference_profile(
+        self,
+    ) -> None:
+        """A refit of the profile from a real camera changes the table of the fake with it."""
+        profile = load_profile("asi294mm-gs250")
+        assert set(DEFAULT_SNAPSHOT_TIMING) == {mode.sdk_bin for mode in profile.readout_modes}
+        for mode in profile.readout_modes:
+            timing = DEFAULT_SNAPSHOT_TIMING[mode.sdk_bin]
+            assert timing.overhead_s == pytest.approx(derived.snapshot_overhead_s(mode))
+            assert timing.row_time_s * 1e6 == pytest.approx(derived.snapshot_row_time_us(mode))
+
+    def test_the_snapshot_timing_is_a_setting(self, clock: VirtualClock) -> None:
+        sdk = FakeAsiSdk(
+            clock, snapshot_timing={1: FakeTiming(1e-6, 0.5), 2: FakeTiming(2e-6, 1.0)}
+        )
+        camera = sdk.get_camera_property(0).camera_id
+        sdk.open_camera(camera)
+        sdk.init_camera(camera)
+        sdk.set_control_value(camera, AsiControl.EXPOSURE, 1000)
+        sdk.set_roi_format(camera, 8, 100, 2, RAW16)
+        assert sdk.snapshot_period_s() == pytest.approx(0.001 + 1.0 + 100 * 2e-6)
 
     def test_video_and_exposure_exclude_each_other(self, sdk: FakeAsiSdk, camera: int) -> None:
         stream(sdk, camera)

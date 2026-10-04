@@ -44,6 +44,15 @@ while the driver reports the new one. So when the flag differs from the one that
 took up, or none is known (after an open, a recovery, or a restore), `configure` sets the other
 image format and then the requested one.
 
+**Single exposures.** A snapshot stream reports the time from `start` to the returned frame as its
+frame period: the exposure plus the snapshot readout of the profile
+(`seeingmon.profile.derived.snapshot_period_s`). That readout is much longer than the video model of
+the same ROI, because the camera reads the whole frame out before the SDK returns it (a 1 ms
+exposure of a full bin2 frame takes about 0.5 s on the reference camera, where the video model gives
+53 ms). The wait of a read, the read timeout of the scheduler, and the stall check of `acquire`
+follow that period. Video streams keep the video model, so the hang detection of a fast stream
+stays as short as it was.
+
 **Frames.** A `RAW8` buffer becomes a `uint8` array, and a `RAW16` buffer becomes a `uint16` array
 with the ADC value in the high bits, as the SDK delivers it. `dropped_before` is the change of the
 SDK drop counter since the previous frame. The first frame after a recovery step carries
@@ -604,7 +613,7 @@ class AsiDriver:
         applied, roi = self._apply_stream(plan)
         bytes_per_pixel = 2 if plan.image_type is AsiImageType.RAW16 else 1
         if applied.kind is StreamKind.SNAPSHOT:
-            period_s = applied.exposure_us / 1e6 + derived.readout_time_s(plan.mode, roi.height)
+            period_s = derived.snapshot_period_s(plan.mode, roi.height, applied.exposure_us)
         else:
             period_s = derived.frame_period_s(plan.mode, roi.height, applied.exposure_us)
         self._next_stream_id += 1

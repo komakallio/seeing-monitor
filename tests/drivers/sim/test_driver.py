@@ -279,7 +279,7 @@ class TestTiming:
         bin2 = StreamConfig(mode="bin2", exposure_us=1000, gain=0, roi=Roi(2000, 1400, 64, 64))
         assert 1 / (driver.configure(bin2).frame_period_s or 1.0) == pytest.approx(416, rel=0.01)
 
-    def test_a_snapshot_period_adds_the_readout(self, driver: SimDriver) -> None:
+    def test_a_snapshot_period_adds_the_snapshot_readout(self, driver: SimDriver) -> None:
         config = StreamConfig(
             mode="bin2",
             exposure_us=1_000_000,
@@ -288,7 +288,35 @@ class TestTiming:
             roi=Roi(0, 0, 64, 64),
         )
         period = driver.configure(config).frame_period_s
-        assert period == pytest.approx(1.0 + 1.22e-3 + 64 * 18.5e-6)
+        # The single-exposure model of the profile, 0.27 s plus 75 us a row, and not the video
+        # readout of 1.22 ms plus 18.5 us a row.
+        assert period == pytest.approx(1.0 + 0.27 + 64 * 75e-6)
+
+    def test_a_snapshot_arrives_after_the_period_and_the_time_is_the_middle_of_the_exposure(
+        self, driver: SimDriver, clock: VirtualClock
+    ) -> None:
+        active = driver.configure(
+            StreamConfig(mode="bin2", exposure_us=1000, gain=0, kind=StreamKind.SNAPSHOT)
+        )
+        assert active.frame_period_s == pytest.approx(0.001 + 0.27 + 2822 * 75e-6)
+        driver.start()
+        started = clock.utc_ns()
+        frame = driver.read_frame(timeout_s=5.0)
+        assert frame.t_arrival_ns - started == pytest.approx(0.4827 * NS_PER_S, abs=1e6)
+        assert frame.t_utc_ns == started + 500_000  # the middle of the 1 ms exposure
+
+    def test_a_snapshot_read_that_is_too_short_times_out(self, driver: SimDriver) -> None:
+        """The frame of a full-frame snapshot needs 0.48 s, so a wait of 0.4 s ends in a timeout."""
+        driver.configure(
+            StreamConfig(mode="bin2", exposure_us=1000, gain=0, kind=StreamKind.SNAPSHOT)
+        )
+        driver.start()
+        with pytest.raises(CameraTimeoutError):
+            driver.read_frame(timeout_s=0.4)
+
+    def test_a_video_period_keeps_the_video_readout(self, driver: SimDriver) -> None:
+        config = StreamConfig(mode="bin2", exposure_us=1000, gain=0, roi=Roi(0, 0, 64, 64))
+        assert driver.configure(config).frame_period_s == pytest.approx(1.22e-3 + 64 * 18.5e-6)
 
     def test_timestamps_follow_the_definition_in_frame(
         self, driver: SimDriver, clock: VirtualClock

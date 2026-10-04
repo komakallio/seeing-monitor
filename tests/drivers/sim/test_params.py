@@ -9,7 +9,7 @@ import pytest
 
 from seeingmon.drivers.sim.params import GainPoint, SimParams, reference_modes
 from seeingmon.frames import Roi
-from seeingmon.profile import Profile, load_profile
+from seeingmon.profile import Profile, derived, load_profile
 
 
 @pytest.fixture(scope="module")
@@ -30,6 +30,44 @@ def test_frame_periods_match_the_measured_camera() -> None:
     # Bin2, 64 rows: 1.22 ms + 64 x 18.5 us = 2.4 ms, or 416 fps (417 measured at 0.5 ms).
     bin2 = SimParams.reference("bin2")
     assert 1 / bin2.readout_time_s(64) == pytest.approx(416, rel=0.02)
+
+
+def test_a_single_exposure_takes_the_snapshot_model_of_the_profile() -> None:
+    # The Raspberry Pi 4 took 0.29 s for 314 rows and 0.48 to 0.53 s for the full frame, where the
+    # video readout of the same ROI takes 7 ms and 53 ms.
+    bin2 = SimParams.reference("bin2")
+    assert bin2.snapshot_readout_time_s(314) == pytest.approx(0.27 + 314 * 75e-6)
+    assert bin2.snapshot_readout_time_s(2822) == pytest.approx(0.27 + 2822 * 75e-6)
+    assert bin2.readout_time_s(2822) == pytest.approx(1.22e-3 + 2822 * 18.5e-6)
+
+
+def test_a_mode_without_a_snapshot_model_takes_the_video_row_time_and_the_overhead_floor() -> None:
+    bin1 = SimParams.reference("bin1")
+    assert bin1.snapshot_overhead_s is None
+    assert bin1.snapshot_readout_time_s(128) == pytest.approx(0.3 + 128 * 37.6e-6)
+    slow = dataclasses.replace(bin1, frame_overhead_s=0.5)  # above the floor: the overhead stays
+    assert slow.snapshot_readout_time_s(128) == pytest.approx(0.5 + 128 * 37.6e-6)
+
+
+@pytest.mark.parametrize("name", ["bin1", "bin2"])
+def test_the_snapshot_readout_equals_the_profile_for_every_height(
+    profile: Profile, name: str
+) -> None:
+    params = SimParams.from_profile(profile, name)
+    mode = profile.mode(name)
+    for rows in (2, 64, 314, 1000, 2822):
+        assert params.snapshot_readout_time_s(rows) == pytest.approx(
+            derived.snapshot_readout_time_s(mode, rows), rel=1e-12
+        )
+
+
+def test_the_snapshot_timing_goes_together_and_is_not_negative() -> None:
+    with pytest.raises(ValueError, match="go together"):
+        SimParams(snapshot_overhead_s=0.3)
+    with pytest.raises(ValueError, match="go together"):
+        SimParams(snapshot_row_time_s=75e-6)
+    with pytest.raises(ValueError, match="not be negative"):
+        SimParams(snapshot_overhead_s=-0.1, snapshot_row_time_s=75e-6)
 
 
 def test_the_reference_equals_the_reference_profile(profile: Profile) -> None:

@@ -48,6 +48,13 @@ class FakeCameraDriver:
     The fake enforces the lifecycle, rounds the ROI to the ROI rules (width to a multiple of 8,
     height to a multiple of 2, as the vendor SDK does), and records every call in `calls`.
     Script failures with `fail_reads`, `drop_frames`, `fail_open`, and `fail_recover`.
+
+    A video frame takes the larger of the exposure and the readout (`overhead_s` plus the rows
+    times `row_time_s`). A snapshot takes the exposure plus `snapshot_overhead_s` plus the rows
+    times `snapshot_row_time_s`. A snapshot number that you leave out takes the video number, so
+    the readout of a snapshot stays short. Pass the single-exposure numbers of a profile (for
+    example `snapshot_overhead_s=0.27` and `snapshot_row_time_s=75e-6` for the reference camera in
+    bin2) to see the long reads of a real camera.
     """
 
     def __init__(
@@ -58,6 +65,8 @@ class FakeCameraDriver:
         adc_bits: int = 14,
         overhead_s: float = 0.0065,
         row_time_s: float = 37.6e-6,
+        snapshot_overhead_s: float | None = None,
+        snapshot_row_time_s: float | None = None,
         temperature_c: float | None = 18.0,
         frame_factory: FrameFactory | None = None,
     ) -> None:
@@ -66,6 +75,12 @@ class FakeCameraDriver:
         self._adc_bits = adc_bits
         self._overhead_s = overhead_s
         self._row_time_s = row_time_s
+        self._snapshot_overhead_s = (
+            overhead_s if snapshot_overhead_s is None else snapshot_overhead_s
+        )
+        self._snapshot_row_time_s = (
+            row_time_s if snapshot_row_time_s is None else snapshot_row_time_s
+        )
         self._temperature_c = temperature_c
         self._frame_factory = frame_factory
         self.calls: list[tuple[str, Any]] = []
@@ -246,13 +261,10 @@ class FakeCameraDriver:
         self._running = False
 
     def _frame_period_s(self, config: StreamConfig, roi: Roi) -> float:
-        readout_s = self._overhead_s + roi.height * self._row_time_s
         exposure_s = config.exposure_us / 1e6
-        return (
-            exposure_s + readout_s
-            if config.kind is StreamKind.SNAPSHOT
-            else max(exposure_s, readout_s)
-        )
+        if config.kind is StreamKind.SNAPSHOT:
+            return exposure_s + self._snapshot_overhead_s + roi.height * self._snapshot_row_time_s
+        return max(exposure_s, self._overhead_s + roi.height * self._row_time_s)
 
 
 class FakeSink:

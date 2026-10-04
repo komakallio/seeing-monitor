@@ -9,6 +9,9 @@ notes (`docs/research-notes.md`, "Camera access options") report about the real 
   `set_start_position`.
 - **Frame timing.** Video frames complete one frame period apart, where the period is the larger
   of the exposure and the readout time (an overhead plus the rows times the row time).
+- **Single exposures.** An exposure completes after the exposure plus a snapshot readout time, an
+  overhead plus the rows times a row time that differ from the video numbers by a large factor
+  (`DEFAULT_SNAPSHOT_TIMING`: the camera reads the whole frame out before the SDK returns it).
 - **A small buffer.** The camera keeps the newest `buffer_frames` frames. A late reader loses the
   oldest frames, and the drop counter counts them. Stopping capture resets the counter.
 - **Silent geometry changes.** `set_roi_format` during capture succeeds without effect, and you
@@ -79,6 +82,14 @@ DEFAULT_TIMING: Mapping[tuple[int, bool], FakeTiming] = {
     (1, True): FakeTiming(30.0e-6, 5.88e-3),
     (2, False): FakeTiming(18.5e-6, 1.22e-3),
     (2, True): FakeTiming(18.5e-6, 1.22e-3),
+}
+# Single exposures on the reference camera, by SDK binning: the same numbers as the snapshot model
+# of `profiles/asi294mm-gs250.toml` (a Raspberry Pi 4, October 3, 2026). Bin1 is unmeasured, so it
+# holds what the profile assumes for a mode without a model: the video row time and an overhead of
+# 0.3 s.
+DEFAULT_SNAPSHOT_TIMING: Mapping[int, FakeTiming] = {
+    1: FakeTiming(37.6e-6, 0.3),
+    2: FakeTiming(75.0e-6, 0.27),
 }
 DEFAULT_ADC_BITS: Mapping[tuple[int, bool], int] = {
     (1, False): 12,
@@ -169,7 +180,8 @@ class FakeAsiSdk:
         bins: The supported SDK binning factors.
         temperature_c: The sensor temperature, or `None` for a camera without a sensor.
         buffer_frames: How many frames the camera holds before it overwrites the oldest.
-        timing: The readout timing, by (binning, high-speed mode).
+        timing: The readout timing of a video stream, by (binning, high-speed mode).
+        snapshot_timing: The time of a single exposure beyond the exposure, by binning.
         adc_bits: The ADC depth, by (binning, high-speed mode).
         pixel_factory: Renders the ADC counts of a frame. The default is `default_pixels`.
         start_alignment: The ROI origin rounds down to a multiple of this many pixels.
@@ -197,6 +209,7 @@ class FakeAsiSdk:
         temperature_c: float | None = 18.3,
         buffer_frames: int = 3,
         timing: Mapping[tuple[int, bool], FakeTiming] | None = None,
+        snapshot_timing: Mapping[int, FakeTiming] | None = None,
         adc_bits: Mapping[tuple[int, bool], int] | None = None,
         pixel_factory: PixelFactory | None = None,
         start_alignment: int = 1,
@@ -217,6 +230,7 @@ class FakeAsiSdk:
         self._bins = bins
         self._buffer_frames = buffer_frames
         self._timing = dict(timing or DEFAULT_TIMING)
+        self._snapshot_timing = dict(snapshot_timing or DEFAULT_SNAPSHOT_TIMING)
         self._adc_bits = dict(adc_bits or DEFAULT_ADC_BITS)
         self._pixel_factory = pixel_factory or default_pixels
         self._start_alignment = start_alignment
@@ -354,6 +368,11 @@ class FakeAsiSdk:
         """The frame period of the current settings, in seconds."""
         return self._period_ns() / NS_PER_S
 
+    def snapshot_period_s(self) -> float:
+        """The time of a single exposure at the current settings, in seconds: the exposure plus
+        the snapshot readout."""
+        return (self._controls[AsiControl.EXPOSURE] * 1000 + self._snapshot_readout_ns()) / NS_PER_S
+
     # --- The camera state ---
 
     def _reset_camera(self, *, power_on: bool) -> None:
@@ -443,6 +462,13 @@ class FakeAsiSdk:
 
     def _readout_ns(self) -> int:
         timing = self._timing[(self._bin, self._high_speed())]
+        return round(timing.overhead_s * NS_PER_S) + self._height * round(
+            timing.row_time_s * NS_PER_S
+        )
+
+    def _snapshot_readout_ns(self) -> int:
+        """The time that a single exposure takes beyond the exposure."""
+        timing = self._snapshot_timing[self._bin]
         return round(timing.overhead_s * NS_PER_S) + self._height * round(
             timing.row_time_s * NS_PER_S
         )
@@ -787,7 +813,9 @@ class FakeAsiSdk:
                 raise error_for("start_exposure", AsiErrorCode.EXPOSURE_IN_PROGRESS)
             exposure_ns = self._controls[AsiControl.EXPOSURE] * 1000
             self._exposure_status = AsiExposureStatus.WORKING
-            self._exposure_done_ns = self._clock.monotonic_ns() + exposure_ns + self._readout_ns()
+            self._exposure_done_ns = (
+                self._clock.monotonic_ns() + exposure_ns + self._snapshot_readout_ns()
+            )
             self._exposure_info = self._frame_info(self._snapshots)
 
     def stop_exposure(self, camera_id: int) -> None:
@@ -846,6 +874,7 @@ class FakeUsbResetter:
 
 __all__ = [
     "DEFAULT_ADC_BITS",
+    "DEFAULT_SNAPSHOT_TIMING",
     "DEFAULT_TIMING",
     "FakeAsiSdk",
     "FakeCameraState",
