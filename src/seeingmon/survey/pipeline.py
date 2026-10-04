@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,7 @@ from seeingmon.survey.detect import (
     detect_stars,
 )
 from seeingmon.survey.field import catalog_field
+from seeingmon.survey.flat_library import ActiveFlat
 from seeingmon.survey.geometry import FloatArray
 from seeingmon.survey.pointing import (
     POINTING_ALGORITHM,
@@ -101,7 +103,7 @@ from seeingmon.survey.quality import (
     field_stars,
 )
 from seeingmon.survey.rawdata import native_counts
-from seeingmon.survey.sky import FlatModel, UnitFlat, load_flat
+from seeingmon.survey.sky import FlatModel, UnitFlat
 from seeingmon.survey.star_epoch import FrameStars
 from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.trail import TrailModel
@@ -247,6 +249,9 @@ def build_pipeline(spec: PipelineSpec, clock: Clock | None = None) -> SurveyPipe
         if config.calibration_dir
         else None
     )
+    # The flat is the active one of the flat library, then `flat_file`, then a unit flat. The
+    # pipeline asks again before each frame, so an activation needs no restart.
+    active = ActiveFlat.from_config(config)
     return SurveyPipeline(
         station_id=spec.station_id,
         profile=profile,
@@ -255,7 +260,8 @@ def build_pipeline(spec: PipelineSpec, clock: Clock | None = None) -> SurveyPipe
         config=config,
         hot_pixels=hot,
         dark_library=library,
-        flat=load_flat(config.flat_file),
+        flat=active.current(),
+        flat_source=active.current,
         clock=clock,
     )
 
@@ -323,6 +329,7 @@ class SurveyPipeline:
         hot_pixels: npt.NDArray[np.bool_] | None = None,
         dark_library: DarkLibrary | None = None,
         flat: FlatModel | None = None,
+        flat_source: Callable[[], FlatModel] | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._station_id = station_id
@@ -333,6 +340,7 @@ class SurveyPipeline:
         self._hot = hot_pixels
         self._library = dark_library
         self._flat: FlatModel = flat or UnitFlat()
+        self._flat_source = flat_source  # asked before each frame: one `stat` when nothing changed
         self._hot_cache: dict[str, npt.NDArray[np.bool_]] = {}
         self._clock = clock or SystemClock()
         cfg = self._config
@@ -377,6 +385,8 @@ class SurveyPipeline:
         fraction. `sky_quality` forces the sky quality step on or off. The default (`None`) runs it
         for frames with an exposure of at least `SkyConfig.min_exposure_s`.
         """
+        if self._flat_source is not None:
+            self._flat = self._flat_source()
         timings: dict[str, float] = {}
         started = self._clock.monotonic_ns()
         notes: list[str] = []

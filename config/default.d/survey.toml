@@ -20,8 +20,10 @@ calibration_dir = ""
 # A measured flat field of the survey mode: a 2-D image of the whole sensor with a median of 1 (.npy
 # or FITS). `seeingmon flat make` builds one from frames of a lit panel, and `seeingmon flat build` from the
 # survey frames of the night sky (which gives no tilt, so `--base-flat` takes the tilt from a panel flat).
-# Empty means a unit flat: no correction. The previews of the survey frames and the live view of the
-# Align page divide by the flat too, when the dark library has a set for the frame.
+# Empty means a unit flat: no correction. A flat that you activate on the Flat page of the web UI wins
+# over this file (the flat library is calibration_dir/flats/), and it needs no restart. The previews of
+# the survey frames and the live view of the Align page divide by the flat too, when the dark library
+# has a set for the frame.
 flat_file = ""
 # The UTC hour that ends one night and starts the next. Pick an hour when the Sun is up at your
 # site, so that no night splits in two. The star epochs and the transparency reference group by
@@ -120,6 +122,16 @@ hot_min_excess_dn = 3.0        # and by at least this many counts.
 doubling_c = 6.0               # The prior doubling temperature of the dark current.
 temperature_tolerance_c = 3.0  # A set this close to the sensor temperature counts for `dark_due`.
 max_age_days = 183.0           # A set older than this (about six months) does not count.
+
+# The flat session of the web UI: it takes frames of a light source over the aperture, and it takes
+# the readout mode and the gain from [survey.dark].
+[survey.flat]
+start_exposure_s = 0.02        # The search for the exposure starts here.
+max_exposure_s = 1.0           # The longest exposure that the search may reach.
+max_iterations = 8             # The most frames that the search takes.
+level_tolerance = 0.1          # The search stops within this share of the target level.
+min_level_fraction = 0.25      # A weaker light at the longest exposure (share of full scale) is too dim.
+drift_percent = 3.0            # A frame this far from the median level warns of a drifting light.
 
 # Aperture photometry of the matched stars: a circle of aperture_px (stretched by the trail), and
 # a ring around it for the background.

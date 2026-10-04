@@ -102,6 +102,21 @@ class DarkConfig(SectionModel):
     max_age_days: float = 183.0  # a set older than this does not count
 
 
+class FlatConfig(SectionModel):
+    """The flat session of the web UI (`seeingmon.survey.flat_session`).
+
+    The session takes the readout mode and the gain from `[survey.dark]`, because the bias of the
+    flat comes from the dark library of that mode and gain.
+    """
+
+    start_exposure_s: float = 0.02  # where the search for the exposure starts
+    max_exposure_s: float = 1.0  # the longest exposure that the search may use
+    max_iterations: int = 8  # the most frames that the search takes
+    level_tolerance: float = 0.1  # the search stops within this share of the target level
+    min_level_fraction: float = 0.25  # a weaker light at the longest exposure is too dim
+    drift_percent: float = 3.0  # a frame this far from the median level warns of a drifting light
+
+
 class PhotometryConfig(SectionModel):
     """Aperture photometry of the matched stars (`seeingmon.survey.photometry`)."""
 
@@ -184,6 +199,7 @@ class SurveyConfig(SectionModel):
     solve: SolveConfig = SolveConfig()
     cloud: CloudConfig = CloudConfig()
     dark: DarkConfig = DarkConfig()
+    flat: FlatConfig = FlatConfig()
     photometry: PhotometryConfig = PhotometryConfig()
     zero_point: ZeroPointConfig = ZeroPointConfig()
     sky: SkyConfig = SkyConfig()
