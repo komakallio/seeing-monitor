@@ -7,7 +7,9 @@ right order. The parts, and where they come from:
 - **Storage:** `open_storage(config, clock, sinks=build_sinks(config))` opens the store, the segment
   files, the forwarder, and retention.
 - **Camera:** `RemoteCameraDriver.from_config`, a driver that talks to `acquire`.
-- **Fast analysis:** `create_fast_analyzer(profile, [fastpath], station_id)`.
+- **Fast analysis:** `create_fast_analyzer(profile, [fastpath], station_id)`. The scheduler gets it
+  through a `LiveFastAnalyzer`, which hands every frame to the live video of Polaris after the
+  analysis (`seeingmon.services.core.live`).
 - **Survey analysis:** the survey analyzer over an executor from `make_survey_executor`, which is a
   worker process at a low priority. The `PointingTracker` of the analyzer is the pointing provider.
 - **Survey frames:** `SurveyFrames` wraps the survey analyzer. It keeps the newest frames in RAM,
@@ -22,18 +24,20 @@ right order. The parts, and where they come from:
   you configure it. `[sqm] source` picks the SQM-LE reader: `tcp` polls the unit over the LAN, and
   `influx` reads the readings that another program wrote to InfluxDB (`create_sqm_reader`).
 - **Alignment helper:** the live view and the quick solve (`seeingmon.services.core.alignment`).
-- **RPC and streams:** an `IpcServer` at the core address with the channels `rpc` and `alignment`.
+- **RPC and streams:** an `IpcServer` at the core address with the channels `rpc`, `alignment`,
+  and `polaris`.
 
 **Threads.** The scheduler thread runs the loop, and it is the only thread that touches the camera,
 the analyzers, and the writers of the scheduler. The housekeeping thread forwards rows to the sinks,
 closes idle segments, and runs retention. The heater and SQM-LE threads run when those parts are
 configured. The frame writer thread writes the previews and the FITS files of the survey frames.
 The supervisor thread runs the periodic jobs: the `health` record, the collection of the events of
-`acquire`, and the heartbeat to systemd. The alignment helper has two threads, and the IPC server
-has its own. All of them stop in this order: new commands, the scheduler (which closes the camera),
-the alignment helper, the heater and the SQM-LE reader, the supervisor, the survey worker, the
-frame writer (which writes the files that wait), and last the housekeeping and the storage, so that
-the final rows reach the disk.
+`acquire`, and the heartbeat to systemd. The alignment helper has two threads, the video of
+Polaris has one (it encodes frames only while a client watches), and the IPC server has its own.
+All of them stop in this order: new commands, the scheduler (which closes the camera), the
+alignment helper, the video of Polaris, the heater and the SQM-LE reader, the supervisor, the
+survey worker, the frame writer (which writes the files that wait), and last the housekeeping and
+the storage, so that the final rows reach the disk.
 
 **A run that a test drives.** With `threads=False`, `start` starts no thread. The test steps the
 scheduler and calls `tick`, which does the periodic work and one pass of the housekeeping, on the
@@ -68,6 +72,7 @@ from seeingmon.hardware.heater import HeaterConfig, HeaterController, create_hea
 from seeingmon.hardware.power import CommandRunner, PowerConfig, PowerCycle
 from seeingmon.hardware.sqm import SqmConfig, SqmReader
 from seeingmon.hardware.sqm_factory import create_sqm_reader
+from seeingmon.profile import ProfileError
 from seeingmon.records import ReferenceRecord
 from seeingmon.scheduler import (
     Command,
@@ -98,9 +103,15 @@ from seeingmon.services.core.escalation import Escalator
 from seeingmon.services.core.events import EventPump, EventSource, EventWriter
 from seeingmon.services.core.health import HealthReporter, build_run_record
 from seeingmon.services.core.history import StoreZeroPointHistory
+from seeingmon.services.core.live import LiveFastAnalyzer, PolarisStream, live_view
 from seeingmon.services.core.liveness import BeatClock, Liveness
 from seeingmon.services.core.nightly import NightlySummary
 from seeingmon.services.core.periodic import PeriodicTasks
+from seeingmon.services.core.polaris import (
+    DEFAULT_APERTURE_PX,
+    FrameSlot,
+    PolarisRenderer,
+)
 from seeingmon.services.core.rpc import CoreRpc
 from seeingmon.services.core.settings import AlignmentSettings, ReplaySettings
 from seeingmon.services.core.skyflags import SkyFlagWriter
@@ -112,7 +123,12 @@ from seeingmon.services.ipc.server import IpcServer
 from seeingmon.services.ipc.stream import StreamWindow
 from seeingmon.services.notify import SystemdNotifier
 from seeingmon.services.remote import RemoteCameraDriver
-from seeingmon.services.web.contract import ALIGNMENT_CHANNEL, RPC_CHANNEL
+from seeingmon.services.web.contract import (
+    ALIGNMENT_CHANNEL,
+    POLARIS_CHANNEL,
+    RPC_CHANNEL,
+    LiveSeeingView,
+)
 from seeingmon.sinks.base import Sink
 from seeingmon.store.db import DuplicateRecordError
 from seeingmon.store.retention import DiskProbe
@@ -269,6 +285,7 @@ class CoreApp:
         )
 
         self.fast = parts.fast or create_fast_analyzer(self.profile, fast_config, self.station_id)
+        self._build_polaris()
         self._build_survey()
         self._build_hardware()
         self._build_alignment()
@@ -285,7 +302,7 @@ class CoreApp:
         self.scheduler: Scheduler = build_scheduler(
             config,
             driver=self.driver,
-            fast=self.fast,
+            fast=self.live_fast,
             survey=self.survey,
             pointing=self.pointing,
             records=SkyFlagWriter(
@@ -309,6 +326,56 @@ class CoreApp:
         self._register_handlers()
         self._build_reporting()
         self._build_server()
+
+    def _build_polaris(self) -> None:
+        """The live video of Polaris, and the analyzer that feeds it.
+
+        `live_fast` wraps the fast analyzer, and the scheduler gets the wrapper. The stream asks
+        the profile for the plate scale of a mode, and the analyzer for the aperture of a stream,
+        so that the width of the star in the video follows the stored windows.
+        """
+        settings = self.settings.polaris
+        scales: dict[str, float | None] = {}
+        apertures: dict[tuple[str, int, int, int, int], float] = {}
+
+        def scale_for(mode: str) -> float | None:
+            if mode not in scales:
+                try:
+                    scales[mode] = self.profile.plate_scale_arcsec_per_px(mode)
+                except ProfileError:
+                    scales[mode] = None
+            return scales[mode]
+
+        def aperture_for(slot: FrameSlot) -> float:
+            bits = 8 * slot.data.dtype.itemsize
+            key = (slot.mode, slot.gain, slot.exposure_us, slot.adc_bits, bits)
+            if key not in apertures:
+                setup = getattr(self.fast, "kernel_setup", None)
+                apertures[key] = (
+                    DEFAULT_APERTURE_PX if setup is None else setup(*key)[0].aperture_diameter_px
+                )
+            return apertures[key]
+
+        self.polaris = PolarisStream(
+            settings,
+            clock=self.clock,
+            renderer=PolarisRenderer(settings, scale_for=scale_for, aperture_for=aperture_for),
+            live=self.live_seeing,
+        )
+        self.live_fast = LiveFastAnalyzer(self.fast, self.polaris)
+        self._live_cache: tuple[Any, LiveSeeingView | None] = (None, None)
+
+    def live_seeing(self) -> LiveSeeingView | None:
+        """The rolling seeing value of the fast analyzer as the contract describes it, or `None`.
+
+        The video and the `live_seeing` method both call it, so it converts a new value once.
+        """
+        current = self.live_fast.live
+        cached, view = self._live_cache
+        if current is not cached:
+            view = live_view(current)
+            self._live_cache = (current, view)
+        return view
 
     def _build_survey(self) -> None:
         parts, config = self.parts, self.config
@@ -672,6 +739,8 @@ class CoreApp:
             writer=self.events,
             dark_library=self.dark_reader.view,
             on_accepted=self._on_command_accepted,
+            live_seeing=self.live_seeing,
+            polaris=self.polaris,
         )
         self.health = HealthReporter(
             clock=self.clock,
@@ -707,11 +776,16 @@ class CoreApp:
             max_message_bytes=services.max_rpc_bytes,
         )
         stream_service = self.rpc.stream_service(StreamWindow(messages=8, bytes=64 * 1024 * 1024))
+        polaris_service = self.rpc.polaris_service(StreamWindow(messages=16, bytes=8 * 1024 * 1024))
         self._rpc_service = rpc_service
         self.server = IpcServer(
             self.endpoint,
             self._key,
-            {RPC_CHANNEL: rpc_service, ALIGNMENT_CHANNEL: stream_service},
+            {
+                RPC_CHANNEL: rpc_service,
+                ALIGNMENT_CHANNEL: stream_service,
+                POLARIS_CHANNEL: polaris_service,
+            },
             handshake_timeout_s=services.handshake_timeout_s,
             name="core",
         )
@@ -852,6 +926,7 @@ class CoreApp:
         self.bound_endpoint = self.server.start()
         if self.threads:
             self.alignment.start()
+            self.polaris.start()
             self._spawn("core-scheduler", self._run_scheduler, fatal=True)
             self._spawn("core-housekeeping", self._run_housekeeping, fatal=True)
             if self.heater is not None:
@@ -997,6 +1072,7 @@ class CoreApp:
         elif self._started:
             self.scheduler.close()
         self.alignment.stop()
+        self.polaris.stop()
         self._close_night()
         for name in ("core-heater", "core-sqm", "core-supervisor"):
             thread = self._threads.get(name)

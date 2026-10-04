@@ -1,19 +1,23 @@
-"""What `core` serves: the RPC methods and the live-view stream.
+"""What `core` serves: the RPC methods and the live-view streams.
 
-`core` listens at one address and serves two channels (see `seeingmon.services.web.contract`, which
-`web` owns and `core` implements):
+`core` listens at one address and serves three channels (see `seeingmon.services.web.contract`,
+which `web` owns and `core` implements):
 
 - **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, `alignment_state`,
-  `alignment_reset_focus`, and `dark_library`. Every method answers at once, so all of them run
-  inline on the connection thread and no worker is needed. `alignment_reset_focus` restarts the
-  best focus value of the helper and answers `{"reset": true}`. `dark_library` answers with the
-  `DarkLibraryView` as JSON: the sets of the dark library, whether it is due, the model, the sensor
-  temperature, and the progress of the latest dark session. `core` adds one method that the
-  contract does not name: `results` answers with the latest commissioning results (the `detail` of
-  each result), so that `seeingmon burst --wait` can show the outcome of its task. A client that
-  does not know the method never calls it.
+  `alignment_reset_focus`, `dark_library`, and `live_seeing`. Every method answers at once, so
+  all of them run inline on the connection thread and no worker is needed.
+  `alignment_reset_focus` restarts the best focus value of the helper and answers
+  `{"reset": true}`. `dark_library` answers with the `DarkLibraryView` as JSON: the sets of the
+  dark library, whether it is due, the model, the sensor temperature, and the progress of the
+  latest dark session. `live_seeing` answers with the `LiveSeeingView`, the rolling seeing value of
+  the fast stream, or with `null` while `core` has none. `core` adds one method that the contract
+  does not name: `results` answers with the latest commissioning results (the `detail` of each
+  result), so that `seeingmon burst --wait` can show the outcome of its task. A client that does
+  not know the method never calls it.
 - **`alignment`**, a `StreamService`. The helper takes each client as a `StreamSender` and pushes
   the frames of the live view (see `seeingmon.services.core.alignment.helper`).
+- **`polaris`**, a `StreamService`. `PolarisStream` takes each client as a `StreamSender` and pushes
+  the frames of the live video of Polaris (see `seeingmon.services.core.live`).
 
 **Commands.** `submit` decodes the command (a malformed command raises a `CodecError`, which the
 connection layer turns into an `InvalidParams` error) and hands it to `Scheduler.submit`, which
@@ -50,11 +54,13 @@ from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
     AlignmentState,
     DarkLibraryView,
+    LiveSeeingView,
     decode_command,
     encode_result,
     encode_status,
@@ -63,6 +69,7 @@ from seeingmon.services.web.contract import (
 METHOD_RESULTS = "results"
 MAX_RESULTS = 32
 LIVE_VIEW_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+POLARIS_MAX_MESSAGE_BYTES = 1024 * 1024
 
 _log = logging.getLogger(__name__)
 
@@ -87,8 +94,14 @@ class AlignmentPort(Protocol):
     def attach(self, sender: StreamSender, params: Mapping[str, Any] | None = None) -> None: ...
 
 
+class PolarisPort(Protocol):
+    """The part of the video of Polaris that the server uses. `PolarisStream` fits."""
+
+    def attach(self, sender: StreamSender, params: Mapping[str, Any] | None = None) -> None: ...
+
+
 class CoreRpc:
-    """The methods of the `rpc` channel, and the builders of the two services."""
+    """The methods of the `rpc` channel, and the builders of the stream services."""
 
     def __init__(
         self,
@@ -100,10 +113,14 @@ class CoreRpc:
         writer: EventWriter | None = None,
         dark_library: Callable[[], DarkLibraryView] | None = None,
         on_accepted: Callable[[Command, CommandResult], None] | None = None,
+        live_seeing: Callable[[], LiveSeeingView | None] | None = None,
+        polaris: PolarisPort | None = None,
     ) -> None:
         self.instance = instance
         self._scheduler = scheduler
         self._alignment = alignment
+        self._live_seeing = live_seeing
+        self._polaris = polaris
         self._check_replay = check_replay
         self._writer = writer
         self._dark_library = dark_library
@@ -125,6 +142,8 @@ class CoreRpc:
         }
         if self._dark_library is not None:
             methods[METHOD_DARK_LIBRARY] = self._answer_dark_library
+        if self._live_seeing is not None:
+            methods[METHOD_LIVE_SEEING] = self._answer_live_seeing
         return methods
 
     def _ping(self, params: Mapping[str, Any]) -> Any:
@@ -143,6 +162,11 @@ class CoreRpc:
     def _answer_dark_library(self, params: Mapping[str, Any]) -> Any:
         assert self._dark_library is not None
         return self._dark_library().model_dump(mode="json")
+
+    def _answer_live_seeing(self, params: Mapping[str, Any]) -> Any:
+        assert self._live_seeing is not None
+        live = self._live_seeing()
+        return None if live is None else live.model_dump(mode="json")
 
     def _results(self, params: Mapping[str, Any]) -> Any:
         recent = self._scheduler.results()[-MAX_RESULTS:]
@@ -211,5 +235,16 @@ class CoreRpc:
             name="core-alignment",
         )
 
+    def polaris_service(self, window: StreamWindow) -> StreamService:
+        """The `StreamService` of the `polaris` channel. Raises `ValueError` without a stream."""
+        if self._polaris is None:
+            raise ValueError("this CoreRpc has no video of Polaris to serve")
+        return StreamService(
+            self._polaris.attach,
+            max_window=window,
+            max_message_bytes=POLARIS_MAX_MESSAGE_BYTES,
+            name="core-polaris",
+        )
 
-__all__ = ["METHOD_RESULTS", "AlignmentPort", "CoreRpc", "SchedulerPort"]
+
+__all__ = ["METHOD_RESULTS", "AlignmentPort", "CoreRpc", "PolarisPort", "SchedulerPort"]
