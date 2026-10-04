@@ -54,6 +54,12 @@ BoolArray = npt.NDArray[np.bool_]
 _MATCHED_KERNEL = np.array([[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]], dtype=np.float32)
 _PIXEL_VARIANCE = 1.0 / 12.0  # the variance of a uniform distribution across one pixel
 
+# `paint_disks` paints stars in batches that share a window of one of these half-widths. A disk
+# that reaches farther holds so many pixels that a loop of its own costs no more than a batch.
+_BATCH_WINDOWS = (4, 8, 16, 32)
+_BATCH_ELEMENTS = 1_000_000  # the most pixels that one batch of `paint_disks` examines
+_BOX_KEYS = ("xmin", "xmax", "ymin", "ymax")
+
 
 class DetectionError(Exception):
     """The detector could not process the frame."""
@@ -202,6 +208,60 @@ class Detections:
         return StarList(x=self.x[keep], y=self.y[keep], flux=np.maximum(self.flux[keep], 1e-3))
 
 
+def paint_disks(mask: BoolArray, x: FloatArray, y: FloatArray, radius: FloatArray) -> None:
+    """Set the pixels of a disk around each position, in place. `mask` is `(height, width)`.
+
+    A pixel is in the disk of a star when its center lies at most `radius` pixels from the
+    position. A disk reaches `ceil(radius)` pixels from the nearest pixel of its center, and the
+    parts outside the frame stay out. The radii must be finite.
+
+    The function paints the stars of similar size together: it builds the pixels of a square
+    window around each star, tests them all at once, and sets the pixels that pass. A disk that
+    reaches more than the largest window (32 pixels) gets a loop of its own.
+    """
+    height, width = mask.shape
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    radius = np.asarray(radius, dtype=np.float64)
+    reach = np.ceil(radius).astype(np.intp)
+    center_x = np.rint(x).astype(np.intp)
+    center_y = np.rint(y).astype(np.intp)
+    square = radius * radius
+    batch = np.searchsorted(_BATCH_WINDOWS, reach, side="left")  # the smallest window that fits
+    for index in np.unique(batch):
+        members = np.flatnonzero(batch == index)
+        if index == len(_BATCH_WINDOWS):
+            for i in members:
+                _paint_disk(mask, x[i], y[i], radius[i])
+            continue
+        half = _BATCH_WINDOWS[index]
+        steps = np.arange(-half, half + 1)
+        per_chunk = max(1, _BATCH_ELEMENTS // steps.size**2)
+        for start in range(0, members.size, per_chunk):
+            part = members[start : start + per_chunk]
+            columns = center_x[part, None] + steps  # (stars, window)
+            rows = center_y[part, None] + steps
+            dx = columns - x[part, None]
+            dy = rows - y[part, None]
+            inside = (dy[:, :, None] ** 2 + dx[:, None, :] ** 2) <= square[part, None, None]
+            inside &= ((rows >= 0) & (rows < height))[:, :, None]
+            inside &= ((columns >= 0) & (columns < width))[:, None, :]
+            star, row, column = np.nonzero(inside)
+            mask[rows[star, row], columns[star, column]] = True
+
+
+def _paint_disk(mask: BoolArray, x: float, y: float, radius: float) -> None:
+    """Set the pixels of one disk. This is the loop that `paint_disks` batches."""
+    height, width = mask.shape
+    reach = int(np.ceil(radius))
+    x0, x1 = max(round(x) - reach, 0), min(round(x) + reach + 1, width)
+    y0, y1 = max(round(y) - reach, 0), min(round(y) + reach + 1, height)
+    if x0 >= x1 or y0 >= y1:
+        return
+    gy, gx = np.ogrid[y0:y1, x0:x1]
+    mask[y0:y1, x0:x1] |= (gx - x) ** 2 + (gy - y) ** 2 <= radius * radius
+
+
 def star_mask(
     shape: tuple[int, int],
     detections: Detections,
@@ -215,7 +275,6 @@ def star_mask(
     plus half the trail, and at least `minimum_px`. A saturated star masks more, in proportion
     to the square root of its flux.
     """
-    height, width = shape
     mask = np.zeros(shape, dtype=np.bool_)
     saturated = detections.has(StarFlag.SATURATED)
     sigma = detections.fwhm_px / FWHM_PER_SIGMA
@@ -225,24 +284,70 @@ def star_mask(
     radius = np.where(
         saturated, np.maximum(radius, 2.0 * np.sqrt(np.maximum(detections.n_pixels, 1))), radius
     )
-    for x, y, r in zip(detections.x, detections.y, radius, strict=True):
-        reach = int(np.ceil(r))
-        x0, x1 = max(round(x) - reach, 0), min(round(x) + reach + 1, width)
-        y0, y1 = max(round(y) - reach, 0), min(round(y) + reach + 1, height)
-        if x0 >= x1 or y0 >= y1:
-            continue
-        gy, gx = np.ogrid[y0:y1, x0:x1]
-        mask[y0:y1, x0:x1] |= (gx - x) ** 2 + (gy - y) ** 2 <= r * r
+    paint_disks(mask, detections.x, detections.y, radius)
     return mask
 
 
 def _bounding_box_any(mask: BoolArray, objects: Any) -> npt.NDArray[np.intp]:
-    """For each object, how many pixels of `mask` lie inside its bounding box."""
-    counts = np.zeros(len(objects), dtype=np.intp)
-    xmin, xmax, ymin, ymax = (objects[key] for key in ("xmin", "xmax", "ymin", "ymax"))
-    for i in range(len(objects)):
-        counts[i] = int(mask[ymin[i] : ymax[i] + 1, xmin[i] : xmax[i] + 1].sum())
-    return counts
+    """For each object, how many pixels of `mask` lie inside its bounding box.
+
+    `objects` gives the integer arrays `xmin`, `xmax`, `ymin`, and `ymax` (the limits are
+    inclusive), as SEP's output does. The function lists the set pixels of the mask once, in
+    row-major order, and counts the pixels of each row of each box with a binary search.
+    """
+    height, width = mask.shape
+    xmin, xmax, ymin, ymax = (np.asarray(objects[key], dtype=np.intp) for key in _BOX_KEYS)
+    count = int(xmin.size)
+    keys = np.flatnonzero(mask)  # y * width + x of every set pixel, in ascending order
+    if count == 0 or keys.size == 0:
+        return np.zeros(count, dtype=np.intp)
+    xmin = np.maximum(xmin, 0)
+    xmax = np.minimum(xmax, width - 1)
+    ymin = np.maximum(ymin, 0)
+    ymax = np.minimum(ymax, height - 1)
+    heights = np.where((xmin <= xmax) & (ymin <= ymax), ymax - ymin + 1, 0)
+    owner = np.repeat(np.arange(count), heights)  # the box that each row belongs to
+    first = np.cumsum(heights) - heights  # where the rows of each box start in `owner`
+    y = ymin[owner] + (np.arange(owner.size) - first[owner])
+    low = np.searchsorted(keys, y * width + xmin[owner], side="left")
+    high = np.searchsorted(keys, y * width + xmax[owner], side="right")
+    found = np.bincount(owner, weights=high - low, minlength=count)
+    return np.asarray(found, dtype=np.intp)
+
+
+def _blended_by_neighbors(x: FloatArray, y: FloatArray, reach: FloatArray) -> BoolArray:
+    """Whether another star lies closer than the sum of the two stars' reaches.
+
+    A star pulls the fit of its neighbor when it lies inside the neighbor's stamp, so two stars
+    are blended when their distance is smaller than `reach[i] + reach[j]`, and both stars of such
+    a pair get the flag. Most stars have a reach of a few pixels, and a few saturated blobs have
+    tens of pixels. The function finds the close pairs of the small stars with one query, and
+    asks of each blob which stars lie within its own reach and the largest reach.
+    """
+    count = int(x.size)
+    blended = np.zeros(count, dtype=np.bool_)
+    if count < 2:
+        return blended
+    points = np.column_stack([x, y])
+    cutoff = max(2.5 * float(np.median(reach)), 8.0)
+    small = np.flatnonzero(reach <= cutoff)
+    wide = np.flatnonzero(reach > cutoff)
+    if small.size > 1:
+        radius = 2.0 * float(reach[small].max())
+        pairs = _scipy.close_pairs(points[small], radius)
+        first, second = small[pairs[:, 0]], small[pairs[:, 1]]
+        close = np.hypot(x[first] - x[second], y[first] - y[second]) < reach[first] + reach[second]
+        blended[first[close]] = True
+        blended[second[close]] = True
+    if wide.size:
+        found = _scipy.within_radii(points, points[wide], reach[wide] + float(reach.max()))
+        for i, candidates in zip(wide, found, strict=True):
+            others = candidates[candidates != i]
+            close = np.hypot(x[i] - x[others], y[i] - y[others]) < reach[i] + reach[others]
+            if close.any():
+                blended[i] = True
+                blended[others[close]] = True
+    return blended
 
 
 def detect_stars(
@@ -418,16 +523,7 @@ def detect_stars(
             )
         # A neighbor inside the stamp pulls the fit.
         reach = 3.0 * np.maximum(fwhm / FWHM_PER_SIGMA, 0.5) + length / 2.0 + 1.5
-        pairs = _scipy.pairs_within(
-            np.column_stack([x, y]), np.column_stack([x, y]), float(2 * reach.max())
-        )
-        blended = np.zeros(n, dtype=bool)
-        for i, near in enumerate(pairs):
-            for j in near:
-                if j != i and np.hypot(x[i] - x[j], y[i] - y[j]) < reach[i] + reach[j]:
-                    blended[i] = True
-                    break
-        mark(blended, StarFlag.BLENDED)
+        mark(_blended_by_neighbors(x, y, reach), StarFlag.BLENDED)
 
     order = np.argsort(-flux, kind="stable")
     detections = Detections(

@@ -54,6 +54,23 @@ def pairs_within(first: FloatArray, second: FloatArray, radius: float) -> list[l
     return [list(map(int, row)) for row in found]
 
 
+def close_pairs(points: FloatArray, radius: float) -> IntArray:
+    """The pairs of rows of `points` that lie no farther apart than `radius`.
+
+    Returns an array of shape `(N, 2)` with the indices `(i, j)`, where `i < j`.
+    """
+    tree = _spatial.cKDTree(points)
+    pairs = tree.query_pairs(radius, output_type="ndarray")
+    return np.asarray(pairs, dtype=np.intp).reshape(-1, 2)
+
+
+def within_radii(points: FloatArray, centers: FloatArray, radii: FloatArray) -> list[IntArray]:
+    """For each row of `centers`, the indices of the rows of `points` within its own radius."""
+    tree = _spatial.cKDTree(points)
+    found = tree.query_ball_point(centers, radii)
+    return [np.asarray(row, dtype=np.intp) for row in found]
+
+
 def erf(x: FloatArray) -> FloatArray:
     """The error function."""
     return np.asarray(_special.erf(x), dtype=np.float64)
