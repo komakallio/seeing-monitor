@@ -49,6 +49,7 @@ class AcquireHealth:
     stream_connected: bool
     threads_alive: bool
     priority: str
+    late_reads: int = 0  # reads that came late and that a catch-up read cleared (no frame lost)
 
     def to_json(self) -> dict[str, Any]:
         """The summary as a JSON object."""

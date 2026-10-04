@@ -1015,6 +1015,7 @@ class AcquireService:
             stream_connected=session is not None and session.sender is not None,
             threads_alive=self._threads_alive() if self._started else True,
             priority=self._priority,
+            late_reads=drops.late,
         )
 
 

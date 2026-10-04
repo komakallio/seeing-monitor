@@ -9,6 +9,8 @@ from __future__ import annotations
 import secrets
 from dataclasses import replace
 
+import pytest
+
 from seeingmon.clock import DEFAULT_START_UTC_NS, VirtualClock
 from seeingmon.frames import ActiveStream, Frame
 from seeingmon.services.acquire.service import AcquireService, timing_config
@@ -27,9 +29,13 @@ class Bench:
     def __init__(self, **acquire: object) -> None:
         self.clock = VirtualClock(start_utc_ns=DEFAULT_START_UTC_NS)
         driver = FakeCameraDriver(self.clock)
-        settings = ServicesConfig(
-            acquire=AcquireSettings(raise_priority=False, time_source="stamp", **acquire)
-        )
+        options: dict[str, object] = {
+            "raise_priority": False,
+            "time_source": "stamp",
+            "queue_depth": 2048,  # nobody reads the queue
+            **acquire,
+        }
+        settings = ServicesConfig(acquire=AcquireSettings(**options))
         self.service = AcquireService(
             driver,
             self.clock,
@@ -97,3 +103,41 @@ def test_the_gap_rule_ignores_the_period_of_the_time_fit() -> None:
         bench.arrive(1.0)
     assert bench.lost == [0] * 60
     assert bench.service.health().dropped_gap == 0
+
+
+def test_late_reads_followed_by_catch_ups_lose_no_frame_and_leave_the_fit_alone() -> None:
+    bench = Bench()
+    bench.arrive(1.0)
+    for _ in range(100):  # three frames in three periods: one read that is 1.6 periods late
+        for step in (2.6, 0.2, 0.2):
+            bench.arrive(step)
+    assert bench.lost == [0] * 301
+    health = bench.service.health()
+    assert (health.dropped_driver, health.dropped_gap, health.dropped_queue) == (0, 0, 0)
+    assert health.late_reads == 100
+    # The fit counts frames as they came, so its period stays the period of the camera.
+    assert bench.service._stamper.period_s == pytest.approx(bench.period_ns / 1e9, rel=0.02)
+    assert health.time_resets == 0
+
+
+def test_a_real_gap_reaches_the_frame_after_it_and_the_fit_follows() -> None:
+    bench = Bench()
+    for _ in range(40):
+        bench.arrive(1.0)
+    bench.arrive(3.0)  # two frames never came
+    for _ in range(40):
+        bench.arrive(1.0)
+    assert bench.lost == [0] * 41 + [2] + [0] * 39
+    health = bench.service.health()
+    assert (health.dropped_driver, health.dropped_gap) == (0, 2)
+    assert health.time_resets == 0
+
+
+def test_a_loss_that_the_driver_counted_reaches_the_frame_at_once() -> None:
+    bench = Bench()
+    for _ in range(40):
+        bench.arrive(1.0)
+    bench.arrive(2.0, counted=1)  # one frame lost, and the SDK counted it
+    bench.arrive(1.0)
+    assert bench.lost == [0] * 40 + [1, 0]
+    assert bench.service.health().dropped_driver == 1

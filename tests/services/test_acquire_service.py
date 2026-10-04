@@ -308,9 +308,10 @@ class TestDrops:
         driver = streaming(rig)
         assert rig.fake.parked.wait(30.0)
         frames = read_frames(driver, 60)
-        # The interval before frame 30 is six periods, so five frames are missing. Every other
-        # frame follows its predecessor by one period.
-        assert [f.dropped_before for f in frames] == [0] * 30 + [5] + [0] * 29
+        # The interval before frame 30 is six periods, so five frames are missing. Frame 31
+        # follows after a regular interval, which confirms the gap, so it carries the count. Every
+        # other frame follows its predecessor by one period.
+        assert [f.dropped_before for f in frames] == [0] * 31 + [5] + [0] * 28
         health = driver.health()
         assert (health["dropped_gap"], health["dropped_driver"], health["dropped_queue"]) == (
             5,
