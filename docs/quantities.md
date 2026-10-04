@@ -172,7 +172,7 @@ Codes for `flags`:
 
 The pointing solution of one survey frame.
 
-`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`, and so do the pixel positions of Polaris (`polaris_x_px` and `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the center of the first pixel at 0. The distance from the pole to Polaris is the radius of the circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag.
+`t_utc_ns` is the UTC time at the middle of the exposure. The attitude is a rotation matrix, so analysis can express it in ICRS or in the frame of date. The plate scale belongs to the readout mode in `readout_mode`, and so do the pixel positions of Polaris (`polaris_x_px` and `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the center of the first pixel at 0. The distance from the pole to Polaris is the radius of the circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that the solver cannot solve has `null` in every geometry field and the `unsolved` flag. A short exposure with fewer than 4 stars, such as the 1 ms frame of each survey step that shows Polaris alone, has no `pointing` record, because no solver can use it. The latest record is therefore always the latest frame that the tracker or a solver could try.
 
 Storage: a row of a SQLite table. Retention: kept forever.
 

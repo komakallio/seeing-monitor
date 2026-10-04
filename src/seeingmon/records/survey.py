@@ -193,7 +193,10 @@ class PointingRecord(Record):
     `polaris_y_px`) and of the celestial pole of date (`pole_x_px` and `pole_y_px`), with the
     center of the first pixel at 0. The distance from the pole to Polaris is the radius of the
     circle that Polaris follows around the pole. The pole can lie outside the frame. A frame that
-    the solver cannot solve has `null` in every geometry field and the `unsolved` flag.
+    the solver cannot solve has `null` in every geometry field and the `unsolved` flag. A short
+    exposure with fewer than 4 stars, such as the 1 ms frame of each survey step that shows
+    Polaris alone, has no `pointing` record, because no solver can use it. The latest record is
+    therefore always the latest frame that the tracker or a solver could try.
     """
 
     record_type: ClassVar[str] = "pointing"

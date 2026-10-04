@@ -20,7 +20,7 @@ from seeingmon.records.survey import (
 from seeingmon.solvers.base import PlateSolver, SolverError, SolveResult
 from seeingmon.survey import pointing as pt
 from seeingmon.survey.catalog import CapCatalog
-from seeingmon.survey.config import SolveConfig, SurveyConfig
+from seeingmon.survey.config import SkyConfig, SolveConfig, SurveyConfig
 from seeingmon.survey.detect import StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import (
@@ -397,6 +397,103 @@ def test_a_frame_that_the_tracker_solves_has_no_attempt_and_one_with_few_stars_h
     assert solver.requests == []  # fewer than 4 stars never reach a solver
     assert empty.attempts == ()
     assert any("stars for a solver" in note for note in empty.notes)
+
+
+def test_a_short_frame_with_too_few_stars_has_no_pointing_record_and_keeps_its_survey_frame(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    """The 1 ms frame of a survey step shows Polaris alone, so no solver can use it."""
+    frame, truth = scene
+    dark, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        exposure_s=0.001,
+        gain=0,
+        seed=7,
+    )
+    solver = FakeSolver()
+    analysis = pipeline_for(profile, catalog, [solver]).analyze(dark)
+    assert not analysis.solved
+    assert [record.record_type for record in analysis.records] == ["survey_frame"]
+    survey = survey_of(analysis)
+    assert survey.exposure_s == 0.001
+    assert survey.n_detected is not None
+    assert survey.n_detected < 4
+    assert survey.t_utc_ns == dark.t_utc_ns
+    assert any("stars for a solver" in note for note in analysis.notes)
+    assert solver.requests == []
+    # The frame has no attempt, so the pointing record of the step is the one of its long frame.
+    first = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert first.solution is not None
+    tracked = pipeline_for(profile, catalog, [FakeSolver()]).analyze(dark, previous=first.solution)
+    assert [record.record_type for record in tracked.records] == ["survey_frame"]
+    assert any("the tracker could not match the frame" in note for note in tracked.notes)
+
+
+def test_a_short_frame_with_enough_stars_that_fails_to_solve_keeps_its_unsolved_record(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    frame, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0),
+        exposure_s=0.02,
+        gain=0,
+        seed=6,
+    )
+    analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(frame)
+    assert not analysis.solved
+    n_detected = survey_of(analysis).n_detected
+    assert n_detected is not None
+    assert n_detected >= 4
+    assert [record.record_type for record in analysis.records] == ["survey_frame", "pointing"]
+    assert pointing_of(analysis).flags == ["unsolved"]
+    assert pointing_of(analysis).solver == "none"
+
+
+def test_a_long_frame_with_too_few_stars_keeps_its_unsolved_record(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    """Clouds over a long exposure are a failed solve that the record and the event must show."""
+    frame, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0),
+        exposure_s=30.0,
+        transmission=0.0,
+        seed=8,
+    )
+    analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(frame)
+    assert not analysis.solved
+    n_detected = survey_of(analysis).n_detected
+    assert n_detected is not None
+    assert n_detected < 4
+    assert [record.record_type for record in analysis.records] == [
+        "survey_frame",
+        "sky_quality",
+        "pointing",
+    ]
+    assert pointing_of(analysis).flags == ["unsolved"]
+
+
+def test_the_exposure_that_makes_a_frame_long_is_the_minimum_of_the_sky_quality(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    dark, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0),
+        exposure_s=0.001,
+        gain=0,
+        seed=7,
+    )
+    # The same frame counts as long when the minimum is below its exposure, and then it
+    # leaves an unsolved record, as every long frame does.
+    config = SurveyConfig(sky=SkyConfig(min_exposure_s=0.0005))
+    analysis = pipeline_for(profile, catalog, [FakeSolver()], config=config).analyze(dark)
+    assert [record.record_type for record in analysis.records][-1] == "pointing"
+    assert pointing_of(analysis).flags == ["unsolved"]
 
 
 class TestTheSolveAttempt:

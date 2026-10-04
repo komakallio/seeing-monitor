@@ -744,6 +744,32 @@ def test_create_survey_analyzer_builds_from_the_configuration(
     assert replace(frame, seq=1).seq == 1
 
 
+def test_a_short_frame_that_shows_no_stars_leaves_its_survey_frame_and_no_pointing_record(
+    profile: Profile, catalog: CapCatalog, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    write_catalog(tmp_path / "cap.smcat", catalog)
+    config = SurveyConfig(catalog_path=str(tmp_path / "cap.smcat"), solvers=())
+    analyzer = create_survey_analyzer(
+        profile=profile, station_id="s", config=config, executor=InlineExecutor()
+    )
+    frame, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0),
+        exposure_s=0.001,
+        gain=0,
+        seed=61,
+    )
+    with caplog.at_level("INFO", logger="seeingmon.survey"):
+        analyzer.submit(frame)
+        (output,) = analyzer.poll()
+    assert not output.solved
+    assert [record.record_type for record in output.records] == ["survey_frame"]
+    assert analyzer.tracker.solution is None
+    assert any("stars for a solver" in message for message in survey_log(caplog))
+    analyzer.close()
+
+
 def test_a_built_pipeline_loads_the_catalog_and_the_hot_pixel_file(
     profile: Profile, catalog: CapCatalog, tmp_path: Path
 ) -> None:

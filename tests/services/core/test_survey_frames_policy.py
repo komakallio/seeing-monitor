@@ -212,6 +212,31 @@ class TestEventFrames:
         assert short.reasons == ("event:bright_sky",)
         assert short.fits is True
 
+    def test_the_unsolved_event_reads_the_result_and_not_a_pointing_record(
+        self, profile: Profile
+    ) -> None:
+        """The result says whether the pointing solved, with or without a pointing record."""
+        policy = make_policy(profile, keep_every=1000)
+        work = run(policy)
+        work.decide(work.frame(step=0))
+        frame = work.frame(step=1)
+        survey_frame = SurveyFrameRecord(
+            station_id="t",
+            t_utc_ns=frame.t_utc_ns,
+            profile_id="p",
+            provenance={"algo": "test"},
+            exposure_s=30.0,
+            gain=120,
+            readout_mode="bin2",
+            n_detected=0,
+        )
+        output = SurveyOutput(
+            t_utc_ns=frame.t_utc_ns, records=(survey_frame,), solved=False, cloud_fraction=None
+        )
+        decision = policy.decide(frame, output)
+        assert decision.reasons == ("event:unsolved",)
+        assert decision.kind == KIND_EVENT
+
     def test_a_short_frame_starts_no_pointing_or_cloud_event(self, profile: Profile) -> None:
         work = run(make_policy(profile, keep_every=1000))
         outcome = work.decide(work.frame(SHORT_US), solved=False, cloud=1.0, moved=True)

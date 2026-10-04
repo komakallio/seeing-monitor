@@ -29,6 +29,13 @@ its own copy.
 **Failure.** A frame that cannot be solved is a normal result. The pointing record gets the
 `unsolved` flag, and `quality` says why. Only an unexpected error propagates.
 
+**No attempt.** A short frame with fewer than `MIN_SOLVER_STARS` stars gets no pointing record.
+The 1 ms frame of each survey step shows Polaris alone by design, so no solver can use it, and an
+`unsolved` record for it would say that a solve failed when none was tried. The frame keeps its
+`survey_frame` record, and the latest `pointing` record stays the latest frame that a solver or
+the tracker could try. A long frame (see `SkyConfig.min_exposure_s`) always gets one, so clouds
+that hide the stars show as `unsolved`, and so does any frame with enough stars that fails.
+
 **Solve attempts.** Each run of a plate solver leaves a `SolveAttempt` in `FrameAnalysis.attempts`:
 the solver, the number of stars that went to it, its time, and the outcome with the reason for a
 failure. The pipeline does not log them, because it often runs in a worker process that has no log
@@ -111,6 +118,7 @@ from seeingmon.survey.wcs_fit import (
 
 log = logging.getLogger("seeingmon.survey")
 
+MIN_SOLVER_STARS = 4  # a plate solver needs at least this many stars
 STAR_LIST_COLUMNS = ["x_px", "y_px", "flux_dn", "fwhm_px", "flags", "cat_row"]
 STAR_LIST_CATALOG = "gaia-dr3+tycho-2"
 STAR_LIST_G_LIMIT = 11.0  # matched stars brighter than this go to the star list
@@ -476,9 +484,8 @@ class SurveyPipeline:
                 solver="" if solved is None else solved.solver,
             )
         quality: SkyQualityResult | None = None
-        wanted = (
-            exposure_s >= self._config.sky.min_exposure_s if sky_quality is None else sky_quality
-        )
+        long_frame = exposure_s >= self._config.sky.min_exposure_s
+        wanted = long_frame if sky_quality is None else sky_quality
         if wanted:
             dark_model, status = self._dark_for(frame)
             quality = assess_frame(
@@ -504,6 +511,10 @@ class SurveyPipeline:
                 time_invalid=frame_time_invalid(frame),
             )
             lap("quality")
+        # A short frame that no solver could use is no failed solve, so it gets no pointing record.
+        attempted = (
+            solved is not None or long_frame or len(detections.star_list()) >= MIN_SOLVER_STARS
+        )
         records = self._records(
             frame,
             detections,
@@ -514,6 +525,7 @@ class SurveyPipeline:
             cat_row,
             focus,
             None if quality is None else quality.record,
+            pointing=attempted,
         )
         lap("records")
         return FrameAnalysis(
@@ -629,7 +641,7 @@ class SurveyPipeline:
             notes.append("the tracker could not match the frame")
 
         stars = detections.star_list()
-        if len(stars) < 4:
+        if len(stars) < MIN_SOLVER_STARS:
             notes.append(f"only {len(stars)} stars for a solver")
             return None
         request = self._solve_request(frame, stars, tracker, epoch)
@@ -913,6 +925,8 @@ class SurveyPipeline:
         cat_row: npt.NDArray[np.intp],
         focus: float | None,
         sky_quality: SkyQualityRecord | None,
+        *,
+        pointing: bool = True,
     ) -> tuple[Record, ...]:
         base: dict[str, Any] = {
             "station_id": self._station_id,
@@ -937,7 +951,7 @@ class SurveyPipeline:
             if solved is None or solved.cross_check is None
             else {"cross_check": solved.cross_check}
         )
-        pointing = build_pointing_record(
+        pointing_record = build_pointing_record(
             station_id=self._station_id,
             profile_id=self._profile.id,
             t_utc_ns=frame.t_utc_ns,
@@ -956,9 +970,11 @@ class SurveyPipeline:
             time_invalid=time_invalid,
             limits=self._limits,
         )
-        records: list[Record] = [survey_frame, pointing]
+        records: list[Record] = [survey_frame]
         if sky_quality is not None:
-            records.insert(1, sky_quality)
+            records.append(sky_quality)
+        if pointing:
+            records.append(pointing_record)
         if solved is not None:
             records.append(self._star_list(frame, detections, cat_row, base))
         return tuple(records)
