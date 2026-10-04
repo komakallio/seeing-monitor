@@ -319,7 +319,11 @@ class AcquireService:
             raise RuntimeError("the service already started")
         self._started = True
         if self._timer is not None:
-            self._timer_status = self._timer.request()
+            try:
+                self._timer_status = self._timer.request()
+            except Exception:  # a tweak of the platform must never stop the service
+                _log.warning("could not ask for a finer system timer", exc_info=True)
+                self._timer_status = "the request failed, so the timer keeps its default resolution"
             if self._timer_status:
                 _log.info("timer resolution: %s", self._timer_status)
         self._rpc.start()

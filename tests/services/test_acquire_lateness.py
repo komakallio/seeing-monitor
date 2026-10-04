@@ -315,6 +315,21 @@ class TestTheTimerRequest:
         self.service(raise_priority=True, priority_hook=lambda: "test")
         assert RecordingTimer.made == []
 
+    def test_a_timer_request_that_raises_does_not_stop_the_service(self) -> None:
+        class BrokenTimer(RecordingTimer):
+            def request(self) -> str:
+                raise RuntimeError("no such library")
+
+        service = self.service(raise_priority=False, timer=BrokenTimer())
+        service.start()
+        try:
+            assert service.health().timer == (
+                "the request failed, so the timer keeps its default resolution"
+            )
+            assert service.health().threads_alive
+        finally:
+            service.stop()
+
     def test_a_timer_that_the_caller_passes_is_the_one_that_runs(self) -> None:
         mine = RecordingTimer()
         service = self.service(raise_priority=False, timer=mine)
