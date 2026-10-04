@@ -221,6 +221,7 @@ def star_mask(
     sigma = detections.fwhm_px / FWHM_PER_SIGMA
     radius = radius_scale * sigma + detections.trail_length_px / 2.0
     radius = np.maximum(radius, minimum_px)
+    radius = np.where(np.isfinite(radius), radius, minimum_px)  # a NaN size must not fail a frame
     radius = np.where(
         saturated, np.maximum(radius, 2.0 * np.sqrt(np.maximum(detections.n_pixels, 1))), radius
     )
@@ -316,6 +317,15 @@ def detect_stars(
     minor = np.maximum(np.asarray(objects["b"], dtype=np.float64), 1e-3)
     theta = np.asarray(objects["theta"], dtype=np.float64)
     n_pixels = np.asarray(objects["npix"], dtype=np.int32)
+    # SEP gives a NaN shape to an object whose second moments a masked pixel leaves undefined. It
+    # happened at first light, next to hot pixels of the dark library, and a NaN size then failed
+    # the whole frame. Such an object gets the circle of its area and no angle.
+    unmeasured = ~(np.isfinite(major) & np.isfinite(minor) & np.isfinite(theta))
+    if unmeasured.any():
+        circle = np.sqrt(np.maximum(n_pixels, 1) / np.pi)
+        major = np.where(unmeasured, circle, major)
+        minor = np.where(unmeasured, circle, minor)
+        theta = np.where(unmeasured, 0.0, theta)
     elongation = major / minor
 
     flags = np.zeros(n, dtype=np.uint16)

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
 import pytest
+import sep
 
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile
@@ -429,3 +431,33 @@ def test_a_wrong_hot_pixel_mask_shape_is_an_error(scene: Scene) -> None:
 def test_a_flat_frame_is_an_error_not_a_crash() -> None:
     with pytest.raises(detect.DetectionError, match="constant"):
         detect.detect_stars(np.full((100, 100), 500.0, dtype=np.float32), saturation_dn=16383.0)
+
+
+def test_an_object_with_an_undefined_shape_still_gets_finite_sizes(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEP gives a NaN shape to an object that a masked pixel leaves without moments. It happened
+    next to the hot pixels of a real dark library, and the NaN size failed the whole frame."""
+    real = sep.extract
+
+    def extract(*args: object, **kwargs: object) -> object:
+        objects = real(*args, **kwargs)
+        objects["a"][:3] = np.nan
+        objects["b"][:3] = np.nan
+        objects["theta"][1] = np.nan
+        return objects
+
+    monkeypatch.setattr(sep, "extract", extract)
+    found = detect.detect_stars(
+        scene.frame_native, saturation_dn=scene.saturation_dn, e_per_adu=scene.e_per_adu
+    )
+    assert found.x.size > 10
+    for name in ("fwhm_px", "elongation", "trail_length_px", "trail_angle_rad"):
+        assert np.isfinite(getattr(found, name)).all(), name
+    assert detect.star_mask(found.shape, found).any()  # a NaN radius raised a ValueError
+
+
+def test_the_star_mask_survives_a_nan_size(detections: detect.Detections) -> None:
+    broken = dataclasses.replace(detections.select(np.arange(3)), fwhm_px=np.full(3, np.nan))
+    mask = detect.star_mask(broken.shape, broken)
+    assert mask.any()
