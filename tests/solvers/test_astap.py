@@ -282,3 +282,14 @@ def test_invalid_options_are_refused() -> None:
     with pytest.raises(ValueError, match="max_stars"):
         AstapSolver(max_stars=3)
     assert astap_module.AstapSolver(command=["astap"]).name == "astap"
+
+
+def test_the_default_image_is_half_the_size_of_the_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quarter-size image found no solution in real star fields at first light. Half size did."""
+    log = configure_shim(tmp_path, monkeypatch, {"ini": SOLUTION_INI})
+    AstapSolver(command=shim_command("shim_astap.py"), work_dir=tmp_path).solve(
+        make_request(star_list())
+    )
+    assert read_log(log)["shape"] == [-(-HEIGHT // 2), -(-WIDTH // 2)]

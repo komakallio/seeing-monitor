@@ -57,7 +57,8 @@ class SolveConfig(SectionModel):
     timeout_s: float = 20.0
     scale_tolerance: float = 0.15  # the solver searches the plate scale +-15%
     hint_radius_deg: float = 2.0  # the search radius around the predicted center
-    max_stars: int = 600  # the brightest stars go to the solver
+    pole_hint_radius_deg: float = 15.0  # radius around the pole for a first solve (0: none)
+    max_stars: int = 1000  # the brightest stars go to the solver (an adapter may use fewer)
     cross_check_every: int = 0  # every Nth solved frame also runs the second solver (0: never)
     cross_check_max_px: float = 1.5  # a larger disagreement is reported in the provenance
 

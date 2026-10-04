@@ -57,7 +57,8 @@ def test_the_local_file_and_the_environment_override_the_defaults(tmp_path: Path
     section = config.section("survey", SurveyConfig)
     assert section.catalog_path == "cap.smcat"
     assert section.solve.timeout_s == 45.0
-    assert section.solve.max_stars == 600  # a key that no layer overrides keeps its default
+    assert section.solve.max_stars == 1000  # a key that no layer overrides keeps its default
+    assert section.solve.pole_hint_radius_deg == 15.0
     assert section.pointing.moved_arcmin == 7.5
 
 

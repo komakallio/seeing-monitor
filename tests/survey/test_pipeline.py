@@ -20,7 +20,7 @@ from seeingmon.records.survey import (
 from seeingmon.solvers.base import PlateSolver, SolverError, SolveResult
 from seeingmon.survey import pointing as pt
 from seeingmon.survey.catalog import CapCatalog
-from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.config import SolveConfig, SurveyConfig
 from seeingmon.survey.detect import StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import (
@@ -160,6 +160,29 @@ def test_a_solved_frame_gives_three_records_and_recovers_the_pointing(
     assert pointing.provenance["algo"] == pt.POINTING_ALGORITHM
     assert pointing.provenance["detector"].startswith("sep-")
     assert solver.requests[0].width_px == 1200
+
+
+def test_a_first_solve_without_a_pointing_gets_a_hint_at_the_pole(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    solver = truth_solver(truth, catalog)
+    pipeline_for(profile, catalog, [solver]).analyze(frame)
+    request = solver.requests[0]
+    assert (request.center_ra_deg, request.center_dec_deg) == (0.0, 90.0)
+    assert request.radius_deg == 15.0
+
+
+def test_the_pole_hint_can_be_turned_off(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    solver = truth_solver(truth, catalog)
+    config = SurveyConfig(solve=SolveConfig(pole_hint_radius_deg=0.0))
+    pipeline_for(profile, catalog, [solver], config=config).analyze(frame)
+    request = solver.requests[0]
+    assert request.center_ra_deg is None
+    assert request.radius_deg is None
 
 
 def test_the_star_list_holds_the_bright_matches_and_the_unmatched_detections(

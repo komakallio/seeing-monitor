@@ -5,8 +5,10 @@ an image, not a star list. The adapter therefore draws the detected stars into a
 image (clean Gaussians on a flat background, so ASTAP's detector finds exactly the stars that
 the survey path found and never mistakes an undersampled bin2 star for a hot pixel), runs
 `astap` on it, and reads the solution. The image is `render_scale` times smaller than the
-frame, which keeps it near a megapixel, and the adapter converts the solution back to the pixels
-of the frame.
+frame, and the adapter converts the solution back to the pixels of the frame. The default is 2.
+At 4, which keeps the image near a megapixel, ASTAP solved synthetic star lists but found no
+solution in any real star field of the first light (October 4, 2026), with 300 to 2,400 stars.
+At 2 it solved the same frames in 0.2 to 0.5 s, and at 3 it failed again.
 
 The command is `astap -f field.fits -fov <height> -z 1 -wcs`, plus a position hint
 (`-ra` in hours and `-spd`, the south polar distance, which is declination plus 90) and a
@@ -124,8 +126,8 @@ class AstapSolver:
         command: str | Sequence[str] = "astap",
         database_dir: str | os.PathLike[str] | None = None,
         database: str | None = None,
-        render_scale: int = 4,
-        max_stars: int = 600,
+        render_scale: int = 2,
+        max_stars: int = 1000,
         extra_args: Sequence[str] = (),
         work_dir: str | os.PathLike[str] | None = None,
         clock: Clock | None = None,

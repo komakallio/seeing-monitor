@@ -673,6 +673,11 @@ class SurveyPipeline:
         if predicted is not None:
             ra, dec = predicted.center_icrs(epoch)
             hint_ra, hint_dec, radius = ra, dec, cfg.hint_radius_deg
+        elif cfg.pole_hint_radius_deg > 0.0:
+            # No pointing is known, but the camera looks at Polaris, so the field is near the
+            # pole. A hint makes ASTAP solve in 0.2 s, where a blind search takes seconds and
+            # sometimes fails.
+            hint_ra, hint_dec, radius = 0.0, 90.0, cfg.pole_hint_radius_deg
         order = np.argsort(-stars.flux, kind="stable")[: cfg.max_stars]
         return SolveRequest(
             stars=StarList(x=stars.x[order], y=stars.y[order], flux=stars.flux[order]),

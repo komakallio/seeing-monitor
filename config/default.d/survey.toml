@@ -75,7 +75,8 @@ reference_file = ""         # The JSON reference solution that commissioning sav
 timeout_s = 20.0
 scale_tolerance = 0.15
 hint_radius_deg = 2.0
-max_stars = 600
+pole_hint_radius_deg = 15.0 # No pointing yet: the camera looks at Polaris, so search this far around the pole. 0 turns it off.
+max_stars = 1000            # The brightest stars go to the solver. An adapter may use fewer.
 cross_check_every = 0       # Every Nth solved frame also runs the second solver. 0 never does.
 cross_check_max_px = 1.5
 
