@@ -23,7 +23,12 @@ sources, so that you can look at the UI on a laptop:
   (see `DEMO_DARK_SCRIPT`): queued, bias frames, the wait for the cover, dark frames, and the
   build. The camera counts as covered a few seconds into the wait, so the session ends
   `ok`, adds a set at the sensor temperature, and pauses the fake scheduler, so that
-  Resume works. A session without the wait for the cover fails, and Pause aborts one.
+  Resume works. A session without the wait for the cover fails, and Pause aborts one. While the
+  fake scheduler is in `auto` or `safe`, the fake `core` also streams a synthetic video of Polaris
+  at about 20 frames a second (`PolarisSky`: a star that jitters with the seeing, flickers by a few
+  percent, and sits on a noisy sky, through the real stretch and PNG encoder of `core`), and it
+  serves a rolling seeing value that varies slowly around the seeing of the demo night
+  (`demo_live_seeing`). Pause the fake scheduler or start the alignment, and the video goes quiet.
 - **A clock.** `DemoClock` stands still in UTC at `DEMO_NOW_NS`, so the newest record is always
   fresh, and it runs in monotonic time, so the rate limits, the timeouts, and the live view work.
 
@@ -48,12 +53,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import numpy.typing as npt
 from PIL import Image
 
+from seeingmon.analysis.base import StarState
 from seeingmon.clock import NS_PER_S, Clock, ClockStatus, utc_ns_to_iso
+from seeingmon.frames import Roi
 from seeingmon.records.base import Record
 from seeingmon.records.samples import sample_record
 from seeingmon.scheduler import activity as words
+from seeingmon.services.core.polaris import FrameSlot, PolarisRenderer
 from seeingmon.services.web import demo_activity
 from seeingmon.services.web.auth import ScryptParams, hash_token
 from seeingmon.services.web.config import WebSettings
@@ -70,7 +79,9 @@ from seeingmon.services.web.contract import (
     FocusView,
     HistogramView,
     LastSolutionView,
+    LiveSeeingView,
     OffsetView,
+    PolarisFrame,
     ReticleView,
     SaturationView,
     SkyView,
@@ -149,6 +160,32 @@ SPIKE_MIN_PREVIOUS = 3
 # The right ascension of Polaris in the demo, which only decides where the labels of the grid fall.
 POLARIS_RA_DEG = 45.0
 
+# The video of Polaris: a 128 x 128 pixel ROI of the bin1 stream (1.91 arcsec per pixel), shown at
+# 20 frames a second while the camera runs at 82. The star is about 1.4 pixels wide (FWHM), and it
+# moves by `IMAGE_MOTION_PX_PER_ARCSEC` pixels rms along each axis for each arcsecond of seeing
+# (0.48 arcsec of motion per axis for 1 arcsec of seeing, at 1.91 arcsec per pixel). The numbers
+# are made up. They show a plausible picture, and they measure nothing.
+POLARIS_SIZE = 128
+POLARIS_ROI = Roi(2008, 1347, POLARIS_SIZE, POLARIS_SIZE)
+POLARIS_PERIOD_S = 0.05
+FAST_PLATE_SCALE_ARCSEC_PX = 1.91
+CAMERA_FPS = 82.0
+IMAGE_MOTION_PX_PER_ARCSEC = 0.25
+STAR_SIGMA_PX = 0.6
+STAR_PEAK_DN = 18_000.0
+FULL_SCALE_DN = 65_520.0
+SKY_DN = 480.0
+DN_PER_ADU = 16.0
+E_PER_ADU = 3.5
+READ_NOISE_E = 2.65
+TILT_TAU_S = 0.12
+SCINTILLATION_TAU_S = 0.08
+SCINTILLATION_RMS = 0.035
+LIVE_EVERY_S = 2.0
+LIVE_SPAN_S = 10.0
+LIVE_MIN_SPAN_S = 4.0
+DEMO_SEEING_ARCSEC = 1.6
+
 # The pole and Polaris in the pointing history. A rigid mount keeps the pole at one pixel, 47 pixels
 # (0.05 degree) from the center of the frame, and the sky turns once in a sidereal day. At the
 # newest record Polaris is 75 degrees from straight below the pole, toward the right.
@@ -214,6 +251,12 @@ def _psd(seeing: float, frequencies: list[float], rng: random.Random) -> list[fl
         0.35 * seeing**2 / (1 + (f / 4.0) ** 2) ** (17 / 12) * rng.uniform(0.85, 1.15)
         for f in frequencies
     ]
+
+
+def demo_seeing_arcsec(t_ns: int) -> float:
+    """The seeing of the demo night before the noise, in arcseconds: two slow waves."""
+    hours = t_ns / HOUR_NS
+    return 1.55 + 0.4 * math.sin(hours / 0.85) + 0.18 * math.sin(hours * 2.9 + 1.3)
 
 
 def _seeing_record(t_ns: int, now_ns: int, seeing: float, rng: random.Random) -> Record:
@@ -475,10 +518,9 @@ def demo_records(now_ns: int = DEMO_NOW_NS, *, seed: int = 2026) -> list[Record]
     noise = 0.0
     t_ns = start_ns - start_ns % (WINDOW_S * NS_PER_S) + WINDOW_S * NS_PER_S
     while t_ns < now_ns:
-        hours = t_ns / HOUR_NS
         noise = 0.9 * noise + rng.gauss(0, 0.05)
         if sun_elevation_deg(t_ns) < -6.0:
-            seeing = 1.55 + 0.4 * math.sin(hours / 0.85) + 0.18 * math.sin(hours * 2.9 + 1.3)
+            seeing = demo_seeing_arcsec(t_ns)
             records.append(_seeing_record(t_ns, now_ns, max(0.75, seeing + noise), rng))
             if (t_ns // NS_PER_S) % 300 == 0:
                 records.append(_sky_record(t_ns, now_ns, rng))
@@ -864,6 +906,154 @@ class StarField:
         return AlignmentFrame(state, jpeg)
 
 
+# --- The video of Polaris ----------------------------------------------------------------------
+
+_ERF = np.vectorize(math.erf, otypes=[np.float64])
+FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
+
+
+def _smooth_seeing_arcsec(t_s: float) -> float:
+    """The seeing of the video at `t_s` seconds: a slow wobble around `DEMO_SEEING_ARCSEC`."""
+    wobble = 0.10 * math.sin(2.0 * math.pi * t_s / 47.0) + 0.05 * math.sin(
+        2.0 * math.pi * t_s / 13.0 + 1.0
+    )
+    return DEMO_SEEING_ARCSEC * (1.0 + wobble)
+
+
+def demo_live_seeing(t_s: float) -> LiveSeeingView | None:
+    """The rolling seeing value at `t_s` seconds of demo time, or `None` in the first seconds.
+
+    A new value comes every `LIVE_EVERY_S` seconds, as `core` makes one, and it follows the
+    wobble that the video shows, plus the scatter of an estimate over a short span. The first
+    value comes after `LIVE_MIN_SPAN_S` seconds, as in `core`.
+    """
+    step = max(0, math.floor(t_s / LIVE_EVERY_S))
+    t_end = step * LIVE_EVERY_S
+    if t_end < LIVE_MIN_SPAN_S:
+        return None
+    rng = random.Random(5000 + step)
+    seeing = _smooth_seeing_arcsec(t_end) * (1.0 + rng.gauss(0.0, 0.035))
+    span = min(LIVE_SPAN_S, t_end)
+    dropped = rng.choice([0, 0, 1, 2, 3])
+    frames = round(span * CAMERA_FPS) - dropped
+    usable = frames - rng.choice([0, 1, 2, 4])
+
+    def r0_cm(fwhm: float) -> float:
+        return round(0.98 * 500e-9 / (fwhm * RAD_PER_ARCSEC) * 100, 2)
+
+    structure = seeing * (1.0 + rng.gauss(0.0, 0.04))
+    rms = 0.48 * seeing
+    # The second moment of a star that the pixels integrate has the variance of the star plus 1/12.
+    width = FWHM_PER_SIGMA * math.sqrt(STAR_SIGMA_PX**2 + 1.0 / 12.0) * FAST_PLATE_SCALE_ARCSEC_PX
+    return LiveSeeingView(
+        t_utc_ns=DEMO_NOW_NS + round(t_end * NS_PER_S),
+        span_s=round(span, 3),
+        n_frames=frames,
+        n_usable=usable,
+        valid_fraction=round(usable / (frames + dropped), 4),
+        seeing_fwhm_arcsec=round(seeing, 3),
+        seeing_fwhm_structure_arcsec=round(structure, 3),
+        r0_cm=r0_cm(seeing),
+        r0_structure_cm=r0_cm(structure),
+        image_motion_rms_x_arcsec=round(rms * rng.uniform(0.95, 1.1), 3),
+        image_motion_rms_y_arcsec=round(rms * rng.uniform(0.85, 1.0), 3),
+        width_fwhm_arcsec=round(width, 3),
+        stream_id=1,
+        readout_mode="bin1",
+        exposure_us=2000,
+        flags=[],
+        quality={},
+    )
+
+
+class PolarisSky:
+    """A synthetic video of Polaris: one `FrameSlot` for each call of `next_frame`.
+
+    The star is a Gaussian of 0.6 pixels sigma (1.4 pixels FWHM), integrated over the pixels, on a
+    sky of 480 counts. It moves along each axis as a random process that forgets its past in about
+    0.12 s, with a spread of `IMAGE_MOTION_PX_PER_ARCSEC` pixels for each arcsecond of seeing, on
+    top of a slow drift of a third of a pixel. Its brightness flickers by 3.5% rms in a few
+    hundredths of a second, and it drifts by 3% over half a minute. The pixels carry photon noise
+    and read noise, and the counts follow a 12-bit ADC in a 16-bit container, like the camera.
+    `time_offset_s` is the video time of the first frame. The same seed gives the same video.
+    """
+
+    def __init__(
+        self,
+        seed: int = 17,
+        *,
+        period_s: float = POLARIS_PERIOD_S,
+        time_offset_s: float = 0.0,
+    ) -> None:
+        self._rng = np.random.default_rng(seed)
+        self._period_s = period_s
+        self._offset_s = time_offset_s
+        self._index = 0
+        self._tilt = self._rng.standard_normal(2)
+        self._scintillation = float(self._rng.standard_normal())
+        self._edges = np.arange(POLARIS_SIZE + 1, dtype=np.float64) - 0.5
+        peak_share = float(_ERF(np.array([0.5 / (STAR_SIGMA_PX * math.sqrt(2.0))]))[0]) ** 2
+        self._flux_dn = STAR_PEAK_DN / peak_share  # the flux that gives the peak at a pixel center
+
+    def _weights(self, center: float, sigma: float) -> npt.NDArray[np.float64]:
+        scaled = (self._edges - center) / (sigma * math.sqrt(2.0))
+        weights: npt.NDArray[np.float64] = np.diff(0.5 * (1.0 + _ERF(scaled)))
+        return weights
+
+    def next_frame(self) -> tuple[FrameSlot, float]:
+        """The next frame of the video, and its time in seconds."""
+        t_s = self._offset_s + self._index * self._period_s
+        rng = self._rng
+        tilt_memory = math.exp(-self._period_s / TILT_TAU_S)
+        self._tilt = tilt_memory * self._tilt + math.sqrt(1.0 - tilt_memory**2) * (
+            rng.standard_normal(2)
+        )
+        flicker_memory = math.exp(-self._period_s / SCINTILLATION_TAU_S)
+        self._scintillation = flicker_memory * self._scintillation + math.sqrt(
+            1.0 - flicker_memory**2
+        ) * float(rng.standard_normal())
+        motion_px = IMAGE_MOTION_PX_PER_ARCSEC * _smooth_seeing_arcsec(t_s)
+        center = POLARIS_SIZE / 2.0
+        x = center + 0.35 * math.sin(2.0 * math.pi * t_s / 41.0) + motion_px * self._tilt[0]
+        y = center + 0.30 * math.sin(2.0 * math.pi * t_s / 29.0 + 1.0) + motion_px * self._tilt[1]
+        brightness = max(
+            0.2,
+            1.0
+            + SCINTILLATION_RMS * self._scintillation
+            + 0.03 * math.sin(2.0 * math.pi * t_s / 31.0),
+        )
+        sigma = STAR_SIGMA_PX * (1.0 + 0.08 * math.sin(2.0 * math.pi * t_s / 37.0))
+        shape = np.outer(self._weights(y, sigma), self._weights(x, sigma))
+        star = brightness * self._flux_dn * shape
+        electrons = (SKY_DN + star) / DN_PER_ADU * E_PER_ADU
+        noisy = rng.poisson(electrons) + rng.normal(0.0, READ_NOISE_E, electrons.shape)
+        adu = np.clip(np.rint(noisy / E_PER_ADU), 0, 4095)
+        counts = (adu * DN_PER_ADU).astype(np.uint16)
+        roi = POLARIS_ROI
+        found = StarState(
+            found=True,
+            x_px=roi.x + x,
+            y_px=roi.y + y,
+            peak_fraction=float(counts.max()) / FULL_SCALE_DN,
+            edge_distance_px=min(x, y, POLARIS_SIZE - 1.0 - x, POLARIS_SIZE - 1.0 - y),
+        )
+        count = round(t_s * CAMERA_FPS)  # the camera frame that this video frame shows
+        slot = FrameSlot(
+            data=counts,
+            stream_id=1,
+            t_utc_ns=DEMO_NOW_NS + round(count / CAMERA_FPS * NS_PER_S),
+            mode="bin1",
+            exposure_us=2000,
+            gain=0,
+            adc_bits=12,
+            roi=roi,
+            star=found,
+            count=count,
+        )
+        self._index += 1
+        return slot, t_s
+
+
 def demo_dark_library(now_ns: int, *, seed: int = 31) -> tuple[list[DarkSetView], DarkModelView]:
     """The six sets of the demo library, the newest first, and the model that they fit.
 
@@ -907,9 +1097,11 @@ class DemoCore(FakeCoreClient):
 
     The commands work as in `FakeCoreClient`. While the fake scheduler is in `align`, the stream
     yields a frame every `period_s` seconds. In any other state the stream stays open and sends
-    nothing, so the UI shows that it waits for frames. The dark library starts with six sets
-    (`demo_dark_library`), or empty with `library=False`, and a dark session follows
-    `dark_script` (`DEMO_DARK_SCRIPT` by default).
+    nothing, so the UI shows that it waits for frames. The video of Polaris runs in the `auto` and
+    `safe` states, one frame every `polaris_period_s` seconds of wall time (the video itself
+    advances 50 ms for each frame). The dark library starts with six sets (`demo_dark_library`),
+    or empty with `library=False`, and a dark session follows `dark_script` (`DEMO_DARK_SCRIPT`
+    by default).
 
     The status plays the activity of a scheduler on a short cycle (see `demo_activity`): the
     phases of `auto` follow the monotonic clock of the fake `core`, and the gate of `safe` opens
@@ -921,6 +1113,7 @@ class DemoCore(FakeCoreClient):
         clock: Clock | None = None,
         *,
         period_s: float = FRAME_PERIOD_S,
+        polaris_period_s: float = POLARIS_PERIOD_S,
         field: StarField | None = None,
         dark_script: DarkScript | None = None,
         library: bool = True,
@@ -928,6 +1121,7 @@ class DemoCore(FakeCoreClient):
         super().__init__(
             clock=clock,
             frames=self._stream,
+            polaris=self._polaris_stream,
             instance="demo-core",
             state="auto",
             dark_script=dark_script or DEMO_DARK_SCRIPT,
@@ -936,6 +1130,8 @@ class DemoCore(FakeCoreClient):
         if library:
             self.dark.sets, self.dark.model = demo_dark_library(self._clock.utc_ns())
         self._period_s = period_s
+        self._polaris_period_s = polaris_period_s
+        self._started_ns = self._clock.monotonic_ns()
         self._field = field or StarField()
         self._seq = 0
         self._latest: AlignmentState | None = None
@@ -999,6 +1195,32 @@ class DemoCore(FakeCoreClient):
         if self.state != "align":
             return AlignmentState(active=False)
         return self._latest or AlignmentState(active=True)
+
+    def _video_time_s(self) -> float:
+        """The seconds since this fake core started, which is the time of the video."""
+        return (self._clock.monotonic_ns() - self._started_ns) / NS_PER_S
+
+    @staticmethod
+    def _polaris_frame(sky: PolarisSky, renderer: PolarisRenderer) -> PolarisFrame:
+        slot, t_s = sky.next_frame()
+        return renderer.render(slot, demo_live_seeing(t_s))
+
+    async def _polaris_stream(self) -> AsyncIterator[PolarisFrame]:
+        sky = PolarisSky(time_offset_s=self._video_time_s())
+        renderer = PolarisRenderer(scale_for=lambda mode: FAST_PLATE_SCALE_ARCSEC_PX)
+        due = time.monotonic()
+        while True:
+            if self.state not in ("auto", "safe"):  # the camera shows no fast stream otherwise
+                await asyncio.sleep(IDLE_POLL_S)
+                due = time.monotonic()
+                continue
+            yield await asyncio.to_thread(self._polaris_frame, sky, renderer)
+            due = max(due + self._polaris_period_s, time.monotonic())  # keep the rate, never burst
+            await asyncio.sleep(max(0.0, due - time.monotonic()))
+
+    def live_seeing(self) -> LiveSeeingView | None:
+        self._check()
+        return demo_live_seeing(self._video_time_s())
 
 
 # --- Files -------------------------------------------------------------------------------------
@@ -1104,6 +1326,7 @@ def build_demo(
     now_ns: int = DEMO_NOW_NS,
     seed: int = 2026,
     frame_period_s: float = FRAME_PERIOD_S,
+    polaris_period_s: float = POLARIS_PERIOD_S,
 ) -> DemoApp:
     """Build the demo app. `profile` and `config` are what `/profile` and `/config` serve.
 
@@ -1131,7 +1354,7 @@ def build_demo(
         write_demo_store(layout, now_ns, seed=seed)
         reader = StoreReader.open(layout.db_path)
         clock = DemoClock(now_ns)
-        core = DemoCore(clock, period_s=frame_period_s)
+        core = DemoCore(clock, period_s=frame_period_s, polaris_period_s=polaris_period_s)
         app = create_app(
             settings,
             reader,
