@@ -30,12 +30,14 @@ from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.remote import RemoteCameraDriver
 
 from . import no_pickle
+from .conftest import wait_until
 from .process import AcquireProcess
 from .rig import FAST, SMALL
 
 StartProcess = Callable[..., AcquireProcess]
 
 SLOW_CONSUMER = {"ACQUIRE__QUEUE_DEPTH": "8", "STREAM_WINDOW_MESSAGES": "4"}
+RUN_AHEAD_DROPS = 20  # the frames that the queue drops while nobody reads
 
 
 @pytest.fixture
@@ -58,13 +60,35 @@ def start_process(short_dir: Path) -> Iterator[StartProcess]:
         process.close()
 
 
-def read_frames(driver: RemoteCameraDriver, count: int, pause_s: float = 0.0) -> list[Frame]:
-    frames = []
-    for _ in range(count):
+def read_frames(driver: RemoteCameraDriver, count: int) -> list[Frame]:
+    return [driver.read_frame(15.0) for _ in range(count)]
+
+
+def let_the_camera_run_ahead(driver: RemoteCameraDriver) -> None:
+    """Stream until the queue of `acquire` has dropped frames while nobody read.
+
+    The queue drops a frame only when it is full, so this makes the consumer slower than the camera
+    by a number of frames that no clock decides. A pause between reads does not do that: it depends
+    on the pace of the camera, and a machine whose timer ticks at 15.6 ms can make fewer frames
+    than a consumer with a pause takes.
+    """
+    assert wait_until(lambda: driver.health()["dropped_queue"] >= RUN_AHEAD_DROPS, 60.0), (
+        "the queue never dropped a frame"
+    )
+
+
+def read_until_a_drop(driver: RemoteCameraDriver, limit: int = 500) -> list[Frame]:
+    """Read frames until one reports a drop, and return them.
+
+    The frames that the window of the stream and the queue held come first, and the frame after the
+    drops carries their count.
+    """
+    frames: list[Frame] = []
+    for _ in range(limit):
         frames.append(driver.read_frame(15.0))
-        if pause_s:
-            time.sleep(pause_s)
-    return frames
+        if frames[-1].dropped_before:
+            return frames
+    raise AssertionError(f"no frame reported a drop in {limit} frames")
 
 
 def read_until_disconnected(driver: RemoteCameraDriver) -> list[Frame]:
@@ -130,11 +154,12 @@ def test_a_slow_consumer_makes_the_queue_drop_and_the_drops_are_counted(
     driver.open()
     driver.configure(FAST)
     driver.start()
-    frames = read_frames(driver, 40, pause_s=0.05)  # slower than the camera by far
+    let_the_camera_run_ahead(driver)
+    frames = read_until_a_drop(driver) + read_frames(driver, 20)
     assert_every_frame_is_accounted_for(frames)
     reported = sum(f.dropped_before for f in frames)
     health = driver.health()
-    assert reported > 0
+    assert reported >= RUN_AHEAD_DROPS
     assert health["dropped_queue"] >= reported
     assert health["flow_stalls"] > 0
     assert health["queue_peak_frames"] <= 8
@@ -150,9 +175,10 @@ def test_kill_and_restart_recovers_and_accounts_for_every_frame(
     driver.start()
 
     # Stream with a consumer that is slower than the camera, so that the queue drops frames.
-    before = read_frames(driver, 40, pause_s=0.04)
+    let_the_camera_run_ahead(driver)
+    before = read_until_a_drop(driver) + read_frames(driver, 20)
     first_instance = driver.instance
-    assert sum(f.dropped_before for f in before) > 0
+    assert sum(f.dropped_before for f in before) >= RUN_AHEAD_DROPS
     assert driver.health()["dropped_queue"] >= sum(f.dropped_before for f in before)
 
     # Kill the process while it streams, as a crash or a hang that its watchdog ended does.
