@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 
-from seeingmon.clock import NS_PER_S
+from seeingmon.clock import NS_PER_S, utc_ns_to_iso
 from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.alignment.state import (
@@ -16,6 +16,7 @@ from seeingmon.services.core.alignment.state import (
     Target,
     build_state,
     resolve_target,
+    ring_from_solution,
     wrap_degrees,
 )
 from seeingmon.services.core.settings import AlignmentSettings
@@ -27,9 +28,10 @@ from seeingmon.services.web.contract import (
     decode_alignment_state,
     pack_frame,
 )
+from seeingmon.survey import apparent
 from seeingmon.survey.apparent import earth_rotation_angle
 from seeingmon.survey.geometry import ARCSEC_PER_RAD, nearest_rotation
-from seeingmon.survey.pointing import polaris_colatitude_deg
+from seeingmon.survey.pointing import PointingSolution, polaris_colatitude_deg
 from seeingmon.survey.skyview import build_sky_view, reticle_geometry, zenith_vector
 from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
@@ -637,6 +639,237 @@ class TestTiming:
         assert state.timing is not None
         assert len(state.timing.model_dump_json()) < 400
         assert decode_alignment_state(json.loads(state.model_dump_json())) == state
+
+
+def solved_at(
+    t_utc_ns: int, attitude: CameraAttitude | None = None, **changes: object
+) -> QuickSolution:
+    """A solution whose Polaris pixel is where the camera model puts the real Polaris."""
+    attitude = camera() if attitude is None else attitude
+    epoch = apparent.epoch_from_utc_ns(t_utc_ns)
+    x, y, _ = attitude.project(apparent.apparent_vectors_for(apparent.POLARIS, epoch))
+    return solution(
+        t_utc_ns=t_utc_ns,
+        attitude=attitude,
+        x_px=float(x[0]),
+        y_px=float(y[0]),
+        polaris_colatitude_deg=polaris_colatitude_deg(t_utc_ns),
+        **changes,
+    )
+
+
+def reference_ring(
+    last: QuickSolution, t_utc_ns: int, aim: tuple[float, float] = (2071.5, 1410.5)
+) -> tuple[float, float]:
+    """The ring that the survey code gives for the time: the Earth-fixed solution, then project."""
+    assert last.attitude is not None
+    fixed = PointingSolution.from_attitude(
+        last.attitude,
+        apparent.epoch_from_utc_ns(last.t_utc_ns),
+        mode="bin2",
+        width_px=4144,
+        height_px=2822,
+    )
+    polaris = fixed.polaris_pixel(t_utc_ns)
+    pole = fixed.attitude_at(t_utc_ns).pole_pixel()
+    assert polaris is not None
+    assert pole is not None
+    return polaris[0] + aim[0] - pole[0], polaris[1] + aim[1] - pole[1]
+
+
+class TestAimRingWithoutASolution:
+    """The ring depends on the twist of the picture and the time, so it outlives a lost solution."""
+
+    def test_a_current_solution_gives_the_ring_of_its_sky_view(self) -> None:
+        current = solved_at(T0 - 2 * NS_PER_S, seq=4)
+        state = build_state(frame_summary(), current, TARGET, SETTINGS)
+        assert state.sky is not None
+        assert state.sky.aim_ring is not None
+        ring = state.aim_ring
+        assert ring is not None
+        assert (ring.x_px, ring.y_px) == (state.sky.aim_ring.x_px, state.sky.aim_ring.y_px)
+        assert ring.source == "current frame"
+        assert ring.age_s == pytest.approx(2.0)
+        assert ring.solution_frame_seq == 4
+        assert "aim_ring" not in state.quality
+
+    def test_without_a_current_solution_the_last_one_gives_the_ring(self) -> None:
+        last = solved_at(T0 - 12 * NS_PER_S, seq=3)
+        failed = solution(
+            seq=9, solved=False, x_px=None, y_px=None, attitude=None, note="too few stars"
+        )
+        state = build_state(frame_summary(), failed, TARGET, SETTINGS, last_good=last)
+        assert state.solved is None
+        assert state.sky is None  # the pole and the grid need the pointing of this frame
+        assert state.quality["solved"] == "too few stars"
+        ring = state.aim_ring
+        assert ring is not None
+        assert ring.source == "last solution"
+        assert ring.age_s == pytest.approx(12.0)
+        assert ring.solution_frame_seq == 3
+        expected = reference_ring(last, T0)
+        assert (ring.x_px, ring.y_px) == pytest.approx(expected, abs=2e-3)
+        assert "aim_ring" not in state.quality
+
+    def test_the_ring_from_the_last_solution_is_the_ring_of_the_same_solution_when_current(
+        self,
+    ) -> None:
+        current = solved_at(T0)
+        with_solution = build_state(frame_summary(), current, TARGET, SETTINGS)
+        without = build_state(frame_summary(), None, TARGET, SETTINGS, last_good=current)
+        assert with_solution.aim_ring is not None
+        assert without.aim_ring is not None
+        assert (without.aim_ring.x_px, without.aim_ring.y_px) == pytest.approx(
+            (with_solution.aim_ring.x_px, with_solution.aim_ring.y_px), abs=2e-3
+        )
+
+    @pytest.mark.parametrize("hours", [0.25, 1.0, 6.0, 12.0, -3.0])
+    def test_the_ring_turns_with_the_earth(self, hours: float) -> None:
+        last = solved_at(T0)
+        t_frame = T0 + round(hours * 3600 * NS_PER_S)
+        state = build_state(frame_summary(t_utc_ns=t_frame), None, TARGET, SETTINGS, last_good=last)
+        assert state.aim_ring is not None
+        expected = reference_ring(last, t_frame)
+        assert (state.aim_ring.x_px, state.aim_ring.y_px) == pytest.approx(expected, abs=2e-3)
+        assert state.reticle is not None
+        angle = []
+        for time_ns in (T0, t_frame):
+            ring = ring_from_solution(last, time_ns, 4144, 2822, AlignmentSettings())
+            assert ring is not None
+            angle.append(math.atan2(ring[1] - state.reticle.y_px, ring[0] - state.reticle.x_px))
+        turned = math.degrees(angle[1] - angle[0])
+        earth = math.degrees(earth_rotation_angle(t_frame) - earth_rotation_angle(T0))
+        assert wrap_degrees(turned - earth) == pytest.approx(0.0, abs=0.01) or wrap_degrees(
+            turned + earth
+        ) == pytest.approx(0.0, abs=0.01)  # the sense depends on the parity of the picture
+
+    def test_the_ring_stays_on_the_circle_of_the_reticle_through_a_day(self) -> None:
+        last = solved_at(T0)
+        for hours in range(0, 25, 3):
+            t_frame = T0 + hours * 3600 * NS_PER_S
+            state = build_state(
+                frame_summary(t_utc_ns=t_frame), None, TARGET, SETTINGS, last_good=last
+            )
+            assert state.aim_ring is not None
+            assert state.reticle is not None
+            distance = math.hypot(
+                state.aim_ring.x_px - state.reticle.x_px, state.aim_ring.y_px - state.reticle.y_px
+            )
+            assert distance == pytest.approx(state.reticle.radius_px, abs=1.0)
+
+    def test_a_move_of_the_mount_leaves_the_ring_where_it_is(self) -> None:
+        """Altitude and azimuth moves translate the picture, and the ring needs the twist only."""
+        later = T0 + 1800 * NS_PER_S
+        moves = (
+            (0.0, 0.0, 0.0),
+            (0.4, 0.1, 1.5),  # altitude and azimuth moves in degrees, and the shift that they allow
+            (-0.3, -0.2, 2.5),
+            (0.7, 0.3, 3.5),
+            (-0.1, 0.5, 4.5),
+            (1.0, 1.0, 9.0),
+        )
+        rings = []
+        for altitude, azimuth, _ in moves:
+            attitude = altaz_camera(SITE.latitude_deg + altitude, azimuth)
+            state = build_state(
+                frame_summary(t_utc_ns=later),
+                None,
+                None,
+                AlignmentSettings(),
+                last_good=solved_at(T0, attitude),
+            )
+            assert state.aim_ring is not None
+            rings.append((state.aim_ring.x_px, state.aim_ring.y_px))
+        for ring, (_, _, limit) in zip(rings[1:], moves[1:], strict=True):
+            assert math.hypot(ring[0] - rings[0][0], ring[1] - rings[0][1]) < limit  # of 580 px
+
+    def test_the_configured_aim_moves_the_ring_with_the_circle(self) -> None:
+        last = solved_at(T0)
+        centered = build_state(frame_summary(), None, None, AlignmentSettings(), last_good=last)
+        moved = build_state(
+            frame_summary(),
+            None,
+            None,
+            AlignmentSettings(aim_x_px=1800.0, aim_y_px=1200.0),
+            last_good=last,
+        )
+        assert centered.aim_ring is not None
+        assert moved.aim_ring is not None
+        assert moved.aim_ring.x_px - centered.aim_ring.x_px == pytest.approx(
+            1800.0 - 2071.5, abs=2e-3
+        )
+        assert moved.aim_ring.y_px - centered.aim_ring.y_px == pytest.approx(
+            1200.0 - 1410.5, abs=2e-3
+        )
+
+    def test_a_state_that_has_no_solution_at_all_has_no_ring_and_says_why(self) -> None:
+        state = build_state(frame_summary(), None, TARGET, SETTINGS)
+        assert state.aim_ring is None
+        assert state.last_solution is None
+        assert (
+            state.quality["aim_ring"] == "no solve has found the star field in this alignment yet"
+        )
+
+    def test_a_last_solution_without_an_attitude_gives_no_ring(self) -> None:
+        bare = solution(attitude=None)
+        state = build_state(frame_summary(), None, TARGET, SETTINGS, last_good=bare)
+        assert state.aim_ring is None
+        assert state.quality["aim_ring"] == "the last solution carries no camera attitude"
+        assert state.last_solution is not None  # its age is still worth showing
+
+    def test_a_pole_behind_the_camera_gives_no_ring(self) -> None:
+        behind = solved_at(T0, camera(120.0))
+        state = build_state(frame_summary(), None, TARGET, SETTINGS, last_good=behind)
+        assert state.aim_ring is None
+        assert state.quality["aim_ring"] == "the pole of the last solution lies behind the camera"
+
+    def test_the_polar_grid_and_the_pole_stay_out_of_a_state_without_a_current_solution(
+        self,
+    ) -> None:
+        state = build_state(
+            frame_summary(), None, TARGET, SETTINGS, last_good=solved_at(T0 - 60 * NS_PER_S)
+        )
+        assert (
+            state.sky is None
+        )  # the camera model, the pole, and the move need the current pointing
+        assert state.quality["sky"] == "no solve has finished yet"
+        assert state.aim_ring is not None
+        assert state.reticle is not None  # the dashed circle needs no solution either
+
+    def test_the_last_solution_says_what_it_was_and_how_old_it_is(self) -> None:
+        last = solved_at(T0 - 90 * NS_PER_S, seq=12, solver="astap", n_matched=55, rms_arcsec=0.9)
+        state = build_state(frame_summary(), None, TARGET, SETTINGS, last_good=last)
+        view = state.last_solution
+        assert view is not None
+        assert view.frame_seq == 12
+        assert view.t_utc == utc_ns_to_iso(T0 - 90 * NS_PER_S)
+        assert view.age_s == pytest.approx(90.0)
+        assert (view.roll_deg, view.n_matched, view.rms_arcsec, view.solver) == (
+            12.0,
+            55,
+            0.9,
+            "astap",
+        )
+        assert view.polaris_colatitude_deg == round(polaris_colatitude_deg(T0 - 90 * NS_PER_S), 5)
+
+    def test_a_current_solution_is_also_the_last_solution(self) -> None:
+        current = solved_at(T0 - NS_PER_S, seq=5)
+        state = build_state(frame_summary(), current, TARGET, SETTINGS, last_good=current)
+        assert state.last_solution is not None
+        assert (state.last_solution.frame_seq, state.last_solution.age_s) == (5, 1.0)
+        assert state.aim_ring is not None
+        assert state.aim_ring.source == "current frame"  # the sky view wins while it exists
+
+    def test_the_ring_and_the_last_solution_survive_the_json_and_stay_small(self) -> None:
+        state = build_state(
+            frame_summary(), None, TARGET, SETTINGS, last_good=solved_at(T0 - 5 * NS_PER_S)
+        )
+        assert state.aim_ring is not None
+        assert state.last_solution is not None
+        assert len(state.aim_ring.model_dump_json()) < 200
+        assert len(state.last_solution.model_dump_json()) < 300
+        assert decode_alignment_state(json.loads(state.model_dump_json())) == state
+        assert len(pack_frame(state, tiny_jpeg())) < MAX_STATE_BYTES // 16
 
 
 def test_the_settings_take_the_aim_as_a_pair() -> None:

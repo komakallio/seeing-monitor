@@ -622,6 +622,76 @@ class SkyView(_View):
         return cls.model_validate(dataclasses.asdict(geometry))
 
 
+class AimRingView(_View):
+    """The aim ring: where Polaris belongs on the circle of the reticle for the time of this frame.
+
+    It is the pixel that the real Polaris would take if the pole sat at the aim, with the same
+    orientation of the picture and at the time of this frame. The orientation of the picture
+    (the twist about the optical axis) and the time fix it. The moves of an altitude-azimuth mount
+    translate the picture and leave the twist alone, so the ring stays right while you adjust the
+    mount, even when the solver finds no star field. `x_px` and `y_px` are pixels of the frame in
+    `frame`, and the ring lies on the circle of `reticle`.
+
+    `source` says where the ring comes from. `current frame` means the solution of this very state
+    (it equals `sky.aim_ring`). `last solution` means that the latest solve failed or is too old, so
+    `core` turned the last good solution to the time of this frame (the Earth turns the picture
+    about the pole by 15 degrees an hour) and took the ring from that. The pole, the polar grid, and
+    the move in altitude and azimuth need the pointing of this frame, so they stay out of a state
+    that has no current solution.
+    """
+
+    x_px: float = Field(description="The x position of the ring, in pixels of the frame.")
+    y_px: float = Field(description="The y position of the ring, in pixels of the frame.")
+    source: Literal["current frame", "last solution"] = Field(
+        description="Whether the ring comes from the solution of this state or from the last "
+        "good solution."
+    )
+    age_s: float | None = Field(
+        None,
+        ge=0,
+        description="The time from the frame of the solution to the frame of this state, in "
+        "seconds. It is small for `current frame` and grows while the solver fails.",
+    )
+    solution_frame_seq: int | None = Field(
+        None, ge=0, description="The sequence number of the frame that the solution came from."
+    )
+
+
+class LastSolutionView(_View):
+    """The last good solution of this alignment: the latest solve that found the star field.
+
+    It stays while later solves fail, so the page can say how old the overlay is. `core` forgets it
+    when the alignment ends. A good solution may be the current one: then `age_s` is small and
+    `solved` holds the same numbers.
+    """
+
+    frame_seq: int = Field(ge=0, description="The sequence number of the frame that was solved.")
+    t_utc: str = Field(max_length=40, description="The capture time of that frame, ISO 8601 UTC.")
+    age_s: float = Field(
+        ge=0,
+        description="The time from that frame to the frame of this state, in seconds.",
+    )
+    roll_deg: float | None = Field(
+        None,
+        description="The position angle of the direction to the pole in that solution, from "
+        "image up toward image left. It is `null` when the pole sat on the center.",
+    )
+    polaris_colatitude_deg: float | None = Field(
+        None,
+        ge=0,
+        lt=90,
+        description="The angle between Polaris and the pole at the time of that frame, in "
+        "degrees: the radius of the orbit.",
+    )
+    n_matched: int = Field(0, ge=0, description="The number of catalog stars that the fit matched.")
+    rms_arcsec: float | None = Field(
+        None, ge=0, description="The residual of the fit, in arcseconds."
+    )
+    solver: str = Field(
+        "", max_length=32, description="What solved the frame: `tracker`, or the plate solver."
+    )
+
+
 class TimingView(_View):
     """Where the time goes between the camera and the page, in seconds, for one state.
 
@@ -699,7 +769,9 @@ class AlignmentState(_View):
     the size of the image that it shows. `reticle` is the fixed circle of the first layer, and it
     exists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the
     orbit of Polaris, and the camera model of the latest current solution. It exists whether or not
-    a target is set. `timing` says how old the frame and the solution are.
+    a target is set. `timing` says how old the frame and the solution are. `aim_ring` is where
+    Polaris belongs on the circle of the reticle, and it exists while the state has no current
+    solution, when it comes from `last_solution`.
     """
 
     active: bool = False
@@ -713,6 +785,17 @@ class AlignmentState(_View):
     saturation: SaturationView | None = None
     reticle: ReticleView | None = None
     sky: SkyView | None = None
+    aim_ring: AimRingView | None = Field(
+        None,
+        description="Where Polaris belongs on the circle of the reticle for the time of this "
+        "frame, from the current solution or, without one, from the last good solution. It is "
+        "`null` when no solution has found the star field in this alignment.",
+    )
+    last_solution: LastSolutionView | None = Field(
+        None,
+        description="The latest solve that found the star field, whether or not it is current. "
+        "It is `null` until a solve succeeds, and after the alignment ends.",
+    )
     timing: TimingView | None = Field(
         None,
         description="The age of the frame, and the frame and the time of the quick solve. It is "

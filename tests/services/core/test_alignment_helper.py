@@ -750,6 +750,77 @@ class TestTheTimingOfTheState:
         assert timing.frame_age_s == 0.0
 
 
+class TestTheLastSolution:
+    def test_the_ring_survives_the_solves_that_fail(self, build: Build) -> None:
+        solver = StubSolver(solution(attitude=camera(), polaris_colatitude_deg=0.6265, seq=1))
+        helper = build(solver=solver)
+        helper.solve_frame(sky_frame(1, t_utc_ns=T0))
+        current = unpack_frame(helper.process_frame(sky_frame(1, t_utc_ns=T0))).state
+        assert current.aim_ring is not None
+        assert current.aim_ring.source == "current frame"
+        solver.result = solution(
+            seq=2, solved=False, x_px=None, y_px=None, attitude=None, note="too few stars"
+        )
+        helper.solve_frame(sky_frame(2, t_utc_ns=T0 + NS_PER_S))
+        later = sky_frame(3, t_utc_ns=T0 + 30 * NS_PER_S)  # the solver found nothing for 30 s
+        lost = unpack_frame(helper.process_frame(later)).state
+        assert lost.solved is None
+        assert lost.sky is None
+        assert lost.aim_ring is not None
+        assert lost.aim_ring.source == "last solution"
+        assert lost.aim_ring.age_s == pytest.approx(30.0)
+        assert lost.aim_ring.solution_frame_seq == 1
+        assert lost.last_solution is not None
+        assert (lost.last_solution.frame_seq, lost.last_solution.age_s) == (1, 30.0)
+        assert lost.timing is not None
+        assert lost.timing.solution_frame_seq == 2  # the latest solve failed on frame 2
+        assert lost.reticle is not None
+
+    def test_a_new_solution_takes_the_ring_back_to_the_current_frame(self, build: Build) -> None:
+        solver = StubSolver(solution(attitude=camera(), seq=1))
+        helper = build(solver=solver)
+        helper.solve_frame(sky_frame(1, t_utc_ns=T0))
+        solver.result = solution(seq=2, solved=False, x_px=None, y_px=None, attitude=None)
+        helper.solve_frame(sky_frame(2, t_utc_ns=T0 + NS_PER_S))
+        solver.result = solution(
+            seq=3, attitude=camera(distance_deg=0.4), t_utc_ns=T0 + 2 * NS_PER_S
+        )
+        helper.solve_frame(sky_frame(3, t_utc_ns=T0 + 2 * NS_PER_S))
+        state = unpack_frame(helper.process_frame(sky_frame(3, t_utc_ns=T0 + 2 * NS_PER_S))).state
+        assert state.aim_ring is not None
+        assert state.aim_ring.source == "current frame"
+        assert state.last_solution is not None
+        assert state.last_solution.frame_seq == 3
+
+    def test_a_solution_without_an_attitude_is_not_kept(self, build: Build) -> None:
+        helper = build(solver=StubSolver(solution(attitude=None)))
+        helper.solve_frame(sky_frame(1, t_utc_ns=T0))
+        state = unpack_frame(helper.process_frame(sky_frame(2, t_utc_ns=T0))).state
+        assert state.last_solution is None
+        assert state.aim_ring is None
+        assert "aim_ring" in state.quality
+
+    def test_the_end_of_the_alignment_forgets_the_last_solution(self, build: Build) -> None:
+        active = Active(True)
+        helper = build(is_active=active, solver=StubSolver(solution(attitude=camera(), seq=1)))
+        helper.solve_frame(sky_frame(1, t_utc_ns=T0))
+        helper.process_frame(sky_frame(1, t_utc_ns=T0))
+        assert helper.state().last_solution is not None
+        active.value = False
+        assert helper.state().active is False
+        active.value = True
+        helper.process_frame(sky_frame(2, t_utc_ns=T0))
+        state = helper.state()
+        assert state.last_solution is None  # a new alignment starts with no solution
+        assert state.aim_ring is None
+
+    def test_without_a_solver_the_ring_has_the_same_reason_as_the_rest(self, build: Build) -> None:
+        state = unpack_frame(build().process_frame(sky_frame(1))).state
+        reason = "the quick solve is not available: no catalog is configured"
+        assert state.quality["aim_ring"] == reason
+        assert state.quality["solved"] == reason
+
+
 class Lifecycle(StubSolver):
     """A solver that has `release` and `close`, and counts the calls."""
 

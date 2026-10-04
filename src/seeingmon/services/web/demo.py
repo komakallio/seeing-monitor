@@ -15,7 +15,10 @@ sources, so that you can look at the UI on a laptop:
   in the UI with the demo token (`DEMO_TOKEN`). The pole starts 0.9 degrees right of and 0.4
   degrees above the field center, drifts through the center and back (`pole_offset_px`), and
   Polaris follows on its orbit, so the numbers and the lines of the overlay move, and the orbit
-  is green, amber, and red in turn. The saturation warning comes and goes. The fake `core` also
+  is green, amber, and red in turn. The saturation warning comes and goes. In the 20 seconds from
+  50 s to 70 s of every drift period, the solver finds no star field (`solution_lost`): the state
+  has no solution, no offset, and no sky, and the aim ring comes from the last solution, as it does
+  in `core`. The fake `core` also
   holds a dark library of six sets with a model, and it plays a dark session on a short timeline
   (see `DEMO_DARK_SCRIPT`): queued, bias frames, the wait for the cover, dark frames, and the
   build. The camera counts as covered a few seconds into the wait, so the session ends
@@ -55,6 +58,7 @@ from seeingmon.services.web.auth import ScryptParams, hash_token
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import (
     ActivityView,
+    AimRingView,
     AlignmentFrame,
     AlignmentFrameInfo,
     AlignmentState,
@@ -63,7 +67,9 @@ from seeingmon.services.web.contract import (
     FaultView,
     FocusView,
     HistogramView,
+    LastSolutionView,
     OffsetView,
+    ReticleView,
     SaturationView,
     SkyView,
     SolvedView,
@@ -122,6 +128,11 @@ SKY_COLATITUDE_DEG = 0.62
 POLE_START_DEG = (0.9, 0.4)
 POLE_DRIFT_PERIOD_S = 150.0
 ORBIT_RADIUS_PX = SKY_COLATITUDE_DEG * 3600.0 / PLATE_SCALE_ARCSEC_PX
+# The solver finds no star field from `SOLUTION_LOST_FROM_S` to `SOLUTION_LOST_UNTIL_S` of every
+# drift period, as it does when a hand moves the camera too fast or a cloud passes.
+SOLUTION_LOST_FROM_S = 50.0
+SOLUTION_LOST_UNTIL_S = 70.0
+LOST_REASON = "the tracker could not match the frame"
 # The right ascension of Polaris in the demo, which only decides where the labels of the grid fall.
 POLARIS_RA_DEG = 45.0
 
@@ -490,13 +501,43 @@ def pole_offset_px(t_s: float) -> tuple[float, float]:
     return right, down
 
 
-def demo_sky(pole_right_px: float, pole_down_px: float, polaris_angle_deg: float) -> SkyView | None:
+def solution_lost(t_s: float) -> bool:
+    """Whether the solver finds no star field at demo time `t_s`."""
+    return SOLUTION_LOST_FROM_S <= t_s % POLE_DRIFT_PERIOD_S < SOLUTION_LOST_UNTIL_S
+
+
+def demo_roll_deg(t_s: float) -> float:
+    """The turn of the picture about Polaris at demo time `t_s`, in degrees."""
+    return 0.9 * math.sin(t_s / 57)
+
+
+def demo_aim_ring(roll_deg: float) -> AimRingView:
+    """Where Polaris belongs on the reticle for a picture turned by `roll_deg`.
+
+    The ring sits on the circle around the frame center, straight below the center when the roll is
+    zero. It depends on the roll only, so a lost solution keeps the ring where the last one put it.
+    """
+    angle = math.radians(roll_deg)
+    return AimRingView(
+        x_px=round(FRAME_CENTER_X + ORBIT_RADIUS_PX * math.sin(angle), 3),
+        y_px=round(FRAME_CENTER_Y + ORBIT_RADIUS_PX * math.cos(angle), 3),
+        source="current frame",
+    )
+
+
+def demo_sky(
+    pole_right_px: float,
+    pole_down_px: float,
+    polaris_angle_deg: float,
+    polaris_xy: tuple[float, float] | None = None,
+) -> SkyView | None:
     """The sky view for a camera whose pole lies at an offset from the frame center.
 
     Polaris lies on its orbit, in the image direction `polaris_angle_deg` from straight down.
-    The view comes from `build_sky_view` through a synthetic camera attitude, so the numbers are
-    the ones that `core` computes for a real solution. The attitude needs the survey extra (the
-    model of the camera lives there), and a demo without it shows no sky view.
+    `polaris_xy` is the pixel of Polaris, which gives the view its aim ring. The view comes from
+    `build_sky_view` through a synthetic camera attitude, so the numbers are the ones that `core`
+    computes for a real solution. The attitude needs the survey extra (the model of the camera
+    lives there), and a demo without it shows no sky view.
     """
     try:
         from seeingmon.survey.skyview import build_sky_view
@@ -524,7 +565,9 @@ def demo_sky(pole_right_px: float, pole_down_px: float, polaris_angle_deg: float
         parity=1,
         center_px=pixel_center(FRAME_WIDTH_PX, FRAME_HEIGHT_PX),
     )
-    geometry = build_sky_view(attitude, FRAME_WIDTH_PX, FRAME_HEIGHT_PX, SKY_COLATITUDE_DEG)
+    geometry = build_sky_view(
+        attitude, FRAME_WIDTH_PX, FRAME_HEIGHT_PX, SKY_COLATITUDE_DEG, polaris_xy=polaris_xy
+    )
     return SkyView.from_geometry(geometry)
 
 
@@ -602,10 +645,15 @@ class StarField:
         return buffer.getvalue()
 
     def frame(self, seq: int, now_ns: int = DEMO_NOW_NS) -> AlignmentFrame:
-        """The live-view frame with this sequence number: the JPEG and the state beside it."""
+        """The live-view frame with this sequence number: the JPEG and the state beside it.
+
+        While the solver finds no star field (`solution_lost`), the state has no `solved`, `offset`,
+        and `sky`. It keeps the `reticle`, the focus, and the `aim_ring` and `last_solution` of the
+        last frame that had a solution.
+        """
         t = seq * FRAME_PERIOD_S
         pole_right, pole_down = pole_offset_px(t)
-        roll = 0.9 * math.sin(t / 57)
+        roll = demo_roll_deg(t)
         # Polaris sits on its orbit around the pole, straight below it when the roll is zero.
         angle = math.radians(roll)
         dx = pole_right + ORBIT_RADIUS_PX * math.sin(angle)
@@ -623,8 +671,30 @@ class StarField:
         fwhm = 2.4 + 0.25 * math.sin(t / 50)
         counts = [round(3.0e6 * math.exp(-0.63 * i)) for i in range(HISTOGRAM_BINS)]
         counts[-1] = round(saturation * FRAME_WIDTH_PX * FRAME_HEIGHT_PX)  # the saturated pixels
-        frame_t_utc = utc_ns_to_iso(now_ns + round(t * NS_PER_S), digits=3)
+        lost = solution_lost(t)
         solution_age_s = round(0.35 + 0.25 * abs(math.sin(t)), 2)
+        # The frame of the last solution: a little behind this one, or the last frame before the
+        # solver lost the star field.
+        if lost:
+            cycle_start = t - t % POLE_DRIFT_PERIOD_S
+            solved_t = cycle_start + SOLUTION_LOST_FROM_S - FRAME_PERIOD_S
+        else:
+            solved_t = max(0.0, t - solution_age_s)
+        solved_seq = round(solved_t / FRAME_PERIOD_S)
+        solved_roll = demo_roll_deg(solved_t)
+        ring = demo_aim_ring(solved_roll if lost else roll).model_copy(
+            update={
+                "source": "last solution" if lost else "current frame",
+                "age_s": round(t - solved_t, 2),
+                "solution_frame_seq": solved_seq,
+            }
+        )
+        frame_t_utc = utc_ns_to_iso(now_ns + round(t * NS_PER_S), digits=3)
+        reasons = {
+            "solved": LOST_REASON,
+            "sky": LOST_REASON,
+            "offset": "the offset needs a current solution",
+        }
         state = AlignmentState(
             active=True,
             t_utc=frame_t_utc,
@@ -638,7 +708,9 @@ class StarField:
                 plate_scale_arcsec_px=PLATE_SCALE_ARCSEC_PX,
             ),
             target=TargetView(x_px=self.target_x, y_px=self.target_y, roll_deg=12.3),
-            solved=SolvedView(
+            solved=None
+            if lost
+            else SolvedView(
                 x_px=round(self.target_x + dx, 2),
                 y_px=round(self.target_y + dy, 2),
                 roll_deg=round(12.3 + roll, 3),
@@ -646,7 +718,9 @@ class StarField:
                 rms_arcsec=round(2.9 + 0.4 * math.sin(t / 13), 2),
                 age_s=solution_age_s,
             ),
-            offset=OffsetView(
+            offset=None
+            if lost
+            else OffsetView(
                 dx_px=round(dx, 2),
                 dy_px=round(dy, 2),
                 distance_px=round(distance, 2),
@@ -660,16 +734,41 @@ class StarField:
             ),
             histogram=HistogramView(counts=counts, min_dn=0.0, max_dn=65535.0),
             saturation=SaturationView(fraction=round(saturation, 5), warning=saturation > 0.001),
-            sky=demo_sky(pole_right, pole_down, roll),
+            reticle=ReticleView(
+                x_px=FRAME_CENTER_X,
+                y_px=FRAME_CENTER_Y,
+                radius_px=round(ORBIT_RADIUS_PX, 3),
+                polaris_colatitude_deg=SKY_COLATITUDE_DEG,
+            ),
+            sky=None
+            if lost
+            else demo_sky(
+                pole_right,
+                pole_down,
+                roll,
+                polaris_xy=(round(self.target_x + dx, 3), round(self.target_y + dy, 3)),
+            ),
+            aim_ring=ring,
+            last_solution=LastSolutionView(
+                frame_seq=solved_seq,
+                t_utc=utc_ns_to_iso(now_ns + round(solved_t * NS_PER_S), digits=3),
+                age_s=round(t - solved_t, 2),
+                roll_deg=round(12.3 + solved_roll, 3),
+                polaris_colatitude_deg=SKY_COLATITUDE_DEG,
+                n_matched=round(40 + 3 * math.sin(solved_t / 9)),
+                rms_arcsec=round(2.9 + 0.4 * math.sin(solved_t / 13), 2),
+                solver="tracker",
+            ),
             timing=TimingView(
                 frame_seq=seq,
                 frame_t_utc=frame_t_utc,
                 frame_age_s=round(0.32 + 0.08 * abs(math.sin(t / 3)), 3),
                 receive_lag_s=round(0.11 + 0.02 * abs(math.sin(t / 4)), 3),
                 preview_s=round(0.19 + 0.05 * abs(math.sin(t / 5)), 3),
-                solution_frame_seq=max(0, seq - round(solution_age_s / FRAME_PERIOD_S)),
+                solution_frame_seq=max(0, seq - 1) if lost else solved_seq,
                 solve_elapsed_s=round(0.45 + 0.15 * abs(math.sin(t / 6)), 3),
             ),
+            quality=reasons if lost else {},
         )
         return AlignmentFrame(state, jpeg)
 

@@ -106,6 +106,63 @@
         "title": "ActivityResponse",
         "type": "object"
       },
+      "AimRingView": {
+        "description": "The aim ring: where Polaris belongs on the circle of the reticle for the time of this frame.\n\nIt is the pixel that the real Polaris would take if the pole sat at the aim, with the same\norientation of the picture and at the time of this frame. The orientation of the picture\n(the twist about the optical axis) and the time fix it. The moves of an altitude-azimuth mount\ntranslate the picture and leave the twist alone, so the ring stays right while you adjust the\nmount, even when the solver finds no star field. `x_px` and `y_px` are pixels of the frame in\n`frame`, and the ring lies on the circle of `reticle`.\n\n`source` says where the ring comes from. `current frame` means the solution of this very state\n(it equals `sky.aim_ring`). `last solution` means that the latest solve failed or is too old, so\n`core` turned the last good solution to the time of this frame (the Earth turns the picture\nabout the pole by 15 degrees an hour) and took the ring from that. The pole, the polar grid, and\nthe move in altitude and azimuth need the pointing of this frame, so they stay out of a state\nthat has no current solution.",
+        "properties": {
+          "age_s": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The time from the frame of the solution to the frame of this state, in seconds. It is small for `current frame` and grows while the solver fails.",
+            "title": "Age S"
+          },
+          "solution_frame_seq": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sequence number of the frame that the solution came from.",
+            "title": "Solution Frame Seq"
+          },
+          "source": {
+            "description": "Whether the ring comes from the solution of this state or from the last good solution.",
+            "enum": [
+              "current frame",
+              "last solution"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "x_px": {
+            "description": "The x position of the ring, in pixels of the frame.",
+            "title": "X Px",
+            "type": "number"
+          },
+          "y_px": {
+            "description": "The y position of the ring, in pixels of the frame.",
+            "title": "Y Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x_px",
+          "y_px",
+          "source"
+        ],
+        "title": "AimRingView",
+        "type": "object"
+      },
       "AimView": {
         "description": "Where the pole should go, and how far it is from there.\n\n`x_px` and `y_px` are the aim, which is the center of the reticle. `dx_px` and `dy_px` are the\npole minus the aim, and they are `null` when the pole lies behind the camera.\n`distance_arcmin` is the exact angle between the pole and the sky direction at the aim pixel.",
         "properties": {
@@ -263,12 +320,23 @@
         "type": "object"
       },
       "AlignmentState": {
-        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `reticle` is the fixed circle of the first layer, and it\nexists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the\norbit of Polaris, and the camera model of the latest current solution. It exists whether or not\na target is set. `timing` says how old the frame and the solution are.",
+        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `reticle` is the fixed circle of the first layer, and it\nexists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the\norbit of Polaris, and the camera model of the latest current solution. It exists whether or not\na target is set. `timing` says how old the frame and the solution are. `aim_ring` is where\nPolaris belongs on the circle of the reticle, and it exists while the state has no current\nsolution, when it comes from `last_solution`.",
         "properties": {
           "active": {
             "default": false,
             "title": "Active",
             "type": "boolean"
+          },
+          "aim_ring": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AimRingView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where Polaris belongs on the circle of the reticle for the time of this frame, from the current solution or, without one, from the last good solution. It is `null` when no solution has found the star field in this alignment."
           },
           "focus": {
             "anyOf": [
@@ -299,6 +367,17 @@
                 "type": "null"
               }
             ]
+          },
+          "last_solution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastSolutionView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest solve that found the star field, whether or not it is current. It is `null` until a solve succeeds, and after the alignment ends."
           },
           "offset": {
             "anyOf": [
@@ -1790,6 +1869,89 @@
           "items"
         ],
         "title": "ImageList",
+        "type": "object"
+      },
+      "LastSolutionView": {
+        "description": "The last good solution of this alignment: the latest solve that found the star field.\n\nIt stays while later solves fail, so the page can say how old the overlay is. `core` forgets it\nwhen the alignment ends. A good solution may be the current one: then `age_s` is small and\n`solved` holds the same numbers.",
+        "properties": {
+          "age_s": {
+            "description": "The time from that frame to the frame of this state, in seconds.",
+            "minimum": 0.0,
+            "title": "Age S",
+            "type": "number"
+          },
+          "frame_seq": {
+            "description": "The sequence number of the frame that was solved.",
+            "minimum": 0.0,
+            "title": "Frame Seq",
+            "type": "integer"
+          },
+          "n_matched": {
+            "default": 0,
+            "description": "The number of catalog stars that the fit matched.",
+            "minimum": 0.0,
+            "title": "N Matched",
+            "type": "integer"
+          },
+          "polaris_colatitude_deg": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 90.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The angle between Polaris and the pole at the time of that frame, in degrees: the radius of the orbit.",
+            "title": "Polaris Colatitude Deg"
+          },
+          "rms_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The residual of the fit, in arcseconds.",
+            "title": "Rms Arcsec"
+          },
+          "roll_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The position angle of the direction to the pole in that solution, from image up toward image left. It is `null` when the pole sat on the center.",
+            "title": "Roll Deg"
+          },
+          "solver": {
+            "default": "",
+            "description": "What solved the frame: `tracker`, or the plate solver.",
+            "maxLength": 32,
+            "title": "Solver",
+            "type": "string"
+          },
+          "t_utc": {
+            "description": "The capture time of that frame, ISO 8601 UTC.",
+            "maxLength": 40,
+            "title": "T Utc",
+            "type": "string"
+          }
+        },
+        "required": [
+          "frame_seq",
+          "t_utc",
+          "age_s"
+        ],
+        "title": "LastSolutionView",
         "type": "object"
       },
       "ModeRequest": {

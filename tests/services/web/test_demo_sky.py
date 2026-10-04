@@ -23,6 +23,7 @@ from seeingmon.services.web.demo import (
     StarField,
     demo_sky,
     pole_offset_px,
+    solution_lost,
 )
 
 pytest.importorskip("erfa", reason="the camera model of the survey path needs the survey extra")
@@ -104,7 +105,8 @@ def test_the_target_is_where_polaris_belongs_when_the_pole_sits_at_the_center(
 
 
 def test_the_orbit_is_red_amber_and_green_in_turn(field: StarField) -> None:
-    states = {orbit_state(seq, field) for seq in range(0, 320, 5)}
+    solved_frames = [seq for seq in range(0, 320, 5) if not solution_lost(seq * FRAME_PERIOD_S)]
+    states = {orbit_state(seq, field) for seq in solved_frames}
     assert states == {"bad", "tight", "good"}
     assert orbit_state(0, field) == "bad"  # the pole starts far out, so the circle leaves the frame
     assert orbit_state(round(POLE_DRIFT_PERIOD_S / 2 / FRAME_PERIOD_S), field) == "good"
@@ -112,6 +114,8 @@ def test_the_orbit_is_red_amber_and_green_in_turn(field: StarField) -> None:
 
 def test_the_numbers_of_the_orbit_are_consistent_with_the_state(field: StarField) -> None:
     for seq in range(0, 320, 20):
+        if solution_lost(seq * FRAME_PERIOD_S):
+            continue  # the solver found no star field, so there is no sky
         sky = field.frame(seq).state.sky
         assert sky is not None
         assert sky.orbit is not None

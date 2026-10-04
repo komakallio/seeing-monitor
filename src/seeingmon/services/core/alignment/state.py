@@ -29,6 +29,15 @@ the aim. It does not depend on the target, so a new install that has none still 
 It follows the freshness rule of the solved position, and without a current solution `sky` is
 `None` and `quality["sky"]` says why.
 
+**The aim ring without a solution.** The aim ring (where Polaris belongs on the circle of the
+reticle) depends on the twist of the picture about the optical axis and on the time, and a move in
+altitude or azimuth leaves the twist alone. So when the latest solve fails or is too old, the state
+keeps the ring: it turns the last good solution to the time of the frame (the Earth rotates the
+picture about the pole) and projects Polaris and the pole through it. `aim_ring.source` says `last
+solution`, and `last_solution` says how old that solution is. The pole, the polar grid, and the move
+in altitude and azimuth need the pointing of the frame, so they stay out of such a state: `sky` is
+`None`.
+
 **The timing.** The frame and the solution are two different frames: the solver takes the newest
 frame when it is free, and it needs time. `timing` says which frame each part comes from and how old
 the frame is, so that the page can show the lag instead of hiding it (`TimingView`).
@@ -44,10 +53,12 @@ from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.settings import AlignmentSettings
 from seeingmon.services.web.contract import (
+    AimRingView,
     AlignmentFrameInfo,
     AlignmentState,
     FocusView,
     HistogramView,
+    LastSolutionView,
     OffsetView,
     ReticleView,
     SaturationView,
@@ -56,10 +67,18 @@ from seeingmon.services.web.contract import (
     TargetView,
     TimingView,
 )
+from seeingmon.survey import apparent
 from seeingmon.survey.apparent import earth_rotation_angle
+from seeingmon.survey.geometry import rot_z
 from seeingmon.survey.pointing import polaris_colatitude_deg
-from seeingmon.survey.skyview import build_sky_view, reticle_geometry, zenith_vector
+from seeingmon.survey.skyview import (
+    build_sky_view,
+    frame_center,
+    reticle_geometry,
+    zenith_vector,
+)
 from seeingmon.survey.tracker import PointingTracker
+from seeingmon.survey.wcs_fit import CameraAttitude
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +148,7 @@ def build_state(
     now_utc_ns: int | None = None,
     solve_elapsed_s: float | None = None,
     solving: tuple[int, float] | None = None,
+    last_good: QuickSolution | None = None,
 ) -> AlignmentState:
     """The state that describes `frame`, with the latest solution and the target.
 
@@ -136,7 +156,8 @@ def build_state(
     in altitude and in azimuth, and without it the view gives the image directions only.
     `now_utc_ns` is the time of the state, which gives the age of the frame. `solve_elapsed_s` is
     the time of the latest finished solve, and `solving` is the frame that the solver works on now
-    with the seconds that it has worked.
+    with the seconds that it has worked. `last_good` is the latest solution that found the star
+    field, which gives the aim ring while the current solve has none.
     """
     quality: dict[str, str] = {}
     info = AlignmentFrameInfo(
@@ -200,6 +221,8 @@ def build_state(
             )
         )
 
+    aim_ring_view = _aim_ring(frame, solution, solved_view, sky_view, last_good, settings, quality)
+
     focus_view: FocusView | None = None
     if solution is not None and solution.focus_fwhm_px is not None:
         focus_view = FocusView(
@@ -224,8 +247,108 @@ def build_state(
         saturation=frame.saturation,
         reticle=reticle_view,
         sky=sky_view,
+        aim_ring=aim_ring_view,
+        last_solution=_last_solution_view(frame, last_good),
         timing=_timing(frame, solution, now_utc_ns, solve_elapsed_s, solving),
         quality=quality,
+    )
+
+
+def _aim_ring(
+    frame: FrameSummary,
+    solution: QuickSolution | None,
+    solved_view: SolvedView | None,
+    sky_view: SkyView | None,
+    last_good: QuickSolution | None,
+    settings: AlignmentSettings,
+    quality: dict[str, str],
+) -> AimRingView | None:
+    """The aim ring from the current solution, or else from the last good one.
+
+    A current solution gives the ring of its sky view. Without one, the ring comes from the last
+    good solution, turned to the time of the frame (`ring_from_solution`).
+    """
+    ring = None if sky_view is None else sky_view.aim_ring
+    if ring is not None and solution is not None and solved_view is not None:
+        return AimRingView(
+            x_px=ring.x_px,
+            y_px=ring.y_px,
+            source="current frame",
+            age_s=solved_view.age_s,
+            solution_frame_seq=solution.seq,
+        )
+    if last_good is None:
+        quality["aim_ring"] = "no solve has found the star field in this alignment yet"
+        return None
+    if last_good.attitude is None:
+        quality["aim_ring"] = "the last solution carries no camera attitude"
+        return None
+    place = ring_from_solution(last_good, frame.t_utc_ns, frame.width_px, frame.height_px, settings)
+    if place is None:
+        quality["aim_ring"] = "the pole of the last solution lies behind the camera"
+        return None
+    return AimRingView(
+        x_px=place[0],
+        y_px=place[1],
+        source="last solution",
+        age_s=max(0.0, (frame.t_utc_ns - last_good.t_utc_ns) / NS_PER_S),
+        solution_frame_seq=last_good.seq,
+    )
+
+
+def ring_from_solution(
+    solution: QuickSolution,
+    t_utc_ns: int,
+    width_px: int,
+    height_px: int,
+    settings: AlignmentSettings,
+) -> tuple[float, float] | None:
+    """Where the aim ring falls at a time, from a solution of an earlier or later frame.
+
+    The camera of a rigid mount is fixed to the Earth, so the solution fixes the attitude at any
+    other time: the Earth turns the camera about the pole by the change of the Earth rotation angle
+    (`CameraAttitude.rotation @ rot_z(era_then - era_now)`). The ring is the aim plus the vector
+    from the pole to Polaris in the picture, as for the sky view. It needs the roll of the picture
+    and the time only, so it holds after a move in altitude or azimuth, which translates the
+    picture. Returns `None` for a solution without an attitude and when the pole or Polaris lies
+    behind the camera.
+    """
+    attitude = solution.attitude
+    if attitude is None:
+        return None
+    epoch = apparent.epoch_from_utc_ns(t_utc_ns)
+    turned = CameraAttitude(
+        rotation=attitude.rotation @ rot_z(earth_rotation_angle(solution.t_utc_ns) - epoch.era_rad),
+        scale_rad_px=attitude.scale_rad_px,
+        parity=attitude.parity,
+        center_px=attitude.center_px,
+    )
+    x, y, front = turned.project(apparent.apparent_vectors_for(apparent.POLARIS, epoch))
+    pole = turned.pole_pixel()
+    if pole is None or not bool(front[0]):
+        return None
+    aim = settings.aim_xy or frame_center(width_px, height_px)
+    return round(float(x[0]) + aim[0] - pole[0], 3), round(float(y[0]) + aim[1] - pole[1], 3)
+
+
+def _last_solution_view(
+    frame: FrameSummary, last_good: QuickSolution | None
+) -> LastSolutionView | None:
+    if last_good is None:
+        return None
+    return LastSolutionView(
+        frame_seq=last_good.seq,
+        t_utc=utc_ns_to_iso(last_good.t_utc_ns),
+        age_s=max(0.0, (frame.t_utc_ns - last_good.t_utc_ns) / NS_PER_S),
+        roll_deg=last_good.roll_deg,
+        polaris_colatitude_deg=(
+            None
+            if last_good.polaris_colatitude_deg is None
+            else round(last_good.polaris_colatitude_deg, 5)
+        ),
+        n_matched=last_good.n_matched,
+        rms_arcsec=last_good.rms_arcsec,
+        solver=last_good.solver[:32],
     )
 
 

@@ -127,6 +127,7 @@ class AlignmentHelper:
         self._solve_slot: _Arrival | None = None
         self._summary: FrameSummary | None = None
         self._solution: QuickSolution | None = None
+        self._last_good: QuickSolution | None = None  # the latest solution that found the field
         self._solve_elapsed_s: float | None = None
         self._solving: tuple[int, int] | None = None  # (frame seq, start on the monotonic clock)
         self._best_fwhm: float | None = None
@@ -200,7 +201,7 @@ class AlignmentHelper:
     ) -> AlignmentState:
         target = resolve_target(self._settings, self._tracker, summary.t_utc_ns, summary.mode)
         with self._lock:
-            elapsed_s, solving = self._solve_elapsed_s, self._solving
+            elapsed_s, solving, last_good = self._solve_elapsed_s, self._solving, self._last_good
         now_ns = self._clock.monotonic_ns()
         state = build_state(
             summary,
@@ -212,11 +213,12 @@ class AlignmentHelper:
             now_utc_ns=self._clock.utc_ns(),
             solve_elapsed_s=elapsed_s,
             solving=None if solving is None else (solving[0], (now_ns - solving[1]) / NS_PER_S),
+            last_good=last_good,
         )
         if self._solver is not None:
             return state
         reason = "the quick solve is not available: no catalog is configured"
-        replaced = {key: reason for key in ("solved", "sky") if key in state.quality}
+        replaced = {key: reason for key in ("solved", "sky", "aim_ring") if key in state.quality}
         if not replaced:
             return state
         return state.model_copy(update={"quality": {**state.quality, **replaced}})
@@ -228,6 +230,7 @@ class AlignmentHelper:
             self._session = False
             self._summary = None
             self._solution = None
+            self._last_good = None
             self._solve_elapsed_s = None
             self._best_fwhm = None
             self._encode_slot = None
@@ -328,6 +331,8 @@ class AlignmentHelper:
                 return solution
             self._solution = solution
             self._solve_elapsed_s = elapsed_s
+            if solution.solved and solution.attitude is not None:
+                self._last_good = solution  # the aim ring survives later solves that fail
             if solution.focus_fwhm_px is not None and (
                 self._best_fwhm is None or solution.focus_fwhm_px < self._best_fwhm
             ):
