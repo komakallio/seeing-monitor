@@ -285,6 +285,8 @@ def test_the_task_runs_through_its_phases_and_adds_a_pending_flat(
     assert task.version is not None
     assert task.version in task.summary
     assert task.summary.startswith(f"Made the flat {task.version} from 16 frames of 39.1 ms.")
+    assert task.exposure_s == pytest.approx(0.0390625)  # a finished task keeps its last reading
+    assert task.level_fraction == 0.5
     assert "The corners get 10 % less light than the center." in task.summary
     assert task.summary.endswith("It waits on the Flat page for you to use it or discard it.")
     assert task.finished_utc is not None
@@ -348,11 +350,19 @@ def test_the_warnings_of_a_script_show_from_the_middle_of_the_frames_on(
 
 
 @pytest.mark.parametrize(
-    ("outcome", "start"),
-    [("dim", "Not enough light:"), ("bright", "Too much light:")],
+    ("outcome", "start", "exposure_s", "level", "saturated"),
+    [
+        ("dim", "Not enough light:", 1.0, 0.1, 0.0),
+        ("bright", "Too much light:", 32e-6, 1.0, 0.02),
+    ],
 )
 def test_a_light_that_is_too_dim_or_too_bright_fails_the_task(
-    clock: VirtualClock, outcome: str, start: str
+    clock: VirtualClock,
+    outcome: str,
+    start: str,
+    exposure_s: float,
+    level: float,
+    saturated: float,
 ) -> None:
     core = make_core(clock, replace(SCRIPT, outcome=outcome))
     core.submit(QueueFlat())
@@ -360,9 +370,15 @@ def test_a_light_that_is_too_dim_or_too_bright_fails_the_task(
     task = core.flat_library().task
     assert (task.state, task.phase) == ("running", "exposure")
     assert task.step == 3  # the search runs out of exposures
+    assert task.exposure_s == pytest.approx(exposure_s)
+    assert task.level_fraction == pytest.approx(level)
+    assert task.saturated_fraction == saturated
     clock.advance(0.2)
     library = core.flat_library()
     assert library.task.state == "failed"
+    # A finished task keeps the last try.
+    assert library.task.exposure_s == pytest.approx(exposure_s)
+    assert library.task.level_fraction == pytest.approx(level)
     assert library.task.summary.startswith(start)
     assert library.task.summary.endswith("The library is unchanged.")
     assert (library.flats, library.session, library.task.version) == ([], None, None)

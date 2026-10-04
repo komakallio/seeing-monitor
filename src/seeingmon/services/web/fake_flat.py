@@ -59,6 +59,8 @@ MAX_EXPOSURE_S = 1.0
 MIN_EXPOSURE_S = 32e-6
 START_EXPOSURE_S = 0.02
 MIN_LEVEL_FRACTION = 0.25
+DIM_RATE_PER_S = 0.1  # the level of a dim light: 10 % of the full scale after a second
+BRIGHT_RATE_PER_S = 40_000.0  # a light that saturates the frame even at the shortest exposure
 SESSION_TTL_NS = 24 * 3600 * NS_PER_S
 DAY_NS = 86_400 * NS_PER_S
 # These two sentences are the ones that `seeingmon.survey.flat_session` gives. The web process does
@@ -683,6 +685,7 @@ class FlatSimulator:
                 summary=run.summary,
                 version=run.version,
                 finished_utc=None if finished is None else utc_ns_to_iso(finished, digits=0),
+                **self._last_reading(run),
             )
         if not run.started:
             message = HOLD_MESSAGES.get(self._held_by or "", WAIT_MESSAGE)
@@ -721,10 +724,32 @@ class FlatSimulator:
             **fields,
         )
 
-    def _final_exposure_s(self, run: _Run) -> float:
-        return max(
-            MIN_EXPOSURE_S, min(MAX_EXPOSURE_S, run.target_fraction / self.script.rate_per_s)
+    @property
+    def _rate(self) -> float:
+        """The level of the light in the middle of the frame, for each second of exposure."""
+        return {"dim": DIM_RATE_PER_S, "bright": BRIGHT_RATE_PER_S}.get(
+            self.script.outcome, self.script.rate_per_s
         )
+
+    def _final_exposure_s(self, run: _Run) -> float:
+        return max(MIN_EXPOSURE_S, min(MAX_EXPOSURE_S, run.target_fraction / self._rate))
+
+    def _last_reading(self, run: _Run) -> dict[str, Any]:
+        """The exposure and the level that the task showed last, which a finished task keeps."""
+        if run.outcome == "ok":
+            return {
+                "exposure_s": self._final_exposure_s(run),
+                "level_fraction": run.target_fraction,
+            }
+        if run.outcome == "failed":
+            exposure_s = MAX_EXPOSURE_S if self.script.outcome == "dim" else MIN_EXPOSURE_S
+            level = min(1.0, self._rate * exposure_s)
+            return {
+                "exposure_s": exposure_s,
+                "level_fraction": round(level, 3),
+                "saturated_fraction": 0.02 if level >= 0.98 else 0.0,
+            }
+        return {}
 
     def _running(self, run: _Run, seconds: float) -> FlatTaskView:
         setup, exposure, capture, _ = self._bounds()
@@ -757,7 +782,7 @@ class FlatSimulator:
 
     def _searching(self, run: _Run, seconds: float) -> FlatTaskView:
         """The search for the exposure: a first try that misses, and then tries that close in."""
-        rate = self.script.rate_per_s
+        rate = self._rate
         tries = 3 if self.script.outcome in ("dim", "bright") else 2
         step = _step(seconds, self.script.exposure_s, tries)
         if self.script.outcome == "dim":
