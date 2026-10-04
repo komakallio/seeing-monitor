@@ -24,6 +24,9 @@ right order. The parts, and where they come from:
   you configure it. `[sqm] source` picks the SQM-LE reader: `tcp` polls the unit over the LAN, and
   `influx` reads the readings that another program wrote to InfluxDB (`create_sqm_reader`).
 - **Alignment helper:** the live view and the quick solve (`seeingmon.services.core.alignment`).
+- **Flat library:** the flats that the Flat page makes, in `calibration/flats/`, with the flat
+  handler, its state, and the reader that the RPC serves
+  (`seeingmon.services.core.commissioning.flat`).
 - **RPC and streams:** an `IpcServer` at the core address with the channels `rpc`, `alignment`,
   and `polaris`.
 
@@ -75,10 +78,12 @@ from seeingmon.hardware.sqm_factory import create_sqm_reader
 from seeingmon.profile import ProfileError
 from seeingmon.records import ReferenceRecord
 from seeingmon.scheduler import (
+    CancelTask,
     Command,
     CommandResult,
     CommissionResult,
     QueueDark,
+    QueueFlat,
     Scheduler,
     SchedulerConfig,
     State,
@@ -142,6 +147,7 @@ SUPERVISOR_SLICE_S = 1.0
 JOIN_SLICE_S = 5.0
 STATUS_INTERVAL_S = 1.0
 NIGHTLY_INTERVAL_S = 30.0
+FLAT_SESSION_SWEEP_INTERVAL_S = 600.0
 
 
 class Hardware(EventSource, Protocol):
@@ -399,6 +405,7 @@ class CoreApp:
         self.preview_calibrator = PreviewCalibrator(
             self.survey_config, self.profile, library=self.dark_library, clock=self.clock
         )
+        self._build_flat()
         transparency = QualityOptions.from_config(self.survey_config).transparency
         self.tracker: PointingTracker | None = parts.tracker
         self.survey: SurveyAnalyzer
@@ -480,6 +487,19 @@ class CoreApp:
 
         self.dark_library = DarkLibrary(Path(self.survey_config.calibration_dir) / DARKS_DIRNAME)
         self.dark_state = DarkTaskState(self.clock, self.survey_config.dark)
+
+    def _build_flat(self) -> None:
+        """The flat library of the survey analysis, and the state of the flat task.
+
+        The library is the one that the survey worker reads (`calibration_dir`), so that an
+        activation reaches the next frame. A first set that expired while `core` was down goes now.
+        """
+        from seeingmon.services.core.commissioning.flat import FlatTaskState
+        from seeingmon.survey.flat_library import FlatLibrary
+
+        self.flat_library = FlatLibrary.from_calibration(self.survey_config.calibration_dir)
+        self.flat_state = FlatTaskState(self.clock)
+        self.flat_library.session.sweep(self.clock.utc_ns())
 
     def _load_seed(self, tracker: Any) -> None:
         """Start the tracker with the solution of `seed_solution_file`, when one is configured."""
@@ -687,6 +707,24 @@ class CoreApp:
                 state=self.dark_state,
             ),
         )
+        from seeingmon.services.core.commissioning.flat import FlatHandler
+        from seeingmon.store.config import GB
+
+        self.scheduler.register_handler(
+            "flat",
+            FlatHandler(
+                flats=self.flat_library,
+                darks=self.dark_library,
+                layout=self.storage.layout,
+                profile=self.profile,
+                clock=self.beat_clock,
+                survey=self.survey_config,
+                state=self.flat_state,
+                capture_allowed=self.storage.capture_allowed,
+                reserve_bytes=round(self.storage.config.retention.min_free_gb * GB),
+                free_bytes=self._flat_free_bytes,
+            ),
+        )
         self.scheduler.register_handler(
             "replay",
             ReplayHandler(
@@ -731,6 +769,17 @@ class CoreApp:
             state=self.dark_state,
             temperature_c=lambda: self.scheduler.status().sensor_temperature_c,
         )
+        from seeingmon.services.core.commissioning.flat import FlatLibraryReader
+
+        self.flat_reader = FlatLibraryReader(
+            flats=self.flat_library,
+            darks=self.dark_library,
+            profile=self.profile,
+            clock=self.clock,
+            survey=self.survey_config,
+            state=self.flat_state,
+            temperature_c=lambda: self.scheduler.status().sensor_temperature_c,
+        )
         self.rpc = CoreRpc(
             instance=self.instance,
             scheduler=self.scheduler,
@@ -741,6 +790,7 @@ class CoreApp:
             on_accepted=self._on_command_accepted,
             live_seeing=self.live_seeing,
             polaris=self.polaris,
+            flat=self.flat_reader,
         )
         self.health = HealthReporter(
             clock=self.clock,
@@ -764,6 +814,9 @@ class CoreApp:
             self.tasks.add("events", self.settings.events_interval_s, self._poll_events)
         self.tasks.add("run_record", 1.0, self._run_record_fallback)
         self.tasks.add("status", STATUS_INTERVAL_S, self._update_status)
+        self.tasks.add(
+            "flat_session", FLAT_SESSION_SWEEP_INTERVAL_S, self._sweep_flat_session, immediate=False
+        )
         if self.nightly is not None:
             self.tasks.add("nightly", NIGHTLY_INTERVAL_S, self._flush_night_if_due, immediate=False)
         if self.notifier.watchdog_interval_s is not None:  # systemd asked for a heartbeat
@@ -812,6 +865,29 @@ class CoreApp:
         """The scheduler accepted a command that came through the RPC."""
         if isinstance(command, QueueDark) and result.task_id is not None:
             self.dark_state.queued(result.task_id, command, result.state)
+        elif isinstance(command, QueueFlat) and result.task_id is not None:
+            self.flat_state.queued(result.task_id, command, result.state)
+        elif (
+            isinstance(command, CancelTask)
+            and command.kind == "flat"
+            and result.task_id is not None
+        ):
+            self.flat_state.cancelled(result.task_id)
+
+    def _flat_free_bytes(self, path: Path) -> int:
+        """The free space where the frames of a flat go.
+
+        Under the data directory, the retention manager answers, which is the probe that the
+        storage uses (a test fakes it). Another place on the disk answers for itself.
+        """
+        from seeingmon.survey.flat_session import disk_free_bytes
+
+        assert self.storage is not None
+        try:
+            path.resolve().relative_to(self.storage.layout.root.resolve())
+        except ValueError:
+            return disk_free_bytes(path)
+        return self.storage.retention.status().free_bytes
 
     def _on_result(self, result: CommissionResult) -> None:
         _log.info("%s %d finished: %s", result.kind, result.task_id, result.summary)
@@ -884,6 +960,14 @@ class CoreApp:
         self.notifier.status_changed(self.status_text(status))
         if self._health_key is not None and self._scheduler_key(status) != self._health_key:
             self.tasks.trigger("health")
+
+    def _sweep_flat_session(self) -> None:
+        """Delete the frames of a first set that nobody used within 24 hours.
+
+        The sweep skips a folder that a running session holds.
+        """
+        if self.flat_library.session.sweep_idle(self.clock.utc_ns()):
+            _log.info("the frames of an expired flat session are deleted")
 
     def scheduler_alive(self) -> bool:
         """Whether the scheduler makes progress. The watchdog of systemd depends on it."""

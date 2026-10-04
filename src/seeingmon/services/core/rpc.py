@@ -4,16 +4,19 @@
 which `web` owns and `core` implements):
 
 - **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, `alignment_state`,
-  `alignment_reset_focus`, `dark_library`, and `live_seeing`. Every method answers at once, so
-  all of them run inline on the connection thread and no worker is needed.
-  `alignment_reset_focus` restarts the best focus value of the helper and answers
-  `{"reset": true}`. `dark_library` answers with the `DarkLibraryView` as JSON: the sets of the
-  dark library, whether it is due, the model, the sensor temperature, and the progress of the
-  latest dark session. `live_seeing` answers with the `LiveSeeingView`, the rolling seeing value of
-  the fast stream, or with `null` while `core` has none. `core` adds one method that the contract
-  does not name: `results` answers with the latest commissioning results (the `detail` of each
-  result), so that `seeingmon burst --wait` can show the outcome of its task. A client that does
-  not know the method never calls it.
+  `alignment_reset_focus`, `dark_library`, `live_seeing`, `flat_library`, `flat_activate`,
+  `flat_delete`, and `flat_image`. Every method answers at once, so all of them run inline on the
+  connection thread and no worker is needed. `alignment_reset_focus` restarts the best focus value
+  of the helper and answers `{"reset": true}`. `dark_library` answers with the `DarkLibraryView` as
+  JSON: the sets of the dark library, whether it is due, the model, the sensor temperature, and the
+  progress of the latest dark session. `live_seeing` answers with the `LiveSeeingView`, the rolling
+  seeing value of the fast stream, or with `null` while `core` has none. `flat_library` answers
+  with the `FlatLibraryView`: the flats with the numbers of their reports, the flat in use, the
+  flat that waits for a decision, and the progress of the latest flat session. `flat_activate` and
+  `flat_delete` change the library, and `flat_image` answers with the preview of a flat. `core`
+  adds one method that the contract does not name: `results` answers with the latest commissioning
+  results (the `detail` of each result), so that `seeingmon burst --wait` can show the outcome of
+  its task. A client that does not know the method never calls it.
 - **`alignment`**, a `StreamService`. The helper takes each client as a `StreamSender` and pushes
   the frames of the live view (see `seeingmon.services.core.alignment.helper`).
 - **`polaris`**, a `StreamService`. `PolarisStream` takes each client as a `StreamSender` and pushes
@@ -23,10 +26,12 @@ which `web` owns and `core` implements):
 connection layer turns into an `InvalidParams` error) and hands it to `Scheduler.submit`, which
 answers at once. A replay command is checked before it reaches the scheduler: its source must be a
 recording name without a directory part that exists, and its options must be on the list that the
-replay accepts. A command that fails the check is a normal answer with `accepted` false, and
-`core` writes an event for it, as the scheduler does for every command that it sees. The owner of
-the RPC can ask to hear about each command that the scheduler accepted (`on_accepted`), which is how
-`core` learns that a dark task is queued.
+replay accepts. A flat command is checked too: a flat needs a dark set for its bias, and a second
+set needs the first set of a session. A command that fails the check is a normal answer with
+`accepted` false, and `core` writes an event for it, as the scheduler does for every command that
+it sees. The owner of the RPC can ask to hear about each command that the scheduler accepted
+(`on_accepted`), which is how `core` learns that a dark or flat task is queued, or that a flat task
+was cancelled.
 
 **Roles.** A client names itself in the hello parameters (`role` is `web` or `cli`). The health
 record counts the `web` component as `ok` while a client with that role is connected.
@@ -41,6 +46,7 @@ from typing import Any, Protocol
 from seeingmon.scheduler.commands import (
     Command,
     CommandResult,
+    QueueFlat,
     QueueReplay,
     RejectReason,
 )
@@ -54,17 +60,25 @@ from seeingmon.services.web.contract import (
     METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_FLAT_ACTIVATE,
+    METHOD_FLAT_DELETE,
+    METHOD_FLAT_IMAGE,
+    METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
     AlignmentState,
     DarkLibraryView,
+    FlatActionView,
+    FlatLibraryView,
     LiveSeeingView,
     decode_command,
+    encode_flat_image,
     encode_result,
     encode_status,
 )
+from seeingmon.survey.flat_library import UNKNOWN_FLAT, is_version
 
 METHOD_RESULTS = "results"
 MAX_RESULTS = 32
@@ -100,6 +114,20 @@ class PolarisPort(Protocol):
     def attach(self, sender: StreamSender, params: Mapping[str, Any] | None = None) -> None: ...
 
 
+class FlatPort(Protocol):
+    """The part of the flat library that the RPC uses. `FlatLibraryReader` fits."""
+
+    def view(self) -> FlatLibraryView: ...
+
+    def activate(self, version: str) -> FlatActionView: ...
+
+    def delete(self, version: str) -> FlatActionView: ...
+
+    def image(self, version: str) -> bytes | None: ...
+
+    def check(self, command: QueueFlat) -> str | None: ...
+
+
 class CoreRpc:
     """The methods of the `rpc` channel, and the builders of the stream services."""
 
@@ -115,6 +143,7 @@ class CoreRpc:
         on_accepted: Callable[[Command, CommandResult], None] | None = None,
         live_seeing: Callable[[], LiveSeeingView | None] | None = None,
         polaris: PolarisPort | None = None,
+        flat: FlatPort | None = None,
     ) -> None:
         self.instance = instance
         self._scheduler = scheduler
@@ -125,6 +154,7 @@ class CoreRpc:
         self._writer = writer
         self._dark_library = dark_library
         self._on_accepted = on_accepted
+        self._flat = flat
         self._service: RpcService | None = None
         self.submitted = 0
         self.refused = 0
@@ -144,6 +174,11 @@ class CoreRpc:
             methods[METHOD_DARK_LIBRARY] = self._answer_dark_library
         if self._live_seeing is not None:
             methods[METHOD_LIVE_SEEING] = self._answer_live_seeing
+        if self._flat is not None:
+            methods[METHOD_FLAT_LIBRARY] = self._answer_flat_library
+            methods[METHOD_FLAT_ACTIVATE] = self._flat_activate
+            methods[METHOD_FLAT_DELETE] = self._flat_delete
+            methods[METHOD_FLAT_IMAGE] = self._flat_image
         return methods
 
     def _ping(self, params: Mapping[str, Any]) -> Any:
@@ -167,6 +202,35 @@ class CoreRpc:
         assert self._live_seeing is not None
         live = self._live_seeing()
         return None if live is None else live.model_dump(mode="json")
+
+    def _answer_flat_library(self, params: Mapping[str, Any]) -> Any:
+        assert self._flat is not None
+        return self._flat.view().model_dump(mode="json")
+
+    @staticmethod
+    def _version_of(params: Mapping[str, Any]) -> str | None:
+        """The flat version of the parameters, or `None` when it is not one. No path follows."""
+        version = params.get("version")
+        return version if is_version(version) else None
+
+    def _flat_activate(self, params: Mapping[str, Any]) -> Any:
+        assert self._flat is not None
+        version = self._version_of(params)
+        if version is None:
+            return _unknown_flat()
+        return self._flat.activate(version).model_dump(mode="json")
+
+    def _flat_delete(self, params: Mapping[str, Any]) -> Any:
+        assert self._flat is not None
+        version = self._version_of(params)
+        if version is None:
+            return _unknown_flat()
+        return self._flat.delete(version).model_dump(mode="json")
+
+    def _flat_image(self, params: Mapping[str, Any]) -> Any:
+        assert self._flat is not None
+        version = self._version_of(params)
+        return encode_flat_image(None if version is None else self._flat.image(version))
 
     def _results(self, params: Mapping[str, Any]) -> Any:
         recent = self._scheduler.results()[-MAX_RESULTS:]
@@ -202,6 +266,8 @@ class CoreRpc:
     def _problem_with(self, command: Command) -> str | None:
         if isinstance(command, QueueReplay) and self._check_replay is not None:
             return self._check_replay(command)
+        if isinstance(command, QueueFlat) and self._flat is not None:
+            return self._flat.check(command)
         return None
 
     # --- The services ----------------------------------------------------------------------
@@ -247,4 +313,16 @@ class CoreRpc:
         )
 
 
-__all__ = ["METHOD_RESULTS", "AlignmentPort", "CoreRpc", "PolarisPort", "SchedulerPort"]
+def _unknown_flat() -> dict[str, Any]:
+    """The answer for a name that is no flat version, which no file can follow from."""
+    return FlatActionView(ok=False, reason="unknown", message=UNKNOWN_FLAT).model_dump(mode="json")
+
+
+__all__ = [
+    "METHOD_RESULTS",
+    "AlignmentPort",
+    "CoreRpc",
+    "FlatPort",
+    "PolarisPort",
+    "SchedulerPort",
+]
