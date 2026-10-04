@@ -174,7 +174,7 @@ module.exports = function scenarios(AlignText, test, assert) {
     assert.ok(card.note.includes("local configuration"));
     assert.ok(card.note.includes("optional"));
     assert.deepEqual(card.roll, {
-      text: "Camera roll: 12.3° from image up toward image left. Altitude and azimuth adjustments do not change it.",
+      text: "Camera roll: 12.3° from image up toward image left. The altitude and azimuth adjustments cannot correct it.",
     });
   });
 
@@ -183,7 +183,7 @@ module.exports = function scenarios(AlignText, test, assert) {
     assert.equal(card.rows.length, 2);
     assert.equal(
       card.roll.text,
-      "Camera roll: not defined while the pole sits at the center of the frame. Altitude and azimuth adjustments do not change it."
+      "Camera roll: not defined while the pole sits at the center of the frame. The altitude and azimuth adjustments cannot correct it."
     );
   });
 
@@ -197,7 +197,7 @@ module.exports = function scenarios(AlignText, test, assert) {
     ]);
     assert.equal(card.note, "");
     assert.deepEqual(card.roll, {
-      text: "Camera roll: 12.3° from image up toward image left. Altitude and azimuth adjustments do not change it.",
+      text: "Camera roll: 12.3° from image up toward image left. The altitude and azimuth adjustments cannot correct it.",
     });
   });
 
@@ -205,7 +205,7 @@ module.exports = function scenarios(AlignText, test, assert) {
     for (const rollOffset of [0.05, 2, -170, null]) {
       const card = AlignText.offsetCard({ solved: SOLVED, target: TARGET, offset: Object.assign({}, OFFSET, { roll_deg: rollOffset }), quality: {} });
       assert.equal(card.rows.length, 3);
-      assert.ok(card.roll.text.includes("do not change it"));
+      assert.ok(card.roll.text.includes("cannot correct it"));
       assert.ok(!/rotate/i.test(card.roll.text));
     }
   });

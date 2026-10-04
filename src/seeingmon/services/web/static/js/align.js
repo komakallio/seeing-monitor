@@ -323,6 +323,11 @@
       };
     }
     let ringFrame = sky && sky.aim_ring ? sky.aim_ring : null;
+    // Without a solution of the current frame, `core` places the ring from the last good solution.
+    const fromLast = !ringFrame && Boolean(state.aim_ring) && state.aim_ring.source === "last solution";
+    if (!ringFrame && state.aim_ring) {
+      ringFrame = state.aim_ring;
+    }
     if (!ringFrame && circle && sky && state.solved && sky.pole && sky.pole.x_px !== null && sky.pole.x_px !== undefined) {
       ringFrame = {
         x_px: circle.x_px + (state.solved.x_px - sky.pole.x_px),
@@ -348,15 +353,23 @@
       cross(ctx, middle[0], middle[1], 2, 9);
       ctx.restore();
       if (!sky) {
-        drawLabel(ctx, { text: "no solution yet", x: middle[0], y: middle[1] + 24, align: "center" }, colors.aim, colors.halo);
+        drawLabel(ctx, { text: fromLast ? "no current solution" : "no solution yet", x: middle[0], y: middle[1] + 24, align: "center" }, colors.aim, colors.halo);
       }
       if (ringFrame) {
         aimRing = at(ringFrame.x_px, ringFrame.y_px);
-        ctx.strokeStyle = colors.target;
-        ctx.fillStyle = colors.target;
+        const ringColor = fromLast ? token("--overlay-orbit-warn", "#ffc233") : colors.target;
+        ctx.strokeStyle = ringColor;
+        ctx.fillStyle = ringColor;
         ctx.lineWidth = 2.2;
+        if (fromLast) {
+          ctx.setLineDash([5, 4]);
+        }
         ring(ctx, aimRing[0], aimRing[1], 16);
-        drawLabel(ctx, { text: "aim", x: aimRing[0] + 20, y: aimRing[1] - 24, align: "left" }, colors.target, colors.halo);
+        ctx.setLineDash([]);
+        const ringText = fromLast && state.aim_ring.age_s !== null && state.aim_ring.age_s !== undefined ? "aim, " + fmt.num(state.aim_ring.age_s, 0) + " s old" : "aim";
+        // The label sits to the right of the ring, and to the left when it would leave the picture.
+        const leftSide = aimRing[0] + 20 + ctx.measureText(ringText).width > frame.width_px * scale - 4;
+        drawLabel(ctx, { text: ringText, x: aimRing[0] + (leftSide ? -20 : 20), y: aimRing[1] - 24, align: leftSide ? "right" : "left" }, ringColor, colors.halo);
         if (solved && !aligned) {
           const distance = Math.hypot(solved[0] - aimRing[0], solved[1] - aimRing[1]);
           if (distance > 34) {
@@ -524,13 +537,22 @@
 
   const ORBIT_LEVELS = { good: "good", tight: "warn", bad: "bad" };
 
+  /** What the pole card says about the last good solution while the solver finds none. */
+  function lastSolutionSentence(state) {
+    const last = state.last_solution;
+    if (state.solved || !last || last.age_s === null || last.age_s === undefined) {
+      return "";
+    }
+    return " The aim ring comes from the last good solution, " + fmt.num(last.age_s, 0) + " s old. A move of a degree in altitude and azimuth shifts the right place of the ring by a few pixels at most, so you can still aim with it.";
+  }
+
   /** The pole card: where the pole is, and whether the orbit of Polaris fits in the frame. */
   function renderPole(state) {
     const sky = state.sky || null;
     const sentence = $("pole-sentence");
     const orbit = $("orbit-sentence");
     if (!sky) {
-      sentence.textContent = AlignText.poleReason(state);
+      sentence.textContent = AlignText.poleReason(state) + lastSolutionSentence(state);
       orbit.textContent = "";
       delete orbit.dataset.level;
       view.canvas.setAttribute("aria-label", "Live view of the star field");

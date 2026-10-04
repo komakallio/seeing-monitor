@@ -177,11 +177,11 @@
     "A target is optional: the overlay aims the pole at the center of the frame. The offset compares Polaris with a target from [alignment] in the local configuration, when you set one.";
 
   /**
-   * The roll, for information only. A mount that moves in altitude and in azimuth cannot change the
-   * roll about the optical axis, so the page never asks the person to correct it.
+   * The roll, for information only. The roll depends on how the camera sits in its mount, and the
+   * altitude and azimuth adjustments cannot correct it, so the page never asks the person to.
    */
   function rollNote(solved) {
-    const tail = " Altitude and azimuth adjustments do not change it.";
+    const tail = " The altitude and azimuth adjustments cannot correct it.";
     if (!solved || solved.roll_deg === null || solved.roll_deg === undefined) {
       return "Camera roll: not defined while the pole sits at the center of the frame." + tail;
     }

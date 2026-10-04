@@ -3,9 +3,11 @@
 A fixed camera that points near the pole sees Polaris go round the pole once a day, on a circle of
 about 0.6 degrees. A first alignment has one job: move the camera until the pole sits at the aim
 (the center of the sensor, unless `[alignment]` names another pixel), so that Polaris stays in the
-frame all day. The mount of the camera moves in altitude and in azimuth, and it cannot change the
-roll about the optical axis, so the view gives the roll for information only. The alignment page
-shows two layers, and this module computes the numbers for both.
+frame all day. The mount of the camera moves in altitude and in azimuth, and it cannot correct the
+roll about the optical axis (a turn in azimuth twists the picture by about the sine of the
+altitude of Polaris times the turn, and it moves the pole too), so the view gives the roll for
+information only. The alignment page shows two layers, and this module computes the numbers for
+both.
 
 **Layer A, the reticle.** It is fixed in the picture, and it never moves with the mount. It is a
 function of the frame size, the plate scale, and the colatitude of Polaris (`reticle_geometry`): a
