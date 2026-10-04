@@ -773,9 +773,10 @@ class AcquireService:
             self._stamper.reset()
             self._drops.reset(stream.frame_period_s)
         arrival_ns = frame.t_arrival_ns if frame.t_arrival_ns > 0 else seen_utc_ns
-        lost = self._drops.frame_arrived(
-            seen_mono_ns, frame.dropped_before, period_s=self._stamper.period_s
-        )
+        # The period of the gap rule comes from the driver or from the intervals themselves, and
+        # never from the time fit. The fit counts the frames that this rule declares lost, so a
+        # period from the fit would shrink with each phantom drop, and the rule would find more.
+        lost = self._drops.frame_arrived(seen_mono_ns, frame.dropped_before)
         flags = frame.flags | FrameFlag.RECOVERED if recovered else frame.flags
         if self._keeps_driver_time(frame):
             stamped = replace(frame, dropped_before=lost, flags=flags)
