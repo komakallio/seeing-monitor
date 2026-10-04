@@ -9,12 +9,14 @@ newest one, and another thread may read it, because the object is immutable and 
 assigns it in one step.
 
 **How it differs from a stored window.** A live value is provisional. It uses a shorter span (10 s
-against 60 s), so it has fewer independent samples, and it jitters by about 10% more than the value
-of a stored window (the validation in `docs/architecture.md` has the numbers). The estimator
-corrects the variance that its detrending removes for the length of the span, so the value stays
-unbiased. `core` does not store the value, and it computes none of the extras of a window: the
-spectrum, the scintillation, the vibration lines, and the star statistics other than the width.
-The value exists only while the fast stream runs, which is about three quarters of each cycle.
+against 60 s), so it has fewer independent samples. On simulated turbulence, the seeing of a 10 s
+span scatters by 3.3% around the truth, against 1.4% for a window of 60 s and 2.6% for one of
+20 s, and it reads 0.4% low on average (the validation in `docs/architecture.md` has the
+numbers). The estimator corrects the variance that its detrending removes for the length of the
+span, so the value stays unbiased to that level. `core` does not store the value, and it computes
+none of the extras of a window: the spectrum, the scintillation, the vibration lines, and the star
+statistics other than the width. The value exists only while the fast stream runs, which is about
+three quarters of each cycle.
 
 **The ring.** One row per frame holds the time (in seconds from the start of the stream), the slot
 on the uniform grid of frame periods, the flags (usable, saturated), the centroid, the widths, the
@@ -22,7 +24,7 @@ modeled noise of the centroid, the peak, the flux, and the frames lost before th
 and the loss follow `seeingmon.fastpath.windows`: a lost frame leaves an empty slot, and never a
 time shift. A new stream, or a time that does not advance, empties the ring.
 
-**Cost.** `LiveRing.add` writes one row, which takes about 2 microseconds, and runs for every frame
+**Cost.** `LiveRing.add` writes one row, which takes about 3 microseconds, and runs for every frame
 on the scheduler thread. An estimate takes about 2 ms on a development machine, once in 2 s.
 """
 
