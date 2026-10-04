@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import replace
+from typing import Any, ClassVar
 
 import pytest
 
 from seeingmon.clock import DEFAULT_START_UTC_NS, VirtualClock
 from seeingmon.frames import ActiveStream, Frame
+from seeingmon.services.acquire import service as service_module
 from seeingmon.services.acquire.service import AcquireService, timing_config
 from seeingmon.services.acquire.timing import TimeStamper
 from seeingmon.services.config import AcquireSettings, ServicesConfig
@@ -29,12 +31,7 @@ class Bench:
     def __init__(self, **acquire: object) -> None:
         self.clock = VirtualClock(start_utc_ns=DEFAULT_START_UTC_NS)
         driver = FakeCameraDriver(self.clock)
-        options: dict[str, object] = {
-            "raise_priority": False,
-            "time_source": "stamp",
-            "queue_depth": 2048,  # nobody reads the queue
-            **acquire,
-        }
+        options: dict[str, object] = {"raise_priority": False, "time_source": "stamp", **acquire}
         settings = ServicesConfig(acquire=AcquireSettings(**options))
         self.service = AcquireService(
             driver,
@@ -65,7 +62,7 @@ class Bench:
             return original(frame, epoch)
 
         service._queue.put_frame = record  # type: ignore[method-assign]
-        self.at_ns = 0
+        self.at_ns = self.clock.monotonic_ns()
         self.seq = 0
 
     def arrive(self, after_periods: float, *, counted: int = 0) -> None:
@@ -73,12 +70,15 @@ class Bench:
 
         `counted` is what the driver reports in `dropped_before`, as the SDK counter would.
         """
-        self.at_ns += round(after_periods * self.period_ns)
+        delta_ns = round(after_periods * self.period_ns)
+        self.at_ns += delta_ns
+        self.clock.advance_ns(delta_ns)  # the service reads the same clock for its health
         frame = replace(self.template, seq=self.seq, t_arrival_ns=0, dropped_before=counted)
         self.seq += 1
         self.service._on_frame(
             frame, DEFAULT_START_UTC_NS + self.at_ns, self.at_ns, self.active, self.epoch
         )
+        self.service._queue.clear()  # nobody reads it, and a full queue would count as lost frames
 
     @property
     def lost(self) -> list[int]:
@@ -141,3 +141,75 @@ def test_a_loss_that_the_driver_counted_reaches_the_frame_at_once() -> None:
     bench.arrive(1.0)
     assert bench.lost == [0] * 40 + [1, 0]
     assert bench.service.health().dropped_driver == 1
+
+
+class RecordingTimer:
+    """Stands in for `TimerResolution`, and notes what the service asks of it."""
+
+    made: ClassVar[list[RecordingTimer]] = []
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        RecordingTimer.made.append(self)
+
+    def request(self) -> str:
+        self.calls.append("request")
+        return "1 ms resolution"
+
+    def release(self) -> None:
+        self.calls.append("release")
+
+
+class TestTheTimerRequest:
+    @pytest.fixture(autouse=True)
+    def recording(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        RecordingTimer.made = []
+        monkeypatch.setattr(service_module, "TimerResolution", RecordingTimer)
+
+    def service(self, *, raise_priority: bool, **options: Any) -> AcquireService:
+        clock = VirtualClock(start_utc_ns=DEFAULT_START_UTC_NS)
+        settings = ServicesConfig(acquire=AcquireSettings(raise_priority=raise_priority))
+        return AcquireService(
+            FakeCameraDriver(clock),
+            clock,
+            Endpoint.loopback(0),
+            ConnectionKey.from_text(secrets.token_urlsafe(24)),
+            settings,
+            **options,
+        )
+
+    def test_the_service_asks_at_the_start_and_gives_back_at_the_stop(self) -> None:
+        service = self.service(raise_priority=True)
+        (timer,) = RecordingTimer.made
+        assert timer.calls == []
+        service.start()
+        try:
+            assert timer.calls == ["request"]
+            assert service.health().timer == "1 ms resolution"
+        finally:
+            service.stop()
+        assert timer.calls == ["request", "release"]
+        service.stop()  # a second stop gives back nothing more
+        assert timer.calls == ["request", "release"]
+
+    def test_a_service_that_does_not_raise_the_priority_leaves_the_timer_alone(self) -> None:
+        service = self.service(raise_priority=False)
+        assert RecordingTimer.made == []
+        service.start()
+        try:
+            assert service.health().timer == ""
+        finally:
+            service.stop()
+
+    def test_a_test_hook_for_the_priority_stands_for_the_platform_calls_and_the_timer(
+        self,
+    ) -> None:
+        self.service(raise_priority=True, priority_hook=lambda: "test")
+        assert RecordingTimer.made == []
+
+    def test_a_timer_that_the_caller_passes_is_the_one_that_runs(self) -> None:
+        mine = RecordingTimer()
+        service = self.service(raise_priority=False, timer=mine)
+        service.start()
+        service.stop()
+        assert mine.calls == ["request", "release"]

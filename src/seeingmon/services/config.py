@@ -120,9 +120,12 @@ class AcquireSettings(SectionModel):
     outlier_floor_s: float = Field(0.003, ge=0)
     step_frames: int = Field(3, ge=2)
 
-    # Drops. A gap between frames longer than `gap_factor` frame periods counts as lost frames.
+    # Drops. A gap between frames longer than `gap_factor` frame periods counts as lost frames,
+    # unless the next read follows at once: then the read was late, and no frame was lost.
     gap_factor: float = Field(1.5, gt=1.0)
 
+    # The capture thread runs at a raised priority where the platform allows it (see
+    # `seeingmon.services.acquire.priority`), and on Windows acquire asks for a 1 ms system timer.
     raise_priority: bool = True
 
     # How `acquire` calls the driver from two threads. `serialize` lets one thread in at a time,

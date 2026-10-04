@@ -27,8 +27,12 @@ time on the system clock: `--speed` must be 1, and `--start` does not apply. The
 the exposure of the profile (2 ms), and the simulator gets no option. The vendor library comes from
 `--asi-library`, or from `SEEINGMON_ASI__LIBRARY_PATH` in your environment, and never from a file.
 The launcher gives it to `acquire` alone, through the environment of that child, and prints no
-path. `--data-dir` keeps the store, the dark library, and the images in a folder that survives the
-run. Without it, the run keeps its temporary folder. The sky catalog, the first pointing solution,
+path. `acquire` raises the priority of its capture thread on the real camera, and on Windows it
+also asks for a 1 ms system timer (the simulator never does, because it renders inside the read).
+`--no-raise-priority` turns both off, so that you can compare two runs: the health line of
+`acquire` in its log shows the priority, the timer, and the share of late and lost frames.
+`--data-dir` keeps the store, the dark library, and the images in a folder that survives the run.
+Without it, the run keeps its temporary folder. The sky catalog, the first pointing solution,
 and the site stay synthetic, so a camera that sees a room or a dark reports no stars, and the
 seeing windows and the sky quality stay empty.
 
@@ -185,6 +189,9 @@ class DevOptions:
     # The real sky: the site, the catalog, and the solvers come from your local configuration, and
     # the run needs the real camera and a data folder that survives it.
     real_sky: bool = False
+    # Whether acquire raises the priority of its capture thread on the real camera (and, on
+    # Windows, asks for a 1 ms timer). A comparison turns it off. The simulator never raises it.
+    raise_priority: bool = True
 
 
 @dataclass(slots=True)
@@ -439,8 +446,15 @@ def build_plan(
         **options.extra_sim,
     }
     acquire_table: dict[str, Any] = (
-        # The real camera keeps the default frame gap, and its options are its own.
-        {"driver": options.acquire_driver, "raise_priority": False, "driver_options": {}}
+        # The real camera keeps the default frame gap, and its options are its own. Its capture
+        # thread waits in the SDK, so a raised priority costs the machine nothing, and it keeps
+        # the reads on time. The simulator renders inside the read, so a raised priority would
+        # starve the other threads of the process.
+        {
+            "driver": options.acquire_driver,
+            "raise_priority": options.raise_priority,
+            "driver_options": {},
+        }
         if real
         else {
             "driver": options.acquire_driver,
@@ -815,6 +829,7 @@ def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str
         "watch the first solve of your run."
     )
     notes.append(f"The logs of the children are in the folder {log_folder} of your data folder.")
+    notes.extend(_priority_notes(options))
     notes.append("Cover the camera by hand for a dark session.")
     return notes
 
@@ -832,8 +847,19 @@ def _real_notes(options: DevOptions) -> list[str]:
         "The scheduler stays in safe while the Sun is above -3 degrees at the synthetic site "
         "(by the clock of this machine). A dark session and the alignment run in safe too."
     )
+    notes.extend(_priority_notes(options))
     notes.append("Cover the camera by hand for a dark session.")
     return notes
+
+
+def _priority_notes(options: DevOptions) -> list[str]:
+    """The line that says that acquire keeps its normal priority, for a comparison run."""
+    if options.raise_priority:
+        return []
+    return [
+        "--no-raise-priority: the capture thread of acquire keeps its normal priority, and on "
+        "Windows the system timer keeps its default resolution."
+    ]
 
 
 def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -1010,6 +1036,7 @@ def options_from_args(args: argparse.Namespace) -> DevOptions:
         asi_library=getattr(args, "asi_library", None),
         data_dir=None if not data_dir else Path(data_dir).expanduser().resolve(),
         real_sky=real_sky,
+        raise_priority=bool(getattr(args, "raise_priority", True)),
     )
 
 

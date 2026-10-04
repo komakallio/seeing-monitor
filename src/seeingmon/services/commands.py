@@ -187,6 +187,14 @@ def register(subparsers: Subparsers) -> None:
         "info into the folder logs of your data folder",
     )
     dev.add_argument(
+        "--no-raise-priority",
+        dest="raise_priority",
+        action="store_false",
+        help="with --driver asi, keep the capture thread of acquire at its normal priority, and "
+        "on Windows the system timer at its default resolution. The default raises both, so use "
+        "this option to compare a run with it. The simulator never raises them",
+    )
+    dev.add_argument(
         "--speed",
         type=float,
         default=1.0,

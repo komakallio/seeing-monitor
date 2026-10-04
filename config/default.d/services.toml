@@ -87,10 +87,13 @@ outlier_sigmas = 6.0
 outlier_floor_s = 0.003
 step_frames = 3
 
-# A gap between two frames longer than this many frame periods counts as lost frames.
+# A gap between two frames longer than this many frame periods counts as lost frames, unless the
+# next read follows at once: then the read was late, and no frame was lost.
 gap_factor = 1.5
 
-# Raise the priority of the capture thread where the platform allows it.
+# Raise the priority of the capture thread where the platform allows it: real-time round-robin on
+# Linux (the unit grants CAP_SYS_NICE), and the highest thread priority on Windows, where acquire
+# also asks for a 1 ms system timer for as long as it runs.
 raise_priority = true
 
 # How acquire calls the driver from its capture thread and its control thread. `serialize` lets

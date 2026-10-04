@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import socket
@@ -9,6 +10,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +19,12 @@ from seeingmon.clock import VirtualClock
 from seeingmon.drivers.base import CameraConfigError
 from seeingmon.services.acquire.factory import create_camera_driver
 from seeingmon.services.acquire.gate import DriverGate
-from seeingmon.services.acquire.priority import raise_current_thread_priority
+from seeingmon.services.acquire.priority import (
+    THREAD_PRIORITY_HIGHEST,
+    TimerResolution,
+    raise_current_thread_priority,
+    windows_priority,
+)
 from seeingmon.services.notify import SystemdNotifier
 from seeingmon.testing import FakeCameraDriver
 
@@ -295,6 +303,148 @@ class TestPriority:
         monkeypatch.setattr(os, "setpriority", lambda *args: calls.append(args))
         assert raise_current_thread_priority() == "nice -10"
         assert calls[0][2] == -10
+
+
+class StandInKernel32:
+    """The two functions of `kernel32` that the priority call uses, with a result to choose."""
+
+    def __init__(self, result: int = 1) -> None:
+        self.result = result
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def GetCurrentThread(self) -> int:  # noqa: N802 - the name of the Windows function
+        self.calls.append(("GetCurrentThread", ()))
+        return 0xFFFFFFFFFFFFFFFE  # the pseudo handle of the calling thread
+
+    def SetThreadPriority(self, handle: int, level: int) -> int:  # noqa: N802
+        self.calls.append(("SetThreadPriority", (handle, level)))
+        return self.result
+
+
+class TestWindowsPriority:
+    def test_the_calling_thread_gets_the_highest_priority_of_its_class(self) -> None:
+        kernel32 = StandInKernel32()
+        assert windows_priority(kernel32, lambda: 0) == "highest thread priority"
+        assert kernel32.calls == [
+            ("GetCurrentThread", ()),
+            ("SetThreadPriority", (0xFFFFFFFFFFFFFFFE, THREAD_PRIORITY_HIGHEST)),
+        ]
+        assert THREAD_PRIORITY_HIGHEST == 2  # the Windows constant, which no header supplies here
+
+    def test_a_refused_call_names_the_error_and_leaves_the_priority_alone(self) -> None:
+        message = windows_priority(StandInKernel32(result=0), lambda: 5)
+        assert message == "the call failed with error 5, so the thread keeps its normal priority"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the Windows library")
+    def test_the_call_goes_through_a_private_kernel32_with_typed_arguments(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kernel32 = MagicMock()
+        kernel32.SetThreadPriority.return_value = 1
+        opened: list[tuple[str, dict[str, Any]]] = []
+
+        def win_dll(name: str, **options: Any) -> MagicMock:
+            opened.append((name, options))
+            return kernel32
+
+        monkeypatch.setattr(ctypes, "WinDLL", win_dll, raising=False)
+        assert raise_current_thread_priority() == "highest thread priority"
+        assert opened == [("kernel32", {"use_last_error": True})]  # not the shared `windll`
+        assert kernel32.SetThreadPriority.argtypes == [ctypes.c_void_p, ctypes.c_int]
+        assert kernel32.SetThreadPriority.restype is ctypes.c_int
+        assert kernel32.GetCurrentThread.restype is ctypes.c_void_p  # a 64-bit pseudo handle
+        kernel32.SetThreadPriority.assert_called_once_with(
+            kernel32.GetCurrentThread.return_value, THREAD_PRIORITY_HIGHEST
+        )
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the Windows library")
+    def test_a_library_that_does_not_load_leaves_the_priority_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(name: str, **options: Any) -> None:
+            raise OSError("no library")
+
+        monkeypatch.setattr(ctypes, "WinDLL", broken, raising=False)
+        assert raise_current_thread_priority() == (
+            "the call raised OSError, so the thread keeps its normal priority"
+        )
+
+
+class StandInWinmm:
+    """The two functions of `winmm` that the timer request uses."""
+
+    def __init__(self, code: int = 0, *, fail_release: bool = False) -> None:
+        self.code = code
+        self.fail_release = fail_release
+        self.calls: list[tuple[str, int]] = []
+
+    def timeBeginPeriod(self, milliseconds: int) -> int:  # noqa: N802 - a Windows function
+        self.calls.append(("timeBeginPeriod", milliseconds))
+        return self.code
+
+    def timeEndPeriod(self, milliseconds: int) -> int:  # noqa: N802
+        self.calls.append(("timeEndPeriod", milliseconds))
+        if self.fail_release:
+            raise OSError("gone")
+        return 0
+
+
+def held(timer: TimerResolution) -> bool:
+    """Whether the timer holds a period. A function, so that a type checker reads it again."""
+    return timer.granted
+
+
+class TestTimerResolution:
+    def test_a_granted_period_is_held_until_it_is_released(self) -> None:
+        winmm = StandInWinmm()
+        timer = TimerResolution(winmm=winmm)
+        assert not held(timer)
+        assert timer.request() == "1 ms resolution"
+        assert held(timer)
+        assert winmm.calls == [("timeBeginPeriod", 1)]
+        timer.release()
+        timer.release()  # a second release gives back nothing
+        assert not held(timer)
+        assert winmm.calls == [("timeBeginPeriod", 1), ("timeEndPeriod", 1)]
+
+    def test_the_period_is_a_parameter(self) -> None:
+        winmm = StandInWinmm()
+        timer = TimerResolution(2, winmm=winmm)
+        assert timer.request() == "2 ms resolution"
+        timer.release()
+        assert winmm.calls == [("timeBeginPeriod", 2), ("timeEndPeriod", 2)]
+
+    def test_a_refused_period_says_so_and_gives_nothing_back(self) -> None:
+        winmm = StandInWinmm(code=97)  # TIMERR_NOCANDO
+        timer = TimerResolution(winmm=winmm)
+        assert timer.request() == (
+            "the call failed with code 97, so the timer keeps its default resolution"
+        )
+        assert not held(timer)
+        timer.release()
+        assert winmm.calls == [("timeBeginPeriod", 1)]
+
+    def test_a_release_that_fails_does_not_raise(self) -> None:
+        timer = TimerResolution(winmm=StandInWinmm(fail_release=True))
+        timer.request()
+        timer.release()
+        assert not held(timer)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows asks for the period")
+    def test_another_platform_needs_no_request(self) -> None:
+        timer = TimerResolution()
+        assert timer.request() == ""
+        assert not held(timer)
+        timer.release()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the Windows library")
+    def test_windows_grants_the_period_and_takes_it_back(self) -> None:
+        timer = TimerResolution()
+        try:
+            assert timer.request() == "1 ms resolution"
+        finally:
+            timer.release()
+        assert not held(timer)
 
 
 class TestFactory:

@@ -3,9 +3,11 @@
 `acquire` owns the camera. It runs four threads:
 
 - The **capture thread** calls `driver.read_frame` in a loop, at raised priority where the
-  platform allows it. It stamps each frame (see `seeingmon.services.acquire.timing`), counts the
-  frames that were lost (see `seeingmon.services.acquire.drops`), and puts the frame on a bounded
-  queue. It analyzes nothing, and it never waits for the network.
+  platform allows it (see `seeingmon.services.acquire.priority`: on Windows, the highest thread
+  priority, and a 1 ms system timer for as long as the service runs). It stamps each frame (see
+  `seeingmon.services.acquire.timing`), counts the frames that were lost (see
+  `seeingmon.services.acquire.drops`), and puts the frame on a bounded queue. It analyzes nothing,
+  and it never waits for the network.
 - The **control thread** is the worker of the RPC service. It serves the calls that mirror
   `CameraDriver`: `open`, `close`, `capabilities`, `configure`, `start`, `stop`, `move_roi`,
   `read_temperature_c`, `dropped_frames`, and `recover`. Two more calls answer at once on the
@@ -83,7 +85,7 @@ from seeingmon.services.acquire.drops import DropAccountant
 from seeingmon.services.acquire.events import HardwareEventLog, after_of, encode_batch
 from seeingmon.services.acquire.gate import DriverGate
 from seeingmon.services.acquire.health import AcquireHealth
-from seeingmon.services.acquire.priority import raise_current_thread_priority
+from seeingmon.services.acquire.priority import TimerResolution, raise_current_thread_priority
 from seeingmon.services.acquire.queue import FrameQueue, QueueItem
 from seeingmon.services.acquire.timing import StreamTiming, TimeStamper, TimingConfig
 from seeingmon.services.config import AcquireSettings, ServicesConfig
@@ -206,6 +208,7 @@ class AcquireService:
         notifier: SystemdNotifier | None = None,
         events: HardwareEventLog | None = None,
         priority_hook: Callable[[], str] | None = None,
+        timer: TimerResolution | None = None,
         on_fatal: Callable[[str], None] | None = None,
     ) -> None:
         self._driver = driver
@@ -214,12 +217,17 @@ class AcquireService:
         self._cfg = settings.acquire
         self._guard = guard if guard is not None else default_guard(clock)
         self._notifier = notifier if notifier is not None else SystemdNotifier()
+        # A priority hook of a test stands for the platform calls, so the timer stays alone then.
+        asked_for_timer: TimerResolution | None = None
         if priority_hook is not None:
             self._priority_hook = priority_hook
         elif self._cfg.raise_priority:
             self._priority_hook = raise_current_thread_priority
+            asked_for_timer = TimerResolution()
         else:
             self._priority_hook = lambda: "disabled"
+        self._timer = timer if timer is not None else asked_for_timer
+        self._timer_status = ""  # what the request for a finer timer got, where it applies
         self._on_fatal = on_fatal or exit_on_fatal
         self.events = events if events is not None else HardwareEventLog()
         self.instance = secrets.token_hex(INSTANCE_BYTES)
@@ -303,6 +311,10 @@ class AcquireService:
         if self._started:
             raise RuntimeError("the service already started")
         self._started = True
+        if self._timer is not None:
+            self._timer_status = self._timer.request()
+            if self._timer_status:
+                _log.info("timer resolution: %s", self._timer_status)
         self._rpc.start()
         endpoint = self._server.start()
         for name, target in (
@@ -365,6 +377,8 @@ class AcquireService:
             self._release_driver()
         else:
             _log.warning("the capture thread is still in a driver call, so the driver stays open")
+        if self._timer is not None:
+            self._timer.release()
 
     def _release_driver(self) -> None:
         """Stop the capture and close the camera, as far as the driver lets us."""
@@ -1016,6 +1030,7 @@ class AcquireService:
             threads_alive=self._threads_alive() if self._started else True,
             priority=self._priority,
             late_reads=drops.late,
+            timer=self._timer_status,
         )
 
 

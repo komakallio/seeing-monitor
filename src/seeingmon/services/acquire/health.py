@@ -17,6 +17,11 @@ class AcquireHealth:
 
     `state` is `starting`, `closed` (the driver is not open), `ready` (open, not capturing),
     `streaming`, `stalled` (capturing, but no frame for several periods), or `stopping`.
+
+    A late read is a read that came more than the gap factor times the frame period after the one
+    before, and that a catch-up read cleared: the host was late, and no frame was lost.
+    `priority` says what the capture thread got, and `timer` what the request for a finer system
+    timer got (Windows), or it is empty.
     """
 
     state: str
@@ -49,7 +54,8 @@ class AcquireHealth:
     stream_connected: bool
     threads_alive: bool
     priority: str
-    late_reads: int = 0  # reads that came late and that a catch-up read cleared (no frame lost)
+    late_reads: int = 0
+    timer: str = ""
 
     def to_json(self) -> dict[str, Any]:
         """The summary as a JSON object."""

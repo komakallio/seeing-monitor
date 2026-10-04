@@ -21,7 +21,7 @@ import pytest
 pytest.importorskip("sep", reason="the survey path needs the survey extra")
 pytest.importorskip("fastapi", reason="the web settings come from the web extra")
 
-from seeingmon.cli import CliError
+from seeingmon.cli import CliError, build_parser
 from seeingmon.clock import iso_to_utc_ns
 from seeingmon.config import load_config
 from seeingmon.fastpath import FastPathConfig
@@ -36,6 +36,7 @@ from seeingmon.services.dev import (
     child_environment,
     default_start_utc_ns,
     flatten_env,
+    options_from_args,
     owner_settings,
     render_env_value,
     run_dev,
@@ -447,6 +448,61 @@ class TestTheRealCamera:
         lines = banner(plan_for(tmp_path))
         assert lines[0].startswith("Seeing monitor, simulated sky: 1x speed, small sensor.")
         assert not [line for line in lines if "real camera" in line or "no stars" in line]
+
+
+class TestThePriorityOfTheCaptureThread:
+    """The real camera raises it, so that the reads stay on time. The simulator never does."""
+
+    def acquire_settings(self, plan: DevPlan, tmp_path: Path) -> Any:
+        config = load_config(
+            local_file=tmp_path / "absent.toml", env=seeingmon_env(child(plan, "acquire"))
+        )
+        return config.section("services", ServicesConfig).acquire
+
+    def test_the_real_camera_raises_the_priority_by_default(self, tmp_path: Path) -> None:
+        plan = plan_for(tmp_path, acquire_driver="asi")
+        assert self.acquire_settings(plan, tmp_path).raise_priority is True
+        assert not [line for line in banner(plan) if "--no-raise-priority" in line]
+
+    def test_a_comparison_run_keeps_the_normal_priority_and_says_so_once(
+        self, tmp_path: Path
+    ) -> None:
+        plan = plan_for(tmp_path, acquire_driver="asi", raise_priority=False)
+        assert self.acquire_settings(plan, tmp_path).raise_priority is False
+        notes = [line for line in banner(plan) if "--no-raise-priority" in line]
+        assert len(notes) == 1
+        assert "normal priority" in notes[0]
+        assert "default resolution" in notes[0]  # the timer of Windows
+
+    def test_the_simulator_never_raises_it(self, tmp_path: Path) -> None:
+        plans = (
+            plan_for(tmp_path, name="default"),
+            plan_for(tmp_path, name="asked", raise_priority=True),
+        )
+        for plan in plans:
+            assert self.acquire_settings(plan, tmp_path).raise_priority is False
+            assert not [line for line in banner(plan) if "--no-raise-priority" in line]
+
+    def test_the_real_sky_run_follows_the_same_rule(self, tmp_path: Path) -> None:
+        # The notes of a real-sky run come from the same helper as the notes of the real camera.
+        from seeingmon.services.dev import _priority_notes
+
+        assert _priority_notes(DevOptions(acquire_driver="asi")) == []
+        assert len(_priority_notes(DevOptions(acquire_driver="asi", raise_priority=False))) == 1
+
+    def test_the_command_line_option_turns_it_off(self) -> None:
+        parser = build_parser()
+        arguments = ["dev", "--driver", "asi"]
+        on = options_from_args(parser.parse_args(arguments))
+        off = options_from_args(parser.parse_args([*arguments, "--no-raise-priority"]))
+        assert on.raise_priority is True
+        assert off.raise_priority is False
+
+    def test_a_namespace_without_the_option_keeps_the_default(self) -> None:
+        namespace = argparse.Namespace(
+            speed=1.0, port=None, sensor=None, seed=1, start=None, keep_data=False
+        )
+        assert options_from_args(namespace).raise_priority is True
 
 
 class TestTheVendorLibrary:
