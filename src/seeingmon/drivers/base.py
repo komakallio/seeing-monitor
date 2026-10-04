@@ -47,6 +47,16 @@ class CameraDisconnectedError(CameraError):
     """The camera is gone, for example after a USB fault."""
 
 
+class CameraLinkError(CameraDisconnectedError):
+    """The driver cannot reach the process that owns the camera, so the camera is out of reach.
+
+    `RemoteCameraDriver` raises it while `acquire` restarts or does not answer. It is a
+    `CameraDisconnectedError`, so code that treats every loss alike keeps working. The scheduler
+    tells the two apart, because a camera that the SDK no longer finds is lost, and a link that
+    breaks during a restart of `acquire` is not.
+    """
+
+
 class CameraConfigError(CameraError):
     """The camera rejected a setting, or silently applied a different geometry."""
 

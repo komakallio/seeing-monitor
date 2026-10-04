@@ -570,7 +570,12 @@ class TestACameraFault:
             assert status.state == ("safe" if status.degraded else "auto")
         degraded = [s for s in faults if s.degraded]
         assert degraded
-        assert degraded[0].activity.label == "Camera fault: the camera has failed"  # type: ignore[union-attr]
+        # The evening's fault is a timeout, and the label of a degraded status names its cause.
+        assert degraded[0].activity.label == "Camera fault: no frame arrives"  # type: ignore[union-attr]
+        assert degraded[0].activity.reason == (  # type: ignore[union-attr]
+            "no frame arrived; the camera may be disconnected"
+        )
+        assert faults[0].activity.label == "Camera fault: recovering"  # type: ignore[union-attr]
 
     def test_a_camera_that_works_again_says_that_it_recovers(
         self, evening: tuple[World, list[SchedulerStatus]]

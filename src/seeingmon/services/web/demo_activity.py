@@ -8,6 +8,8 @@ The fake `core` of the demo has no camera, so it plays what the real scheduler r
 2. three cycles, each with a fast period of six analysis windows, the survey step, and the idle
    slack until the next slot, and
 3. a camera fault with two recovery steps, in which the status stays `auto` and not yet degraded.
+   The fault reads as the scheduler reports a read that timed out: the cause `timeout`, and in
+   words, `no frame arrived; the camera may be disconnected`.
 
 A real cycle takes 3 minutes. The demo's takes 45 seconds, so that you see every phase within a
 few minutes, and the playlist takes about 3 minutes. The other states show their own activity: the
@@ -26,7 +28,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from seeingmon.clock import NS_PER_S
+from seeingmon.drivers.base import CameraTimeoutError
 from seeingmon.scheduler import activity as words
+from seeingmon.scheduler.faults import FaultCause, reason_text
 from seeingmon.scheduler.status import ActivityPhase
 from seeingmon.services.web.contract import ActivityView, DarkTaskView, FaultView
 
@@ -42,6 +46,11 @@ SOLVE_WAIT_S = 6.0  # [scheduler.survey] solve_wait_s
 CYCLES = 3
 CYCLE_S = FAST_WINDOW_S * FAST_WINDOWS + SURVEY_SHORT_S + SURVEY_LONG_S + IDLE_S
 FAULT_STEPS = (("restart_capture", 2, 12.0), ("reopen", 3, 13.0))  # step, failures, length
+FAULT_ERROR = CameraTimeoutError("no frame arrived in time")
+FAULT_CAUSE = FaultCause.TIMEOUT
+FAULT_REASON = reason_text(FAULT_CAUSE, FAULT_ERROR)
+DEGRADED_AFTER = 5  # [scheduler.faults] degraded_after
+SLOW_RETRY_S = 600.0  # [scheduler.faults] slow_retry_s
 WATCH_INTERVAL_S = 10.0  # [scheduler.watch] interval_s
 WATCH_EXPOSURE_S = 0.001
 DAYLIGHT_RESUME_DEG = -4.0
@@ -149,9 +158,11 @@ def build_playlist() -> tuple[tuple[Segment, ...], float]:
         add(
             ActivityPhase.CAMERA_FAULT,
             length_s,
-            "Camera fault: recovering",
+            words.fault_label(FAULT_CAUSE.value, degraded=False),
             words.recovery_label(step),
-            f"Failure {failures} of 5 before the status turns degraded",
+            words.fault_detail(
+                failures, degraded=False, degraded_after=DEGRADED_AFTER, slow_retry_s=SLOW_RETRY_S
+            ),
             episode_start_s=episode,
             failures=failures,
             next_step=step,
@@ -183,17 +194,18 @@ def auto_activity(elapsed_s: float, now_utc_ns: int, reason: str | None) -> Acti
         closed = int((position - segment.start_s) // FAST_WINDOW_S)
         detail = words.fast_detail(FAST_WINDOW_S, closed, FAST_WINDOWS, clouds=False)
     ends = _later(now_utc_ns, segment.end_s - position)
+    failing = segment.phase is ActivityPhase.CAMERA_FAULT
     return ActivityView(
         state="auto",
         phase=segment.phase.value,
         label=segment.label,
         since_utc_ns=_later(now_utc_ns, began - position),
-        ends_utc_ns=None if segment.phase is ActivityPhase.CAMERA_FAULT else ends,
+        ends_utc_ns=None if failing else ends,
         next_label=segment.next_label,
         next_utc_ns=None if segment.phase is ActivityPhase.SOLVE_WAIT else ends,
-        cadence_s=None if segment.phase is ActivityPhase.CAMERA_FAULT else CYCLE_S,
+        cadence_s=None if failing else CYCLE_S,
         detail=detail,
-        reason=reason,
+        reason=FAULT_REASON if failing else reason,
     )
 
 
@@ -203,12 +215,16 @@ def auto_fault(elapsed_s: float, now_utc_ns: int) -> FaultView:
     segment = _segment_at(position)
     if segment.phase is not ActivityPhase.CAMERA_FAULT:
         return FaultView()
+    began = segment.start_s if segment.episode_start_s is None else segment.episode_start_s
     return FaultView(
         failures=segment.failures,
         good_frames=0,
-        last_error="CameraTimeoutError: no frame arrived in time",
+        last_error=f"{type(FAULT_ERROR).__name__}: {FAULT_ERROR}",
         next_attempt_utc_ns=_later(now_utc_ns, segment.end_s - position),
         next_step=segment.next_step,
+        cause=FAULT_CAUSE.value,
+        reason=FAULT_REASON,
+        since_utc_ns=_later(now_utc_ns, began - position),
     )
 
 

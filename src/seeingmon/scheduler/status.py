@@ -112,17 +112,27 @@ class Counters:
     tasks_run: int = 0
     discarded_frames: int = 0  # frames of a sweep cell that a camera error cut short
     transitions: int = 0
+    stalls: int = 0  # sleeps of the loop that returned much too late
 
 
 @dataclass(frozen=True, slots=True)
 class FaultStatus:
-    """Where the scheduler stands in a fault episode."""
+    """Where the scheduler stands in a fault episode.
+
+    `cause` is the best explanation of the episode: `timeout` (no frame arrived), `disconnected`
+    (the driver finds no camera), `link` (the scheduler cannot reach `acquire`), or `error`.
+    `reason` says it in words, such as `no frame arrived; the camera may be disconnected`. Both
+    are `None` without an episode. `since_utc_ns` is when the episode began.
+    """
 
     failures: int = 0  # failures in a row
     good_frames: int = 0  # good frames since the last failure
     last_error: str | None = None
     next_attempt_utc_ns: int | None = None  # when the scheduler will try the recovery step
     next_step: str | None = None  # the name of that step, such as `reopen`
+    cause: str | None = None
+    reason: str | None = None
+    since_utc_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +171,11 @@ class SchedulerStatus:
         if self.degraded:
             return "failed"
         return "degraded" if self.fault.failures else "ok"
+
+    @property
+    def camera_reason(self) -> str | None:
+        """Why the camera component is not `ok`, in words, or `None` while the camera works."""
+        return self.fault.reason if self.camera_component != "ok" else None
 
     def health_fields(self) -> dict[str, Any]:
         """The fields of a `health` record that the scheduler knows.

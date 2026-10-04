@@ -1558,12 +1558,27 @@
         "x-storage": "table"
       },
       "FaultStatusView": {
+        "description": "Where the scheduler stands in a fault episode of the camera.",
         "properties": {
+          "cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The best explanation of the episode: `timeout` (no frame arrived), `disconnected` (the driver finds no camera), `link` (the scheduler cannot reach `acquire`), or `error`. It is `null` without an episode.",
+            "title": "Cause"
+          },
           "failures": {
+            "description": "The failures in a row.",
             "title": "Failures",
             "type": "integer"
           },
           "good_frames": {
+            "description": "The good frames since the last failure.",
             "title": "Good Frames",
             "type": "integer"
           },
@@ -1576,6 +1591,7 @@
                 "type": "null"
               }
             ],
+            "description": "The latest error, as the driver reported it.",
             "title": "Last Error"
           },
           "next_attempt": {
@@ -1587,6 +1603,7 @@
                 "type": "null"
               }
             ],
+            "description": "When the scheduler tries the next step.",
             "title": "Next Attempt"
           },
           "next_step": {
@@ -1598,7 +1615,32 @@
                 "type": "null"
               }
             ],
+            "description": "The next step of the recovery ladder, such as `reopen`.",
             "title": "Next Step"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The cause in words, such as `no frame arrived; the camera may be disconnected`.",
+            "title": "Reason"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the episode began.",
+            "title": "Since"
           }
         },
         "required": [

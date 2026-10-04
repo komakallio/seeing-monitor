@@ -501,9 +501,11 @@ class TestWhenTasksRun:
         from tests.scheduler.test_fault_response import quick_config
 
         world = World(start_utc_ns=NIGHT, config=quick_config())
-        world.camera_fault(1000, None, fixed_by=4)
-        submit_at(world, 1100, SMALL_SWEEP)  # degraded at about 1016, and fixed at about 1137
-        world.run_until(1120)
+        # Only a reboot fixes the camera. The quick steps fail, so the status turns degraded at
+        # about 1016, the restart of `acquire` comes at about 1033, and the reboot at about 1098.
+        world.camera_fault(1000, None, fixed_by=5)
+        submit_at(world, 1050, SMALL_SWEEP)
+        world.run_until(1080)
         assert world.scheduler.status().degraded
         assert world.events("scheduler.sweep_result") == []
         assert world.scheduler.status().queued_tasks == 1

@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from seeingmon.drivers.base import RecoveryLevel
+from seeingmon.drivers.base import (
+    CameraConfigError,
+    CameraDisconnectedError,
+    CameraError,
+    CameraLinkError,
+    CameraStateError,
+    CameraTimeoutError,
+    RecoveryLevel,
+)
 from seeingmon.scheduler.config import FaultConfig, LadderConfig
-from seeingmon.scheduler.faults import FaultTracker
+from seeingmon.scheduler.faults import FaultCause, FaultTracker, classify, reason_text
 from seeingmon.scheduler.levels import (
     LADDER,
     STEP_NAMES,
@@ -37,6 +45,10 @@ def tracker(
             attempts_per_level=attempts, max_level=max_level, destructive_interval_s=interval_s
         ),
     )
+
+
+def cause_of(faults: FaultTracker) -> FaultCause | None:
+    return faults.cause
 
 
 class TestLadderLevels:
@@ -114,11 +126,47 @@ class TestFailurePlan:
         waits = [faults.failure(0, can_escalate=True).wait_s for _ in range(7)]
         assert waits == [2.0, 4.0, 8.0, 16.0, 20.0, 20.0, 20.0]
 
-    def test_a_degraded_status_waits_for_the_slow_retry_period(self) -> None:
+    def test_the_quick_steps_keep_the_backoff_whether_or_not_the_status_is_degraded(self) -> None:
         faults = tracker(degraded_after=3, slow_retry_s=900.0, backoff_initial_s=1.0)
-        plans = [faults.failure(0, can_escalate=True) for _ in range(5)]
-        assert [plan.wait_s for plan in plans] == [1.0, 2.0, 900.0, 900.0, 900.0]
-        assert [plan.degraded for plan in plans] == [False, False, True, True, True]
+        plans = [faults.failure(0, can_escalate=True) for _ in range(8)]
+        assert [plan.step for plan in plans] == [RC, RC, RO, RO, UR, UR, RA, RA]
+        assert [plan.wait_s for plan in plans] == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+        assert [plan.degraded for plan in plans] == [
+            False,
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ]
+
+    def test_the_wait_is_the_slow_retry_period_once_the_quick_steps_have_had_their_attempts(
+        self,
+    ) -> None:
+        faults = tracker(degraded_after=3, slow_retry_s=900.0, backoff_initial_s=1.0)
+        plans = [faults.failure(0, can_escalate=True) for _ in range(12)]
+        assert [plan.wait_s for plan in plans[8:]] == [900.0, 900.0, 900.0, 900.0]
+        assert [plan.step for plan in plans[8:]] == [RB, RB, PC, PC]
+
+    def test_a_ladder_that_stops_early_slows_down_after_its_last_step(self) -> None:
+        capped = tracker(max_level="reopen", degraded_after=100, slow_retry_s=900.0)
+        waits = [capped.failure(0, can_escalate=True).wait_s for _ in range(6)]
+        assert waits == [2.0, 4.0, 8.0, 16.0, 900.0, 900.0]
+        driver_only = tracker(degraded_after=100, slow_retry_s=900.0)
+        waits = [driver_only.failure(0, can_escalate=False).wait_s for _ in range(8)]
+        assert waits == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 900.0, 900.0]
+
+    def test_a_reboot_that_is_too_soon_still_waits_the_slow_period(self) -> None:
+        faults = tracker(attempts=1, degraded_after=100, interval_s=3600.0, slow_retry_s=900.0)
+        for _ in range(4):
+            faults.failure(0, can_escalate=True)
+        first = faults.failure(0, can_escalate=True)
+        assert (first.step, first.wait_s) == (RB, 900.0)
+        faults.note_destructive(0)
+        second = faults.failure(1800 * NS, can_escalate=True)
+        assert (second.step, second.wait_s) == (RA, 900.0)
 
     def test_degraded_changed_marks_only_the_failure_that_degrades(self) -> None:
         faults = tracker(degraded_after=3)
@@ -126,11 +174,114 @@ class TestFailurePlan:
         assert changed == [False, False, True, False, False]
 
     def test_a_huge_failure_count_does_not_overflow_the_backoff(self) -> None:
-        faults = tracker(degraded_after=10**9, backoff_max_s=60.0)
+        faults = tracker(attempts=10**6, degraded_after=10**9, backoff_max_s=60.0)
         for _ in range(3000):
             plan = faults.failure(0, can_escalate=True)
         assert plan.wait_s == 60.0
         assert plan.failures == 3000
+        assert plan.step is RC  # one million attempts for the first step
+
+
+class TestTheCause:
+    @pytest.mark.parametrize(
+        ("error", "cause"),
+        [
+            (CameraTimeoutError("no frame"), FaultCause.TIMEOUT),
+            (CameraDisconnectedError("no ASI camera is connected"), FaultCause.DISCONNECTED),
+            (CameraLinkError("cannot reach acquire"), FaultCause.LINK),
+            (CameraStateError("the camera is not open"), FaultCause.ERROR),
+            (CameraConfigError("a geometry that differs"), FaultCause.ERROR),
+            (CameraError("ASISetControlValue failed"), FaultCause.ERROR),
+            (RuntimeError("the supervisor failed"), FaultCause.ERROR),
+        ],
+    )
+    def test_each_error_has_a_cause(self, error: Exception, cause: FaultCause) -> None:
+        assert classify(error) is cause
+
+    def test_a_link_error_is_also_a_disconnected_error_for_the_code_that_does_not_ask(self) -> None:
+        assert issubclass(CameraLinkError, CameraDisconnectedError)
+        assert classify(CameraLinkError("x")) is FaultCause.LINK  # the nearer class decides
+
+    def test_a_camera_that_is_not_connected_degrades_the_status_at_once(self) -> None:
+        faults = tracker(degraded_after=5)
+        plan = faults.failure(0, can_escalate=True, cause=FaultCause.DISCONNECTED)
+        assert plan.failures == 1
+        assert (plan.degraded, plan.degraded_changed) == (True, True)
+        assert faults.degraded
+        again = faults.failure(0, can_escalate=True, cause=FaultCause.DISCONNECTED)
+        assert (again.degraded, again.degraded_changed) == (True, False)
+
+    @pytest.mark.parametrize("cause", [FaultCause.TIMEOUT, FaultCause.LINK, FaultCause.ERROR])
+    def test_any_other_cause_waits_for_the_failure_count(self, cause: FaultCause) -> None:
+        faults = tracker(degraded_after=3)
+        degraded = [faults.failure(0, can_escalate=True, cause=cause).degraded for _ in range(3)]
+        assert degraded == [False, False, True]
+
+    def test_the_plan_names_the_cause_of_the_episode(self) -> None:
+        faults = tracker(degraded_after=100)
+        causes = [
+            faults.failure(0, can_escalate=True, cause=cause).cause
+            for cause in (
+                FaultCause.TIMEOUT,
+                FaultCause.ERROR,  # a failing step does not replace the better explanation
+                FaultCause.ERROR,
+                FaultCause.LINK,  # acquire is unreachable, which says more
+                FaultCause.TIMEOUT,
+                FaultCause.DISCONNECTED,  # the camera is not there, which says the most
+                FaultCause.LINK,
+                FaultCause.ERROR,
+            )
+        ]
+        assert causes == [
+            FaultCause.TIMEOUT,
+            FaultCause.TIMEOUT,
+            FaultCause.TIMEOUT,
+            FaultCause.LINK,
+            FaultCause.LINK,
+            FaultCause.DISCONNECTED,
+            FaultCause.DISCONNECTED,
+            FaultCause.DISCONNECTED,
+        ]
+
+    def test_a_step_that_works_ends_the_explanation_of_the_failures_before_it(self) -> None:
+        faults = tracker(degraded_after=100)
+        faults.failure(0, can_escalate=True, cause=FaultCause.DISCONNECTED)
+        faults.step_succeeded()
+        plan = faults.failure(0, can_escalate=True, cause=FaultCause.TIMEOUT)
+        assert plan.cause is FaultCause.TIMEOUT
+
+    def test_the_cause_is_unknown_before_the_first_failure_and_after_the_recovery(self) -> None:
+        faults = tracker(degraded_after=2, clear_after_frames=1)
+        assert cause_of(faults) is None
+        faults.failure(0, can_escalate=True, cause=FaultCause.TIMEOUT)
+        assert cause_of(faults) is FaultCause.TIMEOUT
+        assert faults.success() is True
+        assert cause_of(faults) is None
+
+
+class TestTheReasonInWords:
+    def test_a_timeout_says_that_the_camera_may_be_disconnected(self) -> None:
+        text = reason_text(FaultCause.TIMEOUT, CameraTimeoutError("no frame arrived in time"))
+        assert text == "no frame arrived; the camera may be disconnected"
+
+    def test_a_lost_camera_says_so(self) -> None:
+        error = CameraDisconnectedError("no ASI camera is connected")
+        assert reason_text(FaultCause.DISCONNECTED, error) == "the camera is not connected"
+
+    def test_a_broken_link_names_the_process(self) -> None:
+        error = CameraLinkError("cannot reach acquire")
+        assert reason_text(FaultCause.LINK, error) == "the camera process (acquire) does not answer"
+
+    def test_another_error_carries_its_own_message(self) -> None:
+        error = CameraError("ASISetControlValue failed with GENERAL_ERROR (16).")
+        assert reason_text(FaultCause.ERROR, error) == (
+            "the camera reported an error: ASISetControlValue failed with GENERAL_ERROR (16)"
+        )
+
+    def test_a_long_message_is_cut(self) -> None:
+        text = reason_text(FaultCause.ERROR, CameraError("x" * 1000))
+        assert len(text) < 300
+        assert text.endswith("...")
 
 
 class TestRecovery:

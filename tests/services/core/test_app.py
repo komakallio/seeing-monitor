@@ -137,6 +137,45 @@ class TestHealth:
         assert record.degraded is True
 
 
+class TestTheRecordFollowsTheScheduler:
+    """A change of state or of the camera brings a `health` record at once, not a minute later."""
+
+    def test_a_failed_read_brings_a_record_that_says_why_within_seconds(self, rig: CoreRig) -> None:
+        rig.run_for(30.0)
+        before = rig.records("health")
+        assert before[-1].components["camera"] == "ok"  # type: ignore[attr-defined]
+        failed_at = rig.clock.utc_ns()
+        rig.camera.fail_reads(*[CameraTimeoutError("no frame") for _ in range(3)])
+        rig.run_for(10.0)
+        records = rig.records("health")
+        assert len(records) > len(before)
+        record = records[-1]
+        assert isinstance(record, HealthRecord)
+        assert record.components["camera"] == "degraded"
+        assert (record.quality or {})["components"] == (
+            "camera: no frame arrived; the camera may be disconnected"
+        )
+        # The next scheduled record comes 60 seconds after the last one, so this one is early.
+        assert (record.t_utc_ns - failed_at) / 1e9 < 20.0
+
+    def test_a_change_of_state_brings_a_record_at_once(self, rig: CoreRig) -> None:
+        from seeingmon.scheduler import Pause
+
+        rig.run_for(20.0)
+        count = len(rig.records("health"))
+        rig.app.scheduler.submit(Pause())
+        rig.run_for(3.0)
+        records = rig.records("health")
+        assert len(records) > count
+        assert records[-1].state == "paused"  # type: ignore[attr-defined]
+
+    def test_a_quiet_run_writes_one_record_a_minute(self, rig: CoreRig) -> None:
+        rig.run_for(10.0)
+        count = len(rig.records("health"))
+        rig.run_for(180.0)
+        assert len(rig.records("health")) - count <= 4  # the scheduled ones, and nothing more
+
+
 class TestEvents:
     def test_the_events_of_acquire_become_event_records_once(self, rig: CoreRig) -> None:
         rig.remote.log.append(

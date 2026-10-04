@@ -335,13 +335,20 @@ class StreamView(_View):
 
 
 class FaultView(_View):
-    """Where the scheduler stands in a fault episode."""
+    """Where the scheduler stands in a fault episode (`FaultStatus`).
+
+    `cause` is `timeout`, `disconnected`, `link`, or `error`, and `reason` says it in words. Both
+    are `None` without an episode. `since_utc_ns` is when the episode began.
+    """
 
     failures: int = 0
     good_frames: int = 0
     last_error: str | None = None
     next_attempt_utc_ns: int | None = None
     next_step: str | None = None
+    cause: str | None = None
+    reason: str | None = None
+    since_utc_ns: int | None = None
 
 
 class ActivityView(_View):

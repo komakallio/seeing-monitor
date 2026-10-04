@@ -37,7 +37,8 @@ class HealthReport:
     """The verdict and its evidence.
 
     `age_s` is the age of the newest health record, or `None` when there is none. `quality` says
-    why a value is missing, as the API does everywhere.
+    why a value is missing, as the API does everywhere. Its entry `components`, which comes from the
+    record, says why a component is not `ok`, such as `camera: the camera is not connected`.
     """
 
     status: str
@@ -111,4 +112,6 @@ def evaluate_health(
         raise_to(DEGRADED, "core_unreachable")
     elif core_ok is True:
         components["core_link"] = "ok"
-    return HealthReport(level, tuple(reasons), components, age_s, None, flags)
+    note = (record.get("quality") or {}).get("components")
+    quality = {"components": str(note)} if note else None
+    return HealthReport(level, tuple(reasons), components, age_s, quality, flags)

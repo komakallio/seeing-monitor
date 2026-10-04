@@ -80,6 +80,7 @@ from seeingmon.scheduler import (
     build_scheduler,
     load_site,
 )
+from seeingmon.scheduler.status import SchedulerStatus
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.alignment.calibration import PreviewCalibrator
 from seeingmon.services.core.alignment.helper import AlignmentHelper, Solver
@@ -200,6 +201,7 @@ class CoreApp:
         self._threads: dict[str, threading.Thread] = {}
         self._camera: CameraInfo | None = None
         self._run_record_written = False
+        self._health_key: tuple[Any, ...] | None = None  # what the newest health record said
         self._started_mono = clock.monotonic_ns()
         self.bound_endpoint: Endpoint | None = None
         self.storage: Storage | None = None
@@ -763,10 +765,17 @@ class CoreApp:
         if not self._run_record_written and waited_s >= self.settings.run_record_wait_s:
             self._write_run_record()
 
+    @staticmethod
+    def _scheduler_key(status: SchedulerStatus) -> tuple[Any, ...]:
+        """The parts of the status that a `health` record shows, and that must not wait a minute."""
+        return (status.state, status.degraded, status.camera_component, status.fault.cause)
+
     def _write_health(self) -> None:
         assert self.storage is not None
+        key = self._scheduler_key(self.scheduler.status())
         record = self.health.build()
         self.storage.store.write(record)
+        self._health_key = key
 
     def _flush_night_if_due(self) -> None:
         if self.nightly is not None:
@@ -776,9 +785,9 @@ class CoreApp:
         if self.pump is not None:
             self.pump.poll()
 
-    def status_text(self) -> str:
+    def status_text(self, status: SchedulerStatus | None = None) -> str:
         """The one line that `systemctl status` shows: the state, and what is wrong."""
-        status = self.scheduler.status()
+        status = self.scheduler.status() if status is None else status
         parts = [status.state]
         if status.degraded:
             parts.append("the camera has failed")
@@ -791,8 +800,16 @@ class CoreApp:
         return ", ".join(parts)
 
     def _update_status(self) -> None:
-        """Send the status to systemd when it changes. The text has no counters."""
-        self.notifier.status_changed(self.status_text())
+        """Send the status to systemd when it changes, and write a `health` record when it matters.
+
+        The text for systemd has no counters. A change of the state, of `degraded`, or of the camera
+        component writes a `health` record at once, because a lost camera must show within seconds
+        and not at the next minute.
+        """
+        status = self.scheduler.status()
+        self.notifier.status_changed(self.status_text(status))
+        if self._health_key is not None and self._scheduler_key(status) != self._health_key:
+            self.tasks.trigger("health")
 
     def scheduler_alive(self) -> bool:
         """Whether the scheduler makes progress. The watchdog of systemd depends on it."""

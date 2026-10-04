@@ -218,10 +218,11 @@ def scheduler_response(view: SchedulerView) -> SchedulerStatusResponse:
             failures=fault.failures,
             good_frames=fault.good_frames,
             last_error=None if fault.last_error is None else scrub_text(fault.last_error),
-            next_attempt=None
-            if fault.next_attempt_utc_ns is None
-            else iso(fault.next_attempt_utc_ns),
+            next_attempt=_optional_iso(fault.next_attempt_utc_ns),
             next_step=fault.next_step,
+            cause=fault.cause,
+            reason=_optional_scrub(fault.reason),
+            since=_optional_iso(fault.since_utc_ns),
         ),
         queued_tasks=view.queued_tasks,
         survey_pending=view.survey_pending,

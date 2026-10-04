@@ -186,10 +186,13 @@ class FaultConfig(SectionModel):
     backoff_max_s: Seconds = 60.0
 
     degraded_after: PositiveInt = 5
-    """The number of failures in a row after which the status turns `degraded`."""
+    """The number of failures in a row after which the status turns `degraded`. A camera that the
+    driver reports as not connected turns it at once."""
 
     slow_retry_s: Seconds = 600.0
-    """The pause between attempts while the status is `degraded`, in seconds."""
+    """The pause between attempts once the quick steps of the ladder (up to the restart of
+    `acquire`) have had their attempts, in seconds. A reboot or a power cycle waits this long too.
+    Until then, the pause is the backoff."""
 
     clear_after_frames: PositiveInt = 10
     """The number of good frames in a row that clear the failure count and `degraded`."""
@@ -287,6 +290,13 @@ class LoopConfig(SectionModel):
 
     context_refresh_s: Seconds = 30.0
     """How often the scheduler refreshes the context that it gives the fast analyzer."""
+
+    stall_s: Seconds = 10.0
+    """A sleep that returns this much later than it should writes the event `scheduler.stalled`.
+
+    The loop sleeps for fractions of a second, so a sleep that takes much longer means that the
+    process did not run: the machine was suspended, or something held it. The value is far above the
+    jitter of a loaded machine."""
 
 
 class SchedulerConfig(SectionModel):

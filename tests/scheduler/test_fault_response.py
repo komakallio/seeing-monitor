@@ -151,13 +151,15 @@ class TestAPersistentFault:
         reasons = [(e.detail or {})["reason"] for e in world.events("scheduler.state_change")]
         assert reasons == ["the sky is dark enough", "camera fault", "the sky is dark enough"]
 
-    def test_while_degraded_the_scheduler_retries_at_the_slow_pace(
+    def test_the_quick_steps_keep_the_backoff_even_when_the_status_is_degraded(
         self, persistent_world: World
     ) -> None:
         faults = persistent_world.events("scheduler.fault")
         assert [(e.detail or {})["failures"] for e in faults] == [1, 2, 3, 4]
         waits = [(e.detail or {})["wait_s"] for e in faults]
-        assert waits == [1.0, 2.0, 60.0, 60.0]  # the third failure degrades, so the wait is slow
+        # The third failure degrades the status, but the ladder still has quick steps to try.
+        assert waits == [1.0, 2.0, 4.0, 8.0]
+        assert [(e.detail or {})["cause"] for e in faults] == ["timeout"] * 4
 
     def test_a_supervisor_step_sends_the_escalation_and_reopens_the_camera(
         self, persistent_world: World
@@ -301,7 +303,8 @@ class TestStatusDuringAFault:
     def test_the_health_fields_follow_the_degraded_state(self) -> None:
         world = World(start_utc_ns=NIGHT, config=quick_config())
         world.camera_fault(1000, None, fixed_by=int(RA))
-        world.run_until(1100)  # degraded since 1016, and the fix comes at about 1137
+        while not world.scheduler.status().degraded:  # the third failure degrades the status
+            world.scheduler.step()
         fields = world.scheduler.status().health_fields()
         assert fields["state"] == "safe"
         assert fields["degraded"] is True

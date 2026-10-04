@@ -27,6 +27,7 @@ from seeingmon.drivers.base import (
     CameraDisconnectedError,
     CameraDriver,
     CameraError,
+    CameraLinkError,
     CameraStateError,
     CameraTimeoutError,
     RecoveryLevel,
@@ -205,8 +206,10 @@ def test_scripted_read_failures_come_one_per_read(camera: Camera) -> None:
     driver.start()
     with pytest.raises(CameraTimeoutError):
         driver.read_frame(10.0)
-    with pytest.raises(CameraDisconnectedError):
+    with pytest.raises(CameraDisconnectedError) as raised:
         driver.read_frame(10.0)
+    # The camera said that it is gone. That is not a broken link to `acquire`.
+    assert not isinstance(raised.value, CameraLinkError)
     assert driver.read_frame(10.0).seq == 0
 
 
@@ -237,8 +240,9 @@ def test_lifecycle_errors(camera: Camera) -> None:
 
 def test_a_failing_open_raises_the_camera_error(camera: Camera) -> None:
     camera.fake.fail_open()
-    with pytest.raises(CameraDisconnectedError):
+    with pytest.raises(CameraDisconnectedError) as raised:
         camera.driver.open()
+    assert not isinstance(raised.value, CameraLinkError)  # `acquire` answered: no camera
 
 
 def test_recovery_and_close(camera: Camera) -> None:

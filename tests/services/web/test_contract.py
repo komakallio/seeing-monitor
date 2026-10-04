@@ -256,7 +256,15 @@ def scheduler_status(**overrides: Any) -> SchedulerStatus:
         "background_fraction": 0.01,
         "sensor_temperature_c": 4.5,
         "counters": Counters(frames=1000, dropped=3, windows=12),
-        "fault": FaultStatus(failures=1, good_frames=4, last_error="timeout", next_step="reopen"),
+        "fault": FaultStatus(
+            failures=1,
+            good_frames=4,
+            last_error="timeout",
+            next_step="reopen",
+            cause="timeout",
+            reason="no frame arrived; the camera may be disconnected",
+            since_utc_ns=1_767_225_620_000_000_000,
+        ),
         "queued_tasks": 2,
         "survey_pending": 1,
         "alignment_idle_s": None,
@@ -276,6 +284,9 @@ def test_a_status_survives_the_round_trip_through_json() -> None:
     assert decoded.scheduler.stream.roi.width == 128
     assert decoded.scheduler.counters["frames"] == 1000
     assert decoded.scheduler.fault.next_step == "reopen"
+    assert decoded.scheduler.fault.cause == "timeout"
+    assert decoded.scheduler.fault.reason == "no frame arrived; the camera may be disconnected"
+    assert decoded.scheduler.fault.since_utc_ns == 1_767_225_620_000_000_000
     assert decoded.scheduler.cloud_fraction == 0.62
     assert dataclasses.asdict(status)["queued_tasks"] == decoded.scheduler.queued_tasks
 
@@ -602,3 +613,11 @@ def test_the_error_of_a_malformed_dark_library_names_the_fields_and_not_the_valu
         decode_dark_library(example)
     assert "gain" in str(error.value)
     assert "a-secret-value" not in str(error.value)
+
+
+def test_a_status_from_an_older_core_has_a_fault_without_a_cause() -> None:
+    wire = decode_json(encode_json(encode_status(scheduler_status(), "core-1")))
+    for name in ("cause", "reason", "since_utc_ns"):
+        del wire["scheduler"]["fault"][name]
+    fault = decode_status(wire).scheduler.fault
+    assert (fault.cause, fault.reason, fault.since_utc_ns) == (None, None, None)

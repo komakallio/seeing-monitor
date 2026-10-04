@@ -16,6 +16,7 @@ from seeingmon.drivers.base import (
     CameraConfigError,
     CameraDisconnectedError,
     CameraError,
+    CameraLinkError,
     CameraStateError,
     CameraTimeoutError,
     RecoveryLevel,
@@ -584,9 +585,10 @@ class TestConnecting:
     ) -> None:
         driver = RemoteCameraDriver(native, key, connect_timeout_s=0.3)
         started = time.monotonic()
-        with pytest.raises(CameraDisconnectedError, match="cannot reach acquire"):
+        with pytest.raises(CameraDisconnectedError, match="cannot reach acquire") as raised:
             driver.open()
         assert 0.15 <= time.monotonic() - started < 20.0
+        assert isinstance(raised.value, CameraLinkError)  # the camera is out of reach, not gone
 
     def test_calls_before_open_are_state_errors(self, native: Endpoint, key: ConnectionKey) -> None:
         driver = RemoteCameraDriver(native, key)
@@ -624,9 +626,9 @@ class TestConnecting:
             read_frames(driver, 3)
             old_instance = driver.instance
             first.service.stop()
-            with pytest.raises(CameraDisconnectedError):
+            with pytest.raises(CameraLinkError):  # a restart of acquire breaks the link
                 read_until_it_raises(driver)
-            with pytest.raises(CameraDisconnectedError):
+            with pytest.raises(CameraLinkError):
                 driver.configure(SMALL)
             second = make_rig(native, key)
             try:

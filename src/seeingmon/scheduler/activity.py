@@ -198,6 +198,31 @@ def step_text(step_name: str) -> str:
     return STEP_TEXT.get(step_name, step_name.replace("_", " "))
 
 
+# What a fault is, in the label of the camera fault, by the cause that the scheduler recorded.
+_FAULT_SUMMARIES = {
+    "timeout": "no frame arrives",
+    "disconnected": "the camera is not connected",
+    "link": "the camera process does not answer",
+}
+
+
+def fault_label(cause: str | None, *, degraded: bool) -> str:
+    """The label of a camera fault: `Camera fault: recovering`, or what failed once degraded."""
+    if not degraded:
+        return "Camera fault: recovering"
+    return f"Camera fault: {_FAULT_SUMMARIES.get(cause or '', 'the camera has failed')}"
+
+
+def fault_detail(failures: int, *, degraded: bool, degraded_after: int, slow_retry_s: float) -> str:
+    """The count of failures, and what the scheduler does next about the pace."""
+    if not degraded:
+        return f"Failure {failures} of {degraded_after} before the status turns degraded"
+    return (
+        f"{count_text(failures, 'failure')} in a row; once the quick recovery steps are done, "
+        f"the scheduler tries every {duration_text(slow_retry_s)}"
+    )
+
+
 def recovery_label(step_name: str) -> str:
     """The name of the next recovery step: `Recovery step: reopen the camera`."""
     return f"Recovery step: {step_text(step_name)}"

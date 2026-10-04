@@ -25,9 +25,9 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.no_site": "No site is configured, so the Sun's elevation and `twilight` are off.",
     "scheduler.state_change": "The state changed. The detail holds `from`, `to`, and `reason`.",
     "scheduler.command": "A command arrived. The detail says whether the scheduler accepted it.",
-    "scheduler.fault": "A camera error ended an activity. The detail holds the failure count.",
+    "scheduler.fault": "A camera error ended an activity. The detail holds `cause` and `reason`.",
     "scheduler.recovery_step": "The scheduler performed a step of the recovery ladder, or failed.",
-    "scheduler.degraded": "The camera failed repeatedly, so the status turned `degraded`.",
+    "scheduler.degraded": "The camera failed repeatedly or is gone, so the status is `degraded`.",
     "scheduler.recovered": "Good frames in a row cleared a fault and the `degraded` status.",
     "scheduler.solve_requested": "A survey step runs to solve the pointing again. See `reason`.",
     "scheduler.roi_recentered": "The star neared the ROI edge, so the window ended early.",
@@ -47,4 +47,5 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.alignment_sink_failed": "The consumer of the alignment frames raised an error.",
     "scheduler.stop_failed": "The camera did not stop cleanly when the scheduler ended a stream.",
     "scheduler.internal_error": "The loop hit an unexpected error and went on.",
+    "scheduler.stalled": "The loop did not run for a while: the machine may have been suspended.",
 }

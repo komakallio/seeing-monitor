@@ -12,9 +12,11 @@ their own state: the scheduler (state, camera, drops), the storage (free space, 
 sink), the driver in `acquire` (queue depth, thread state), the heater and the SQM-LE reader, the
 clock (synchronization and error bound), the dark library (`dark_due`), and the machine (load and
 memory, from `/proc` on Linux and unknown elsewhere). A value that no part can give is `None`, and
-`quality` says why. A component state is `ok`, `degraded`, or `failed`, and `acquire` is `starting`
-while `core` has not heard from it yet and the first seconds of the run last (the scheduler opens
-the camera a moment after the start), so that a restart never shows a failure that is not one.
+`quality` says why. A component that is not `ok` says why in `quality["components"]`: the camera
+reads `camera: the camera is not connected`, so a reader of the record needs no log. A component
+state is `ok`, `degraded`, or `failed`, and `acquire` is `starting` while `core` has not heard from
+it yet and the first seconds of the run last (the scheduler opens the camera a moment after the
+start), so that a restart never shows a failure that is not one.
 """
 
 from __future__ import annotations
@@ -225,6 +227,8 @@ class HealthReporter:
         quality: dict[str, str] = {}
 
         components: dict[str, str] = {"core": "ok", **fields["components"]}
+        if status.camera_reason is not None:  # say why, in words, so that a reader needs no log
+            quality["components"] = f"camera: {status.camera_reason}"
         acquire = self._acquire_health()
         uptime_s = max(0.0, (self._clock.monotonic_ns() - self._started_ns) / NS_PER_S)
         queue_depth: int | None = None

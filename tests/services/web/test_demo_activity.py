@@ -155,6 +155,11 @@ class TestAuto:
         assert scheduler.fault.failures == 2
         assert scheduler.fault.next_step == "restart_capture"
         assert (scheduler.t_utc_ns - view.since_utc_ns) / NS_PER_S == pytest.approx(3.0)
+        # The fault says why, in the words of the real scheduler, for the activity and the status.
+        assert view.reason == "no frame arrived; the camera may be disconnected"
+        assert scheduler.fault.cause == "timeout"
+        assert scheduler.fault.reason == view.reason
+        assert scheduler.fault.since_utc_ns == view.since_utc_ns
         later = play(core, clock, 15.0)
         assert later.next_label == "Recovery step: reopen the camera"
         assert core.status().scheduler.fault.failures == 3

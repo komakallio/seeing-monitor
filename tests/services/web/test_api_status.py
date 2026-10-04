@@ -41,6 +41,9 @@ class PrivateCore(FakeCoreClient):
                     last_error=WINDOWS_ERROR,
                     next_attempt_utc_ns=NOW_NS + 30 * NS_PER_S,
                     next_step="reopen",
+                    cause="error",
+                    reason="the camera reported an error: " + WINDOWS_ERROR,
+                    since_utc_ns=NOW_NS - 60 * NS_PER_S,
                 ),
             }
         )
@@ -96,7 +99,16 @@ def test_the_status_reports_the_scheduler_and_the_link_to_core(client: TestClien
     assert scheduler["degraded"] is False
     assert scheduler["stream"]["purpose"] == "fast"
     assert scheduler["queued_tasks"] == 0
-    assert scheduler["fault"]["failures"] == 0
+    assert scheduler["fault"] == {
+        "failures": 0,
+        "good_frames": 0,
+        "last_error": None,
+        "next_attempt": None,
+        "next_step": None,
+        "cause": None,
+        "reason": None,
+        "since": None,
+    }
 
 
 def test_the_status_gives_the_age_of_the_newest_record_of_each_type(client: TestClient) -> None:
@@ -166,6 +178,9 @@ def test_the_status_leaves_out_the_sun_and_cleans_the_text_of_core(
     assert fault["last_error"] == "Cannot open <hidden>"
     assert fault["next_attempt"] == "2026-10-01T03:00:30.000000Z"
     assert fault["next_step"] == "reopen"
+    assert fault["cause"] == "error"
+    assert fault["reason"] == "the camera reported an error: Cannot open <hidden>"
+    assert fault["since"] == "2026-10-01T02:59:00.000000Z"
     assert response.json()["scheduler"]["state_reason"] == "The sky is dark at <hidden>"
 
 
@@ -407,3 +422,18 @@ def test_the_health_answer_has_a_json_body_even_when_it_is_503(
         "flags",
         "quality",
     }
+
+
+def test_the_health_says_why_a_component_is_not_ok(client: TestClient, seeded: Store) -> None:
+    note = "camera: the camera is not connected"
+    write_health(
+        seeded,
+        5,
+        components={"acquire": "ok", "camera": "failed"},
+        degraded=True,
+        quality={"components": note},
+    )
+    response = client.get(f"{API}/health")
+    assert response.status_code == 503
+    assert response.json()["quality"] == {"components": note}
+    assert client.get(f"{API}/status").json()["health"]["quality"] == {"components": note}

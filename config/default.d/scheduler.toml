@@ -63,12 +63,14 @@ gain = 120
 backoff_initial_s = 2.0
 backoff_factor = 2.0
 backoff_max_s = 60.0
-degraded_after = 5          # Failures in a row.
-slow_retry_s = 600.0        # The pause between attempts while `degraded`.
+degraded_after = 5          # Failures in a row. A camera that is not connected degrades at once.
+slow_retry_s = 600.0        # The pause between attempts once the quick steps have had their turn.
 clear_after_frames = 10     # Good frames in a row that clear the failure count.
 
 # The recovery ladder: restart_capture, reopen, usb_reset, restart_acquire, reboot, power_cycle.
 # The first three steps run in the driver. The others go to the supervisor through `escalate`.
+# The steps up to restart_acquire follow the backoff above (a minute at most). After them, the
+# attempts come every slow_retry_s, and a reboot or a power cycle waits for that pace too.
 [scheduler.ladder]
 attempts_per_level = 2
 max_level = "power_cycle"
@@ -105,3 +107,4 @@ poll_interval_s = 0.1
 read_timeout_factor = 2.0
 read_timeout_margin_s = 0.5
 context_refresh_s = 30.0
+stall_s = 10.0              # A sleep this much late writes the event scheduler.stalled.

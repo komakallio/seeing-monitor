@@ -245,6 +245,8 @@ The endpoint answers 200 for a healthy or degraded system and 503 otherwise. It 
 | 503 | A component failed (for example the camera failed repeatedly), the store cannot be read, `core` has written no health record yet, or its newest record is more than three minutes old because `core` stopped. | Read the `reasons` in the answer, then `systemctl status seeingmon.target` and the log of `core`. |
 | No answer | `web` is down, or it binds to another address. | `systemctl status seeingmon-web`, and check `bind_address`. |
 
+The answer's `quality.components` says why a component is not `ok`, for example `camera: the camera is not connected`, so you read the cause without opening a log.
+
 An external watchdog on your LAN can poll this endpoint (see [Remote power cycle](#remote-power-cycle)).
 
 ## Reach the web UI through a VPN
@@ -341,7 +343,7 @@ A ZWO camera on a Raspberry Pi can stall after hours or days. The system answers
 | 5. Reboot | `core` | Runs `reboot_command` from `[services.core.escalation]`. | Name the command, and install with `--supervisor-actions`. |
 | 6. Power cycle | `core` | Calls the power-cycle hook (see below). | Choose and wire a route. |
 
-Each step gets two attempts. Once the system is `degraded`, the scheduler retries slowly (every 600 seconds). A reboot or a power cycle happens at most once in six hours (`[scheduler.ladder] destructive_interval_s`), and the power hook adds its own limits.
+Each step gets two attempts. The first four steps follow each other at the pace of the backoff, which starts at two seconds, doubles, and stops at a minute, so the climb to the restart of `acquire` takes about four minutes. After that the scheduler tries again every ten minutes (`[scheduler.faults] slow_retry_s`), and the reboot and the power cycle wait for that pace too. A reboot or a power cycle happens at most once in six hours (`[scheduler.ladder] destructive_interval_s`), and the power hook adds its own limits.
 
 Until you configure them, steps 5 and 6 write an event and change nothing: `escalation.reboot_unavailable` for the reboot, and `power.cycle_unavailable` for a power route of `none`. Once you configure them, each writes its event and then runs your command or request. For the reboot, the service user cannot use `sudo`, because the units set `NoNewPrivileges`. The `--supervisor-actions` option installs a polkit rule that lets the service user, and nobody else, manage the three services (`seeingmon-acquire`, `seeingmon-core`, and `seeingmon-web`) and reboot the Pi. Then name the command in the local configuration:
 
@@ -360,6 +362,24 @@ sudo reboot
 ```
 
 An exit of `acquire` with code 70 means that a call into the SDK hung and the watchdog ended the process. Code 71 means that one of its threads died. Code 75 is a restart that `core` asked for. All three end with a new process.
+
+### What you see when the camera disappears
+
+The camera disappears when a USB cable comes loose, when the camera loses its power, or when the machine goes to sleep. The table counts from the first read that fails, with the default settings. A fast frame takes about 12 ms and a read waits about half a second, so the first failure comes within a second of the last frame.
+
+| After | What happens | Where you see it |
+|---|---|---|
+| 0 s | The read times out with `no frame arrived in time`, and the fast period ends. | The event `scheduler.fault` (cause `timeout`), and the activity `Camera fault: recovering` on **Now** |
+| 1 to 2 s | The camera component of `health` reads `degraded`, and `quality.components` says `camera: no frame arrived; the camera may be disconnected`. | `GET /api/v1/health`, and the newest `health` record |
+| 2 s and 6 s | The restart of the capture fails twice, usually with an SDK error such as `GENERAL_ERROR`. | The events `scheduler.recovery_step` |
+| 14 s | The reopen finds no camera: `no ASI camera is connected`. The status turns `degraded` at once, the component reads `failed`, `GET /api/v1/health` answers 503, and the scheduler goes to `safe`. | The events `scheduler.fault` (cause `disconnected`), `scheduler.degraded`, and `scheduler.state_change`, and the activity `Camera fault: the camera is not connected` with the time of the next try |
+| 30 s to 4 min | The second reopen, two USB resets, and the restart of `acquire` follow, each a minute at most after the one before. | The events `scheduler.recovery_step` and `escalation.restart_acquire` |
+| Then | The scheduler tries again every ten minutes. A reboot or a power cycle comes after the quick steps, once in six hours at most. | The same events |
+| When the camera is back | The next step finds it. The scheduler returns to `auto` when the sky allows it, and ten good frames in a row clear the status. | The event `scheduler.recovered` |
+
+The activity in `GET /api/v1/status` (`scheduler.activity`) names the next try as a time, so you see how long the wait lasts. Check the cable and the port, and plug the camera in again. The next step of the ladder finds it. If the camera does not come back after a replug, `lsusb -d 03c3:` on the Pi shows whether the system sees the device at all.
+
+A machine that sleeps looks the same, with a gap before it. Windows Modern Standby suspends every process and cuts the power of a USB camera, and Linux does the same on a suspend. The processes do not run while the machine sleeps, so the records stop, and after the wake the scheduler reports `scheduler.stalled` with the length of the gap, and then the camera as lost. A Pi does not sleep, so the gap means a different fault there: look at the load and at the log of `core`.
 
 ### Remote power cycle
 
@@ -864,6 +884,7 @@ Add the lines to `local/config.toml`, and restart `core`. `core` loads the file 
 - Connect the camera to a USB 3 port, and close other camera software, because one process opens the camera at a time. Point the launcher at the vendor library with `--asi-library <path>` or with the variable `SEEINGMON_ASI__LIBRARY_PATH` (see [Windows](hardware-checks.md#windows)). The launcher gives the path to `acquire` alone and prints it nowhere.
 - Install the dependencies with `uv sync --all-extras`.
 - Check that Windows has synchronized its clock. The scheduler and the pointing use the system clock, and the launcher cannot tell on Windows whether it is synchronized, so it trusts it.
+- Keep the machine awake for the whole run: turn off sleep, and keep it on its charger. Windows Modern Standby suspends every process and cuts the power of the USB camera, so the run stops and the camera looks lost (see [What you see when the camera disappears](#what-you-see-when-the-camera-disappears)).
 - Choose a data folder on a local disk, outside the repository and outside any folder that a cloud service syncs. The run keeps the store (a SQLite database), the dark library, the images, and the logs there.
 
 ### Set your site and survey
@@ -990,6 +1011,8 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | The picture is smooth, but the pole and the aim ring trail it by seconds. | The quick solve is slow. Each solve runs the detector over the whole frame, and the overlay shows the newest finished solve. | `GET /alignment/state` returns `timing.solve_elapsed_s` and `timing.solution_frame_seq` next to `timing.frame_seq`. A solve of more than 2 s on a laptop means a loaded machine. Raise `[alignment] detect_threshold_sigma` or lower `detect_max_stars`, and close other programs. |
 | The state stays `safe`, and no survey frame runs. | The Sun is above -3 degrees at your `[site]`, or the measured sky brightness gate holds the scheduler. | Check the **System** card and the latest events. Check that the values of `[site]` are your own. |
 | The launcher ends with `acquire exited` and the end of its log. | The vendor library or the camera is not available. | Check `--asi-library` and `SEEINGMON_ASI__LIBRARY_PATH`, close other camera software, and see [Windows](hardware-checks.md#windows). |
+| The records and the logs stop for minutes, and then the camera is reported as lost. | The machine went to sleep. The event `scheduler.stalled` says how long the scheduler did not run, and the power of the USB camera was cut. | Turn off sleep while a run lasts, and keep the machine on its charger. Plug the camera in again if the next reopen does not find it. |
+| The state is `safe`, and the activity reads `Camera fault: the camera is not connected`. | The camera has no power or no data link: a loose cable, a hub without power, or a machine that slept. | Check the cable and the port, and plug the camera in again. The next try is on the status page. |
 | The **Pointing** card still says "no reference solution" after you saved a reference. | You did not restart the run, or `[survey.pointing] reference_file` names no file, which `core` ignores without an error. | Run `seeingmon pointing show`, fix the path, and start the run again (see [Save the pointing reference](#save-the-pointing-reference)). |
 
 ## Troubleshooting

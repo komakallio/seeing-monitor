@@ -420,11 +420,30 @@ class StreamStatus(_Response):
 
 
 class FaultStatusView(_Response):
-    failures: int
-    good_frames: int
-    last_error: str | None = None
-    next_attempt: str | None = None
-    next_step: str | None = None
+    """Where the scheduler stands in a fault episode of the camera."""
+
+    failures: int = Field(description="The failures in a row.")
+    good_frames: int = Field(description="The good frames since the last failure.")
+    last_error: str | None = Field(None, description="The latest error, as the driver reported it.")
+    next_attempt: str | None = Field(None, description="When the scheduler tries the next step.")
+    next_step: str | None = Field(
+        None, description="The next step of the recovery ladder, such as `reopen`."
+    )
+    cause: str | None = Field(
+        None,
+        description=(
+            "The best explanation of the episode: `timeout` (no frame arrived), `disconnected` "
+            "(the driver finds no camera), `link` (the scheduler cannot reach `acquire`), or "
+            "`error`. It is `null` without an episode."
+        ),
+    )
+    reason: str | None = Field(
+        None,
+        description=(
+            "The cause in words, such as `no frame arrived; the camera may be disconnected`."
+        ),
+    )
+    since: str | None = Field(None, description="When the episode began.")
 
 
 class ActivityResponse(_Response):

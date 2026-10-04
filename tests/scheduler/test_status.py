@@ -83,6 +83,22 @@ def test_the_camera_component_follows_the_fault_state(
     }
 
 
+def test_the_camera_reason_is_the_fault_reason_until_the_camera_works() -> None:
+    """A component that is not `ok` says why, so that a reader of the health record needs no log."""
+    reason = "no frame arrived; the camera may be disconnected"
+    fault = FaultStatus(failures=1, cause="timeout", reason=reason, since_utc_ns=400)
+    failing = dataclasses.replace(make_status(), fault=fault)
+    assert failing.camera_component == "degraded"
+    assert failing.camera_reason == reason
+    assert dataclasses.replace(failing, degraded=True).camera_reason == reason
+    # A reason that outlives its episode never reaches the record: a working camera has none.
+    assert (
+        dataclasses.replace(failing, fault=dataclasses.replace(fault, failures=0)).camera_reason
+        is None
+    )
+    assert make_status().camera_reason is None
+
+
 @pytest.mark.parametrize("state", ["safe", "auto", "align", "commission", "paused"])
 def test_the_health_fields_build_a_valid_health_record(state: str) -> None:
     fields = make_status(state=state).health_fields()

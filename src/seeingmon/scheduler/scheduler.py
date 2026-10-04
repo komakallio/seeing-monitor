@@ -90,7 +90,7 @@ from seeingmon.scheduler.config import (
 )
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
 from seeingmon.scheduler.events import DARK_PHASE_EVENT
-from seeingmon.scheduler.faults import FaultPlan, FaultTracker
+from seeingmon.scheduler.faults import FaultCause, FaultPlan, FaultTracker, classify, reason_text
 from seeingmon.scheduler.gates import (
     REASON_BRIGHT_SKY,
     REASON_DAYLIGHT,
@@ -310,6 +310,8 @@ class Scheduler:
         self._return_state = State.SAFE
         self._pending_fault: _PendingFault | None = None
         self._fault_since_mono: int | None = None  # when the fault episode began
+        self._fault_cause: FaultCause | None = None  # the best explanation of the episode
+        self._fault_reason: str | None = None  # the same, in words
         self._last_error: str | None = None
         self._pointing_known = False  # whether the pointing provider had a position at last look
         self._survey_overhead_s: float | None = None  # what a survey exposure cost beyond itself
@@ -416,13 +418,7 @@ class Scheduler:
                 background_fraction=self._background_fraction,
                 sensor_temperature_c=self._last_temperature_c,
                 counters=replace(self._counters),
-                fault=FaultStatus(
-                    failures=self._faults.failures,
-                    good_frames=self._faults.good_frames,
-                    last_error=self._last_error,
-                    next_attempt_utc_ns=None if pending is None else pending.due_utc_ns,
-                    next_step=None if pending is None else step_name(pending.plan.step),
-                ),
+                fault=self._fault_status(now_utc, now_mono, pending),
                 queued_tasks=len(self._queue),
                 survey_pending=self._survey_pending,
                 alignment_idle_s=(
@@ -430,6 +426,24 @@ class Scheduler:
                 ),
                 activity=self._status_activity(now_utc, now_mono, align, pending),
             )
+
+    def _fault_status(
+        self, now_utc: int, now_mono: int, pending: _PendingFault | None
+    ) -> FaultStatus:
+        """Where the scheduler stands in a fault episode. The caller holds the lock."""
+        failures = self._faults.failures
+        episode = failures > 0 or self._faults.degraded
+        cause, since = self._fault_cause, self._fault_since_mono
+        return FaultStatus(
+            failures=failures,
+            good_frames=self._faults.good_frames,
+            last_error=self._last_error,
+            next_attempt_utc_ns=None if pending is None else pending.due_utc_ns,
+            next_step=None if pending is None else step_name(pending.plan.step),
+            cause=cause.value if episode and cause is not None else None,
+            reason=self._fault_reason if episode else None,
+            since_utc_ns=None if not episode or since is None else now_utc - (now_mono - since),
+        )
 
     # --- The activity ----------------------------------------------------------------------
 
@@ -508,21 +522,23 @@ class Scheduler:
     ) -> ActivityStatus:
         """The camera failed, and the scheduler waits to try a recovery step."""
         plan = pending.plan
-        faults = self._config.faults
         failed = self._faults.degraded
         since = self._fault_since_mono
-        detail = f"Failure {plan.failures}"
-        if not failed:
-            detail += f" of {faults.degraded_after} before the status turns degraded"
+        cause = self._fault_cause
         return ActivityStatus(
             state=self._machine.state.value,
             phase=ActivityPhase.CAMERA_FAULT.value,
-            label="Camera fault: the camera has failed" if failed else "Camera fault: recovering",
+            label=words.fault_label(None if cause is None else cause.value, degraded=failed),
             since_utc_ns=now_utc if since is None else at(since),
             next_label=words.recovery_label(step_name(plan.step)),
             next_utc_ns=pending.due_utc_ns,
-            detail=detail,
-            reason=reason,
+            detail=words.fault_detail(
+                plan.failures,
+                degraded=failed,
+                degraded_after=self._config.faults.degraded_after,
+                slow_retry_s=self._config.faults.slow_retry_s,
+            ),
+            reason=self._fault_reason or reason,
         )
 
     def _align_activity(
@@ -1125,8 +1141,42 @@ class Scheduler:
         wait_ns = min(target_mono_ns - now, self._max_sleep_ns)
         if self._deadline_mono is not None:
             wait_ns = min(wait_ns, self._deadline_mono - now)
-        self._clock.sleep(max(wait_ns, _MIN_SLEEP_NS) / NS_PER_S)
+        asked_ns = max(wait_ns, _MIN_SLEEP_NS)
+        self._clock.sleep(asked_ns / NS_PER_S)
+        late_ns = self._mono() - now - asked_ns
+        if late_ns > round(self._config.loop.stall_s * NS_PER_S):
+            self._note_stall(late_ns)
         return StepKind.SLEEP
+
+    def _read(self, timeout_s: float) -> Frame:
+        """Read one frame, and note a stall when the read returns far later than its timeout.
+
+        A read waits at most its timeout, so a read that takes `stall_s` longer means that the
+        process did not run while the read waited.
+        """
+        started = self._mono()
+        try:
+            return self._driver.read_frame(timeout_s)
+        finally:
+            late_ns = self._mono() - started - round(timeout_s * NS_PER_S)
+            if late_ns > round(self._config.loop.stall_s * NS_PER_S):
+                self._note_stall(late_ns)
+
+    def _note_stall(self, late_ns: int) -> None:
+        """A sleep of a fraction of a second took minutes: the process did not run.
+
+        The scheduler cannot know why. On a laptop it is the machine that went to sleep, which also
+        cuts the power of a USB camera, so a lost camera follows the stall.
+        """
+        stalled_s = late_ns / NS_PER_S
+        self._counters.stalls += 1
+        self._emit(
+            "warning",
+            "scheduler.stalled",
+            f"The scheduler did not run for {words.duration_text(stalled_s)}, so the machine may "
+            "have been suspended.",
+            {"stalled_s": round(stalled_s, 3)},
+        )
 
     def _reconcile(self, state: State) -> bool:
         """End a stream that does not belong to the state. Returns `True` when it did."""
@@ -1230,6 +1280,8 @@ class Scheduler:
         self._last_temperature_c = frame.temperature_c
         if self._faults.success():
             self._fault_since_mono = None
+            self._fault_cause = None
+            self._fault_reason = None
             self._emit(
                 "info",
                 "scheduler.recovered",
@@ -1244,9 +1296,12 @@ class Scheduler:
         now = self._mono()
         self._end_stream("fault")
         self._counters.faults += 1
-        plan = self._faults.failure(now, can_escalate=self._escalate is not None)
+        cause = classify(error)
+        plan = self._faults.failure(now, can_escalate=self._escalate is not None, cause=cause)
         if plan.failures == 1 or self._fault_since_mono is None:
             self._fault_since_mono = now  # a new episode begins
+        self._fault_cause = plan.cause
+        self._fault_reason = reason_text(plan.cause, error)
         self._last_error = f"{type(error).__name__}: {error}"
         self._pending_fault = _PendingFault(
             plan=plan,
@@ -1263,15 +1318,27 @@ class Scheduler:
                 "failures": plan.failures,
                 "wait_s": plan.wait_s,
                 "next_step": step_name(plan.step),
+                "cause": cause.value,  # of this failure; the reason explains the episode
+                "reason": self._fault_reason,
             },
         )
         if plan.degraded_changed:
+            lead = (
+                "The camera is not connected, so the status is degraded."
+                if plan.cause is FaultCause.DISCONNECTED
+                else "The camera failed repeatedly, so the status is degraded."
+            )
             self._emit(
                 "error",
                 "scheduler.degraded",
-                "The camera failed repeatedly, so the status is degraded. The scheduler keeps "
-                "trying at a slow pace.",
-                {"failures": plan.failures},
+                f"{lead} The scheduler keeps trying, and it retries every "
+                f"{words.duration_text(self._config.faults.slow_retry_s)} once the quick recovery "
+                "steps are done.",
+                {
+                    "failures": plan.failures,
+                    "cause": plan.cause.value,
+                    "reason": self._fault_reason,
+                },
             )
         self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
         if plan.degraded and not self._end_alignment("camera fault"):
@@ -1298,9 +1365,16 @@ class Scheduler:
         name = step_name(step)
         supervisor_level = isinstance(step, EscalationLevel)
         self._counters.recovery_steps += 1
+        opened = False
         try:
             if isinstance(step, RecoveryLevel):
-                self._driver.recover(step)
+                if self._opened:
+                    self._driver.recover(step)
+                else:
+                    # The camera never opened, or a restart of `acquire` closed it, and the steps of
+                    # the driver have no camera to restart. Opening it is the step that can work.
+                    self._driver.open()
+                    self._opened = opened = True
             else:
                 assert self._escalate is not None
                 self._escalate(step)
@@ -1320,11 +1394,18 @@ class Scheduler:
             self._opened = False  # the supervisor restarted something, so open the camera again
             if step in DESTRUCTIVE_STEPS:
                 self._faults.note_destructive(self._mono())
+        self._faults.step_succeeded()
         self._emit(
             "warning" if supervisor_level else "info",
             "scheduler.recovery_step",
             f"The scheduler performed the recovery step {name}.",
-            {"step": name, "level": int(step), "ok": True, "failures": plan.failures},
+            {
+                "step": name,
+                "level": int(step),
+                "ok": True,
+                "failures": plan.failures,
+                **({"opened": True} if opened else {}),
+            },
         )
 
     # --- The `safe` state ------------------------------------------------------------------
@@ -1387,7 +1468,7 @@ class Scheduler:
         try:
             active = self._reconfigure(self._watch_config(), Purpose.WATCH)
             self._start_stream()
-            frame = self._driver.read_frame(self._timeout_s(active))
+            frame = self._read(self._timeout_s(active))
         except CameraError as error:
             return self._camera_error(error, "the brightness watch")
         self._end_stream("snapshot_done")
@@ -1530,7 +1611,7 @@ class Scheduler:
             return StepKind.TRANSITION
         fast = self._config.fast
         try:
-            frame = self._driver.read_frame(run.read_timeout_s)
+            frame = self._read(run.read_timeout_s)
         except CameraError as error:
             return self._camera_error(error, "reading a fast frame")
         now = self._mono()
@@ -1671,7 +1752,7 @@ class Scheduler:
         try:
             active = self._reconfigure(config, Purpose.SURVEY)
             self._start_stream()
-            frame = self._driver.read_frame(self._timeout_s(active))
+            frame = self._read(self._timeout_s(active))
         except CameraError as error:
             return self._camera_error(error, "a survey exposure")
         self._survey_overhead_s = max(0.0, (self._mono() - started) / NS_PER_S - exposure_us / 1e6)
@@ -1839,7 +1920,7 @@ class Scheduler:
             session.dirty = False
             return StepKind.WORK
         try:
-            frame = self._driver.read_frame(self._align_timeout_s(session))
+            frame = self._read(self._align_timeout_s(session))
         except CameraError as error:
             return self._camera_error(error, "reading an alignment frame")
         self._note_frame(frame)

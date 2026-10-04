@@ -148,3 +148,22 @@ def test_a_core_that_was_not_asked_leaves_no_link_component() -> None:
 def test_the_reasons_name_each_cause_once() -> None:
     report = judge(record(components={"core": "degraded"}, degraded=True, flags=["low_space"]))
     assert report.reasons == ("component_degraded:core", "flag:low_space")
+
+
+def test_the_note_of_the_record_says_why_a_component_is_not_ok() -> None:
+    note = "camera: the camera is not connected"
+    report = judge(
+        record(
+            components={"camera": "failed", "core": "ok"},
+            degraded=True,
+            quality={"components": note, "queue_depth": "acquire did not answer"},
+        )
+    )
+    assert report.status == FAILED
+    assert report.quality == {"components": note}  # only the note of the components passes on
+
+
+def test_a_record_without_a_note_leaves_the_quality_empty() -> None:
+    assert judge(record()).quality is None
+    assert judge(record(quality=None)).quality is None
+    assert judge(record(quality={"queue_depth": "acquire did not answer"})).quality is None

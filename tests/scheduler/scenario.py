@@ -11,6 +11,10 @@ describes the world as functions of time, and the frame factory of the fake came
   `hide_star` removes it, and `jolt` shifts it, as a bumped mount would.
 - **Faults.** `camera_fault` makes every read time out. A recovery step of a given level, or an
   escalation, clears it.
+- **A lost camera.** `camera_gone` makes every read time out, as a camera does that nobody unplugged
+  yet, and the recovery steps fail as they do on a camera that is gone: the restart of the capture
+  fails with an SDK error, the reopen finds no camera, and the USB reset finds no device. Nothing
+  but the end of the window brings it back.
 - **Commands.** `at` runs any action at a time, such as `world.scheduler.submit(Pause())`.
 
 The scenario uses a small bin2 frame and a slow, small fast stream (one frame in 2 s on a
@@ -28,7 +32,13 @@ import numpy as np
 
 from seeingmon.analysis import FastContext, SurveyOutput
 from seeingmon.clock import NS_PER_S, Clock, VirtualClock, iso_to_utc_ns
-from seeingmon.drivers.base import CameraTimeoutError, RecoveryLevel
+from seeingmon.drivers.base import (
+    CameraDisconnectedError,
+    CameraError,
+    CameraInfo,
+    CameraTimeoutError,
+    RecoveryLevel,
+)
 from seeingmon.frames import ActiveStream, Frame, FrameData, Roi, StreamConfig, StreamKind
 from seeingmon.profile import load_profile
 from seeingmon.records import EventRecord, Record, SeeingWindowRecord, SkyQualityRecord
@@ -94,6 +104,7 @@ class ScenarioCamera(FakeCameraDriver):
         self.world = world
         self.configure_log: list[ConfigureCall] = []
         self.fault_windows: list[list[int | None]] = []  # [start, end], with None for open ended
+        self.gone_windows: list[list[int | None]] = []  # the camera is not there
         self.fixed_by: int | None = None  # the lowest ladder step that clears a fault
 
     def add_fault(self, start_utc_ns: int, end_utc_ns: int | None) -> None:
@@ -112,18 +123,44 @@ class ScenarioCamera(FakeCameraDriver):
             for start, end in ((w[0], w[1]) for w in self.fault_windows if w[0] is not None)
         )
 
+    def add_gone(self, start_utc_ns: int, end_utc_ns: int | None) -> None:
+        self.gone_windows.append([start_utc_ns, end_utc_ns])
+
+    def gone_active(self) -> bool:
+        now = self._clock.utc_ns()
+        return any(
+            start is not None and start <= now and (end is None or now < end)
+            for start, end in ((w[0], w[1]) for w in self.gone_windows)
+        )
+
+    def open(self) -> CameraInfo:
+        if self.gone_active():
+            self.calls.append(("open", None))
+            raise CameraDisconnectedError("no ASI camera is connected")
+        return super().open()
+
     def configure(self, config: StreamConfig) -> ActiveStream:
         self.configure_log.append(ConfigureCall(self._clock.utc_ns(), config))
         return super().configure(config)
 
     def read_frame(self, timeout_s: float) -> Frame:
-        if self.fault_active():
+        if self.fault_active() or self.gone_active():
             self.calls.append(("read_frame", timeout_s))
             self._clock.sleep(timeout_s)
             raise CameraTimeoutError("scripted fault")
         return super().read_frame(timeout_s)
 
     def recover(self, level: RecoveryLevel) -> None:
+        if self.gone_active():
+            self.calls.append(("recover", level))
+            if level is RecoveryLevel.RESTART_CAPTURE:
+                raise CameraError(
+                    "ASISetControlValue failed with GENERAL_ERROR (16): the SDK reports a "
+                    "general error"
+                )
+            if level is RecoveryLevel.REOPEN:
+                raise CameraDisconnectedError("no ASI camera is connected")
+            raise CameraError("no USB device matches the camera's vendor ID")
         super().recover(level)
         if self.fixed_by is not None and int(level) >= self.fixed_by:
             self.clear_faults()
@@ -275,6 +312,10 @@ class World:
         self.camera.add_fault(self.t(start), None if end is None else self.t(end))
         if fixed_by is not None:
             self.camera.fixed_by = fixed_by
+
+    def camera_gone(self, start: float, end: float | None = None) -> None:
+        """The camera is not there from `start` to `end`, or for good (see the module text)."""
+        self.camera.add_gone(self.t(start), None if end is None else self.t(end))
 
     def at(self, seconds: float, action: Callable[[World], None]) -> None:
         """Run `action(world)` at the first step boundary at or after this time."""

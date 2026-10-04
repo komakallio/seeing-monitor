@@ -11,8 +11,10 @@ is not up (it restarts, or it has not started yet), `open` retries for `connect_
 other methods connect to nothing: they work on the session that `open` made.
 
 **Errors.** A call that `acquire` answers with a camera error raises that class
-(`CameraStateError`, `CameraConfigError`, and so on). A call that gets no answer in time raises
-`CameraTimeoutError`, and a call on a connection that is gone raises `CameraDisconnectedError`.
+(`CameraStateError`, `CameraConfigError`, `CameraDisconnectedError` for a camera that the SDK no
+longer finds, and so on). A call that gets no answer in time raises `CameraTimeoutError`, and a
+call on a connection that is gone raises `CameraLinkError`, which is a `CameraDisconnectedError`
+that says that the camera is out of reach and not that it is gone.
 
 **A restart is a disconnect.** When `acquire` exits (a crash, a hang that its watchdog ended,
 or `systemctl restart`), the driver sees the connection close. Frames that already arrived are
@@ -49,6 +51,7 @@ from seeingmon.drivers.base import (
     CameraDisconnectedError,
     CameraError,
     CameraInfo,
+    CameraLinkError,
     CameraStateError,
     CameraTimeoutError,
     RecoveryLevel,
@@ -230,7 +233,7 @@ class RemoteCameraDriver:
             raise CameraStateError("the camera is not open: call open first")
         if state is _State.LOST or link.rpc.closed:
             self._mark_lost(link, link.rpc.close_reason)
-            raise CameraDisconnectedError(
+            raise CameraLinkError(
                 "the connection to acquire was lost: call open to start a new session"
             )
         return link
@@ -250,7 +253,7 @@ class RemoteCameraDriver:
             return link.rpc.call(method, params, timeout_s=timeout_s)
         except IpcClosedError as error:
             self._mark_lost(link, str(error))
-            raise CameraDisconnectedError(f"acquire went away during {method}: {error}") from None
+            raise CameraLinkError(f"acquire went away during {method}: {error}") from None
         except RpcTimeoutError as error:
             raise CameraTimeoutError(f"acquire did not answer {method} in time: {error}") from None
         except RpcError as error:  # includes the exceptions that this side does not know
@@ -279,7 +282,7 @@ class RemoteCameraDriver:
         except IpcAuthError as error:
             raise CameraConfigError(f"acquire refused the connection key: {error}") from None
         except IpcError as error:
-            raise CameraDisconnectedError(f"cannot reach acquire: {error}") from None
+            raise CameraLinkError(f"cannot reach acquire: {error}") from None
         try:
             session = get_str(hello, "session", "hello")
             instance = get_str(hello, "instance", "hello")
@@ -298,11 +301,11 @@ class RemoteCameraDriver:
             )
         except (IpcError, CodecError) as error:
             rpc.close("the frame stream did not connect")
-            raise CameraDisconnectedError(f"cannot open the frame stream: {error}") from None
+            raise CameraLinkError(f"cannot open the frame stream: {error}") from None
         if reply.get("instance") != instance:
             frames.close("acquire restarted during the connection")
             rpc.close("acquire restarted during the connection")
-            raise CameraDisconnectedError("acquire restarted while the driver connected")
+            raise CameraLinkError("acquire restarted while the driver connected")
         return _Link(rpc, frames, instance)
 
     # --- CameraDriver ----------------------------------------------------------------------
@@ -473,7 +476,7 @@ class RemoteCameraDriver:
                 raise CameraStateError("the camera is not open: call open first")
             if active is None or not capturing:
                 if state is _State.LOST:
-                    raise CameraDisconnectedError("the connection to acquire was lost")
+                    raise CameraLinkError("the connection to acquire was lost")
                 raise CameraStateError("read_frame while not capturing")
             ready = link.ready
             while ready:  # the rest of a message that held several frames
@@ -488,7 +491,7 @@ class RemoteCameraDriver:
                 message = link.frames.recv(remaining_s)
             except IpcClosedError as error:
                 self._mark_lost(link, str(error))
-                raise CameraDisconnectedError(f"the frame stream ended: {error}") from None
+                raise CameraLinkError(f"the frame stream ended: {error}") from None
             if message is None:
                 raise CameraTimeoutError(f"no frame within {timeout_s} s")
             if message.tag != epoch & MAX_TAG:

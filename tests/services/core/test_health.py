@@ -130,6 +130,44 @@ def reporter(**parts: Any) -> HealthReporter:
     return HealthReporter(**defaults)
 
 
+class TestWhyTheCameraIsNotOk:
+    """A component that is not `ok` says why in `quality["components"]`, in words."""
+
+    def test_a_camera_that_recovers_says_why_in_the_quality(self) -> None:
+        fault = FaultStatus(
+            failures=2,
+            reason="no frame arrived; the camera may be disconnected",
+            cause="timeout",
+        )
+        record = reporter(scheduler=FakeScheduler(fault=fault)).build()
+        assert record.components["camera"] == "degraded"
+        assert quality_of(record)["components"] == (
+            "camera: no frame arrived; the camera may be disconnected"
+        )
+
+    def test_a_failed_camera_says_why_in_the_quality(self) -> None:
+        fault = FaultStatus(failures=4, reason="the camera is not connected", cause="disconnected")
+        record = reporter(scheduler=FakeScheduler(degraded=True, fault=fault)).build()
+        assert record.components["camera"] == "failed"
+        assert record.degraded is True
+        assert quality_of(record)["components"] == "camera: the camera is not connected"
+
+    def test_a_camera_that_works_adds_no_note(self) -> None:
+        record = reporter().build()
+        assert record.components["camera"] == "ok"
+        assert "components" not in quality_of(record)
+
+    def test_a_note_without_a_reason_is_left_out(self) -> None:
+        record = reporter(scheduler=FakeScheduler(fault=FaultStatus(failures=1))).build()
+        assert record.components["camera"] == "degraded"
+        assert "components" not in quality_of(record)
+
+    def test_the_quality_of_the_other_values_stays_beside_the_note(self) -> None:
+        fault = FaultStatus(failures=1, reason="the camera is not connected")
+        record = reporter(scheduler=FakeScheduler(fault=fault), acquire=FakeAcquire(None)).build()
+        assert set(quality_of(record)) >= {"components", "queue_depth"}
+
+
 class TestComponents:
     @pytest.mark.parametrize(
         ("summary", "expected"),
