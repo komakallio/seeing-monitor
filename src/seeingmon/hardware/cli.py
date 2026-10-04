@@ -65,7 +65,7 @@ def register(subparsers: Subparsers) -> None:
         type=int,
         default=DEFAULT_SETTLE,
         help=f"frames to read and drop before each measurement (default {DEFAULT_SETTLE}; a "
-        "snapshot row drops at most 2 exposures)",
+        "snapshot row drops none)",
     )
     rates.add_argument("--gain", type=int, default=120, help="the gain of every row (default 120)")
     rates.add_argument(

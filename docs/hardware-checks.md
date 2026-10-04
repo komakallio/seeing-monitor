@@ -68,7 +68,7 @@ seeingmon camera rates --json local/camera-rates.json
 
 Close other camera programs first. The command reads the driver options from `[services.acquire.driver_options]`, so it needs the same configuration as the checks above (the path of the library). A run takes about two and a half minutes. These options change it:
 
-- `--frames` and `--settle` set the frames that each row measures (default 150) and the frames that it reads and drops first (default 10). A snapshot row takes at most 10 exposures after 2 that it drops, because one exposure takes about half a second.
+- `--frames` and `--settle` set the frames that each row measures (default 150) and the frames that it reads and drops first (default 10). A snapshot row takes at most 10 exposures and drops none, because one exposure takes about half a second.
 - `--gain` sets the gain of every row (default 120). The gain does not change the rate.
 - `--groups` runs a subset of `exposure,roi,format,bandwidth,speed,bin2,snapshot`. The baseline always runs.
 - `--json` also writes the table as JSON. The file holds the conditions (the camera model, the SDK version, the sensor temperature, the platform), the rows, and the fits. It carries no host name, serial number, or path, and it belongs in `local/`.
@@ -100,13 +100,13 @@ The values in the profile come from one run on a Raspberry Pi 4 on October 3, 20
 Refit the model on the final hardware, and again after you change the host, the USB port, or the SDK:
 
 1. Stop the services that use the camera (`sudo systemctl stop seeingmon.target` on the Pi), and close other camera programs.
-2. Run the `snapshot` group. It takes about 20 seconds.
+2. Run the `snapshot` group. It takes about half a minute.
 
    ```bash
    seeingmon camera rates --groups snapshot --json local/camera-snapshots.json
    ```
 
-   The group measures the survey readout mode, which is the mode of the brightness frame, the survey frames, and the dark sessions. Each row takes single exposures of 1 ms in the full width of the frame, at 64, 256, and 1024 rows and at the full height. It takes 2 exposures that it drops and 10 that it measures, and it times each exposure from the call that starts it to the returned frame.
+   The group measures the survey readout mode, which is the mode of the brightness frame, the survey frames, and the dark sessions. Each row takes single exposures of 1 ms in the full width of the frame, at 64, 256, and 1024 rows and at the full height. It takes 10 exposures, and before each one it configures the camera, as the scheduler does before every exposure of a survey step. It times each exposure from the call that starts it to the returned frame, and it drops none, so `max ms` shows a slow first exposure after a configure, which the median hides. The first survey exposure after a start timed out on the Pi 4.
 3. Read the rows. `med ms` is the median time of an exposure, `max ms` is the slowest one, and `model` is the rate that the profile predicts. A median above the model shows a model that is too short.
 4. Read the fit under the table. It prints `snapshot_overhead_s` and `snapshot_row_time_us` with the values of the profile beside them, and the largest error of the line against the medians.
 5. If a median lies above the model, or the fitted values differ from the profile by more than about 10%, put the fitted values in the entry of the survey mode in `profiles/<id>.toml`. Add a comment with the host, the date, the SDK version, and the conditions. Round the values up: a model that is too short brings the timeouts back, and a model that is a little long only lengthens the wait for a frame that never comes.

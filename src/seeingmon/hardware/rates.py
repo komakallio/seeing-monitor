@@ -19,9 +19,9 @@ of the profile (its readout mode, 128 x 128 pixels, 2 ms, RAW16, bandwidth 100, 
   high-speed mode, and one ROI at 2 ms), and the 320 x 240, 10 ms, RAW8 stream that a recording
   uses.
 - `snapshot`: single exposures of the survey readout mode at 1 ms, in the full width of the frame
-  and a few ROI heights up to the full frame. A row is not a stream: it takes one exposure at a
-  time, and it times each from the call that starts the exposure to the returned frame, as the
-  scheduler experiences it.
+  and a few ROI heights up to the full frame. A row is not a stream: it configures the camera and
+  takes one exposure, again and again, as the scheduler does before every exposure of a survey
+  step, and it times each exposure from the call that starts it to the returned frame.
 
 **The columns.** Each row gives the measured rate, the rate of the model, the median, the standard
 deviation (jitter), and the maximum of the frame periods, the frames that the camera dropped, and
@@ -88,7 +88,6 @@ BIN2_RECORDING = (320, 240, 10_000)  # width, height, and exposure of the stream
 SNAPSHOT_EXPOSURE_US = 1000  # short, so that the readout is nearly all of the time
 SNAPSHOT_HEIGHTS_PX = (64, 256, 1024)  # and the full height of the mode, always at full width
 SNAPSHOT_MAX_FRAMES = 10  # single exposures that a snapshot row measures, at the most
-SNAPSHOT_MAX_SETTLE = 2  # single exposures that a snapshot row takes and drops first, at the most
 SNAPSHOT_READ_TIMEOUT_S = 30.0  # the driver bounds the wait by the period of the profile anyway
 MIN_FRAMES = 3  # the shortest measurement: two frame periods and one more
 READ_TIMEOUT_S = 2.0  # the longest wait for one frame of a stream in the table
@@ -367,30 +366,29 @@ def measure_row(driver: AsiDriver, spec: RowSpec, *, frames: int, settle: int) -
     )
 
 
-def measure_snapshot_row(
-    driver: AsiDriver, spec: RowSpec, *, frames: int, settle: int, clock: Clock
-) -> RateRow:
-    """Take `settle` single exposures and then `frames` more, and time each of them.
+def measure_snapshot_row(driver: AsiDriver, spec: RowSpec, *, frames: int, clock: Clock) -> RateRow:
+    """Configure the camera and take one exposure, `frames` times, and time each exposure.
 
-    The time of an exposure runs from the call that starts it to the return of the frame, on
-    `clock`, which must be the clock of the driver. That is the time that the scheduler waits for a
-    frame, and it holds the exposure, the readout, and the transfer. The rate is one over the
-    median time, and a failure of the camera gives a row with an `error` and no numbers.
+    The scheduler configures the camera before every exposure of a survey step, so the exposure
+    that it waits for is the first one after a `configure`, and a row does the same. It drops no
+    exposure, so `max_ms` shows a slow first exposure, and the median does not move for it. The
+    time of an exposure runs from the call that starts it to the return of the frame, on `clock`,
+    which must be the clock of the driver. That is the time that the scheduler waits for a frame,
+    and it holds the exposure, the readout, and the transfer. The rate is one over the median
+    time, and a failure of the camera gives a row with an `error` and no numbers.
     """
     if frames < MIN_FRAMES:
         raise ValueError(f"measure at least {MIN_FRAMES} frames")
     times_s: list[float] = []
     dropped = 0
     try:
-        active = driver.configure(spec.config)
-        for index in range(settle + frames):
+        for _ in range(frames):
+            active = driver.configure(spec.config)
             started_ns = clock.monotonic_ns()
             driver.start()
             frame = driver.read_frame(SNAPSHOT_READ_TIMEOUT_S)
-            elapsed_s = (clock.monotonic_ns() - started_ns) / 1e9
-            if index >= settle:
-                times_s.append(elapsed_s)
-                dropped += frame.dropped_before
+            times_s.append((clock.monotonic_ns() - started_ns) / 1e9)
+            dropped += frame.dropped_before
     except CameraError as error:
         with contextlib.suppress(CameraError):
             driver.stop()
@@ -547,8 +545,7 @@ def run_table(
     is restored and closed on every path out: a failing row, an exception from a callback, and an
     interrupt. `clock` gives the time of the report and times the single exposures, so it must be
     the clock of the driver (the system clock by default). A snapshot row takes at most
-    `SNAPSHOT_MAX_FRAMES` exposures after `SNAPSHOT_MAX_SETTLE` more, because one takes about half
-    a second.
+    `SNAPSHOT_MAX_FRAMES` exposures and drops none, because one takes about half a second.
     """
     plan = plan_rows(profile, gain=gain, groups=groups)
     clock = clock or SystemClock()
@@ -578,7 +575,6 @@ def run_table(
                         driver,
                         spec,
                         frames=min(frames, SNAPSHOT_MAX_FRAMES),
-                        settle=min(settle, SNAPSHOT_MAX_SETTLE),
                         clock=clock,
                     )
                 else:

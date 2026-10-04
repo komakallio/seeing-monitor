@@ -24,7 +24,6 @@ from seeingmon.hardware.rates import (
     BANDWIDTHS_PCT,
     GROUPS,
     SNAPSHOT_MAX_FRAMES,
-    SNAPSHOT_MAX_SETTLE,
     RateRow,
     RowSpec,
     SnapshotFit,
@@ -279,7 +278,7 @@ def snapshot_spec(height: int = 2822) -> RowSpec:
 class TestMeasureSnapshots:
     def test_a_row_times_each_exposure_from_the_start_call_to_the_frame(self) -> None:
         rig = make_rig().opened()
-        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=5, settle=1, clock=rig.clock)
+        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=5, clock=rig.clock)
         assert row.error is None
         assert row.kind == "snapshot"
         assert row.median_ms is not None
@@ -296,17 +295,41 @@ class TestMeasureSnapshots:
         assert (row.exposure_us, row.bandwidth_pct, row.pixel_format) == (1000, 100, "RAW16")
         assert row.high_speed is False
 
-    def test_each_exposure_is_a_new_start_and_the_settle_exposures_are_taken_too(self) -> None:
+    def test_each_exposure_follows_a_new_configure_as_in_a_survey_step_and_none_is_dropped(
+        self,
+    ) -> None:
         rig = make_rig().opened()
-        measure_snapshot_row(rig.driver, snapshot_spec(64), frames=5, settle=2, clock=rig.clock)
-        assert len(rig.sdk.calls_named("start_exposure")) == 7
-        assert len(rig.sdk.calls_named("get_data_after_exposure")) == 7
+        row = measure_snapshot_row(rig.driver, snapshot_spec(64), frames=5, clock=rig.clock)
+        assert row.frames == 5
+        assert len(rig.sdk.calls_named("start_exposure")) == 5
+        assert len(rig.sdk.calls_named("get_data_after_exposure")) == 5
+        assert len(rig.sdk.calls_named("set_roi_format")) >= 5  # one for each configure
         assert not rig.sdk.video_active
+
+    def test_a_slow_first_exposure_shows_in_the_maximum_and_not_in_the_median(self) -> None:
+        """The first survey exposure after a start timed out on the real camera, so the row keeps
+        the exposure that follows a configure, and the median does not move for one slow one."""
+        rig = make_rig().opened()
+        original = rig.sdk.start_exposure
+        state = {"started": 0}
+
+        def slow_first(camera_id: int, *, dark: bool = False) -> None:
+            state["started"] += 1
+            if state["started"] == 1:
+                rig.clock.advance(0.2)  # the first start call takes 0.2 s, as after a reconfigure
+            original(camera_id, dark=dark)
+
+        rig.sdk.start_exposure = slow_first  # type: ignore[method-assign]
+        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=5, clock=rig.clock)
+        assert row.max_ms is not None
+        assert row.median_ms is not None
+        assert row.max_ms == pytest.approx(row.median_ms + 200, abs=3.0)
+        assert row.median_ms == pytest.approx(SNAPSHOT_FULL_S * 1e3, abs=SNAPSHOT_POLL_MS)
 
     def test_the_row_shows_the_camera_and_not_the_model(self) -> None:
         """A camera that is slower than the model, but within the bound of the driver."""
         rig = make_rig(sdk={"snapshot_timing": {2: FakeTiming(150e-6, 0.5)}}).opened()
-        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=3, settle=0, clock=rig.clock)
+        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=3, clock=rig.clock)
         assert row.median_ms == pytest.approx(
             (0.001 + 0.5 + 2822 * 150e-6) * 1e3, abs=SNAPSHOT_POLL_MS
         )
@@ -314,7 +337,7 @@ class TestMeasureSnapshots:
 
     def test_a_camera_far_slower_than_the_model_gives_a_row_with_the_timeout(self) -> None:
         rig = make_rig(sdk={"snapshot_timing": {2: FakeTiming(75e-6, 5.0)}}).opened()
-        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=3, settle=0, clock=rig.clock)
+        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=3, clock=rig.clock)
         assert row.error is not None
         assert row.error.startswith("CameraTimeoutError: the exposure did not finish within 1.5 s")
         assert (row.fps, row.median_ms, row.dropped) == (None, None, None)
@@ -323,7 +346,7 @@ class TestMeasureSnapshots:
     def test_a_row_that_the_camera_refuses_is_reported(self) -> None:
         rig = make_rig().opened()
         rig.sdk.fail_next("set_roi_format", AsiErrorCode.INVALID_SIZE)
-        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=3, settle=0, clock=rig.clock)
+        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=3, clock=rig.clock)
         assert row.error is not None
         assert row.error.startswith("AsiConfigError: set_roi_format failed")
         assert (row.fps, row.dropped, row.kind) == (None, None, "snapshot")
@@ -332,15 +355,13 @@ class TestMeasureSnapshots:
     def test_a_failed_exposure_is_reported(self) -> None:
         rig = make_rig().opened()
         rig.sdk.fail_next_exposure()
-        row = measure_snapshot_row(
-            rig.driver, snapshot_spec(64), frames=3, settle=0, clock=rig.clock
-        )
+        row = measure_snapshot_row(rig.driver, snapshot_spec(64), frames=3, clock=rig.clock)
         assert row.error == "CameraError: the exposure failed"
 
     def test_too_few_frames_is_an_error(self) -> None:
         rig = make_rig().opened()
         with pytest.raises(ValueError, match="at least 3"):
-            measure_snapshot_row(rig.driver, snapshot_spec(), frames=2, settle=0, clock=rig.clock)
+            measure_snapshot_row(rig.driver, snapshot_spec(), frames=2, clock=rig.clock)
 
 
 def owner_state() -> FakeCameraState:
@@ -475,7 +496,7 @@ class TestRunTable:
         rig = make_rig()
         run_table(rig.driver, PROFILE, frames=150, settle=10, groups=("snapshot",), clock=rig.clock)
         taken = len(rig.sdk.calls_named("start_exposure"))
-        assert taken == rows * (SNAPSHOT_MAX_FRAMES + SNAPSHOT_MAX_SETTLE)
+        assert taken == rows * SNAPSHOT_MAX_FRAMES  # and none of them is dropped
 
     def test_the_snapshot_rows_do_not_enter_the_video_fit(self) -> None:
         rig = make_rig()
@@ -701,7 +722,7 @@ class TestOutput:
 
     def test_a_snapshot_row_is_one_line_with_the_columns_of_the_header(self) -> None:
         rig = make_rig().opened()
-        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=4, settle=1, clock=rig.clock)
+        row = measure_snapshot_row(rig.driver, snapshot_spec(), frames=4, clock=rig.clock)
         line = format_row(row)
         assert "\n" not in line
         for text in ("snapshot 4144x2822, 1 ms", "bin2", "4144x2822", "RAW16", "1000", "2.1"):
@@ -853,7 +874,7 @@ class TestCommand:
         text = " ".join(capsys.readouterr().out.split())
         assert "bin2, and snapshot (default: all)" in text
         assert f"a snapshot row takes at most {SNAPSHOT_MAX_FRAMES} exposures" in text
-        assert f"a snapshot row drops at most {SNAPSHOT_MAX_SETTLE} exposures" in text
+        assert "a snapshot row drops none" in text
 
     def test_a_group_that_does_not_exist_is_a_usage_error(
         self, rig: Rig, tmp_path: Path, capsys: pytest.CaptureFixture[str]
