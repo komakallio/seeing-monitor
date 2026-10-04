@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from seeingmon.frames import PixelFormat, Roi, StreamConfig, StreamKind
 from seeingmon.scheduler.commands import (
@@ -37,6 +38,8 @@ from seeingmon.services.web.contract import (
     ActivityView,
     AlignmentState,
     CoreStatus,
+    FocusHistoryView,
+    FocusView,
     decode_alignment_state,
     decode_command,
     decode_dark_library,
@@ -466,7 +469,87 @@ def test_unpack_refuses_what_is_not_a_frame() -> None:
 
 
 def test_the_methods_are_the_documented_ones() -> None:
-    assert METHODS == ("ping", "status", "submit", "alignment_state", "dark_library")
+    assert METHODS == (
+        "ping",
+        "status",
+        "submit",
+        "alignment_state",
+        "dark_library",
+        "alignment_reset_focus",
+    )
+
+
+def history_example(points: int = 3) -> dict[str, Any]:
+    return {
+        "session": 2,
+        "reset": True,
+        "index": list(range(1, points + 1)),
+        "seq": list(range(10, 10 + points)),
+        "t_utc_ms": [1_800_000_000_000 + 500 * n for n in range(points)],
+        "fwhm_px": [2.4 + 0.1 * n for n in range(points)],
+        "fwhm_arcsec": [9.168 + 0.382 * n for n in range(points)],
+        "n_stars": [30] * points,
+        "spike": [False] * points,
+    }
+
+
+def test_a_focus_with_a_history_survives_the_round_trip_through_json() -> None:
+    focus = FocusView(
+        fwhm_px=2.5,
+        best_fwhm_px=2.0,
+        n_stars=31,
+        fwhm_arcsec=9.55,
+        best_fwhm_arcsec=7.64,
+        spike=True,
+        frame_seq=12,
+        history=FocusHistoryView.model_validate(history_example()),
+    )
+    state = AlignmentState(active=True, focus=focus)
+    assert decode_alignment_state(json.loads(state.model_dump_json())) == state
+
+
+def test_a_focus_history_with_lists_of_different_length_is_refused() -> None:
+    value = history_example()
+    value["spike"] = [False]
+    with pytest.raises(ValidationError, match="differ in length"):
+        FocusHistoryView.model_validate(value)
+    with pytest.raises(CodecError):
+        decode_alignment_state({"active": True, "focus": {"history": value}})
+
+
+def test_a_focus_history_may_be_empty_and_says_reset_by_default() -> None:
+    empty = FocusHistoryView(session=0)
+    assert empty.reset is True
+    assert empty.index == []
+    assert FocusView().history is None
+
+
+def test_a_focus_history_holds_at_most_256_points() -> None:
+    with pytest.raises(ValidationError):
+        FocusHistoryView.model_validate(history_example(257))
+    assert FocusHistoryView.model_validate(history_example(256)).index[-1] == 256
+
+
+def test_a_focus_from_an_older_core_has_no_new_fields() -> None:
+    state = decode_alignment_state(
+        {"active": True, "focus": {"fwhm_px": 2.4, "best_fwhm_px": 2.1, "n_stars": 35}}
+    )
+    assert state.focus is not None
+    assert state.focus.history is None
+    assert (state.focus.spike, state.focus.fwhm_arcsec, state.focus.frame_seq) == (
+        False,
+        None,
+        None,
+    )
+
+
+def test_the_whole_history_of_120_values_stays_small() -> None:
+    history = FocusHistoryView.model_validate(history_example(120))
+    size = len(history.model_dump_json())
+    assert size < 7000  # the state of every frame carries it, so the bytes count
+    assert (
+        len(AlignmentState(active=True, focus=FocusView(history=history)).model_dump_json()) < 7200
+    )
 
 
 # --- The dark library ------------------------------------------------------------------------

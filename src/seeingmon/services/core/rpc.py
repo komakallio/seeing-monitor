@@ -3,13 +3,15 @@
 `core` listens at one address and serves two channels (see `seeingmon.services.web.contract`, which
 `web` owns and `core` implements):
 
-- **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, `alignment_state`, and
-  `dark_library`. Every method answers at once, so all of them run inline on the connection thread
-  and no worker is needed. `dark_library` answers with the `DarkLibraryView` as JSON: the sets of
-  the dark library, whether it is due, the model, the sensor temperature, and the progress of the
-  latest dark session. `core` adds one method that the contract does not name: `results` answers
-  with the latest commissioning results (the `detail` of each result), so that `seeingmon burst
-  --wait` can show the outcome of its task. A client that does not know the method never calls it.
+- **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, `alignment_state`,
+  `alignment_reset_focus`, and `dark_library`. Every method answers at once, so all of them run
+  inline on the connection thread and no worker is needed. `alignment_reset_focus` restarts the
+  best focus value of the helper and answers `{"reset": true}`. `dark_library` answers with the
+  `DarkLibraryView` as JSON: the sets of the dark library, whether it is due, the model, the sensor
+  temperature, and the progress of the latest dark session. `core` adds one method that the
+  contract does not name: `results` answers with the latest commissioning results (the `detail` of
+  each result), so that `seeingmon burst --wait` can show the outcome of its task. A client that
+  does not know the method never calls it.
 - **`alignment`**, a `StreamService`. The helper takes each client as a `StreamSender` and pushes
   the frames of the live view (see `seeingmon.services.core.alignment.helper`).
 
@@ -45,6 +47,7 @@ from seeingmon.services.ipc.codec import as_mapping
 from seeingmon.services.ipc.rpc import RpcService
 from seeingmon.services.ipc.stream import StreamSender, StreamService, StreamWindow
 from seeingmon.services.web.contract import (
+    METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
     METHOD_PING,
@@ -78,6 +81,8 @@ class AlignmentPort(Protocol):
     """The part of the alignment helper that the RPC uses. `AlignmentHelper` fits."""
 
     def state(self) -> AlignmentState: ...
+
+    def reset_focus(self) -> None: ...
 
     def attach(self, sender: StreamSender, params: Mapping[str, Any] | None = None) -> None: ...
 
@@ -115,6 +120,7 @@ class CoreRpc:
             METHOD_STATUS: self._status,
             METHOD_SUBMIT: self._submit,
             METHOD_ALIGNMENT_STATE: self._alignment_state,
+            METHOD_ALIGNMENT_RESET_FOCUS: self._alignment_reset_focus,
             METHOD_RESULTS: self._results,
         }
         if self._dark_library is not None:
@@ -129,6 +135,10 @@ class CoreRpc:
 
     def _alignment_state(self, params: Mapping[str, Any]) -> Any:
         return self._alignment.state().model_dump(mode="json")
+
+    def _alignment_reset_focus(self, params: Mapping[str, Any]) -> Any:
+        self._alignment.reset_focus()
+        return {"reset": True}
 
     def _answer_dark_library(self, params: Mapping[str, Any]) -> Any:
         assert self._dark_library is not None

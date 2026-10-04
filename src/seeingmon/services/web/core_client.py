@@ -64,6 +64,7 @@ from seeingmon.services.ipc.stream import StreamKind, StreamReceiver, StreamWind
 from seeingmon.services.web.config import CoreLinkSettings
 from seeingmon.services.web.contract import (
     ALIGNMENT_CHANNEL,
+    METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
     METHOD_PING,
@@ -119,6 +120,10 @@ class CoreClient(Protocol):
 
     def alignment_state(self) -> AlignmentState:
         """The state of the alignment helper, with `active` false outside alignment."""
+        ...
+
+    def alignment_reset_focus(self) -> None:
+        """Restart the best focus value of the alignment. Raises `CoreError`."""
         ...
 
     def dark_library(self) -> DarkLibraryView:
@@ -309,6 +314,12 @@ class RpcCoreClient:
             _log.warning("core sent an unreadable alignment state: %s", error)
             raise CoreProtocolError("core sent an unreadable alignment state") from None
 
+    def alignment_reset_focus(self) -> None:
+        """Restart the best focus value, with the `alignment_reset_focus` method."""
+        answer = self._call(METHOD_ALIGNMENT_RESET_FOCUS, None, self._rpc_timeout_s)
+        if not isinstance(answer, Mapping) or answer.get("reset") is not True:
+            raise CoreProtocolError("core sent an unreadable answer to the focus reset")
+
     def dark_library(self) -> DarkLibraryView:
         """The dark library and the dark task, from the `dark_library` method."""
         answer = self._call(METHOD_DARK_LIBRARY, None, self._rpc_timeout_s)
@@ -381,6 +392,8 @@ class FakeCoreClient:
     and set it back to `None` to recover. Pass `frames` to give the live view a source: a function
     that returns an async iterator of `AlignmentFrame`.
 
+    `focus_resets` counts the calls of `alignment_reset_focus`.
+
     The dark library lives in `dark`, a `DarkSimulator`: set its `sets`, `model`, and
     `sensor_temperature_c`, and pass `dark_script` to set how long each part of a dark task lasts.
     `QueueDark` starts a scripted task that follows the clock (see `fake_dark`).
@@ -419,6 +432,7 @@ class FakeCoreClient:
         self.fail_with: CoreError | None = None
         self.submitted: list[Command] = []
         self.status_calls = 0
+        self.focus_resets = 0
         self.streams_opened = 0
         self.streams_closed = 0
         self.closed = False
@@ -560,6 +574,11 @@ class FakeCoreClient:
             if self._state != "align":
                 return AlignmentState(active=False)
             return self._alignment or AlignmentState(active=True)
+
+    def alignment_reset_focus(self) -> None:
+        self._check()
+        with self._lock:
+            self.focus_resets += 1
 
     async def alignment_frames(self) -> AsyncIterator[AlignmentFrame]:
         self._check()

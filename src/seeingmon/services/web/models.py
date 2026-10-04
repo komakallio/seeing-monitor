@@ -275,6 +275,13 @@ class CommandResponse(_Response):
     task_id: int | None = Field(None, description="The ID of a queued task, or `null`.")
 
 
+class FocusResetResponse(_Response):
+    """The answer to the reset of the best focus value."""
+
+    reset: bool = Field(description="`true` when `core` restarted the best focus value.")
+    message: str
+
+
 # --- Dark ------------------------------------------------------------------------------------
 
 

@@ -10,6 +10,7 @@ import pytest
 
 from seeingmon.clock import NS_PER_S, utc_ns_to_iso
 from seeingmon.scheduler.config import SiteConfig
+from seeingmon.services.core.alignment.focus import FocusHistory, FocusSnapshot
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.alignment.state import (
     FrameSummary,
@@ -22,6 +23,7 @@ from seeingmon.services.core.alignment.state import (
 from seeingmon.services.core.settings import AlignmentSettings
 from seeingmon.services.web.contract import (
     MAX_STATE_BYTES,
+    FocusHistoryView,
     HistogramView,
     SaturationView,
     SkyView,
@@ -870,6 +872,190 @@ class TestAimRingWithoutASolution:
         assert len(state.last_solution.model_dump_json()) < 300
         assert decode_alignment_state(json.loads(state.model_dump_json())) == state
         assert len(pack_frame(state, tiny_jpeg())) < MAX_STATE_BYTES // 16
+
+
+def focus_snapshot(*values: float, first_seq: int = 1) -> FocusSnapshot:
+    """The history after one value for each frame from `first_seq`, half a second apart."""
+    history = FocusHistory()
+    for offset, value in enumerate(values):
+        history.add(first_seq + offset, T0 + offset * NS_PER_S // 2, value, 30)
+    return history.snapshot()
+
+
+class TestFocus:
+    """The focus view: the value in px and arcsec, the spike, the best value, and the history."""
+
+    def test_the_value_comes_in_pixels_and_in_arcseconds(self) -> None:
+        snapshot = focus_snapshot(2.0, 2.2, 2.4, 2.5, 2.6, 2.4, 2.5)  # frames 1 to 7
+        state = build_state(
+            frame_summary(seq=7),
+            solution(seq=7, focus_fwhm_px=2.5, n_focus_stars=33),
+            TARGET,
+            SETTINGS,
+            focus=snapshot,
+        )
+        focus = state.focus
+        assert focus is not None
+        assert (focus.fwhm_px, focus.n_stars, focus.frame_seq, focus.spike) == (2.5, 33, 7, False)
+        assert focus.fwhm_arcsec == pytest.approx(2.5 * SCALE, abs=1e-4)
+        assert focus.best_fwhm_px == 2.0
+        assert focus.best_fwhm_arcsec == pytest.approx(2.0 * SCALE, abs=1e-4)
+
+    def test_a_spike_is_flagged_on_the_value_and_never_sets_the_best_value(self) -> None:
+        snapshot = focus_snapshot(2.0, 2.0, 2.0, 2.0, 9.0)
+        state = build_state(
+            frame_summary(seq=5),
+            solution(seq=5, focus_fwhm_px=9.0),
+            TARGET,
+            SETTINGS,
+            focus=snapshot,
+        )
+        assert state.focus is not None
+        assert state.focus.spike is True
+        assert state.focus.best_fwhm_px == 2.0
+        assert state.focus.history is not None
+        assert state.focus.history.spike == [False, False, False, False, True]
+
+    def test_the_flag_belongs_to_the_frame_of_the_solution(self) -> None:
+        snapshot = focus_snapshot(2.0, 2.0, 2.0, 2.0, 9.0)  # the newest point is a spike
+        older = build_state(
+            frame_summary(seq=7),
+            solution(seq=3, focus_fwhm_px=2.0),  # the latest solve ran on the frame 3
+            TARGET,
+            SETTINGS,
+            focus=snapshot,
+        )
+        assert older.focus is not None
+        assert (older.focus.spike, older.focus.frame_seq) == (False, 3)
+
+    def test_the_best_value_of_the_history_wins_over_the_one_that_is_passed(self) -> None:
+        state = build_state(
+            frame_summary(),
+            solution(focus_fwhm_px=2.4),
+            TARGET,
+            SETTINGS,
+            best_fwhm_px=9.9,
+            focus=focus_snapshot(2.0, 2.4),
+        )
+        assert state.focus is not None
+        assert state.focus.best_fwhm_px == 2.0
+
+    def test_the_plate_scale_of_the_solution_stands_in_for_a_missing_mode_scale(self) -> None:
+        state = build_state(
+            frame_summary(plate_scale_arcsec_px=None),
+            solution(seq=3, focus_fwhm_px=2.0, scale_arcsec_px=4.0),
+            TARGET,
+            SETTINGS,
+            focus=focus_snapshot(2.1, 2.0, 2.0),
+        )
+        assert state.focus is not None
+        assert state.focus.fwhm_arcsec == 8.0
+        assert state.focus.history is not None
+        assert state.focus.history.fwhm_arcsec == [8.4, 8.0, 8.0]
+
+    def test_without_any_plate_scale_the_arcsecond_values_are_null(self) -> None:
+        state = build_state(
+            frame_summary(plate_scale_arcsec_px=None),
+            solution(seq=2, focus_fwhm_px=2.0, scale_arcsec_px=None),
+            TARGET,
+            SETTINGS,
+            focus=focus_snapshot(2.1, 2.0),
+        )
+        assert state.focus is not None
+        assert (state.focus.fwhm_arcsec, state.focus.best_fwhm_arcsec) == (None, None)
+        assert state.focus.history is not None
+        assert state.focus.history.fwhm_arcsec == [None, None]
+
+    def test_the_history_travels_as_parallel_lists(self) -> None:
+        values = [2.0 + 0.01 * n for n in range(7)]
+        state = build_state(
+            frame_summary(seq=7),
+            solution(seq=7, focus_fwhm_px=values[-1]),
+            TARGET,
+            SETTINGS,
+            focus=focus_snapshot(*values),
+        )
+        assert state.focus is not None
+        history = state.focus.history
+        assert history is not None
+        assert history.session == 0
+        assert history.reset is True
+        assert history.index == [1, 2, 3, 4, 5, 6, 7]
+        assert history.seq == [1, 2, 3, 4, 5, 6, 7]
+        assert history.t_utc_ms == [T0 // 1_000_000 + 500 * n for n in range(7)]
+        assert history.fwhm_px == [round(v, 4) for v in values]
+        assert history.fwhm_arcsec[0] == pytest.approx(2.0 * SCALE, abs=1e-4)
+        assert history.n_stars == [30] * 7
+        assert history.spike == [False] * 7
+
+    def test_the_history_keeps_the_newest_120_values(self) -> None:
+        values = [2.0 + 0.001 * n for n in range(200)]
+        state = build_state(
+            frame_summary(seq=200),
+            solution(seq=200, focus_fwhm_px=values[-1]),
+            TARGET,
+            SETTINGS,
+            focus=focus_snapshot(*values),
+        )
+        assert state.focus is not None
+        assert state.focus.history is not None
+        assert state.focus.history.index == list(range(81, 201))
+        assert len(state.focus.history.t_utc_ms) == 120
+
+    def test_the_history_and_the_best_value_stay_when_the_latest_frame_has_no_value(self) -> None:
+        no_value = solution(seq=4, focus_fwhm_px=None, n_focus_stars=0)
+        state = build_state(
+            frame_summary(seq=4), no_value, TARGET, SETTINGS, focus=focus_snapshot(2.0, 2.1, 2.2)
+        )
+        focus = state.focus
+        assert focus is not None
+        assert (focus.fwhm_px, focus.n_stars, focus.frame_seq, focus.spike) == (
+            None,
+            None,
+            None,
+            False,
+        )
+        assert focus.best_fwhm_px == 2.0
+        assert focus.history is not None
+        assert len(focus.history.index) == 3
+        assert state.quality["focus"] == "no unsaturated stars to measure"
+
+    def test_without_a_value_and_without_a_history_there_is_no_focus(self) -> None:
+        state = build_state(
+            frame_summary(),
+            solution(focus_fwhm_px=None),
+            TARGET,
+            SETTINGS,
+            focus=FocusHistory().snapshot(),
+        )
+        assert state.focus is None
+        assert state.quality["focus"]
+
+    def test_a_state_with_the_whole_history_stays_small(self) -> None:
+        values = [2.0 + 0.001 * n for n in range(150)]
+        state = build_state(
+            frame_summary(seq=150),
+            solution(seq=150, focus_fwhm_px=values[-1]),
+            TARGET,
+            SETTINGS,
+            focus=focus_snapshot(*values),
+        )
+        assert state.focus is not None
+        assert state.focus.history is not None
+        assert len(state.focus.history.model_dump_json()) < 7000
+        assert len(pack_frame(state, tiny_jpeg())) < MAX_STATE_BYTES // 4
+
+    def test_the_history_survives_the_json_of_the_contract(self) -> None:
+        state = build_state(
+            frame_summary(seq=3),
+            solution(seq=3, focus_fwhm_px=2.4),
+            TARGET,
+            SETTINGS,
+            focus=focus_snapshot(2.0, 2.2, 2.4),
+        )
+        again = decode_alignment_state(json.loads(state.model_dump_json()))
+        assert again == state
+        assert isinstance(again.focus.history, FocusHistoryView)  # type: ignore[union-attr]
 
 
 def test_the_settings_take_the_aim_as_a_pair() -> None:

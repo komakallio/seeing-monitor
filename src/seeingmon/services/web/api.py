@@ -47,7 +47,7 @@ from seeingmon.services.web.data import (
 from seeingmon.services.web.errors import ApiError
 from seeingmon.services.web.health import HealthReport
 from seeingmon.services.web.images import ImageInfo, ImageKey, parse_image_id
-from seeingmon.services.web.live import Subscription
+from seeingmon.services.web.live import HistoryCursor, Subscription
 from seeingmon.services.web.models import (
     ActivityResponse,
     AlignmentStartRequest,
@@ -64,6 +64,7 @@ from seeingmon.services.web.models import (
     ErrorResponse,
     EventLevel,
     FaultStatusView,
+    FocusResetResponse,
     HealthResponse,
     ImageFormat,
     ImageItem,
@@ -763,6 +764,32 @@ def post_alignment_stop(ctx: Ctx) -> JSONResponse:
     return command_reply(ctx, StopAlignment())
 
 
+@router.post(
+    "/alignment/focus/reset",
+    operation_id="post_alignment_focus_reset",
+    summary="Restart the best focus value",
+    tags=["alignment"],
+    response_model=FocusResetResponse,
+    responses=errors(401, 403, 429, 502, 503),
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_alignment_focus_reset(ctx: Ctx) -> JSONResponse:
+    """Restart the best focus value of the alignment, for example after you refocus.
+
+    The best value is the smallest value of the session that is not a spike. A reset forgets it, and
+    the next value that is not a spike becomes the best. The history of the values stays, so the
+    curve before and after the refocus shows together. The call needs no running alignment: it
+    changes nothing then.
+    """
+    ctx.core.alignment_reset_focus()
+    return JSONResponse(
+        FocusResetResponse(reset=True, message="the best focus value restarted").model_dump(
+            mode="json"
+        )
+    )
+
+
 # --- Dark ---
 
 
@@ -893,7 +920,9 @@ async def alignment_stream(websocket: WebSocket) -> None:
     # The live view pushes the newest frame. Each frame is a text message with its state,
     # `{"type": "state", "state": {...}}`, and then a binary message with the JPEG. The text
     # message `{"type": "idle"}` says that no frame arrived for `stall_s` seconds, and
-    # `{"type": "error", "code": ...}` says that the stream to core broke. With
+    # `{"type": "error", "code": ...}` says that the stream to core broke. The focus history of
+    # the state holds the whole history in the first message of a viewer (`reset` true) and the new
+    # points in the next ones (`reset` false). With
     # `require_token_for_reads`, the client sends `{"type": "auth", "token": "..."}` first.
     await _serve_stream(websocket.app.state.ctx, websocket)
 
@@ -1071,6 +1100,7 @@ async def _send_frames(ctx: WebContext, websocket: WebSocket, subscription: Subs
     min_interval_s = 1.0 / live.max_fps
     clock = ctx.clock
     last_sent_ns: int | None = None
+    cursor = HistoryCursor()  # the focus history that this viewer has received
     while True:
         update = await subscription.next_update(live.stall_s)
         if update is None:
@@ -1086,9 +1116,9 @@ async def _send_frames(ctx: WebContext, websocket: WebSocket, subscription: Subs
             if wait_s > 0:
                 await ctx.hub.sleep(wait_s)
                 frame = subscription.newest() or frame  # the newest frame wins
-        await websocket.send_text(
-            json.dumps({"type": "state", "state": frame.frame.state.model_dump(mode="json")})
-        )
+        state = frame.frame.state.model_dump(mode="json")
+        cursor.delta(state)
+        await websocket.send_text(json.dumps({"type": "state", "state": state}))
         await websocket.send_bytes(frame.frame.jpeg)
         last_sent_ns = clock.monotonic_ns()
 

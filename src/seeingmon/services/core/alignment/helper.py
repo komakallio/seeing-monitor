@@ -47,6 +47,7 @@ from seeingmon.frames import Frame, FrameFlag, TimeQuality
 from seeingmon.profile import Profile
 from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.calibration import PreviewCalibrator
+from seeingmon.services.core.alignment.focus import FocusHistory
 from seeingmon.services.core.alignment.preview import (
     frame_saturation_dn,
     histogram_counts,
@@ -130,7 +131,7 @@ class AlignmentHelper:
         self._last_good: QuickSolution | None = None  # the latest solution that found the field
         self._solve_elapsed_s: float | None = None
         self._solving: tuple[int, int] | None = None  # (frame seq, start on the monotonic clock)
-        self._best_fwhm: float | None = None
+        self._focus = FocusHistory()
         self._senders: list[StreamSender] = []
         self._session = False
         self._generation = 0  # counts the sessions, so that a late solve cannot leak into the next
@@ -191,24 +192,23 @@ class AlignmentHelper:
             self._end_session()
             return AlignmentState(active=False)
         with self._lock:
-            summary, solution, best = self._summary, self._solution, self._best_fwhm
+            summary, solution = self._summary, self._solution
         if summary is None:
             return AlignmentState(active=True, quality={"frame": "no frame has arrived yet"})
-        return self._build(summary, solution, best)
+        return self._build(summary, solution)
 
-    def _build(
-        self, summary: FrameSummary, solution: QuickSolution | None, best: float | None
-    ) -> AlignmentState:
+    def _build(self, summary: FrameSummary, solution: QuickSolution | None) -> AlignmentState:
         target = resolve_target(self._settings, self._tracker, summary.t_utc_ns, summary.mode)
         with self._lock:
             elapsed_s, solving, last_good = self._solve_elapsed_s, self._solving, self._last_good
+            focus = self._focus.snapshot()
         now_ns = self._clock.monotonic_ns()
         state = build_state(
             summary,
             solution,
             target,
             self._settings,
-            best_fwhm_px=best,
+            focus=focus,
             site=self._site,
             now_utc_ns=self._clock.utc_ns(),
             solve_elapsed_s=elapsed_s,
@@ -232,7 +232,7 @@ class AlignmentHelper:
             self._solution = None
             self._last_good = None
             self._solve_elapsed_s = None
-            self._best_fwhm = None
+            self._focus.clear()
             self._encode_slot = None
             self._solve_slot = None
             self._logged_outcome = None
@@ -301,8 +301,8 @@ class AlignmentHelper:
         with self._lock:
             self._summary = summary
             self._session = True
-            solution, best = self._solution, self._best_fwhm
-        payload = pack_frame(self._build(summary, solution, best), preview.jpeg)
+            solution = self._solution
+        payload = pack_frame(self._build(summary, solution), preview.jpeg)
         self.frames_encoded += 1
         self._publish(payload)
         self.last_encode_s = (self._clock.monotonic_ns() - started) / NS_PER_S
@@ -333,10 +333,10 @@ class AlignmentHelper:
             self._solve_elapsed_s = elapsed_s
             if solution.solved and solution.attitude is not None:
                 self._last_good = solution  # the aim ring survives later solves that fail
-            if solution.focus_fwhm_px is not None and (
-                self._best_fwhm is None or solution.focus_fwhm_px < self._best_fwhm
-            ):
-                self._best_fwhm = solution.focus_fwhm_px
+            if solution.focus_fwhm_px is not None:
+                self._focus.add(
+                    solution.seq, solution.t_utc_ns, solution.focus_fwhm_px, solution.n_focus_stars
+                )
         if solution.solved:
             self.solves += 1
         else:
@@ -344,6 +344,11 @@ class AlignmentHelper:
         self.last_solve_s = elapsed_s
         self._log_outcome(solution)
         return solution
+
+    def reset_focus(self) -> None:
+        """Restart the best focus value, for example after a refocus. The history stays."""
+        with self._lock:
+            self._focus.reset_best()
 
     def _log_outcome(self, solution: QuickSolution) -> None:
         """Say in the log when the solve starts to fail or starts to work again."""

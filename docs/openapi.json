@@ -1650,9 +1650,134 @@
         "title": "FaultStatusView",
         "type": "object"
       },
-      "FocusView": {
-        "description": "The focus measure: the median FWHM of the unsaturated stars, and the best of the session.",
+      "FocusHistoryView": {
+        "description": "The last values of the focus measure, oldest first, as parallel lists of one length.\n\n`core` keeps the last 120 values with the capture times of their frames, so a page that\nreloads finds the whole curve at once. Parallel lists keep the message small: 120 values take\nabout 5 kilobytes in the state of `GET /alignment/state`. The live view sends the whole history\nin the first message of a viewer (`reset` is `true`), and after that only the points that this\nviewer lacks (`reset` is `false`). One rule serves every message: if `reset` is `true`, throw\naway the points that you hold, then append the points of the message, then keep the newest 120.\n`session` changes when the history restarts (a new alignment), and `index` counts the points of\na session from 1, so a reader can tell new points from old ones.",
         "properties": {
+          "fwhm_arcsec": {
+            "description": "The same value in arcseconds, through the plate scale of the frame (3.82 arcseconds per pixel in bin2). An entry is `null` when the plate scale is not known.",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 256,
+            "title": "Fwhm Arcsec",
+            "type": "array"
+          },
+          "fwhm_px": {
+            "description": "The median FWHM of the usable stars of that frame, in pixels of the readout mode.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 256,
+            "title": "Fwhm Px",
+            "type": "array"
+          },
+          "index": {
+            "description": "The number of each point in its session, from 1. It grows by one for each point and never repeats.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 256,
+            "title": "Index",
+            "type": "array"
+          },
+          "n_stars": {
+            "description": "The number of stars that each value rests on.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 256,
+            "title": "N Stars",
+            "type": "array"
+          },
+          "reset": {
+            "default": true,
+            "description": "`true`: discard the points that you hold, then append these. `false`: append these to the points that you hold.",
+            "title": "Reset",
+            "type": "boolean"
+          },
+          "seq": {
+            "description": "The sequence number of the frame that each value was measured in.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 256,
+            "title": "Seq",
+            "type": "array"
+          },
+          "session": {
+            "description": "Changes when the history restarts, for example in a new alignment.",
+            "minimum": 0.0,
+            "title": "Session",
+            "type": "integer"
+          },
+          "spike": {
+            "description": "`true` for a value that exceeds twice the median of the preceding ten values. Touching the telescope inflates the width of the stars for a moment, and a page leaves such a value out of its scale. A spike never sets the best value.",
+            "items": {
+              "type": "boolean"
+            },
+            "maxItems": 256,
+            "title": "Spike",
+            "type": "array"
+          },
+          "t_utc_ms": {
+            "description": "The capture time of that frame, in milliseconds since the Unix epoch (UTC).",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 256,
+            "title": "T Utc Ms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "title": "FocusHistoryView",
+        "type": "object"
+      },
+      "FocusResetResponse": {
+        "description": "The answer to the reset of the best focus value.",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reset": {
+            "description": "`true` when `core` restarted the best focus value.",
+            "title": "Reset",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reset",
+          "message"
+        ],
+        "title": "FocusResetResponse",
+        "type": "object"
+      },
+      "FocusView": {
+        "description": "The focus measure: the median FWHM of the usable stars of one frame, and a short history.\n\nA star is usable when it is not saturated, not at the edge, not blended, and bright enough to\nmeasure. The value is the median of their widths across the trail, in pixels of the readout\nmode (3.82 arcseconds per pixel in bin2), and it has no smoothing. `fwhm_px`, `n_stars`, and\n`spike` describe the frame of the latest finished solve (`frame_seq`). They are `null` when\nthat frame had too few usable stars, while the best value and the history remain.\n\n`best_fwhm_px` is the smallest value of the session that is not a spike. A reset\n(`POST /alignment/focus/reset`) restarts it, for example after a refocus, and the history stays.",
+        "properties": {
+          "best_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`best_fwhm_px` in arcseconds.",
+            "title": "Best Fwhm Arcsec"
+          },
           "best_fwhm_px": {
             "anyOf": [
               {
@@ -1663,7 +1788,34 @@
                 "type": "null"
               }
             ],
+            "description": "The smallest value since the session began or since the last reset, in pixels. A spike never sets it.",
             "title": "Best Fwhm Px"
+          },
+          "frame_seq": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sequence number of the frame that `fwhm_px` was measured in.",
+            "title": "Frame Seq"
+          },
+          "fwhm_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`fwhm_px` in arcseconds, through the plate scale of the frame.",
+            "title": "Fwhm Arcsec"
           },
           "fwhm_px": {
             "anyOf": [
@@ -1675,7 +1827,19 @@
                 "type": "null"
               }
             ],
+            "description": "The focus value of the latest solve, in pixels.",
             "title": "Fwhm Px"
+          },
+          "history": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FocusHistoryView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last 120 values, oldest first. It is `null` until the first value of the session."
           },
           "n_stars": {
             "anyOf": [
@@ -1687,7 +1851,14 @@
                 "type": "null"
               }
             ],
+            "description": "The number of stars that `fwhm_px` rests on.",
             "title": "N Stars"
+          },
+          "spike": {
+            "default": false,
+            "description": "`true` when `fwhm_px` exceeds twice the median of the preceding ten values: a spike, such as the moment after you touch the telescope. A page leaves a spike out of its scale.",
+            "title": "Spike",
+            "type": "boolean"
           }
         },
         "title": "FocusView",
@@ -5334,6 +5505,83 @@
         "summary": "Describe the API",
         "tags": [
           "status"
+        ]
+      }
+    },
+    "/api/v1/alignment/focus/reset": {
+      "post": {
+        "description": "Restart the best focus value of the alignment, for example after you refocus.\n\nThe best value is the smallest value of the session that is not a spike. A reset forgets it, and\nthe next value that is not a spike becomes the best. The history of the values stays, so the\ncurve before and after the refocus shows together. The call needs no running alignment: it\nchanges nothing then.",
+        "operationId": "post_alignment_focus_reset",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FocusResetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Restart the best focus value",
+        "tags": [
+          "alignment"
         ]
       }
     },

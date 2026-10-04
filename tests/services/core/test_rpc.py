@@ -86,6 +86,20 @@ class TestTheMethods:
         _, client = served
         assert client.alignment_state() == AlignmentState(active=False)
 
+    def test_the_focus_reset_reaches_the_helper_and_keeps_the_history(
+        self, served: tuple[CoreRig, RpcCoreClient]
+    ) -> None:
+        rig, client = served
+        focus = rig.app.alignment._focus
+        focus.add(1, 1, 2.0, 30)
+        focus.add(2, 2, 2.2, 30)
+        before = focus.snapshot().best_px
+        client.alignment_reset_focus()
+        after = focus.snapshot()
+        assert before == 2.0
+        assert after.best_px is None
+        assert len(after.points) == 2
+
     def test_an_unknown_method_is_a_protocol_error_for_the_client(
         self, served: tuple[CoreRig, RpcCoreClient]
     ) -> None:

@@ -19,6 +19,8 @@ value. A call that fails raises an exception that the connection layer sends bac
 - `dark_library` takes no parameters and answers with the `DarkLibraryView` as JSON: the dark
   sets of the library, whether it is due for a new set, the dark model, the sensor temperature,
   and the progress of the latest dark session (`DarkTaskView`).
+- `alignment_reset_focus` takes no parameters, restarts the best focus value of the alignment
+  (the history of the values stays), and answers `{"reset": true}`.
 
 `submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
 normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
@@ -49,7 +51,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from seeingmon.scheduler.commands import (
     Command,
@@ -86,12 +88,14 @@ METHOD_STATUS = "status"
 METHOD_SUBMIT = "submit"
 METHOD_ALIGNMENT_STATE = "alignment_state"
 METHOD_DARK_LIBRARY = "dark_library"
+METHOD_ALIGNMENT_RESET_FOCUS = "alignment_reset_focus"
 METHODS = (
     METHOD_PING,
     METHOD_STATUS,
     METHOD_SUBMIT,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
+    METHOD_ALIGNMENT_RESET_FOCUS,
 )
 
 FRAME_MAGIC = b"SMAF"
@@ -465,12 +469,127 @@ class OffsetView(_View):
     roll_deg: float | None = None
 
 
-class FocusView(_View):
-    """The focus measure: the median FWHM of the unsaturated stars, and the best of the session."""
+class FocusHistoryView(_View):
+    """The last values of the focus measure, oldest first, as parallel lists of one length.
 
-    fwhm_px: float | None = Field(None, ge=0)
-    best_fwhm_px: float | None = Field(None, ge=0)
-    n_stars: int | None = Field(None, ge=0)
+    `core` keeps the last 120 values with the capture times of their frames, so a page that
+    reloads finds the whole curve at once. Parallel lists keep the message small: 120 values take
+    about 5 kilobytes in the state of `GET /alignment/state`. The live view sends the whole history
+    in the first message of a viewer (`reset` is `true`), and after that only the points that this
+    viewer lacks (`reset` is `false`). One rule serves every message: if `reset` is `true`, throw
+    away the points that you hold, then append the points of the message, then keep the newest 120.
+    `session` changes when the history restarts (a new alignment), and `index` counts the points of
+    a session from 1, so a reader can tell new points from old ones.
+    """
+
+    session: int = Field(
+        ge=0, description="Changes when the history restarts, for example in a new alignment."
+    )
+    reset: bool = Field(
+        True,
+        description="`true`: discard the points that you hold, then append these. `false`: append "
+        "these to the points that you hold.",
+    )
+    index: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="The number of each point in its session, from 1. It grows by one for each "
+        "point and never repeats.",
+    )
+    seq: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="The sequence number of the frame that each value was measured in.",
+    )
+    t_utc_ms: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="The capture time of that frame, in milliseconds since the Unix epoch (UTC).",
+    )
+    fwhm_px: list[float] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="The median FWHM of the usable stars of that frame, in pixels of the readout "
+        "mode.",
+    )
+    fwhm_arcsec: list[float | None] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="The same value in arcseconds, through the plate scale of the frame (3.82 "
+        "arcseconds per pixel in bin2). An entry is `null` when the plate scale is not known.",
+    )
+    n_stars: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="The number of stars that each value rests on.",
+    )
+    spike: list[bool] = Field(
+        default_factory=list,
+        max_length=MAX_LIST_ITEMS,
+        description="`true` for a value that exceeds twice the median of the preceding ten "
+        "values. Touching the telescope inflates the width of the stars for a moment, and a page "
+        "leaves such a value out of its scale. A spike never sets the best value.",
+    )
+
+    @model_validator(mode="after")
+    def _lists_have_one_length(self) -> FocusHistoryView:
+        lengths = {
+            len(self.index),
+            len(self.seq),
+            len(self.t_utc_ms),
+            len(self.fwhm_px),
+            len(self.fwhm_arcsec),
+            len(self.n_stars),
+            len(self.spike),
+        }
+        if len(lengths) != 1:
+            raise ValueError("the lists of the focus history differ in length")
+        return self
+
+
+class FocusView(_View):
+    """The focus measure: the median FWHM of the usable stars of one frame, and a short history.
+
+    A star is usable when it is not saturated, not at the edge, not blended, and bright enough to
+    measure. The value is the median of their widths across the trail, in pixels of the readout
+    mode (3.82 arcseconds per pixel in bin2), and it has no smoothing. `fwhm_px`, `n_stars`, and
+    `spike` describe the frame of the latest finished solve (`frame_seq`). They are `null` when
+    that frame had too few usable stars, while the best value and the history remain.
+
+    `best_fwhm_px` is the smallest value of the session that is not a spike. A reset
+    (`POST /alignment/focus/reset`) restarts it, for example after a refocus, and the history stays.
+    """
+
+    fwhm_px: float | None = Field(
+        None, ge=0, description="The focus value of the latest solve, in pixels."
+    )
+    best_fwhm_px: float | None = Field(
+        None,
+        ge=0,
+        description="The smallest value since the session began or since the last reset, in "
+        "pixels. A spike never sets it.",
+    )
+    n_stars: int | None = Field(
+        None, ge=0, description="The number of stars that `fwhm_px` rests on."
+    )
+    fwhm_arcsec: float | None = Field(
+        None, ge=0, description="`fwhm_px` in arcseconds, through the plate scale of the frame."
+    )
+    best_fwhm_arcsec: float | None = Field(None, ge=0, description="`best_fwhm_px` in arcseconds.")
+    spike: bool = Field(
+        False,
+        description="`true` when `fwhm_px` exceeds twice the median of the preceding ten values: "
+        "a spike, such as the moment after you touch the telescope. A page leaves a spike out of "
+        "its scale.",
+    )
+    frame_seq: int | None = Field(
+        None, ge=0, description="The sequence number of the frame that `fwhm_px` was measured in."
+    )
+    history: FocusHistoryView | None = Field(
+        None,
+        description="The last 120 values, oldest first. It is `null` until the first value of "
+        "the session.",
+    )
 
 
 class HistogramView(_View):

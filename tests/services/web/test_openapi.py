@@ -119,12 +119,14 @@ def test_every_operation_has_an_id_a_summary_a_description_and_a_tag(
 
 def test_every_post_names_the_token_and_the_documented_failures(document: dict[str, Any]) -> None:
     posts = [(path, op) for method, path, op in operations(document) if method == "post"]
-    assert len(posts) == 7
+    assert len(posts) == 8
     for path, operation in posts:
         assert operation["security"] == [{"bearerAuth": []}], path
-        assert {"200", "401", "403", "409", "413", "422", "429"} <= set(operation["responses"]), (
-            path
-        )
+        # The reset of the best focus value takes no body and is no scheduler command.
+        required = {"200", "401", "403", "429"}
+        if not path.endswith("/alignment/focus/reset"):
+            required |= {"409", "413", "422"}
+        assert required <= set(operation["responses"]), path
     assert document["components"]["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
 
 
@@ -180,6 +182,7 @@ def test_the_documented_endpoints_are_the_ones_of_the_architecture(
         "/alignment/start",
         "/alignment/stop",
         "/alignment/state",
+        "/alignment/focus/reset",
     }
     assert {f"{API}{path}" for path in required} <= paths
 

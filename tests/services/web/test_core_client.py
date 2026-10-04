@@ -31,6 +31,7 @@ from seeingmon.services.ipc.rpc import connect_rpc
 from seeingmon.services.ipc.server import IpcServer
 from seeingmon.services.web.config import CoreLinkSettings
 from seeingmon.services.web.contract import (
+    METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_DARK_LIBRARY,
     METHOD_PING,
     METHOD_STATUS,
@@ -302,6 +303,35 @@ def test_the_client_reads_the_alignment_state(
     client.submit(StartAlignment())
     core.backend.set_alignment_state(alignment_state(5))
     assert client.alignment_state() == alignment_state(5)
+
+
+def test_the_client_restarts_the_best_focus_value_of_core(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core()
+    client = make_client(clients, core.endpoint, key)
+    client.alignment_reset_focus()
+    client.alignment_reset_focus()
+    assert core.backend.focus_resets == 2
+
+
+def test_a_core_without_the_focus_reset_is_a_protocol_error(
+    start_core: Callable[..., ReferenceCore], key: ConnectionKey, clients: list[RpcCoreClient]
+) -> None:
+    core = start_core(lambda core: core.handlers.pop(METHOD_ALIGNMENT_RESET_FOCUS))
+    client = make_client(clients, core.endpoint, key)
+    with pytest.raises(CoreProtocolError, match="versions differ"):
+        client.alignment_reset_focus()
+
+
+def test_the_fake_counts_the_focus_resets_and_fails_while_told_to() -> None:
+    fake = FakeCoreClient()
+    fake.alignment_reset_focus()
+    assert fake.focus_resets == 1
+    fake.fail_with = CoreUnavailableError("gone")
+    with pytest.raises(CoreUnavailableError):
+        fake.alignment_reset_focus()
+    assert fake.focus_resets == 1
 
 
 def test_the_client_reuses_one_connection_for_many_calls(
@@ -597,6 +627,7 @@ UNREADABLE = {
     "status": {"nonsense": True},
     "submit": {"accepted": "yes"},
     "alignment_state": {"active": "yes"},
+    "alignment_reset_focus": {"reset": False},
     "dark_library": {"mode": 5},
 }
 
@@ -617,6 +648,7 @@ def test_an_unreadable_answer_is_a_protocol_error(
         "status": client.status,
         "submit": lambda: client.submit(Pause()),
         "alignment_state": client.alignment_state,
+        "alignment_reset_focus": client.alignment_reset_focus,
         "dark_library": client.dark_library,
     }
     with pytest.raises(CoreProtocolError):

@@ -7,6 +7,7 @@ import math
 
 import pytest
 
+from seeingmon.services.core.alignment.focus import FocusHistory
 from seeingmon.services.web.contract import (
     MAX_STATE_BYTES,
     AlignmentState,
@@ -14,18 +15,24 @@ from seeingmon.services.web.contract import (
     pack_frame,
 )
 from seeingmon.services.web.demo import (
+    FOCUS_POINTS,
+    FOCUS_SPIKE_EVERY,
     FRAME_CENTER_X,
     FRAME_CENTER_Y,
     FRAME_PERIOD_S,
     LOST_REASON,
     ORBIT_RADIUS_PX,
+    PLATE_SCALE_ARCSEC_PX,
     POLE_DRIFT_PERIOD_S,
     SKY_COLATITUDE_DEG,
     SOLUTION_LOST_FROM_S,
     SOLUTION_LOST_UNTIL_S,
+    DemoCore,
     StarField,
     demo_aim_ring,
+    demo_fwhm_px,
     demo_roll_deg,
+    demo_spike_flags,
     solution_lost,
 )
 
@@ -172,6 +179,103 @@ class TestWithoutASolution:
         assert state.aim_ring.source == "last solution"
         assert state.last_solution is not None
         assert state.last_solution.frame_seq == round((POLE_DRIFT_PERIOD_S + 49.5) / FRAME_PERIOD_S)
+
+
+class TestFocus:
+    def test_the_value_comes_in_pixels_and_arcseconds(self, field: StarField) -> None:
+        focus = state_of(60, field).focus
+        assert focus is not None
+        assert focus.fwhm_px is not None
+        assert focus.fwhm_arcsec == pytest.approx(focus.fwhm_px * PLATE_SCALE_ARCSEC_PX, abs=1e-3)
+        assert focus.best_fwhm_px is not None
+        assert focus.best_fwhm_arcsec == pytest.approx(
+            focus.best_fwhm_px * PLATE_SCALE_ARCSEC_PX, abs=1e-3
+        )
+
+    def test_the_history_holds_the_last_120_values_up_to_the_frame_of_the_value(
+        self, field: StarField
+    ) -> None:
+        state = state_of(300, field)
+        assert state.focus is not None
+        history = state.focus.history
+        assert history is not None
+        assert FOCUS_POINTS == 120
+        assert len(history.index) == 120
+        assert history.index[-1] == state.focus.frame_seq
+        assert history.index == list(range(history.index[0], history.index[0] + 120))
+        assert history.fwhm_px[-1] == state.focus.fwhm_px
+        assert history.t_utc_ms == sorted(history.t_utc_ms)
+        lengths = {len(getattr(history, name)) for name in ("seq", "fwhm_px", "n_stars", "spike")}
+        assert lengths == {120}
+
+    def test_an_early_frame_has_a_short_history(self, field: StarField) -> None:
+        history = state_of(10, field).focus.history  # type: ignore[union-attr]
+        assert history is not None
+        assert history.index == list(range(1, len(history.index) + 1))
+        assert len(history.index) < 120
+
+    def test_every_97th_frame_is_a_spike_and_the_rule_is_the_one_of_core(self) -> None:
+        assert FOCUS_SPIKE_EVERY == 97
+        last = 400
+        flags = demo_spike_flags(1, last)
+        reference = FocusHistory()
+        expected = []
+        for seq in range(1, last + 1):
+            point = reference.add(seq, seq, demo_fwhm_px(seq), 30)
+            assert point is not None
+            expected.append(point.spike)
+        assert flags == expected
+        assert [seq for seq, spike in enumerate(flags, start=1) if spike] == [97, 194, 291, 388]
+
+    def test_the_value_of_a_spike_frame_carries_the_flag_and_not_the_best_value(
+        self, field: StarField
+    ) -> None:
+        state = next(
+            found
+            for found in (state_of(seq, field) for seq in range(97, 104))
+            if found.focus is not None and found.focus.frame_seq == 97
+        )
+        assert state.focus is not None
+        assert state.focus.spike is True
+        assert state.focus.fwhm_px is not None
+        assert state.focus.best_fwhm_px is not None
+        assert state.focus.fwhm_px > 2.0 * state.focus.best_fwhm_px
+
+    def test_the_best_value_is_the_smallest_value_that_is_no_spike(self, field: StarField) -> None:
+        state = state_of(500, field)
+        assert state.focus is not None
+        assert state.focus.frame_seq is not None
+        reference = FocusHistory()
+        for seq in range(1, state.focus.frame_seq + 1):
+            reference.add(seq, seq, demo_fwhm_px(seq), 30)
+        assert state.focus.best_fwhm_px == reference.best_px
+
+    def test_the_reset_restarts_the_best_value_and_keeps_the_history(self) -> None:
+        field = StarField(stars=20)
+        before = field.frame(200).state.focus
+        assert before is not None
+        field.reset_focus(200)
+        after = field.frame(210).state.focus
+        assert after is not None
+        assert after.frame_seq is not None
+        values = [demo_fwhm_px(seq) for seq in range(200, after.frame_seq + 1)]
+        flags = demo_spike_flags(200, after.frame_seq)
+        counted = [value for value, spike in zip(values, flags, strict=True) if not spike]
+        assert after.best_fwhm_px == min(counted)
+        assert after.history is not None
+        assert len(after.history.index) == 120  # the curve before the reset stays
+
+    def test_the_demo_core_restarts_the_best_value_at_the_next_frame(self) -> None:
+        core = DemoCore(field=StarField(stars=20))
+        core._seq = 40
+        core.alignment_reset_focus()
+        assert core.focus_resets == 1
+        assert core._field.focus_reset_seq == 41
+
+    def test_the_focus_stays_small_with_its_history(self, field: StarField) -> None:
+        state = state_of(300, field)
+        assert state.focus is not None
+        assert len(state.focus.model_dump_json()) < 7000
 
 
 def test_the_states_survive_the_json_and_fit_in_the_message(field: StarField) -> None:

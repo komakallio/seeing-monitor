@@ -12,6 +12,13 @@ the pump tells the viewers once and reconnects after `retry_s`. When no viewer h
 for `idle_s`, `check_idle` stops the pump and closes the stream to `core`. A ticker task calls
 `check_idle` every `tick_s`, and a test can call it directly with a `VirtualClock`.
 
+**The focus history.** `core` sends the whole focus history (the last 120 values, in parallel
+lists) in the state of every frame. A viewer needs it once and then only the new points, so each
+WebSocket client has a `HistoryCursor` that rewrites the history of a state before the server
+sends it: the first message of a viewer holds the whole history (`reset` is `true`), and the next
+ones only the points that this viewer lacks (`reset` is `false`). A viewer that skips a frame still
+gets every point, because the cursor follows what the viewer received and not what the hub saw.
+
 **Event loop.** The hub belongs to one event loop. It creates its tasks in the loop that runs the
 first call, and it starts again if a later call comes from another loop.
 """
@@ -23,6 +30,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.services.web.contract import AlignmentFrame
@@ -39,6 +47,47 @@ ERROR_PROTOCOL = "core_error"
 ERROR_INTERNAL = "internal_error"
 
 Sleep = Callable[[float], Awaitable[None]]
+
+
+# The lists of `FocusHistoryView` that hold one entry for each point.
+HISTORY_LISTS = ("index", "seq", "t_utc_ms", "fwhm_px", "fwhm_arcsec", "n_stars", "spike")
+
+
+class HistoryCursor:
+    """What one viewer has received of the focus history. See the module text."""
+
+    def __init__(self) -> None:
+        self._session: int | None = None
+        self._last = 0
+
+    def delta(self, state: dict[str, Any]) -> None:
+        """Cut the focus history of a state (as JSON) down to the points that this viewer lacks.
+
+        The history stays whole, with `reset` true, for a viewer that has seen nothing, for a new
+        session, and for a history that runs backward (`core` restarted). A state without a focus
+        history stays as it is.
+        """
+        focus = state.get("focus")
+        history = focus.get("history") if isinstance(focus, dict) else None
+        if not isinstance(history, dict):
+            return
+        index: list[int] = history.get("index") or []
+        fresh = (
+            self._session is None
+            or history.get("session") != self._session
+            or (bool(index) and index[-1] < self._last)
+        )
+        if fresh:
+            history["reset"] = True
+            self._session = history.get("session")
+            self._last = index[-1] if index else 0
+            return
+        keep = [position for position, number in enumerate(index) if number > self._last]
+        for name in HISTORY_LISTS:
+            history[name] = [history[name][position] for position in keep]
+        history["reset"] = False
+        if keep:
+            self._last = index[keep[-1]]
 
 
 @dataclass(frozen=True, slots=True)

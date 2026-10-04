@@ -38,6 +38,7 @@ import io
 import math
 import random
 import shutil
+import statistics
 import tempfile
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -65,6 +66,7 @@ from seeingmon.services.web.contract import (
     DarkModelView,
     DarkSetView,
     FaultView,
+    FocusHistoryView,
     FocusView,
     HistogramView,
     LastSolutionView,
@@ -133,6 +135,17 @@ ORBIT_RADIUS_PX = SKY_COLATITUDE_DEG * 3600.0 / PLATE_SCALE_ARCSEC_PX
 SOLUTION_LOST_FROM_S = 50.0
 SOLUTION_LOST_UNTIL_S = 70.0
 LOST_REASON = "the tracker could not match the frame"
+# The focus value of the demo is a slow wave with a little noise, and every `FOCUS_SPIKE_EVERY`
+# frames a hand touches the telescope for a moment, which inflates the stars (a spike).
+FOCUS_POINTS = 120
+FOCUS_SPIKE_EVERY = 97
+FOCUS_SPIKE_FACTOR = 2.8
+# The rule of the spike flag, as `seeingmon.services.core.alignment.focus` states it: a value above
+# `SPIKE_FACTOR` times the median of the preceding `SPIKE_WINDOW` values, when at least
+# `SPIKE_MIN_PREVIOUS` precede it. A test compares the two.
+SPIKE_FACTOR = 2.0
+SPIKE_WINDOW = 10
+SPIKE_MIN_PREVIOUS = 3
 # The right ascension of Polaris in the demo, which only decides where the labels of the grid fall.
 POLARIS_RA_DEG = 45.0
 
@@ -501,6 +514,52 @@ def pole_offset_px(t_s: float) -> tuple[float, float]:
     return right, down
 
 
+def demo_fwhm_px(seq: int) -> float:
+    """The focus value of the demo frame `seq`, in pixels, with the spike of a touched telescope."""
+    value = 2.4 + 0.25 * math.sin(seq * FRAME_PERIOD_S / 50) + 0.08 * math.sin(seq * 1.7)
+    if seq > 0 and seq % FOCUS_SPIKE_EVERY == 0:
+        value *= FOCUS_SPIKE_FACTOR
+    return round(value, 4)
+
+
+def demo_focus_stars(seq: int) -> int:
+    """The number of stars that the focus value of the demo frame `seq` rests on."""
+    return round(31 + 2 * math.sin(seq * FRAME_PERIOD_S / 7))
+
+
+def demo_is_spike(previous: list[float], value: float) -> bool:
+    """Whether `value` is a spike after the values `previous` (the rule of the helper)."""
+    recent = previous[-SPIKE_WINDOW:]
+    return len(recent) >= SPIKE_MIN_PREVIOUS and value > SPIKE_FACTOR * statistics.median(recent)
+
+
+def demo_spike_flags(first: int, last: int) -> list[bool]:
+    """The spike flag of each demo frame from `first` to `last` (frame numbers from 1)."""
+    start = max(1, first - SPIKE_WINDOW)
+    values = [demo_fwhm_px(seq) for seq in range(start, last + 1)]
+    flags = [demo_is_spike(values[:offset], value) for offset, value in enumerate(values)]
+    return flags[first - start :]
+
+
+def demo_focus_history(last: int, now_ns: int) -> FocusHistoryView | None:
+    """The history of the focus values up to the frame `last`: the newest `FOCUS_POINTS` of them."""
+    if last < 1:
+        return None
+    first = max(1, last - FOCUS_POINTS + 1)
+    seqs = list(range(first, last + 1))
+    values = [demo_fwhm_px(seq) for seq in seqs]
+    return FocusHistoryView(
+        session=1,
+        index=seqs,
+        seq=seqs,
+        t_utc_ms=[(now_ns + round(seq * FRAME_PERIOD_S * NS_PER_S)) // 1_000_000 for seq in seqs],
+        fwhm_px=values,
+        fwhm_arcsec=[round(value * PLATE_SCALE_ARCSEC_PX, 4) for value in values],
+        n_stars=[demo_focus_stars(seq) for seq in seqs],
+        spike=demo_spike_flags(first, last),
+    )
+
+
 def solution_lost(t_s: float) -> bool:
     """Whether the solver finds no star field at demo time `t_s`."""
     return SOLUTION_LOST_FROM_S <= t_s % POLE_DRIFT_PERIOD_S < SOLUTION_LOST_UNTIL_S
@@ -601,6 +660,26 @@ class StarField:
         self._x = x
         self._y = y
         self._flux = np.concatenate(([6.0], flux))
+        self.focus_reset_seq = 1  # the best focus value counts the frames from here
+        self._best_cache: tuple[int, int, float | None] = (1, 0, None)  # reset, last frame, best
+
+    def reset_focus(self, seq: int) -> None:
+        """Restart the best focus value at the frame `seq`. The history stays."""
+        self.focus_reset_seq = max(1, seq)
+
+    def best_focus_px(self, last: int) -> float | None:
+        """The smallest focus value that is not a spike, from the last reset to the frame `last`."""
+        reset, done, best = self._best_cache
+        if reset != self.focus_reset_seq or last < done:
+            reset = self.focus_reset_seq
+            done, best = reset - 1, None
+        flags = demo_spike_flags(done + 1, last) if last > done else []
+        for seq, spike in zip(range(done + 1, last + 1), flags, strict=True):
+            value = demo_fwhm_px(seq)
+            if not spike and (best is None or value < best):
+                best = value
+        self._best_cache = (reset, max(done, last), best)
+        return best
 
     def image(
         self,
@@ -668,7 +747,6 @@ class StarField:
             saturate=1.0 + 8 * saturation * 1000,
         )
         distance = math.hypot(dx, dy)
-        fwhm = 2.4 + 0.25 * math.sin(t / 50)
         counts = [round(3.0e6 * math.exp(-0.63 * i)) for i in range(HISTOGRAM_BINS)]
         counts[-1] = round(saturation * FRAME_WIDTH_PX * FRAME_HEIGHT_PX)  # the saturated pixels
         lost = solution_lost(t)
@@ -681,6 +759,10 @@ class StarField:
         else:
             solved_t = max(0.0, t - solution_age_s)
         solved_seq = round(solved_t / FRAME_PERIOD_S)
+        focus_seq = max(1, max(0, seq - 1) if lost else solved_seq)  # the frame of the latest solve
+        focus_px = demo_fwhm_px(focus_seq)
+        best_px = self.best_focus_px(focus_seq)
+        history = demo_focus_history(focus_seq, now_ns)
         solved_roll = demo_roll_deg(solved_t)
         ring = demo_aim_ring(solved_roll if lost else roll).model_copy(
             update={
@@ -730,7 +812,16 @@ class StarField:
                 roll_deg=round(roll, 3),
             ),
             focus=FocusView(
-                fwhm_px=round(fwhm, 2), best_fwhm_px=2.1, n_stars=round(31 + 2 * math.sin(t / 7))
+                fwhm_px=focus_px,
+                best_fwhm_px=best_px,
+                n_stars=demo_focus_stars(focus_seq),
+                fwhm_arcsec=round(focus_px * PLATE_SCALE_ARCSEC_PX, 4),
+                best_fwhm_arcsec=(
+                    None if best_px is None else round(best_px * PLATE_SCALE_ARCSEC_PX, 4)
+                ),
+                spike=False if history is None else history.spike[-1],
+                frame_seq=focus_seq,
+                history=history,
             ),
             histogram=HistogramView(counts=counts, min_dn=0.0, max_dn=65535.0),
             saturation=SaturationView(fraction=round(saturation, 5), warning=saturation > 0.001),
@@ -849,6 +940,11 @@ class DemoCore(FakeCoreClient):
         self._seq = 0
         self._latest: AlignmentState | None = None
         self._since_mono = self._clock.monotonic_ns()  # when the fake scheduler entered its state
+
+    def alignment_reset_focus(self) -> None:
+        """Restart the best focus value at the frame that the stream sends next."""
+        super().alignment_reset_focus()
+        self._field.reset_focus(self._seq + 1)
 
     # --- The activity ---
 

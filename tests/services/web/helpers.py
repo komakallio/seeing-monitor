@@ -22,6 +22,7 @@ from seeingmon.services.ipc.server import IpcServer
 from seeingmon.services.ipc.stream import StreamSender, StreamService, StreamWindow
 from seeingmon.services.web.contract import (
     ALIGNMENT_CHANNEL,
+    METHOD_ALIGNMENT_RESET_FOCUS,
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
     METHOD_PING,
@@ -129,6 +130,7 @@ class ReferenceCore:
             METHOD_STATUS: self._status,
             METHOD_SUBMIT: self._submit,
             METHOD_ALIGNMENT_STATE: self._alignment_state,
+            METHOD_ALIGNMENT_RESET_FOCUS: self._alignment_reset_focus,
             METHOD_DARK_LIBRARY: self._dark_library,
         }
         self.raw_payloads: list[bytes] = []  # sent before the frames, to test a bad message
@@ -153,6 +155,10 @@ class ReferenceCore:
 
     def _alignment_state(self, params: Mapping[str, Any]) -> Any:
         return self.backend.alignment_state().model_dump(mode="json")
+
+    def _alignment_reset_focus(self, params: Mapping[str, Any]) -> Any:
+        self.backend.alignment_reset_focus()
+        return {"reset": True}
 
     def _dark_library(self, params: Mapping[str, Any]) -> Any:
         return self.backend.dark_library().model_dump(mode="json")

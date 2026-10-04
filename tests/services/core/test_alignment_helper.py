@@ -821,6 +821,148 @@ class TestTheLastSolution:
         assert state.quality["solved"] == reason
 
 
+class TestTheFocusHistory:
+    def feed(
+        self,
+        helper: AlignmentHelper,
+        solver: StubSolver,
+        values: list[float | None],
+        first_seq: int = 1,
+    ) -> None:
+        """Solve one frame for each value, half a second apart."""
+        for offset, value in enumerate(values):
+            seq = first_seq + offset
+            t_ns = T0 + offset * NS_PER_S // 2
+            solver.result = solution(seq=seq, t_utc_ns=t_ns, focus_fwhm_px=value)
+            helper.solve_frame(sky_frame(seq, t_utc_ns=t_ns))
+
+    def test_each_solve_adds_a_point_with_the_time_of_its_frame(self, build: Build) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.4, 2.5, 2.3])
+        state = unpack_frame(helper.process_frame(sky_frame(4, t_utc_ns=T0 + 2 * NS_PER_S))).state
+        assert state.focus is not None
+        history = state.focus.history
+        assert history is not None
+        assert history.index == [1, 2, 3]
+        assert history.seq == [1, 2, 3]
+        assert history.t_utc_ms == [T0 // 1_000_000 + 500 * n for n in range(3)]
+        assert history.fwhm_px == [2.4, 2.5, 2.3]
+        assert (state.focus.fwhm_px, state.focus.best_fwhm_px) == (2.3, 2.3)
+
+    def test_the_state_carries_the_arcseconds_of_the_plate_scale_of_the_frame(
+        self, build: Build
+    ) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.5])
+        state = unpack_frame(helper.process_frame(sky_frame(1, t_utc_ns=T0))).state
+        assert state.focus is not None
+        assert state.focus.fwhm_arcsec == pytest.approx(2.5 * 3.82, abs=0.01)
+        assert state.focus.best_fwhm_arcsec == pytest.approx(2.5 * 3.82, abs=0.01)
+
+    def test_the_history_is_the_same_for_a_page_that_reloads(self, build: Build) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.4, 2.5, 2.3])
+        helper.process_frame(sky_frame(3, t_utc_ns=T0))
+        first = helper.state().focus
+        second = helper.state().focus
+        assert first is not None
+        assert first == second
+        assert first.history is not None
+        assert first.history.reset is True  # a state always holds the whole history
+
+    def test_a_spike_is_flagged_and_does_not_set_the_best_value(self, build: Build) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.4, 2.5, 2.4, 2.5, 7.0])
+        state = unpack_frame(helper.process_frame(sky_frame(5, t_utc_ns=T0))).state
+        assert state.focus is not None
+        assert state.focus.spike is True
+        assert state.focus.best_fwhm_px == 2.4
+        assert state.focus.history is not None
+        assert state.focus.history.spike == [False, False, False, False, True]
+
+    def test_a_solve_without_a_value_adds_no_point_and_keeps_the_history(
+        self, build: Build
+    ) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.4, 2.5, None])
+        state = unpack_frame(helper.process_frame(sky_frame(3, t_utc_ns=T0))).state
+        assert state.focus is not None
+        assert state.focus.fwhm_px is None
+        assert state.focus.best_fwhm_px == 2.4
+        assert state.focus.history is not None
+        assert state.focus.history.index == [1, 2]
+
+    def test_the_history_holds_120_values_at_most(self, build: Build) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.4 + 0.001 * (n % 5) for n in range(130)])
+        state = unpack_frame(helper.process_frame(sky_frame(130, t_utc_ns=T0))).state
+        assert state.focus is not None
+        assert state.focus.history is not None
+        assert state.focus.history.index == list(range(11, 131))
+
+    def test_the_reset_restarts_the_best_value_and_keeps_the_history(self, build: Build) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver)
+        self.feed(helper, solver, [2.0, 2.4, 2.5])
+        helper.reset_focus()
+        state = unpack_frame(helper.process_frame(sky_frame(3, t_utc_ns=T0))).state
+        assert state.focus is not None
+        assert state.focus.best_fwhm_px is None
+        assert state.focus.history is not None
+        assert state.focus.history.index == [1, 2, 3]
+        self.feed(helper, solver, [2.6], first_seq=4)
+        later = unpack_frame(helper.process_frame(sky_frame(4, t_utc_ns=T0))).state
+        assert later.focus is not None
+        assert later.focus.best_fwhm_px == 2.6  # the next value that counts starts it again
+
+    def test_a_new_alignment_starts_a_new_history(self, build: Build) -> None:
+        active = Active(True)
+        solver = StubSolver()
+        helper = build(is_active=active, solver=solver)
+        self.feed(helper, solver, [2.4, 2.5])
+        helper.process_frame(sky_frame(2, t_utc_ns=T0))
+        first = helper.state().focus
+        assert first is not None
+        assert first.history is not None
+        active.value = False
+        assert helper.state().active is False
+        active.value = True
+        helper.process_frame(sky_frame(3, t_utc_ns=T0))
+        fresh = helper.state().focus
+        assert fresh is None  # no value yet, and no history, and no best value
+        self.feed(helper, solver, [2.8], first_seq=3)
+        again = helper.state().focus
+        assert again is not None
+        assert again.history is not None
+        assert again.history.session == first.history.session + 1  # a reader can tell
+        assert again.history.index == [1]
+        assert again.best_fwhm_px == 2.8
+
+    def test_a_late_solve_does_not_add_a_point_to_the_next_session(self, build: Build) -> None:
+        active = Active(True)
+        helpers: list[AlignmentHelper] = []
+
+        class EndsTheAlignment:
+            def solve(self, frame: Frame) -> QuickSolution:
+                active.value = False
+                helpers[0].state()
+                return solution(seq=frame.seq, focus_fwhm_px=2.4)
+
+        helper = build(is_active=active, solver=EndsTheAlignment())
+        helpers.append(helper)
+        helper.process_frame(sky_frame(1))
+        helper.solve_frame(sky_frame(1))
+        active.value = True
+        helper.process_frame(sky_frame(2))
+        assert helper.state().focus is None
+
+
 class Lifecycle(StubSolver):
     """A solver that has `release` and `close`, and counts the calls."""
 

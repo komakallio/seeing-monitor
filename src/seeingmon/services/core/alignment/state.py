@@ -50,12 +50,14 @@ from dataclasses import dataclass
 
 from seeingmon.clock import NS_PER_S, utc_ns_to_iso
 from seeingmon.scheduler.config import SiteConfig
+from seeingmon.services.core.alignment.focus import FocusSnapshot
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.settings import AlignmentSettings
 from seeingmon.services.web.contract import (
     AimRingView,
     AlignmentFrameInfo,
     AlignmentState,
+    FocusHistoryView,
     FocusView,
     HistogramView,
     LastSolutionView,
@@ -149,6 +151,7 @@ def build_state(
     solve_elapsed_s: float | None = None,
     solving: tuple[int, float] | None = None,
     last_good: QuickSolution | None = None,
+    focus: FocusSnapshot | None = None,
 ) -> AlignmentState:
     """The state that describes `frame`, with the latest solution and the target.
 
@@ -157,7 +160,9 @@ def build_state(
     `now_utc_ns` is the time of the state, which gives the age of the frame. `solve_elapsed_s` is
     the time of the latest finished solve, and `solving` is the frame that the solver works on now
     with the seconds that it has worked. `last_good` is the latest solution that found the star
-    field, which gives the aim ring while the current solve has none.
+    field, which gives the aim ring while the current solve has none. `focus` is the history of the
+    focus values: with it, the focus view carries the best value, the spike flag, and the history
+    (`best_fwhm_px` stands in for the best value when there is no history).
     """
     quality: dict[str, str] = {}
     info = AlignmentFrameInfo(
@@ -223,15 +228,7 @@ def build_state(
 
     aim_ring_view = _aim_ring(frame, solution, solved_view, sky_view, last_good, settings, quality)
 
-    focus_view: FocusView | None = None
-    if solution is not None and solution.focus_fwhm_px is not None:
-        focus_view = FocusView(
-            fwhm_px=solution.focus_fwhm_px,
-            best_fwhm_px=best_fwhm_px,
-            n_stars=solution.n_focus_stars,
-        )
-    else:
-        quality["focus"] = "no unsaturated stars to measure"
+    focus_view = _focus_view(frame, solution, best_fwhm_px, focus, quality)
 
     if frame.histogram is None:
         quality["histogram"] = "the frame has no histogram"
@@ -251,6 +248,64 @@ def build_state(
         last_solution=_last_solution_view(frame, last_good),
         timing=_timing(frame, solution, now_utc_ns, solve_elapsed_s, solving),
         quality=quality,
+    )
+
+
+def _arcsec(value_px: float | None, scale_arcsec_px: float | None) -> float | None:
+    if value_px is None or scale_arcsec_px is None:
+        return None
+    return round(value_px * scale_arcsec_px, 4)
+
+
+def _focus_view(
+    frame: FrameSummary,
+    solution: QuickSolution | None,
+    best_px: float | None,
+    snapshot: FocusSnapshot | None,
+    quality: dict[str, str],
+) -> FocusView | None:
+    """The focus view: the value of the latest solve, the best value, and the history.
+
+    The value belongs to the frame of the latest solve. When that frame has no value, the view
+    keeps the best value and the history, and `quality["focus"]` says why the value is missing.
+    The plate scale of the frame turns pixels into arcseconds.
+    """
+    value = None if solution is None else solution.focus_fwhm_px
+    if value is None:
+        quality["focus"] = "no unsaturated stars to measure"
+    if snapshot is not None:
+        best_px = snapshot.best_px
+    if value is None and (snapshot is None or not snapshot.points):
+        return None
+    scale = frame.plate_scale_arcsec_px or (None if solution is None else solution.scale_arcsec_px)
+    point = None
+    if value is not None and snapshot is not None and solution is not None:
+        point = snapshot.point_for(solution.seq)
+    return FocusView(
+        fwhm_px=value,
+        best_fwhm_px=best_px,
+        n_stars=None if value is None or solution is None else solution.n_focus_stars,
+        fwhm_arcsec=_arcsec(value, scale),
+        best_fwhm_arcsec=_arcsec(best_px, scale),
+        spike=False if point is None else point.spike,
+        frame_seq=None if value is None or solution is None else solution.seq,
+        history=None if snapshot is None or not snapshot.points else _history_view(snapshot, scale),
+    )
+
+
+def _history_view(snapshot: FocusSnapshot, scale_arcsec_px: float | None) -> FocusHistoryView:
+    """The points of a snapshot as the parallel lists of the contract."""
+    points = snapshot.points
+    return FocusHistoryView(
+        session=snapshot.session,
+        reset=True,
+        index=[point.index for point in points],
+        seq=[point.seq for point in points],
+        t_utc_ms=[point.t_utc_ns // 1_000_000 for point in points],
+        fwhm_px=[round(point.fwhm_px, 4) for point in points],
+        fwhm_arcsec=[_arcsec(point.fwhm_px, scale_arcsec_px) for point in points],
+        n_stars=[point.n_stars for point in points],
+        spike=[point.spike for point in points],
     )
 
 
