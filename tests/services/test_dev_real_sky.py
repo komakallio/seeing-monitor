@@ -236,6 +236,47 @@ class TestThePlanOfTheRealSky:
         assert survey.cloud.expected_snr == 20.0  # the rest of the table keeps its default
         assert (survey.dark.frames, survey.dark.bias_frames, survey.dark.poll_s) == (7, 5, 2.0)
 
+    def test_the_owner_names_the_pointing_reference_in_the_pointing_table(
+        self, tmp_path: Path
+    ) -> None:
+        """`seeingmon pointing set-reference` prints `reference_file` for `[survey.pointing]`."""
+        reference = tmp_path / "calibration" / "pointing-reference.json"
+        tables = working_tables(tmp_path)
+        tables["survey"]["pointing"] = {"reference_file": str(reference), "moved_arcmin": 2.5}
+        plan = real_plan(tmp_path, tables)
+        survey = configuration(plan, "core", tmp_path).section("survey", SurveyConfig)
+        assert survey.pointing.reference_file == str(reference)
+        assert survey.pointing.moved_arcmin == 2.5
+        assert survey.pointing.few_stars == 12  # the rest of the table keeps its default
+        assert survey.pointing.validity_s == 43_200.0
+        assert survey.catalog_path == tables["survey"]["catalog_path"]  # and so does the rest
+        variable = "SEEINGMON_SURVEY__POINTING__REFERENCE_FILE"
+        assert json.loads(child(plan, "core").env[variable]) == str(reference)
+        for name in ("acquire", "web"):  # only core receives the survey table
+            assert variable not in child(plan, name).env, name
+
+    def test_a_variable_can_name_the_pointing_reference_and_beats_the_file(
+        self, tmp_path: Path
+    ) -> None:
+        in_file = tmp_path / "from-the-file.json"
+        in_variable = tmp_path / "from-the-variable.json"
+        tables = working_tables(tmp_path)
+        tables["survey"]["pointing"] = {"reference_file": str(in_file)}
+        env = {"SEEINGMON_SURVEY__POINTING__REFERENCE_FILE": json.dumps(str(in_variable))}
+        plan = real_plan(tmp_path, tables, env=env)
+        survey = configuration(plan, "core", tmp_path).section("survey", SurveyConfig)
+        assert survey.pointing.reference_file == str(in_variable)
+        alone = real_plan(tmp_path, working_tables(tmp_path), env=env, name="alone")
+        survey = configuration(alone, "core", tmp_path).section("survey", SurveyConfig)
+        assert survey.pointing.reference_file == str(in_variable)
+
+    def test_without_a_pointing_table_core_loads_no_reference(self, tmp_path: Path) -> None:
+        survey = configuration(real_plan(tmp_path), "core", tmp_path).section(
+            "survey", SurveyConfig
+        )
+        # With no file, the Pointing card says "no reference solution".
+        assert survey.pointing.reference_file == ""
+
     def test_the_dark_session_is_short_unless_the_owner_says_otherwise(
         self, tmp_path: Path
     ) -> None:
