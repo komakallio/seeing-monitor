@@ -547,7 +547,7 @@ The wrapper does not load `<config-dir>/sdk.env`, which only the `acquire` unit 
 | `seeingmon burst` | Records frames to a SER file with a JSON sidecar, and pins the burst. Pinned bursts are exempt from retention, so a burst stays until you remove the `PINNED` file in its folder. | Also `POST /api/v1/commands/burst` (token required). |
 | `seeingmon sweep` | Runs a short fast window for each cell of a grid (exposure, gain, ROI, readout mode) and prints saturation, signal-to-noise ratio, frame and drop rates, and estimator noise. | Also `POST /api/v1/commands/sweep` (token required). |
 | `seeingmon dark` | Records a dark set with the camera covered, and adds it to the dark library. | It asks the running `core` to record the set, and it shows the progress, including why the latest test frame is not dark while it waits for the cover. `--detach` queues the session and returns. The scheduler pauses afterwards, so uncover the camera and resume the scheduler from the web UI. With `--standalone` it opens the camera itself, so stop the services first: `sudo systemctl stop seeingmon.target`. Start them again afterwards. |
-| `seeingmon flat make` | Combines frames of a lit panel into the master flat for `[survey] flat_file`, and prints the vignetting, the tilt, the shadows, and how well the sets agree. | Offline: it needs no camera and no running service. See [Take a flat with a panel](#take-a-flat-with-a-panel). |
+| `seeingmon flat make` | Combines frames of a lit panel into the master flat for `[survey] flat_file`, and prints the vignetting, the tilt, the shadows, and how well the sets agree. | Offline: it needs no camera and no running service. See [Take a flat with a panel](#take-a-flat-with-a-panel). The **Flat** page of the web UI takes a flat on the station (see [Take a flat from the web UI](#take-a-flat-from-the-web-ui)). |
 | `seeingmon flat build` | Builds a flat from the survey frames of the night sky, adds them to an accumulator file on request, and prints the vignetting, the shadows, and a check of the mask around Polaris. With `--base-flat` it compares the sky with a panel flat instead, and with `--update` it writes the panel flat with the changes that exceed their limits. | Offline: it needs no camera and no running service. It needs a clear night of frames, a dark library, and `[site]`. See [Build a flat from the night sky](#build-a-flat-from-the-night-sky). |
 | `seeingmon camera rates` | Measures the frame rates of the connected camera, one factor at a time around the fast stream: the exposure, the ROI size, the pixel format, the USB bandwidth, the high-speed mode, and the second readout mode, and then single exposures of the survey mode (`--groups snapshot`). It prints the measured and modeled rates with the jitter and the drops, and it fits the frame overhead and the row time of the profile, and the snapshot overhead and row time. | It opens the camera itself, so stop the services first. It puts back every control that it changed and closes the camera. `--json PATH` also writes the table to a file. The default `local/camera-rates.json` lies under the configuration directory when you run the wrapper, and the service user cannot write there, so give a path such as `/tmp/camera-rates.json`. |
 | `seeingmon hardware sqm` | Reads the SQM-LE once from the source that `[sqm]` names (the unit over TCP, or the readings in InfluxDB), and prints the magnitude, the temperature, and the age of the reading. | Read-only, and it needs no camera. It ignores `enabled`. The wrapper does not load `seeingmon.env`, so a variable that `token_env` names must be in the environment of the command (see [Check the settings](#check-the-settings)). |
@@ -586,9 +586,93 @@ The scheduler pauses when the session ends, whatever the outcome, because the ca
 
 The dark rate depends on the sensor temperature, so a set serves only the temperatures near its own. The library counts a set that lies within 3 degrees C of the sensor temperature (`temperature_tolerance_c`) and is younger than about six months (`max_age_days`). When no such set exists, the status line says `Due`. The model of the dark current fits the doubling step once the sets span 4 degrees C or more, and until then it assumes 6 degrees C (`doubling_c` in `[survey.dark]`). A wider span fits it better, so take a set on a cold night and another on a warm one, and look at the chart for the gaps. The `[web.requests]` table caps the exposure that the page may ask for (`max_dark_exposure_s`, 120 s by default).
 
+## Take a flat from the web UI
+
+The analysis divides every survey frame by a flat, which corrects the loss of light toward the edge of the lens and the shadows of the dust on the sensor window (see [Take a flat with a panel](#take-a-flat-with-a-panel)). The **Flat** page of the web UI takes one on the station: you hold an even light over the lens, and `core` finds the exposure, takes the frames, builds the flat, and keeps it for you to use or to discard. The session runs in `core`, so `core` must run. It takes the bias from the dark library, so record a dark set first (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)). Without one, the page says "Record a dark set first (Dark page)." and **Take flat** stays off.
+
+1. Open the **Flat** page. The first panel says which flat the survey uses now and how old it is.
+1. Cover the front of the guide scope with an even light: a light panel, or a white cloth over a lit surface in daylight. The light must cover the whole 50 mm aperture and sit flush against the lens (see [What you need](#what-you-need)). Keep it steady until the session ends.
+1. Press **Take flat**. The first time, the page asks for the API token, because every command needs it.
+1. Wait. The page lists the phases (setting up, finding the exposure, taking frames, and combining the frames), marks the active one, and shows the level of the frames on a bar with the target marked on it. It also writes what the session notices, such as a light that drifts.
+1. Look at the new flat that the page shows, and press **Use this flat** or **Discard**. Then remove the light and press **Resume**.
+
+### How the session finds the exposure
+
+The session aims at 50% of the full scale in the middle of the frame, above the bias. You can set the target to 30 to 70% and the number of frames to 8 to 64 (32 by default) under **Advanced**. It takes a frame at 20 ms, measures the level, and scales the exposure toward the target, until the level lies within 10% of the target or after 8 tries. The exposure stays between the shortest exposure of the profile and 1 s. It then takes the frames at that exposure. The page shows each try and each frame.
+
+A light that is too weak or too bright ends the session with a sentence that says what to change, and the library stays as it was:
+
+- **"Not enough light: the frame reaches 6 % of full scale at the longest exposure of 1 s."** Use a brighter source, or hold it closer to the lens. A dim source, such as a phone screen at low brightness, may need a longer exposure: raise `max_exposure_s` in `[survey.flat]`.
+- **"Too much light: the frame saturates at the shortest exposure of 32 µs."** Dim the source, or put a layer of cloth between it and the lens.
+- **"The light is too unsteady to find an exposure."** Check that the light is steady and covers the whole lens.
+
+The frames go into a SER file in `calibration/flats/session/` of the data directory. A frame of the survey mode takes 23 MB, so 32 frames take about 750 MB and 64 frames about 1.5 GB. The session checks the free space before it starts, and it refuses to start when the frames would leave less than `min_free_gb` of `[store.retention]` free. It stops when the free space falls below that limit while it records.
+
+The combination reads the frames three times, one frame at a time, and it holds a few images of the frame in memory. A run on frames of the survey mode (4144 × 2822 pixels) peaked at 421 MB of arrays on a development machine, whatever the number of frames, and it took 10 s for 32 frames when the file lay in the cache of the operating system, and 29 s when it did not. On Linux, the session refuses to start when less than about 0.6 GB of memory is available (`MemAvailable`), and the page says so.
+
+### Read the review
+
+The page shows the new flat as a picture. The picture runs from 10% less light (black) to 10% more light (white) than the median pixel, so the corners are dark where the lens loses light, and the dust shows as faint dark rings. Beside the picture, each row has a number, a word, and a sentence that says why. The word is **Good**, **Check**, or **Problem**, and the word at the top of the review is the worst of the rows. The limits are rules of thumb, so judge the numbers with the picture.
+
+| Row | What it measures | Good | Check | Problem |
+|---|---|---|---|---|
+| Corners | The light in the corners against the center | Up to 25% less | 25 to 40% less, or 1 to 5% more | More than 40% less, or more than 5% more |
+| Tilt | The plane across the frame after the radial part, in percent across the width and the height | Up to 1% (one set), or any tilt of two sets | More than 1% (one set) | |
+| Dust | The number of shadows deeper than 1% | Up to 8 | 9 to 20 | More than 20 |
+| Noise | The noise of a pixel in the flat | Up to 0.25% | Up to 0.5% | More than 0.5% |
+| Frames | The frames that passed the checks of the flat | 90% or more | 70% or more | Less than 70% |
+| Two sets | The fine part of the quotient of the sets, against the noise that predicts it | Up to 1.5 times the noise | Up to 3 times | More than 3 times |
+
+The lens of the development station loses about 10% in the corners, so a **Problem** in the corners with a light of its own usually means that the light does not cover the whole lens. Below the rows, the page lists the notes of the session and of the combination, such as "The light drifts: a frame is 3.4 % above the median level."
+
+### Take a second set
+
+One set cannot tell the gradient of your light source from the tilt of the optics. A second set that you take after you turn the source by 180 degrees separates the two (see [Turn the source](#turn-the-source)). The page offers it under the review while the pending flat comes from the first set of a session:
+
+1. Turn the light source by 180 degrees, and keep it over the lens.
+1. Press **Take a second set**. The page resumes the scheduler, which the first set paused, and the session starts. It keeps the exposure of the first set as its start.
+1. When the session ends, the page shows one flat that combines both sets. The flat of the first set is gone, and the review shows the tilt of the optics apart from the gradient of the source and how well the two sets agree.
+
+`core` keeps the frames of the first set for 24 hours, and the page says until when. After that, or after you use or discard the flat, they are gone, and the page offers no second set.
+
+### Use or discard the flat
+
+- **Use this flat** makes the flat the one that the survey uses. The survey divides by it from its next frame, with no restart. The flat of the library wins over `flat_file` in `[survey]`, and the status line at the top says so. The `sky_quality` records carry the name of the flat in `provenance.flat`, so you can see from which record on the pipeline used it.
+- **Discard** deletes the pending flat with its report and its picture, and it ends the session, so the frames of the first set go too. A deletion asks twice: the first press changes the button to "Press again to discard" for 5 seconds.
+
+The table at the bottom lists the flats, newest first, with the state of each: **In use**, **Waiting for you**, or **Used before**. **Use again** puts an older flat back in use, for example when a new flat turns out worse, and **Delete** deletes a flat that is not in use. Both wait while a session is queued or running. The library keeps the newest 10 flats and the flat in use. The files lie in `calibration/flats/` of the data directory (or of `[survey] calibration_dir`): `flat-<8 hex digits>.npy` (the flat), `.json` (the report), `.jpg` (the picture), and `current.json` (the name of the flat in use).
+
+### Why the station pauses after a flat
+
+The scheduler pauses when the session ends, whatever the outcome, because the light may still cover the camera, and nothing may record data while it does. **Resume** puts the scheduler in `safe`, which checks the sky and goes on to `auto`. Clear "Pause the scheduler at the end" under **Advanced** only when something else removes the light.
+
+**Stop** ends a session. A session that waits never starts, and a running session stops at its next frame and ends as `aborted`. The library stays as it was, and the frames of the unfinished set are deleted. A pause command (`POST /mode` with `paused`) ends a running session the same way. When the scheduler is paused and you press **Take flat** or **Take a second set**, the page resumes it so that the session can start, and the session pauses it again at the end.
+
+### Settings
+
+The session takes the readout mode and the gain from `[survey.dark]`, and the rest from `[survey.flat]` in `config/default.d/survey.toml`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `start_exposure_s` | 0.02 | The search for the exposure starts here. |
+| `max_exposure_s` | 1.0 | The longest exposure that the search may reach. |
+| `max_iterations` | 8 | The most frames that the search takes. |
+| `level_tolerance` | 0.1 | The search stops within this share of the target level. |
+| `min_level_fraction` | 0.25 | A light weaker than this share of the full scale at the longest exposure is too dim. |
+| `drift_percent` | 3.0 | A frame this far from the median level warns of a drifting light. |
+
+### What only the real camera confirms
+
+The tests run the session against a scripted camera and the page against the demo (`seeingmon web --demo`), and the demo plays a whole session. Nothing here ran on the real camera or on a Pi, so check these points on the first real session:
+
+- How the search for the exposure behaves with your light: the number of tries, and whether 20 ms is a good start.
+- How long the combination takes on the Pi 4 (the card reads 750 MB three times for 32 frames), and whether `core` has the 0.4 GB that it needs while it combines. The services of the Pi 4 with 2 GB used at most 1,053 MiB of the 1,844 MiB in the performance run (see [performance.md](performance.md#results-on-a-raspberry-pi-4)), and the memory check refuses a session that would not fit.
+- Whether the first set and the second set agree on the real lens, and whether the limit of 3% for a drifting light suits your light.
+- Whether the limits of the verdicts suit your lens. They come from one development lens and one test of the offline command.
+
 ## Take a flat with a panel
 
-A flat field corrects the vignetting of the lens and the shadows of the dust on the sensor window. The survey analysis divides every frame by the flat before it measures the sky, so a flat that you measure makes the sky brightness more accurate. The default is a unit flat, which corrects nothing, and it stays the default until you set `[survey] flat_file`. A panel flat takes about half an hour. Take it before the first clear night, with the camera on the lens as it will run.
+A flat field corrects the vignetting of the lens and the shadows of the dust on the sensor window. The survey analysis divides every frame by the flat before it measures the sky, so a flat that you measure makes the sky brightness more accurate. The default is a unit flat, which corrects nothing, and it stays the default until you set `[survey] flat_file` or use a flat on the Flat page (see [Take a flat from the web UI](#take-a-flat-from-the-web-ui)). A panel flat takes about half an hour. Take it before the first clear night, with the camera on the lens as it will run.
 
 ### What you need
 
@@ -678,7 +762,7 @@ The flat has a median of 1. The command floors a pixel that reads at or below ze
 ### Use the flat
 
 1. Copy the file to the Pi, and set `flat_file` in the `[survey]` table of `local/config.toml` to its path.
-1. Restart `core`, which loads the flat when it starts. The `sky_quality` records carry `provenance.flat` with the name of the flat (`flat-` and a hash of its pixels), so you can see from which record on the pipeline used it. A unit flat shows `unit`.
+1. Restart `core`, which loads the flat when it starts. A flat that you use on the **Flat** page of the web UI wins over `flat_file`, and it needs no restart. The `sky_quality` records carry `provenance.flat` with the name of the flat (`flat-` and a hash of its pixels), so you can see from which record on the pipeline used it. A unit flat shows `unit`.
 
 The previews use the flat too: the JPEGs of the survey frames (the **Images** page and the latest image on the **Now** page) and the live view of the **Align** page. When the dark library has a set for the readout mode and the gain of a frame, `core` replaces the hot pixels that the library lists, subtracts the dark level, and divides by the flat, so the vignetting and the dust shadows leave the image. A preview reads the flat file again when the file changes, so a new flat reaches the previews without a restart (the survey analysis still waits for the restart). The FITS files keep the raw counts. Without a dark set, the previews stay raw, because the division would print the inverse of the flat into the sky (see [Take a dark set from the UI](#take-a-dark-set-from-the-ui)). A flat that `core` cannot read gives one warning in the log, "the previews are not calibrated", and raw previews.
 
