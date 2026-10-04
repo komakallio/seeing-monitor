@@ -6,13 +6,14 @@ read the frames that reach the queue. The service sees the same calls that its c
 
 from __future__ import annotations
 
+import json
 import secrets
 from dataclasses import replace
 from typing import Any, ClassVar
 
 import pytest
 
-from seeingmon.clock import DEFAULT_START_UTC_NS, VirtualClock
+from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S, VirtualClock
 from seeingmon.frames import ActiveStream, Frame
 from seeingmon.services.acquire import service as service_module
 from seeingmon.services.acquire.service import AcquireService, timing_config
@@ -141,6 +142,113 @@ def test_a_loss_that_the_driver_counted_reaches_the_frame_at_once() -> None:
     bench.arrive(1.0)
     assert bench.lost == [0] * 40 + [1, 0]
     assert bench.service.health().dropped_driver == 1
+
+
+def run_pattern(bench: Bench, seconds: float, pattern: tuple[float, ...]) -> None:
+    """Feed frames at the intervals of the pattern, over and over, for `seconds` of the clock.
+
+    The watchdog thread notes the counters each tick, so the test notes them after each frame.
+    """
+    end_ns = bench.at_ns + round(seconds * NS_PER_S)
+    while bench.at_ns < end_ns:
+        for step in pattern:
+            bench.arrive(step)
+            bench.service._note_recent()
+
+
+class TestTheLastMinute:
+    def short_minute(self) -> Bench:
+        bench = Bench()
+        bench.service._recent_ns = 10 * NS_PER_S  # ten seconds stand for the minute
+        return bench
+
+    def test_the_figures_follow_the_stream_and_forget_what_is_older_than_the_minute(self) -> None:
+        bench = self.short_minute()
+        run_pattern(bench, 12.0, (1.0,))
+        clean = bench.service.health()
+        assert (clean.recent_lost, clean.recent_late) == (0, 0)
+        assert clean.recent_lost_percent == 0.0
+        assert 10.0 <= clean.recent_s <= 11.1
+        assert clean.recent_frames == pytest.approx(10.5 * NS_PER_S / bench.period_ns, rel=0.1)
+
+        run_pattern(bench, 12.0, (*[1.0] * 8, 3.0, 1.0))  # two frames lost in twelve periods
+        lossy = bench.service.health()
+        assert lossy.recent_lost_percent == pytest.approx(100 * 2 / 12, abs=1.5)
+        assert lossy.recent_late == 0
+
+        run_pattern(bench, 12.0, (1.0,))  # the loss is a minute old now
+        assert bench.service.health().recent_lost == 0
+
+        run_pattern(bench, 12.0, (2.6, 0.2, 0.2))  # one late read in three frames
+        late = bench.service.health()
+        assert late.recent_lost == 0
+        assert late.recent_late_percent == pytest.approx(100 / 3, abs=2.0)
+
+    def test_the_totals_keep_counting_when_the_minute_moves_on(self) -> None:
+        bench = self.short_minute()
+        run_pattern(bench, 12.0, (*[1.0] * 8, 3.0, 1.0))
+        run_pattern(bench, 12.0, (1.0,))
+        health = bench.service.health()
+        assert health.recent_lost == 0
+        assert health.dropped_gap > 150  # the first part of the run lost 2 frames in 12 periods
+
+    def test_a_stream_that_has_not_run_has_no_figures(self) -> None:
+        health = Bench().service.health()
+        assert (health.recent_frames, health.recent_lost, health.recent_late) == (0, 0, 0)
+        assert health.recent_lost_percent is None
+        assert health.recent_late_percent is None
+        assert "in the last" not in health.summary()
+
+    def test_the_notes_stay_few(self) -> None:
+        bench = Bench()
+        run_pattern(bench, 200.0, (1.0,))
+        assert len(bench.service._recent) <= 62  # one a second for a minute, and the one before
+
+
+class TestTheSummaryLine:
+    def health(self, **changes: Any) -> Any:
+        return replace(Bench().service.health(), **changes)
+
+    def test_it_names_the_sources_the_last_minute_and_the_platform_calls(self) -> None:
+        health = self.health(
+            state="streaming",
+            capturing=True,
+            frame_rate_hz=82.1,
+            frames_captured=9413,
+            dropped_gap=1101,
+            priority="highest thread priority",
+            timer="1 ms resolution",
+            recent_s=60.2,
+            recent_frames=4939,
+            recent_lost=598,
+            recent_late=300,
+        )
+        assert health.summary() == (
+            "streaming, 82.1 fps, 9413 frames, 1101 dropped (driver 0, gap 1101, queue 0), "
+            "10.8% lost and 6.1% late in the last minute, priority: highest thread priority, "
+            "timer: 1 ms resolution"
+        )
+
+    def test_a_span_of_less_than_a_minute_says_how_long_it_is(self) -> None:
+        health = self.health(recent_s=23.4, recent_frames=100, recent_lost=0, recent_late=0)
+        assert "0.0% lost and 0.0% late in the last 23 s" in health.summary()
+
+    def test_a_platform_without_a_timer_request_says_nothing_about_it(self) -> None:
+        summary = self.health(priority="nice -10", timer="").summary()
+        assert "priority: nice -10" in summary
+        assert "timer" not in summary
+
+    def test_the_last_error_comes_last(self) -> None:
+        summary = self.health(last_error="boom", priority="disabled").summary()
+        assert summary.endswith("priority: disabled, last error: boom")
+
+    def test_the_json_carries_the_figures_and_the_two_shares(self) -> None:
+        health = self.health(recent_s=60.0, recent_frames=900, recent_lost=100, recent_late=90)
+        data = json.loads(json.dumps(health.to_json()))
+        assert data["recent_lost_percent"] == pytest.approx(10.0)
+        assert data["recent_late_percent"] == pytest.approx(10.0)
+        assert (data["recent_s"], data["late_reads"], data["timer"]) == (60.0, 0, "")
+        assert self.health().to_json()["recent_lost_percent"] is None
 
 
 class RecordingTimer:

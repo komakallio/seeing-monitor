@@ -57,6 +57,7 @@ import os
 import secrets
 import sys
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
@@ -124,6 +125,8 @@ MAX_TAG = 2**32 - 1
 STALL_PERIODS = 5
 STALL_FLOOR_S = 3.0
 MIN_FRAMES_TO_HOLD = 1.5  # a slower stream sends each frame at once
+RECENT_S = 60.0  # the span of the figures that the health summary gives for the last minute
+RECENT_SAMPLE_S = 1.0  # how often the watchdog thread notes the counters for those figures
 
 _log = logging.getLogger(__name__)
 _REAL_CLOCK = SystemClock()
@@ -259,6 +262,10 @@ class AcquireService:
         self._exit_reason = "stopped"
         self._restart_reason: str | None = None
         self._frame_rate_hz = 0.0
+        # Notes of the counters, as (monotonic ns, frames captured, frames lost, late reads), one
+        # a second. The oldest note is the newest one that is at least a minute old, if any is.
+        self._recent: deque[tuple[int, int, int, int]] = deque()
+        self._recent_ns = round(RECENT_S * NS_PER_S)
         self._batch_due_ns = 0  # when the sender flushes the next batch, on the real clock
         self._capture_since_ns = 0
         self._threads: dict[str, threading.Thread] = {}
@@ -960,6 +967,7 @@ class AcquireService:
                     rate = (frames - previous_frames) / ((now_ns - previous_ns) / NS_PER_S)
                     self._frame_rate_hz = 0.7 * self._frame_rate_hz + 0.3 * rate
                     previous_frames, previous_ns = frames, now_ns
+                self._note_recent()
                 real_ns = _REAL_CLOCK.monotonic_ns()
                 if real_ns >= next_heartbeat_ns:
                     next_heartbeat_ns = real_ns + round(interval_s * NS_PER_S)
@@ -975,15 +983,39 @@ class AcquireService:
 
     # --- Health ----------------------------------------------------------------------------
 
+    def _note_recent(self) -> None:
+        """Note the counters, so that `health` can say what the last minute lost.
+
+        The watchdog thread calls it each tick, and it notes the counters once a second. It keeps
+        the newest note that is at least a minute old, and every note after it, so that the
+        figures cover the whole minute.
+        """
+        now_ns = self._clock.monotonic_ns()
+        with self._lock:
+            notes = self._recent
+            if notes and now_ns - notes[-1][0] < round(RECENT_SAMPLE_S * NS_PER_S):
+                return
+            drops = self._drops.counters
+            notes.append((now_ns, self._counters.frames_captured, drops.total, drops.late))
+            while len(notes) > 1 and now_ns - notes[1][0] >= self._recent_ns:
+                notes.popleft()
+
     def health(self) -> AcquireHealth:
         """A snapshot of the process. Safe to call from any thread."""
         with self._lock:
             opened, capturing, active = self._opened, self._capturing, self._active
             session = self._session
+            since = self._recent[0] if self._recent else None
         status = self._clock.status()
         counters = self._counters
         drops = self._drops.counters
         now_ns = self._clock.monotonic_ns()
+        recent_s, recent_frames, recent_lost, recent_late = 0.0, 0, 0, 0
+        if since is not None:
+            recent_s = (now_ns - since[0]) / NS_PER_S
+            recent_frames = counters.frames_captured - since[1]
+            recent_lost = drops.total - since[2]
+            recent_late = drops.late - since[3]
         state = "closed"
         if self._stop.is_set():
             state = "stopping"
@@ -1031,6 +1063,10 @@ class AcquireService:
             priority=self._priority,
             late_reads=drops.late,
             timer=self._timer_status,
+            recent_s=round(recent_s, 1),
+            recent_frames=recent_frames,
+            recent_lost=recent_lost,
+            recent_late=recent_late,
         )
 
 
