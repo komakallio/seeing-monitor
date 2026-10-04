@@ -2,10 +2,11 @@
 
 `seeingmon camera rates` measures the frame rates of the connected camera in a table: the exposure,
 the ROI size, the pixel format, the USB bandwidth control, and the high-speed mode, one factor at a
-time around the fast stream of the profile, and the second readout mode. It prints the measured rate
-beside the rate of the profile's model and the fitted timing, and it can write the table as JSON
-(see `seeingmon.hardware.rates`). The command puts every control that it changed back, so another
-program that shares the camera finds it as it left it.
+time around the fast stream of the profile, the second readout mode, and the time of single
+exposures at a few ROI heights. It prints the measured rate beside the rate of the profile's model
+and the fitted timing, and it can write the table as JSON (see `seeingmon.hardware.rates`). The
+command puts every control that it changed back, so another program that shares the camera finds it
+as it left it.
 
 `seeingmon hardware sqm` reads the SQM-LE one time from the source that `[sqm]` names (the unit over
 TCP, or the readings in InfluxDB), and it prints the magnitude, the temperature, and the age of the
@@ -40,12 +41,15 @@ def register(subparsers: Subparsers) -> None:
         description=(
             "Measure the frame rates of the connected camera, one factor at a time around the "
             "fast stream of the profile: the exposure, the ROI size, the pixel format, the USB "
-            "bandwidth, and the high-speed mode, and then the second readout mode. Print the "
-            "measured rate, the rate of the profile's model, the median, the jitter, and the "
-            "maximum of the frame periods, the dropped frames, and the ADC depth. Fit the frame "
-            "overhead and the row time of the profile to the rows at bandwidth 100. The command "
-            "puts every control that it changed back, and it closes the camera, even when a row "
-            "fails. Close other camera programs first. The command reads the driver options from "
+            "bandwidth, and the high-speed mode, then the second readout mode, and then single "
+            "exposures of the survey readout mode at a few ROI heights. Print the measured rate, "
+            "the rate of the profile's model, the median, the jitter, and the maximum of the "
+            "frame periods (for a single exposure, of the time from the start call to the "
+            "returned frame), the dropped frames, and the ADC depth. Fit the frame overhead and "
+            "the row time of the profile to the rows at bandwidth 100, and the snapshot overhead "
+            "and the snapshot row time to the single exposures. The command puts every control "
+            "that it changed back, and it closes the camera, even when a row fails. Close other "
+            "camera programs first. The command reads the driver options from "
             "[services.acquire.driver_options] of the configuration (the library path)."
         ),
     )
@@ -53,19 +57,21 @@ def register(subparsers: Subparsers) -> None:
         "--frames",
         type=int,
         default=DEFAULT_FRAMES,
-        help=f"frames to measure in each row (default {DEFAULT_FRAMES})",
+        help=f"frames to measure in each row (default {DEFAULT_FRAMES}; a snapshot row takes "
+        "at most 10 exposures)",
     )
     rates.add_argument(
         "--settle",
         type=int,
         default=DEFAULT_SETTLE,
-        help=f"frames to read and drop before each measurement (default {DEFAULT_SETTLE})",
+        help=f"frames to read and drop before each measurement (default {DEFAULT_SETTLE}; a "
+        "snapshot row drops at most 2 exposures)",
     )
     rates.add_argument("--gain", type=int, default=120, help="the gain of every row (default 120)")
     rates.add_argument(
         "--groups",
         help="the row groups to run, separated by commas, besides the baseline: "
-        "exposure, roi, format, bandwidth, speed, and bin2 (default: all)",
+        "exposure, roi, format, bandwidth, speed, bin2, and snapshot (default: all)",
     )
     rates.add_argument(
         "--json",
