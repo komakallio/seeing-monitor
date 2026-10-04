@@ -23,11 +23,18 @@ from seeingmon.scheduler.commands import (
     StartAlignment,
     StopAlignment,
 )
-from seeingmon.scheduler.status import Counters, FaultStatus, SchedulerStatus, StreamInfo
+from seeingmon.scheduler.status import (
+    ActivityStatus,
+    Counters,
+    FaultStatus,
+    SchedulerStatus,
+    StreamInfo,
+)
 from seeingmon.services.ipc.codec import CodecError, decode_json, encode_json
 from seeingmon.services.web.contract import (
     FRAME_MAGIC,
     METHODS,
+    ActivityView,
     AlignmentState,
     CoreStatus,
     decode_alignment_state,
@@ -271,6 +278,66 @@ def test_a_status_survives_the_round_trip_through_json() -> None:
     assert decoded.scheduler.fault.next_step == "reopen"
     assert decoded.scheduler.cloud_fraction == 0.62
     assert dataclasses.asdict(status)["queued_tasks"] == decoded.scheduler.queued_tasks
+
+
+def activity_status() -> ActivityStatus:
+    return ActivityStatus(
+        state="auto",
+        phase="fast",
+        label="Fast stream: seeing windows",
+        since_utc_ns=1_767_225_640_000_000_000,
+        ends_utc_ns=1_767_225_760_000_000_000,
+        next_label="Survey step: a 1 ms and a 30 s frame",
+        next_utc_ns=1_767_225_760_000_000_000,
+        cadence_s=180.0,
+        detail="Windows of 20 s: 4 of 7 closed",
+        reason="the sky is dark enough",
+    )
+
+
+def activity_wire() -> dict[str, Any]:
+    status = scheduler_status(activity=activity_status())
+    wire: dict[str, Any] = decode_json(encode_json(encode_status(status, "core-1")))
+    return wire
+
+
+def test_the_activity_survives_the_round_trip_through_json() -> None:
+    decoded = decode_status(activity_wire()).scheduler.activity
+    assert decoded == ActivityView(**dataclasses.asdict(activity_status()))
+
+
+def test_a_status_from_an_older_core_has_no_activity() -> None:
+    wire = activity_wire()
+    del wire["scheduler"]["activity"]
+    assert decode_status(wire).scheduler.activity is None
+
+
+def test_an_activity_of_a_newer_core_may_add_fields() -> None:
+    wire = activity_wire()
+    wire["scheduler"]["activity"]["progress"] = 0.5
+    assert decode_status(wire).scheduler.activity is not None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"since_utc_ns": "later"},
+        {"since_utc_ns": None},
+        {"phase": None},
+        {"label": 3},
+        {"cadence_s": "slow"},
+        {"ends_utc_ns": 1.5},
+    ],
+)
+def test_a_malformed_activity_is_refused_with_the_names_of_its_fields(
+    change: dict[str, Any],
+) -> None:
+    wire = activity_wire()
+    wire["scheduler"]["activity"].update(change)
+    with pytest.raises(CodecError) as raised:
+        decode_status(wire)
+    assert "scheduler.activity" in str(raised.value)
+    assert "later" not in str(raised.value)
 
 
 def test_a_status_without_a_stream_decodes() -> None:

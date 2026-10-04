@@ -68,6 +68,18 @@ class TestTheMethods:
         assert status.scheduler.stream is None or status.scheduler.stream.purpose
         assert status.scheduler.counters["frames"] >= 0
 
+    def test_status_says_what_the_scheduler_does(
+        self, served: tuple[CoreRig, RpcCoreClient]
+    ) -> None:
+        rig, client = served
+        rig.app.scheduler.step()
+        scheduler = client.status().scheduler
+        activity = scheduler.activity
+        assert activity is not None
+        assert activity.state == scheduler.state
+        assert activity.label
+        assert activity.since_utc_ns <= scheduler.t_utc_ns
+
     def test_the_alignment_state_is_inactive_outside_alignment(
         self, served: tuple[CoreRig, RpcCoreClient]
     ) -> None:

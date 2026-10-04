@@ -49,14 +49,18 @@ from PIL import Image
 from seeingmon.clock import NS_PER_S, Clock, ClockStatus, utc_ns_to_iso
 from seeingmon.records.base import Record
 from seeingmon.records.samples import sample_record
+from seeingmon.scheduler import activity as words
+from seeingmon.services.web import demo_activity
 from seeingmon.services.web.auth import ScryptParams, hash_token
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import (
+    ActivityView,
     AlignmentFrame,
     AlignmentFrameInfo,
     AlignmentState,
     DarkModelView,
     DarkSetView,
+    FaultView,
     FocusView,
     HistogramView,
     OffsetView,
@@ -704,6 +708,10 @@ class DemoCore(FakeCoreClient):
     nothing, so the UI shows that it waits for frames. The dark library starts with six sets
     (`demo_dark_library`), or empty with `library=False`, and a dark session follows
     `dark_script` (`DEMO_DARK_SCRIPT` by default).
+
+    The status plays the activity of a scheduler on a short cycle (see `demo_activity`): the
+    phases of `auto` follow the monotonic clock of the fake `core`, and the gate of `safe` opens
+    after `GATE_OPEN_S`, which moves the state to `auto`.
     """
 
     def __init__(
@@ -729,6 +737,44 @@ class DemoCore(FakeCoreClient):
         self._field = field or StarField()
         self._seq = 0
         self._latest: AlignmentState | None = None
+        self._since_mono = self._clock.monotonic_ns()  # when the fake scheduler entered its state
+
+    # --- The activity ---
+
+    def _transition(self, state: str, reason: str = "a fake transition") -> None:
+        super()._transition(state, reason)
+        self._since_mono = self._clock.monotonic_ns()
+
+    def _settle_dark(self) -> None:
+        super()._settle_dark()
+        if self._state == "safe" and self._elapsed_s() >= demo_activity.GATE_OPEN_S:
+            self._transition("auto", "the sky is dark enough")  # the demo sky is dark
+
+    def _elapsed_s(self) -> float:
+        """The seconds that the fake scheduler has spent in its state."""
+        return max(0.0, (self._clock.monotonic_ns() - self._since_mono) / NS_PER_S)
+
+    def _reason_text(self) -> str | None:
+        if self._reason == "a fake transition":
+            return demo_activity.STATE_REASONS.get(self._state)
+        return words.state_reason_text(self._reason)
+
+    def _activity_view(self, now_ns: int) -> ActivityView | None:
+        elapsed, reason = self._elapsed_s(), self._reason_text()
+        if self._state == "auto":
+            return demo_activity.auto_activity(elapsed, now_ns, reason)
+        if self._state == "safe":
+            return demo_activity.safe_activity(elapsed, now_ns, reason)
+        if self._state == "align":
+            return demo_activity.align_activity(elapsed, now_ns, reason)
+        if self._state == "commission":
+            return demo_activity.commission_activity(elapsed, now_ns, reason, self.dark.task())
+        return demo_activity.paused_activity(elapsed, now_ns, reason)
+
+    def _fault_view(self, now_ns: int) -> FaultView:
+        if self._state != "auto":
+            return FaultView()
+        return demo_activity.auto_fault(self._elapsed_s(), now_ns)
 
     async def _stream(self) -> AsyncIterator[AlignmentFrame]:
         while True:

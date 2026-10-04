@@ -29,7 +29,12 @@ import seeingmon
 from seeingmon.clock import NS_PER_S
 from seeingmon.scheduler.commands import Command, RejectReason, StopAlignment
 from seeingmon.services.web.context import WebContext
-from seeingmon.services.web.contract import AlignmentState, DarkLibraryView, SchedulerView
+from seeingmon.services.web.contract import (
+    ActivityView,
+    AlignmentState,
+    DarkLibraryView,
+    SchedulerView,
+)
 from seeingmon.services.web.data import (
     InvalidQueryError,
     Step,
@@ -44,6 +49,7 @@ from seeingmon.services.web.health import HealthReport
 from seeingmon.services.web.images import ImageInfo, ImageKey, parse_image_id
 from seeingmon.services.web.live import Subscription
 from seeingmon.services.web.models import (
+    ActivityResponse,
     AlignmentStartRequest,
     ApiInfo,
     BurstRequest,
@@ -152,6 +158,30 @@ def health_response(report: HealthReport, now_ns: int) -> HealthResponse:
     )
 
 
+def _optional_iso(t_ns: int | None) -> str | None:
+    return None if t_ns is None else iso(t_ns)
+
+
+def _optional_scrub(text: str | None) -> str | None:
+    return None if text is None else scrub_text(text)
+
+
+def activity_response(view: ActivityView) -> ActivityResponse:
+    """The activity as the API serves it: ISO times, and no text from a private place."""
+    return ActivityResponse(
+        state=view.state,
+        phase=view.phase,
+        label=scrub_text(view.label),
+        since_utc=iso(view.since_utc_ns),
+        ends_utc=_optional_iso(view.ends_utc_ns),
+        next_label=_optional_scrub(view.next_label),
+        next_utc=_optional_iso(view.next_utc_ns),
+        cadence_s=view.cadence_s,
+        detail=_optional_scrub(view.detail),
+        reason=_optional_scrub(view.reason),
+    )
+
+
 def scheduler_response(view: SchedulerView) -> SchedulerStatusResponse:
     """The scheduler status as the API serves it: ISO times, and no text from a private place."""
     stream = None
@@ -196,6 +226,7 @@ def scheduler_response(view: SchedulerView) -> SchedulerStatusResponse:
         queued_tasks=view.queued_tasks,
         survey_pending=view.survey_pending,
         alignment_idle_s=view.alignment_idle_s,
+        activity=None if view.activity is None else activity_response(view.activity),
     )
 
 

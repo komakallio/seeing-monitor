@@ -9,11 +9,23 @@ import pytest
 
 from seeingmon.frames import Roi
 from seeingmon.records import HealthRecord
-from seeingmon.scheduler.status import Counters, FaultStatus, SchedulerStatus, StreamInfo
+from seeingmon.scheduler.status import (
+    ActivityPhase,
+    ActivityStatus,
+    Counters,
+    FaultStatus,
+    SchedulerStatus,
+    StreamInfo,
+)
 
 
 def make_status(
-    *, degraded: bool = False, failures: int = 0, state: str = "auto", dropped: int = 7
+    *,
+    degraded: bool = False,
+    failures: int = 0,
+    state: str = "auto",
+    dropped: int = 7,
+    activity: ActivityStatus | None = None,
 ) -> SchedulerStatus:
     return SchedulerStatus(
         t_utc_ns=1_000,
@@ -33,6 +45,7 @@ def make_status(
         fault=FaultStatus(failures=failures),
         queued_tasks=2,
         survey_pending=1,
+        activity=activity,
     )
 
 
@@ -85,3 +98,57 @@ def test_the_health_fields_build_a_valid_health_record(state: str) -> None:
     assert record.dropped_total == 7
     assert record.sensor_temperature_c == 18.5
     assert record.components["camera"] == "ok"
+
+
+def test_a_status_has_no_activity_until_the_scheduler_gives_one() -> None:
+    assert make_status().activity is None
+    assert dataclasses.asdict(make_status())["activity"] is None
+
+
+def test_the_activity_converts_to_json_with_plain_values() -> None:
+    activity = ActivityStatus(
+        state="auto",
+        phase=ActivityPhase.FAST.value,
+        label="Fast stream: seeing windows",
+        since_utc_ns=1_000,
+        ends_utc_ns=2_000,
+        next_label="Survey step: a 1 ms and a 30 s frame",
+        next_utc_ns=2_000,
+        cadence_s=180.0,
+        detail="Windows of 20 s: 4 of 7 closed",
+        reason="the sky is dark enough",
+    )
+    data = json.loads(json.dumps(dataclasses.asdict(make_status(activity=activity))))
+    assert data["activity"] == {
+        "state": "auto",
+        "phase": "fast",
+        "label": "Fast stream: seeing windows",
+        "since_utc_ns": 1_000,
+        "ends_utc_ns": 2_000,
+        "next_label": "Survey step: a 1 ms and a 30 s frame",
+        "next_utc_ns": 2_000,
+        "cadence_s": 180.0,
+        "detail": "Windows of 20 s: 4 of 7 closed",
+        "reason": "the sky is dark enough",
+    }
+
+
+def test_the_activity_has_a_phase_for_every_state_of_the_scheduler_and_the_fault() -> None:
+    assert {phase.value for phase in ActivityPhase} == {
+        "fast",
+        "survey_short",
+        "survey_long",
+        "solve_wait",
+        "idle",
+        "watch",
+        "align",
+        "commission",
+        "paused",
+        "camera_fault",
+    }
+
+
+def test_the_activity_is_frozen() -> None:
+    activity = ActivityStatus(state="safe", phase="watch", label="x", since_utc_ns=1)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        activity.label = "y"  # type: ignore[misc]

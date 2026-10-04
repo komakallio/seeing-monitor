@@ -427,10 +427,54 @@ class FaultStatusView(_Response):
     next_step: str | None = None
 
 
+class ActivityResponse(_Response):
+    """What the scheduler does now, for how long, and what comes next, in plain words.
+
+    A value that the scheduler does not know is `null`. The two times that look ahead are
+    expectations: a fast period can end early, and a wait for a pointing solution ends when the
+    solution arrives.
+    """
+
+    state: str = Field(description="The state: `safe`, `auto`, `align`, `commission`, or `paused`.")
+    phase: str = Field(
+        description=(
+            "What the scheduler does within the state. `auto` has `fast` (the fast stream), "
+            "`survey_short` and `survey_long` (the two exposures of the survey step), "
+            "`solve_wait` (it waits for a pointing solution), and `idle` (the camera rests "
+            "until the next slot of the cycle). The other states have `watch` (the brightness "
+            "watch of `safe`), `align`, `commission`, and `paused`. `camera_fault` replaces the "
+            "phase while the scheduler waits to try a recovery step of the camera."
+        )
+    )
+    label: str = Field(description="The activity in words, such as `Fast stream: seeing windows`.")
+    since_utc: str = Field(description="When the activity began.")
+    ends_utc: str | None = Field(
+        None,
+        description=(
+            "When the activity ends, if the scheduler knows: the end of the fast period or of an "
+            "exposure, the wait for the next slot, or the idle timeout of the alignment."
+        ),
+    )
+    next_label: str | None = Field(None, description="The activity that follows.")
+    next_utc: str | None = Field(None, description="When the next activity starts.")
+    cadence_s: float | None = Field(
+        None,
+        description=(
+            "The length of the cycle in force, in seconds. It is shorter under clouds, and it is "
+            "`null` outside `auto`."
+        ),
+    )
+    detail: str | None = Field(
+        None, description="A phrase that adds to the label, such as the windows that have closed."
+    )
+    reason: str | None = Field(None, description="Why the state holds, in words.")
+
+
 class SchedulerStatusResponse(_Response):
     """The scheduler as `core` reports it.
 
     The status leaves out the Sun's elevation, because a series of elevations shows the site.
+    `activity` says what the scheduler does now and what comes next.
     """
 
     t_utc: str
@@ -450,6 +494,7 @@ class SchedulerStatusResponse(_Response):
     queued_tasks: int
     survey_pending: int
     alignment_idle_s: float | None
+    activity: ActivityResponse | None = None
 
 
 class RecordTime(_Response):

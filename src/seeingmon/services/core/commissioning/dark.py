@@ -55,6 +55,7 @@ from seeingmon.scheduler.commission import (
     CommissionResult,
     CommissionTask,
 )
+from seeingmon.scheduler.events import DARK_PHASE_EVENT
 from seeingmon.services.web.contract import (
     MAX_LIST_ITEMS,
     DarkLibraryView,
@@ -82,7 +83,7 @@ from seeingmon.survey.dark_session import (
 
 _log = logging.getLogger(__name__)
 
-PHASE_EVENT = "scheduler.dark_phase"
+PHASE_EVENT = DARK_PHASE_EVENT
 READ_MARGIN_S = 30.0  # a read waits this long beyond the exposure
 TaskState = Literal["idle", "queued", "running", "ok", "failed", "aborted"]
 WAITING_MESSAGE = "The dark session waits for the scheduler to start it."

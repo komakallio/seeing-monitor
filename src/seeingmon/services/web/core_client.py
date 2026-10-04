@@ -70,10 +70,12 @@ from seeingmon.services.web.contract import (
     METHOD_STATUS,
     METHOD_SUBMIT,
     RPC_CHANNEL,
+    ActivityView,
     AlignmentFrame,
     AlignmentState,
     CoreStatus,
     DarkLibraryView,
+    FaultView,
     SchedulerView,
     StreamView,
     decode_alignment_state,
@@ -382,6 +384,9 @@ class FakeCoreClient:
     The dark library lives in `dark`, a `DarkSimulator`: set its `sets`, `model`, and
     `sensor_temperature_c`, and pass `dark_script` to set how long each part of a dark task lasts.
     `QueueDark` starts a scripted task that follows the clock (see `fake_dark`).
+
+    The status answers with the `activity` that you set, which is `None` at first. A subclass can
+    compute the activity and the fault from the clock instead (`_activity_view` and `_fault_view`).
     """
 
     def __init__(
@@ -410,6 +415,7 @@ class FakeCoreClient:
         self._rejected = 0
         self._alignment = alignment_state
         self.degraded = False
+        self.activity: ActivityView | None = None
         self.fail_with: CoreError | None = None
         self.submitted: list[Command] = []
         self.status_calls = 0
@@ -442,6 +448,14 @@ class FakeCoreClient:
         for change in self.dark.settle(state=self._state):
             self._transition(change.state, change.reason)
 
+    def _activity_view(self, now_ns: int) -> ActivityView | None:
+        """The activity that `status` answers with. A subclass can compute it from the clock."""
+        return self.activity
+
+    def _fault_view(self, now_ns: int) -> FaultView:
+        """The fault that `status` answers with. A subclass can script an episode."""
+        return FaultView()
+
     def status(self) -> CoreStatus:
         self._check()
         with self._lock:
@@ -460,11 +474,13 @@ class FakeCoreClient:
                     stream=StreamView(
                         stream_id=1, purpose="fast", mode="bin1", exposure_us=2000, gain=0
                     ),
+                    fault=self._fault_view(now_ns),
                     queued_tasks=self._queued + (1 if self.dark.queued else 0),
                     counters={
                         "commands_accepted": self._accepted,
                         "commands_rejected": self._rejected,
                     },
+                    activity=self._activity_view(now_ns),
                 ),
             )
 

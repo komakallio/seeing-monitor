@@ -29,6 +29,7 @@ streams, and the camera never serves two modes at once.
 from __future__ import annotations
 
 import contextlib
+import logging
 import math
 import re
 import threading
@@ -55,6 +56,7 @@ from seeingmon.drivers.base import CameraDriver, CameraError, CameraStateError, 
 from seeingmon.frames import ActiveStream, Frame, PixelFormat, Roi, StreamConfig, StreamKind
 from seeingmon.profile import Profile
 from seeingmon.records import EventRecord, Record, SeeingWindowRecord, field_specs
+from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.commands import (
     TASK_KINDS,
     Command,
@@ -87,8 +89,12 @@ from seeingmon.scheduler.config import (
     seconds_to_us,
 )
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
+from seeingmon.scheduler.events import DARK_PHASE_EVENT
 from seeingmon.scheduler.faults import FaultPlan, FaultTracker
 from seeingmon.scheduler.gates import (
+    REASON_BRIGHT_SKY,
+    REASON_DAYLIGHT,
+    REASON_NO_MEASUREMENT,
     CloudTracker,
     DaylightGate,
     sky_background_fraction,
@@ -97,11 +103,15 @@ from seeingmon.scheduler.levels import DESTRUCTIVE_STEPS, EscalationLevel, step_
 from seeingmon.scheduler.machine import State, StateMachine
 from seeingmon.scheduler.roi import roi_at_sensor_center, roi_centered_on
 from seeingmon.scheduler.status import (
+    ActivityPhase,
+    ActivityStatus,
     Counters,
     FaultStatus,
     SchedulerStatus,
     StreamInfo,
 )
+
+_log = logging.getLogger(__name__)
 
 _MIN_SLEEP_NS = 1_000_000  # a sleep is at least 1 ms, so every step moves the clock forward
 _OVERRUN_TOLERANCE_NS = NS_PER_S  # a cycle that starts later than this counts as an overrun
@@ -109,6 +119,9 @@ _CLOCK_CHECK_NS = 5 * NS_PER_S  # how often the loop asks the clock whether it i
 _METRICS_DRAIN_NS = NS_PER_S  # drain per-frame metrics at least once per second of frame time
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _MAX_EVENT_REVISIONS = 64
+# What a survey exposure costs beyond its exposure time (configure, start, and read), until the
+# scheduler has measured it. The activity uses it to say when a survey frame ends.
+_DEFAULT_SURVEY_OVERHEAD_S = 1.5
 
 # The reasons that go with a move into `safe`, in the `state_change` event and in the status.
 SAFE_STARTUP = "startup"
@@ -156,6 +169,12 @@ class _Cycle:
     survey_stage: int = 0  # 0 for the short exposure, 1 for the long one
     survey_forced: bool = False  # a solve is needed, so the next fast period starts at once
     solve_deadline_mono: int = 0
+    since_mono: int = 0  # when the cycle entered its current phase, for the activity
+
+    def enter(self, phase: Phase, now_mono: int) -> None:
+        """Move to another phase, and note when."""
+        self.phase = phase
+        self.since_mono = now_mono
 
 
 @dataclass(slots=True)
@@ -170,6 +189,7 @@ class _FastRun:
     missing_frames: int = 0
     frames: int = 0
     edge_blocked: bool = False  # the ROI cannot center the star, so stop cutting windows for it
+    windows_at_start: int = 0  # the count of written windows when the period began
 
 
 @dataclass(slots=True)
@@ -270,6 +290,8 @@ class Scheduler:
         self._event_revisions: dict[int, int] = {}
         self._next_task_id = 1
         self._running_task: CommissionTask | None = None  # popped from the queue, and not done
+        self._task_started_mono = now_mono  # when `_running_task` began, for the activity
+        self._task_phase: tuple[str, str] | None = None  # the phase and message that it reported
         self._pause_after: str | None = None  # why a commission episode ends in `paused`
         self._next_watch_mono = now_mono
         self._closed = False
@@ -284,10 +306,14 @@ class Scheduler:
         self._stream_running = False
         self._activity: Purpose | None = None
         self._fast_run: _FastRun | None = None
-        self._cycle = _Cycle(next_slot_mono=now_mono)
+        self._cycle = _Cycle(next_slot_mono=now_mono, since_mono=now_mono)
         self._return_state = State.SAFE
         self._pending_fault: _PendingFault | None = None
+        self._fault_since_mono: int | None = None  # when the fault episode began
         self._last_error: str | None = None
+        self._pointing_known = False  # whether the pointing provider had a position at last look
+        self._survey_overhead_s: float | None = None  # what a survey exposure cost beyond itself
+        self._activity_error_reported = False
         self._background_fraction: float | None = None
         self._last_temperature_c: float | None = None
         self._last_context: FastContext | None = None
@@ -372,10 +398,11 @@ class Scheduler:
         """A snapshot of the scheduler for `/status` and the `health` record."""
         with self._lock:
             now_mono = self._clock.monotonic_ns()
+            now_utc = self._clock.utc_ns()
             align = self._align
             pending = self._pending_fault
             return SchedulerStatus(
-                t_utc_ns=self._clock.utc_ns(),
+                t_utc_ns=now_utc,
                 state=self._machine.state.value,
                 state_reason=self._machine.reason,
                 state_since_utc_ns=self._machine.entered_utc_ns,
@@ -401,7 +428,302 @@ class Scheduler:
                 alignment_idle_s=(
                     None if align is None else (now_mono - align.last_activity_mono) / NS_PER_S
                 ),
+                activity=self._status_activity(now_utc, now_mono, align, pending),
             )
+
+    # --- The activity ----------------------------------------------------------------------
+
+    def _status_activity(
+        self,
+        now_utc: int,
+        now_mono: int,
+        align: _AlignSession | None,
+        pending: _PendingFault | None,
+    ) -> ActivityStatus | None:
+        """What the scheduler does now, for how long, and what comes next.
+
+        The caller holds the lock, and the loop thread does not, so the activity reads the state
+        of the loop as it finds it. A read of a field that changes in the middle of the call can
+        make the activity one step old, and the code copies each field once before it uses it. A
+        status that cannot explain itself still answers: the activity is then `None`.
+        """
+        try:
+            return self._build_activity(now_utc, now_mono, align, pending)
+        except Exception:  # best effort: see above
+            if not self._activity_error_reported:
+                self._activity_error_reported = True
+                _log.exception("could not build the activity of the status")
+            return None
+
+    def _build_activity(
+        self,
+        now_utc: int,
+        now_mono: int,
+        align: _AlignSession | None,
+        pending: _PendingFault | None,
+    ) -> ActivityStatus:
+        machine = self._machine
+        state = machine.state
+        reason = words.state_reason_text(machine.reason)
+
+        def at(mono: int) -> int:
+            """A moment of the monotonic clock as UTC."""
+            return now_utc - (now_mono - mono)
+
+        if state is State.PAUSED:
+            return ActivityStatus(
+                state=state.value,
+                phase=ActivityPhase.PAUSED.value,
+                label=words.PAUSED_LABEL,
+                since_utc_ns=machine.entered_utc_ns,
+                next_label=words.PAUSED_NEXT_LABEL,
+                detail=words.PAUSED_DETAIL,
+                reason=reason,
+            )
+        if pending is not None:
+            return self._fault_activity(now_utc, at, pending, reason)
+        if state is State.ALIGN:
+            activity = self._align_activity(now_mono, at, align, reason)
+        elif state is State.COMMISSION:
+            activity = self._commission_activity(at, reason)
+        elif state is State.SAFE:
+            activity = self._safe_activity(at, reason)
+        else:
+            activity = self._auto_activity(now_mono, at, reason)
+        failures = self._faults.failures
+        if failures:  # the camera works again, and the failure count has not cleared yet
+            note = words.recovering_text(
+                self._faults.good_frames, self._config.faults.clear_after_frames
+            )
+            detail = note if activity.detail is None else f"{activity.detail}; {note}"
+            activity = replace(activity, detail=detail)
+        return activity
+
+    def _fault_activity(
+        self,
+        now_utc: int,
+        at: Callable[[int], int],
+        pending: _PendingFault,
+        reason: str | None,
+    ) -> ActivityStatus:
+        """The camera failed, and the scheduler waits to try a recovery step."""
+        plan = pending.plan
+        faults = self._config.faults
+        failed = self._faults.degraded
+        since = self._fault_since_mono
+        detail = f"Failure {plan.failures}"
+        if not failed:
+            detail += f" of {faults.degraded_after} before the status turns degraded"
+        return ActivityStatus(
+            state=self._machine.state.value,
+            phase=ActivityPhase.CAMERA_FAULT.value,
+            label="Camera fault: the camera has failed" if failed else "Camera fault: recovering",
+            since_utc_ns=now_utc if since is None else at(since),
+            next_label=words.recovery_label(step_name(plan.step)),
+            next_utc_ns=pending.due_utc_ns,
+            detail=detail,
+            reason=reason,
+        )
+
+    def _align_activity(
+        self,
+        now_mono: int,
+        at: Callable[[int], int],
+        align: _AlignSession | None,
+        reason: str | None,
+    ) -> ActivityStatus:
+        """The alignment helper runs, and its idle timer decides when it ends."""
+        timeout_s = self._config.align.idle_timeout_s
+        idle_s = 0.0
+        ends = None
+        if align is not None:
+            idle_s = max(0.0, (now_mono - align.last_activity_mono) / NS_PER_S)
+            ends = at(align.last_activity_mono + round(timeout_s * NS_PER_S))
+        return ActivityStatus(
+            state=State.ALIGN.value,
+            phase=ActivityPhase.ALIGN.value,
+            label=words.ALIGN_LABEL,
+            since_utc_ns=self._machine.entered_utc_ns,
+            ends_utc_ns=ends,
+            next_label=words.ALIGN_NEXT_LABEL,
+            next_utc_ns=ends,
+            detail=words.align_detail(idle_s, timeout_s),
+            reason=reason,
+        )
+
+    def _commission_activity(self, at: Callable[[int], int], reason: str | None) -> ActivityStatus:
+        """A commissioning task holds the camera."""
+        task = self._running_task
+        reported = self._task_phase
+        waiting = len(self._queue)
+        if self._pause_after is not None:
+            after = words.AFTER_TASK_PAUSED
+        elif self._return_state is State.AUTO:
+            after = words.AFTER_TASK_AUTO
+        else:
+            after = words.AFTER_TASK_SAFE
+        if task is None:  # between two tasks, or before the first one starts
+            return ActivityStatus(
+                state=State.COMMISSION.value,
+                phase=ActivityPhase.COMMISSION.value,
+                label=words.task_label(None),
+                since_utc_ns=self._machine.entered_utc_ns,
+                next_label=after,
+                detail=words.task_detail(waiting, None),
+                reason=reason,
+            )
+        started = self._task_started_mono
+        command = task.command
+        ends = (
+            at(started + round(command.duration_s * NS_PER_S))
+            if isinstance(command, QueueBurst)
+            else None
+        )
+        return ActivityStatus(
+            state=State.COMMISSION.value,
+            phase=ActivityPhase.COMMISSION.value,
+            label=words.task_label(task.kind, None if reported is None else reported[0]),
+            since_utc_ns=at(started),
+            ends_utc_ns=ends,
+            next_label=after,
+            next_utc_ns=ends,
+            detail=words.task_detail(waiting, None if reported is None else reported[1]),
+            reason=reason,
+        )
+
+    def _safe_activity(self, at: Callable[[int], int], reason: str | None) -> ActivityStatus:
+        """The camera is idle, and the brightness watch decides when the cycle may start."""
+        daylight, watch = self._config.daylight, self._config.watch
+        decision = self._gate.evaluate(
+            sun_elevation_deg=self._sun_elevation(),
+            background_fraction=self._background_fraction,
+            running=False,
+        )
+        detail = words.watch_detail(watch.exposure_us / 1e6, watch.interval_s)
+        if decision.reason == REASON_DAYLIGHT:
+            label = words.daylight_label(
+                daylight.sun_elevation_limit_deg - daylight.sun_resume_margin_deg
+            )
+        elif decision.reason == REASON_BRIGHT_SKY:
+            label = words.BRIGHT_SKY_LABEL
+            detail = words.bright_sky_detail(self._background_fraction, daylight.resume_saturation)
+        elif decision.reason == REASON_NO_MEASUREMENT:
+            label = words.FIRST_FRAME_LABEL
+        else:
+            label = words.WATCH_LABEL
+        return ActivityStatus(
+            state=State.SAFE.value,
+            phase=ActivityPhase.WATCH.value,
+            label=label,
+            since_utc_ns=self._machine.entered_utc_ns,
+            next_label=words.WATCH_NEXT_LABEL,
+            next_utc_ns=at(self._next_watch_mono),
+            detail=detail,
+            reason=reason,
+        )
+
+    def _survey_overhead(self) -> float:
+        """What one survey exposure costs beyond its exposure time, in seconds.
+
+        It is the cost of the last exposure that the scheduler took, and a default before that.
+        """
+        measured = self._survey_overhead_s
+        return _DEFAULT_SURVEY_OVERHEAD_S if measured is None else measured
+
+    def _auto_activity(
+        self, now_mono: int, at: Callable[[int], int], reason: str | None
+    ) -> ActivityStatus:
+        """The cycle of `auto`: a fast period, a survey step, and the wait for the next slot."""
+        cycle = self._cycle
+        run = self._fast_run
+        phase, stage, since_mono = cycle.phase, cycle.survey_stage, cycle.since_mono
+        fast, survey = self._config.fast, self._config.survey
+        cadence_ns = self._cadence_ns()
+        step_label = words.survey_step_label(survey.short_exposure_s, survey.long_exposure_s)
+
+        def make(**fields: Any) -> ActivityStatus:
+            return ActivityStatus(
+                state=State.AUTO.value, cadence_s=cadence_ns / NS_PER_S, reason=reason, **fields
+            )
+
+        def fast_period(started_mono: int, window_s: float, closed: int) -> ActivityStatus:
+            ends = at(started_mono + round(window_s * NS_PER_S))
+            total = max(1, round(window_s / fast.analysis_window_s))
+            return make(
+                phase=ActivityPhase.FAST.value,
+                label=words.FAST_LABEL,
+                since_utc_ns=at(started_mono),
+                ends_utc_ns=ends,
+                next_label=step_label,
+                next_utc_ns=ends,
+                detail=words.fast_detail(
+                    fast.analysis_window_s, closed, total, clouds=self._cloud.active
+                ),
+            )
+
+        def survey_frame(stage: int, started_mono: int) -> ActivityStatus:
+            exposure_s = survey.short_exposure_s if stage == 0 else survey.long_exposure_s
+            ends_mono = started_mono + round((exposure_s + self._survey_overhead()) * NS_PER_S)
+            ends = at(ends_mono)
+            if stage == 0:
+                return make(
+                    phase=ActivityPhase.SURVEY_SHORT.value,
+                    label=words.survey_frame_label(exposure_s),
+                    since_utc_ns=at(started_mono),
+                    ends_utc_ns=ends,
+                    next_label=words.survey_frame_label(survey.long_exposure_s),
+                    next_utc_ns=ends,
+                    detail=words.SURVEY_SHORT_DETAIL,
+                )
+            if not self._pointing_known:
+                next_label, next_utc = words.SOLVE_WAIT_LABEL, ends
+            elif cycle.survey_forced:
+                next_label, next_utc = words.FAST_LABEL, ends
+            else:  # the cycle keeps its cadence, so the next fast period waits for its slot
+                slot = cycle.slot_start_mono + cadence_ns
+                next_label, next_utc = words.FAST_LABEL, at(max(ends_mono, slot))
+            return make(
+                phase=ActivityPhase.SURVEY_LONG.value,
+                label=words.survey_frame_label(exposure_s),
+                since_utc_ns=at(started_mono),
+                ends_utc_ns=ends,
+                next_label=next_label,
+                next_utc_ns=next_utc,
+                detail=words.SURVEY_LONG_DETAIL,
+            )
+
+        if phase is Phase.FAST and run is not None:
+            closed = max(0, self._counters.windows - run.windows_at_start)
+            return fast_period(run.started_mono, run.window_ns / NS_PER_S, closed)
+        if phase is Phase.SURVEY:
+            return survey_frame(stage, since_mono)
+        if phase is Phase.SOLVE_WAIT:
+            return make(
+                phase=ActivityPhase.SOLVE_WAIT.value,
+                label=words.SOLVE_WAIT_LABEL,
+                since_utc_ns=at(since_mono),
+                ends_utc_ns=at(cycle.solve_deadline_mono),
+                next_label=words.FAST_LABEL,
+                detail=words.solve_wait_detail(survey.solve_wait_s),
+            )
+        due = self._slot_due_mono(cycle, cadence_ns)
+        if now_mono >= due:  # the next period or step starts now
+            if self._pointing_known:
+                return fast_period(now_mono, self._cloud.fast_window_s(fast.window_s), 0)
+            return survey_frame(0, now_mono)
+        return make(
+            phase=ActivityPhase.IDLE.value,
+            label=words.IDLE_LABEL if self._pointing_known else words.RETRY_LABEL,
+            since_utc_ns=at(since_mono),
+            ends_utc_ns=at(due),
+            next_label=words.FAST_LABEL if self._pointing_known else step_label,
+            next_utc_ns=at(due),
+            detail=(
+                words.idle_detail((due - since_mono) / NS_PER_S)
+                if self._pointing_known
+                else words.retry_detail((due - since_mono) / NS_PER_S)
+            ),
+        )
 
     def step(self) -> StepKind:
         """Do one unit of work and return what it was.
@@ -696,7 +1018,8 @@ class Scheduler:
     def _enter_auto(self) -> None:
         """Start a fresh cycle. The first fast period begins at once."""
         self._fast_run = None
-        self._cycle = _Cycle(next_slot_mono=self._clock.monotonic_ns())
+        now = self._clock.monotonic_ns()
+        self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
 
     def _enter_safe(self, reason: str, *, expect: State) -> bool:
         """Leave `expect` for `safe`. The next brightness frame follows one interval later."""
@@ -906,6 +1229,7 @@ class Scheduler:
         counters.dropped += frame.dropped_before
         self._last_temperature_c = frame.temperature_c
         if self._faults.success():
+            self._fault_since_mono = None
             self._emit(
                 "info",
                 "scheduler.recovered",
@@ -921,6 +1245,8 @@ class Scheduler:
         self._end_stream("fault")
         self._counters.faults += 1
         plan = self._faults.failure(now, can_escalate=self._escalate is not None)
+        if plan.failures == 1 or self._fault_since_mono is None:
+            self._fault_since_mono = now  # a new episode begins
         self._last_error = f"{type(error).__name__}: {error}"
         self._pending_fault = _PendingFault(
             plan=plan,
@@ -947,7 +1273,7 @@ class Scheduler:
                 "trying at a slow pace.",
                 {"failures": plan.failures},
             )
-        self._cycle = _Cycle(next_slot_mono=now)
+        self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
         if plan.degraded and not self._end_alignment("camera fault"):
             for state in (State.AUTO, State.COMMISSION):
                 if self._transition("camera fault", State.SAFE, expect=state):
@@ -1117,14 +1443,9 @@ class Scheduler:
             return StepKind.TRANSITION
         if self._tasks_ready() and self._enter_commission(State.AUTO):
             return StepKind.TRANSITION
-        if cycle.anchored:
-            # Read the cadence now, because a cloud result can arrive while the camera idles.
-            cadence_ns = round(
-                self._cloud.survey_cadence_s(self._config.survey.cadence_s) * NS_PER_S
-            )
-            due = cycle.slot_start_mono + cadence_ns
-        else:
-            due = cycle.next_slot_mono
+        # Read the cadence now, because a cloud result can arrive while the camera idles.
+        cadence_ns = self._cadence_ns()
+        due = self._slot_due_mono(cycle, cadence_ns)
         if now < due:
             return self._sleep_until(due)
         if cycle.anchored:
@@ -1134,6 +1455,7 @@ class Scheduler:
                 self._counters.cadence_overruns += 1  # the cycle took longer than its cadence
         cycle.anchored = False
         position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
+        self._pointing_known = position is not None
         if position is None:
             self._counters.solves_requested += 1
             self._emit(
@@ -1146,21 +1468,31 @@ class Scheduler:
             return StepKind.TRANSITION
         return self._start_fast(position, now)
 
+    def _cadence_ns(self) -> int:
+        """The length of the cycle in force: the survey cadence, or the shorter one under clouds."""
+        return round(self._cloud.survey_cadence_s(self._config.survey.cadence_s) * NS_PER_S)
+
+    @staticmethod
+    def _slot_due_mono(cycle: _Cycle, cadence_ns: int) -> int:
+        """When the cycle at a boundary starts its next fast period or survey step."""
+        if cycle.anchored:
+            return cycle.slot_start_mono + cadence_ns
+        return cycle.next_slot_mono
+
     def _begin_survey(self, *, forced: bool) -> None:
         cycle = self._cycle
-        cycle.phase = Phase.SURVEY
+        now = self._mono()
+        cycle.enter(Phase.SURVEY, now)
         cycle.survey_stage = 0
         cycle.survey_forced = forced
         if forced:
-            cycle.slot_start_mono = self._mono()
+            cycle.slot_start_mono = now
 
     def _start_fast(self, position: tuple[float, float], now: int) -> StepKind:
         fast = self._config.fast
         cycle = self._cycle
         cycle.slot_start_mono = now
-        cycle.cadence_ns = round(
-            self._cloud.survey_cadence_s(self._config.survey.cadence_s) * NS_PER_S
-        )
+        cycle.cadence_ns = self._cadence_ns()
         roi = roi_centered_on(self._profile, self._fast_mode, position, fast.roi_arcmin)
         config = StreamConfig(
             mode=self._fast_mode,
@@ -1184,15 +1516,17 @@ class Scheduler:
             window_ns=round(window_s * NS_PER_S),
             read_timeout_s=self._timeout_s(active),
             last_recenter_mono=now - cooldown_ns,  # an immediate recenter is allowed
+            windows_at_start=self._counters.windows,
         )
         self._refresh_context(force=True)
-        cycle.phase = Phase.FAST
+        cycle.enter(Phase.FAST, now)
         return StepKind.WORK
 
     def _fast_step(self) -> StepKind:
         run = self._fast_run
         if run is None:  # the stream ended outside the cycle, so start the cycle again
-            self._cycle = _Cycle(next_slot_mono=self._mono())
+            now = self._mono()
+            self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
             return StepKind.TRANSITION
         fast = self._config.fast
         try:
@@ -1333,12 +1667,14 @@ class Scheduler:
             roi=None,
             kind=StreamKind.SNAPSHOT,
         )
+        started = self._mono()
         try:
             active = self._reconfigure(config, Purpose.SURVEY)
             self._start_stream()
             frame = self._driver.read_frame(self._timeout_s(active))
         except CameraError as error:
             return self._camera_error(error, "a survey exposure")
+        self._survey_overhead_s = max(0.0, (self._mono() - started) / NS_PER_S - exposure_us / 1e6)
         self._end_stream("snapshot_done")
         self._note_frame(frame)
         self._survey.submit(frame)
@@ -1355,6 +1691,7 @@ class Scheduler:
                 self._enter_safe(decision.reason or "the sky is too bright", expect=State.AUTO)
                 return StepKind.WORK
             cycle.survey_stage = 1
+            cycle.since_mono = self._mono()  # the long exposure begins where the short one ended
         else:
             self._finish_survey()
         return StepKind.WORK
@@ -1372,23 +1709,26 @@ class Scheduler:
         cycle.anchored = not cycle.survey_forced
         cycle.next_slot_mono = now
         position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
+        self._pointing_known = position is not None
         if position is None:
-            cycle.phase = Phase.SOLVE_WAIT
+            cycle.enter(Phase.SOLVE_WAIT, now)
             cycle.solve_deadline_mono = now + round(self._config.survey.solve_wait_s * NS_PER_S)
         else:
-            cycle.phase = Phase.BEGIN
+            cycle.enter(Phase.BEGIN, now)
 
     def _solve_wait_step(self) -> StepKind:
         """Wait for the survey analysis to produce a pointing solution."""
         cycle = self._cycle
         now = self._mono()
-        if self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode) is not None:
-            cycle.phase = Phase.BEGIN
+        known = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode) is not None
+        self._pointing_known = known
+        if known:
+            cycle.enter(Phase.BEGIN, now)
             cycle.next_slot_mono = now
             return StepKind.TRANSITION
         if now >= cycle.solve_deadline_mono or self._survey.pending() == 0:
             # The analysis finished, or took too long, and there is still no solution.
-            cycle.phase = Phase.BEGIN
+            cycle.enter(Phase.BEGIN, now)
             cycle.next_slot_mono = now + round(self._config.survey.solve_retry_s * NS_PER_S)
             return StepKind.TRANSITION
         return self._sleep_until(cycle.solve_deadline_mono)
@@ -1550,6 +1890,8 @@ class Scheduler:
                 # The task counts as running from the moment that it leaves the queue, so that
                 # `submit` never sees a gap between the two.
                 self._running_task = task
+                self._task_started_mono = self._mono()
+                self._task_phase = None
                 if isinstance(task.command, QueueDark) and task.command.pause_after:
                     self._pause_after = (
                         "the dark session is done, and the camera may still be covered"
@@ -1603,6 +1945,7 @@ class Scheduler:
             self._end_stream("task_end")
             with self._lock:
                 self._running_task = None
+                self._task_phase = None
         self._counters.tasks_run += 1
         with self._lock:
             self._results.append(result)
@@ -1622,6 +1965,16 @@ class Scheduler:
                     f"Storing the {task.kind} result failed: {type(error).__name__}.",
                     {"task_id": task.task_id, "error": f"{type(error).__name__}: {error}"},
                 )
+
+    def _note_task_event(self, kind: str, message: str, detail: Mapping[str, Any] | None) -> None:
+        """Keep the phase that a task reports, so that the activity can name it.
+
+        A dark session writes `scheduler.dark_phase` when each phase starts (`bias`, `cover`,
+        `dark`, and `build`), and the activity shows that phase until the next one.
+        """
+        phase = None if detail is None else detail.get("phase")
+        if kind == DARK_PHASE_EVENT and isinstance(phase, str):
+            self._task_phase = (phase, message)
 
     def _should_stop(self) -> bool:
         """Whether a running task must end: the state left `commission`, or the loop shuts down."""
@@ -1788,6 +2141,7 @@ class _TaskContext:
     def emit_event(
         self, level: str, kind: str, message: str, detail: Mapping[str, Any] | None = None
     ) -> None:
+        self._scheduler._note_task_event(kind, message, detail)
         self._scheduler._emit(level, kind, message, detail)
 
     def fast_stream_config(

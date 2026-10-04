@@ -10,7 +10,8 @@ value. A call that fails raises an exception that the connection layer sends bac
 - `ping` takes no parameters and answers `{"instance": "<ID of this core process>"}`. The ID
   changes at a restart.
 - `status` takes no parameters and answers `{"instance": ..., "scheduler": {...}}`, where the
-  scheduler object holds the fields of `SchedulerStatus` (`encode_status`).
+  scheduler object holds the fields of `SchedulerStatus` (`encode_status`), including its
+  `activity`: what the scheduler does now, and what comes next.
 - `submit` takes `{"command": <a command>}` (`encode_command`) and answers with the
   `CommandResult` as JSON (`encode_result`).
 - `alignment_state` takes no parameters and answers with the `AlignmentState` as JSON, with
@@ -343,6 +344,27 @@ class FaultView(_View):
     next_step: str | None = None
 
 
+class ActivityView(_View):
+    """What the scheduler does now, for how long, and what comes next (`ActivityStatus`).
+
+    `phase` is one of `fast`, `survey_short`, `survey_long`, `solve_wait`, `idle`, `watch`,
+    `align`, `commission`, `paused`, and `camera_fault`. Times are nanoseconds since the Unix
+    epoch, in UTC. The text fields are plain words, and a value that the scheduler does not know
+    is `None`.
+    """
+
+    state: str
+    phase: str
+    label: str
+    since_utc_ns: int
+    ends_utc_ns: int | None = None
+    next_label: str | None = None
+    next_utc_ns: int | None = None
+    cadence_s: float | None = None
+    detail: str | None = None
+    reason: str | None = None
+
+
 class SchedulerView(_View):
     """The fields of `SchedulerStatus` as JSON. Every field is plain, so `asdict` fills it."""
 
@@ -364,6 +386,7 @@ class SchedulerView(_View):
     queued_tasks: int = 0
     survey_pending: int = 0
     alignment_idle_s: float | None = None
+    activity: ActivityView | None = None
 
 
 class CoreStatus(_View):

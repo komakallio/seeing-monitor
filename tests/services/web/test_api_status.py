@@ -10,7 +10,13 @@ from fastapi import FastAPI
 from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.records.samples import sample_record
 from seeingmon.services.web.config import WebSettings
-from seeingmon.services.web.contract import CoreStatus, FaultView, RoiView, StreamView
+from seeingmon.services.web.contract import (
+    ActivityView,
+    CoreStatus,
+    FaultView,
+    RoiView,
+    StreamView,
+)
 from seeingmon.services.web.core_client import CoreUnavailableError, FakeCoreClient
 from seeingmon.store.db import Store, StoreReader
 from tests.services.web.client import TestClient
@@ -163,6 +169,77 @@ def test_the_status_leaves_out_the_sun_and_cleans_the_text_of_core(
     assert response.json()["scheduler"]["state_reason"] == "The sky is dark at <hidden>"
 
 
+def test_the_status_has_no_activity_when_core_gives_none(client: TestClient) -> None:
+    assert client.get(f"{API}/status").json()["scheduler"]["activity"] is None
+
+
+def test_the_status_carries_the_activity_with_iso_times(
+    client: TestClient, core: FakeCoreClient
+) -> None:
+    core.activity = ActivityView(
+        state="auto",
+        phase="fast",
+        label="Fast stream: seeing windows",
+        since_utc_ns=NOW_NS - 20 * NS_PER_S,
+        ends_utc_ns=NOW_NS + 120 * NS_PER_S,
+        next_label="Survey step: a 1 ms and a 30 s frame",
+        next_utc_ns=NOW_NS + 121 * NS_PER_S,
+        cadence_s=180.0,
+        detail="Windows of 20 s: 4 of 7 closed",
+        reason="the sky is dark enough",
+    )
+    activity = client.get(f"{API}/status").json()["scheduler"]["activity"]
+    assert activity == {
+        "state": "auto",
+        "phase": "fast",
+        "label": "Fast stream: seeing windows",
+        "since_utc": "2026-10-01T02:59:40.000000Z",
+        "ends_utc": "2026-10-01T03:02:00.000000Z",
+        "next_label": "Survey step: a 1 ms and a 30 s frame",
+        "next_utc": "2026-10-01T03:02:01.000000Z",
+        "cadence_s": 180.0,
+        "detail": "Windows of 20 s: 4 of 7 closed",
+        "reason": "the sky is dark enough",
+    }
+
+
+def test_an_activity_without_the_optional_values_has_them_null(
+    client: TestClient, core: FakeCoreClient
+) -> None:
+    core.activity = ActivityView(
+        state="paused", phase="paused", label="Paused: nothing runs", since_utc_ns=NOW_NS
+    )
+    activity = client.get(f"{API}/status").json()["scheduler"]["activity"]
+    assert activity["ends_utc"] is None
+    assert activity["next_label"] is None
+    assert activity["next_utc"] is None
+    assert activity["cadence_s"] is None
+    assert activity["detail"] is None
+    assert activity["reason"] is None
+
+
+def test_the_activity_cleans_the_text_that_may_name_a_private_place(
+    client: TestClient, core: FakeCoreClient
+) -> None:
+    core.activity = ActivityView(
+        state="safe",
+        phase="camera_fault",
+        label="Camera fault: nothing answers at \\\\.\\pipe\\private-name",
+        since_utc_ns=NOW_NS,
+        next_label="Recovery step: reopen the camera at 192.0.2.50",
+        detail=WINDOWS_ERROR,
+        reason="cannot reach http://host.example/path",
+    )
+    response = client.get(f"{API}/status")
+    activity = response.json()["scheduler"]["activity"]
+    assert activity["label"] == "Camera fault: nothing answers at <hidden>"
+    assert activity["next_label"] == "Recovery step: reopen the camera at <hidden>"
+    assert activity["detail"] == "Cannot open <hidden>"
+    assert activity["reason"] == "cannot reach <hidden>"
+    for private in ("someone", "192.0.2.50", "host.example", "private-name"):
+        assert private not in response.text
+
+
 def test_the_status_reports_a_stream_with_its_roi(
     make_app: Callable[..., FastAPI],
     open_client: Callable[..., TestClient],
@@ -210,6 +287,7 @@ def test_the_status_never_carries_the_scheduler_fields_that_it_does_not_name(
         "queued_tasks",
         "survey_pending",
         "alignment_idle_s",
+        "activity",
     }
 
 

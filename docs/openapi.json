@@ -1,6 +1,111 @@
 {
   "components": {
     "schemas": {
+      "ActivityResponse": {
+        "description": "What the scheduler does now, for how long, and what comes next, in plain words.\n\nA value that the scheduler does not know is `null`. The two times that look ahead are\nexpectations: a fast period can end early, and a wait for a pointing solution ends when the\nsolution arrives.",
+        "properties": {
+          "cadence_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The length of the cycle in force, in seconds. It is shorter under clouds, and it is `null` outside `auto`.",
+            "title": "Cadence S"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A phrase that adds to the label, such as the windows that have closed.",
+            "title": "Detail"
+          },
+          "ends_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the activity ends, if the scheduler knows: the end of the fast period or of an exposure, the wait for the next slot, or the idle timeout of the alignment.",
+            "title": "Ends Utc"
+          },
+          "label": {
+            "description": "The activity in words, such as `Fast stream: seeing windows`.",
+            "title": "Label",
+            "type": "string"
+          },
+          "next_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The activity that follows.",
+            "title": "Next Label"
+          },
+          "next_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the next activity starts.",
+            "title": "Next Utc"
+          },
+          "phase": {
+            "description": "What the scheduler does within the state. `auto` has `fast` (the fast stream), `survey_short` and `survey_long` (the two exposures of the survey step), `solve_wait` (it waits for a pointing solution), and `idle` (the camera rests until the next slot of the cycle). The other states have `watch` (the brightness watch of `safe`), `align`, `commission`, and `paused`. `camera_fault` replaces the phase while the scheduler waits to try a recovery step of the camera.",
+            "title": "Phase",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the state holds, in words.",
+            "title": "Reason"
+          },
+          "since_utc": {
+            "description": "When the activity began.",
+            "title": "Since Utc",
+            "type": "string"
+          },
+          "state": {
+            "description": "The state: `safe`, `auto`, `align`, `commission`, or `paused`.",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "phase",
+          "label",
+          "since_utc"
+        ],
+        "title": "ActivityResponse",
+        "type": "object"
+      },
       "AimView": {
         "description": "Where the pole should go, and how far it is from there.\n\n`x_px` and `y_px` are the aim, which is the center of the reticle. `dx_px` and `dy_px` are the\npole minus the aim, and they are `null` when the pole lies behind the camera.\n`distance_arcmin` is the exact angle between the pole and the sky direction at the aim pixel.",
         "properties": {
@@ -2737,8 +2842,18 @@
         "type": "object"
       },
       "SchedulerStatusResponse": {
-        "description": "The scheduler as `core` reports it.\n\nThe status leaves out the Sun's elevation, because a series of elevations shows the site.",
+        "description": "The scheduler as `core` reports it.\n\nThe status leaves out the Sun's elevation, because a series of elevations shows the site.\n`activity` says what the scheduler does now and what comes next.",
         "properties": {
+          "activity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActivityResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "alignment_idle_s": {
             "anyOf": [
               {
