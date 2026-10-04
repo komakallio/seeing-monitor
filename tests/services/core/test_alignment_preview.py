@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from typing import Any
 
 import numpy as np
 import pytest
@@ -111,6 +112,37 @@ class TestJpeg:
     def test_a_frame_under_the_limit_keeps_its_size(self) -> None:
         preview = make_preview(sky_with_a_star(), max_pixels=1_000_000, quality=80)
         assert (preview.factor, preview.width_px, preview.height_px) == (1, 128, 96)
+
+
+class TestTheCalibrationHook:
+    def test_without_a_calibration_the_image_goes_straight_to_the_stretch(self) -> None:
+        data = sky_with_a_star(300, 400)
+        preview = make_preview(data, max_pixels=10_000, quality=80)
+        assert preview.jpeg == encode_jpeg(stretch_asinh(block_mean(data, 4)), 80)
+
+    def test_the_calibration_gets_the_frame_the_shrunk_image_and_the_factor(self) -> None:
+        data = sky_with_a_star(300, 400)
+        seen: list[tuple[bool, tuple[int, ...], np.dtype[Any], int]] = []
+
+        def spy(frame: Any, image: Any, factor: int) -> Any:
+            seen.append((frame is data, image.shape, image.dtype, factor))
+            return image
+
+        preview = make_preview(data, max_pixels=10_000, quality=80, calibration=spy)
+        assert seen == [(True, (75, 100), np.dtype(np.float32), 4)]
+        assert preview.jpeg == make_preview(data, max_pixels=10_000, quality=80).jpeg
+
+    def test_the_stretch_takes_the_image_that_the_calibration_returns(self) -> None:
+        data = sky_with_a_star(300, 400)
+
+        def invert(frame: Any, image: Any, factor: int) -> Any:
+            return np.asarray(image.max() - image, dtype=np.float32)
+
+        preview = make_preview(data, max_pixels=10_000, quality=80, calibration=invert)
+        shrunk = block_mean(data, 4)
+        assert preview.jpeg == encode_jpeg(stretch_asinh(shrunk.max() - shrunk), 80)
+        assert preview.jpeg != make_preview(data, max_pixels=10_000, quality=80).jpeg
+        assert (preview.width_px, preview.height_px, preview.factor) == (100, 75, 4)
 
 
 class TestSaturation:

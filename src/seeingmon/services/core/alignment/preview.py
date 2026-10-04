@@ -1,15 +1,19 @@
 """The live-view image: a small, stretched JPEG of an alignment frame, and the numbers beside it.
 
 An alignment frame is a full bin2 frame (12 megapixels on the reference camera). The helper cannot
-send that to a phone, so it makes a preview in four steps:
+send that to a phone, so it makes a preview in five steps:
 
 1. **Shrink.** Average blocks of `k` by `k` pixels, with the smallest `k` that brings the image
    under the pixel limit. The average keeps the noise down, and a star stays visible.
-2. **Stretch.** Subtract the median, scale by the bright end of the sky and the stars, and apply
+2. **Calibrate.** When the caller passes a calibration (`PreviewCalibration`, which
+   `seeingmon.services.core.alignment.calibration` makes), it takes the dark level, the vignetting,
+   and the dust shadows out of the shrunk image, so that the stretch shows the sky and not the
+   optics. Without one, the image goes on as it is.
+3. **Stretch.** Subtract the median, scale by the bright end of the sky and the stars, and apply
    `asinh`. The curve is linear for faint pixels and logarithmic for bright ones, so the faint stars
    and the core of Polaris show in one image.
-3. **Encode.** Pillow writes a grayscale JPEG.
-4. **Measure.** The histogram of the frame (with the counts to draw on a log axis) and the share of
+4. **Encode.** Pillow writes a grayscale JPEG.
+5. **Measure.** The histogram of the frame (with the counts to draw on a log axis) and the share of
    saturated pixels come from the full frame, not the preview, because one saturated pixel decides
    the exposure.
 
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import io
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,6 +40,12 @@ MIN_RANGE_DN = 8.0
 WHITE_PERCENTILE = 99.95
 MAD_TO_SIGMA = 1.4826
 HISTOGRAM_STRIDE = 2
+
+# A step between the shrink and the stretch. `calibration(data, image, factor)` gets the frame (it
+# must leave it as it is), the shrunk image of the frame (it may change that in place), and the
+# shrink factor, and it returns the calibrated image. It must not raise: a preview never fails
+# because of its calibration, so a step that cannot run returns the image as it got it.
+PreviewCalibration = Callable[[FrameData, npt.NDArray[np.float32], int], npt.NDArray[np.float32]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,11 +100,23 @@ def encode_jpeg(image: npt.NDArray[np.uint8], quality: int) -> bytes:
     return buffer.getvalue()
 
 
-def make_preview(data: FrameData, *, max_pixels: int, quality: int) -> Preview:
-    """The JPEG of a frame: shrunk under `max_pixels`, stretched, and encoded."""
+def make_preview(
+    data: FrameData,
+    *,
+    max_pixels: int,
+    quality: int,
+    calibration: PreviewCalibration | None = None,
+) -> Preview:
+    """The JPEG of a frame: shrunk under `max_pixels`, calibrated, stretched, and encoded.
+
+    Without a `calibration`, the shrunk image goes straight to the stretch.
+    """
     height, width = data.shape
     factor = shrink_factor(height, width, max_pixels)
-    image = stretch_asinh(block_mean(data, factor))
+    shrunk = block_mean(data, factor)
+    if calibration is not None:
+        shrunk = calibration(data, shrunk, factor)
+    image = stretch_asinh(shrunk)
     return Preview(encode_jpeg(image, quality), image.shape[1], image.shape[0], factor)
 
 
