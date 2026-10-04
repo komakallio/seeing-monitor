@@ -770,6 +770,55 @@ def test_a_short_frame_that_shows_no_stars_leaves_its_survey_frame_and_no_pointi
     analyzer.close()
 
 
+def test_a_survey_step_leaves_one_pointing_record_and_the_latest_one_is_the_solved_one(
+    profile: Profile, catalog: CapCatalog, tmp_path: Path
+) -> None:
+    """The short frame of a step, then the long one: the store holds one pointing record."""
+    from seeingmon.store.db import Store
+
+    rotation = synth.make_attitude(0.9, 40.0, 25.0)
+    long_frame, truth = synth.render_frame(
+        catalog, profile, rotation_tirs=rotation, exposure_s=30.0, seed=3
+    )
+    short_frame, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=rotation,
+        t_utc_ns=truth.t_utc_ns - 2 * NS,
+        exposure_s=0.001,
+        gain=0,
+        seed=7,
+    )
+    pipeline = SurveyPipeline(
+        station_id="test",
+        profile=profile,
+        catalog=catalog,
+        solvers=[synth.QueueSolver([synth.truth_solve_result(truth, catalog)])],
+    )
+    analyzer = SurveyPipelineAnalyzer(
+        profile=profile, station_id="test", pipeline=pipeline, executor=InlineExecutor()
+    )
+    with Store.open(tmp_path / "results.sqlite") as store:
+        for frame in (short_frame, long_frame):
+            analyzer.submit(frame)
+            for output in analyzer.poll():
+                for record in output.records:
+                    store.write(record)
+        survey_frames = store.latest("survey_frame")
+        latest = store.latest("pointing")
+        counts = {
+            kind: len(store.range(kind, 0, 2**63 - 1, 100))
+            for kind in ("survey_frame", "pointing", "sky_quality", "star_list")
+        }
+    assert counts == {"survey_frame": 2, "pointing": 1, "sky_quality": 1, "star_list": 1}
+    assert survey_frames is not None
+    assert latest is not None
+    assert latest.values["t_utc_ns"] == truth.t_utc_ns == survey_frames.values["t_utc_ns"]
+    assert latest.values["solver"] == "synthetic"
+    assert latest.values["flags"] == []
+    analyzer.close()
+
+
 def test_a_built_pipeline_loads_the_catalog_and_the_hot_pixel_file(
     profile: Profile, catalog: CapCatalog, tmp_path: Path
 ) -> None:
