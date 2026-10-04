@@ -1,4 +1,4 @@
-"""Helpers that the web tests share: small JPEG files, alignment states, and a reference `core`.
+"""Helpers that the web tests share: small images, states of the live views, and a reference `core`.
 
 `ReferenceCore` is the server side of `seeingmon.services.web.contract`, built on the real
 connection layer and answering from a `FakeCoreClient`. It shows what `core` has to serve, and the
@@ -34,7 +34,12 @@ from seeingmon.services.web.contract import (
     DarkSetView,
     FocusView,
     HistogramView,
+    LiveSeeingView,
     OffsetView,
+    PolarisStar,
+    PolarisState,
+    PolarisStretch,
+    RoiView,
     SaturationView,
     SolvedView,
     TargetView,
@@ -57,6 +62,65 @@ def tiny_jpeg(shade: int = 0, size: tuple[int, int] = (16, 12)) -> bytes:
     buffer = io.BytesIO()
     Image.new("L", size, shade).save(buffer, "JPEG", quality=90)
     return buffer.getvalue()
+
+
+def tiny_png(shade: int = 0, size: tuple[int, int] = (16, 12)) -> bytes:
+    """A real 8-bit grayscale PNG image of one gray level. Different shades give different bytes."""
+    buffer = io.BytesIO()
+    Image.new("L", size, shade).save(buffer, "PNG", compress_level=1)
+    return buffer.getvalue()
+
+
+def live_seeing_view(**changes: Any) -> LiveSeeingView:
+    """A rolling seeing value with synthetic numbers. Keyword arguments replace fields."""
+    fields: dict[str, Any] = {
+        "t_utc_ns": 1_790_000_000_000_000_000,
+        "span_s": 10.0,
+        "n_frames": 820,
+        "n_usable": 815,
+        "valid_fraction": 0.994,
+        "seeing_fwhm_arcsec": 1.62,
+        "seeing_fwhm_structure_arcsec": 1.55,
+        "r0_cm": 6.1,
+        "r0_structure_cm": 6.4,
+        "image_motion_rms_x_arcsec": 0.71,
+        "image_motion_rms_y_arcsec": 0.66,
+        "width_fwhm_arcsec": 2.9,
+        "stream_id": 3,
+        "readout_mode": "bin1",
+        "exposure_us": 2000,
+        "flags": [],
+        "quality": {},
+    }
+    fields.update(changes)
+    return LiveSeeingView(**fields)
+
+
+def polaris_state(seq: int = 1, *, live: bool = True, found: bool = True) -> PolarisState:
+    """A complete state of a Polaris frame with synthetic values."""
+    star = (
+        PolarisStar(found=True, x=64.3, y=63.8, peak_fraction=0.31, fwhm_arcsec=2.7)
+        if found
+        else PolarisStar(found=False)
+    )
+    return PolarisState(
+        seq=seq,
+        t_utc="2026-10-01T21:00:00.123Z",
+        t_utc_ns=1_790_000_000_123_000_000,
+        stream_id=3,
+        mode="bin1",
+        exposure_us=2000,
+        gain=0,
+        roi=RoiView(x=2008, y=1347, width=128, height=128),
+        scale_arcsec_px=1.91,
+        fast_fps=82.1,
+        image_type="image/png",
+        image_width=128,
+        image_height=128,
+        star=star,
+        stretch=PolarisStretch(black_dn=480.0, white_dn=21_000.0),
+        live_seeing=live_seeing_view() if live else None,
+    )
 
 
 def alignment_state(seq: int = 1, *, active: bool = True) -> AlignmentState:

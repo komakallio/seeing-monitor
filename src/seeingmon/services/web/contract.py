@@ -1,8 +1,8 @@
-"""What `web` and `core` agree on: the RPC methods, the JSON shapes, and the alignment frame.
+"""What `web` and `core` agree on: the RPC methods, the JSON shapes, and the live-view frames.
 
-`core` serves two channels on its `IpcServer`, and `web` is the client of both. This module holds
-the names and the codecs, so that both sides build and read the same bytes. It needs no FastAPI, so
-`core` can import it.
+`core` serves three channels on its `IpcServer`, and `web` is the client of all of them. This module
+holds the names and the codecs, so that both sides build and read the same bytes. It needs no
+FastAPI, so `core` can import it.
 
 **Channel `rpc`** (an `RpcService`). Every request is a JSON object, and every answer is a JSON
 value. A call that fails raises an exception that the connection layer sends back as an error.
@@ -21,6 +21,9 @@ value. A call that fails raises an exception that the connection layer sends bac
   and the progress of the latest dark session (`DarkTaskView`).
 - `alignment_reset_focus` takes no parameters, restarts the best focus value of the alignment
   (the history of the values stays), and answers `{"reset": true}`.
+- `live_seeing` takes no parameters and answers with the `LiveSeeingView` as JSON: the rolling
+  seeing value of the fast stream. The answer is `null` while `core` has no value, which is the
+  case before the first fast period has gathered `live_min_span_s` seconds of frames.
 
 `submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
 normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
@@ -35,6 +38,19 @@ the message. The state describes the same frame as the JPEG. `core` skips frames
 full, so a slow consumer never makes `core` buffer. While the stream is open, `core` treats the
 person as present and calls `Scheduler.touch_alignment` now and then, so the idle timer does not end
 `align`. Outside alignment, the stream stays open and sends nothing.
+
+**Channel `polaris`** (a `StreamService`). `web` opens one stream at a time, and only while a person
+watches the live video of Polaris. While the fast stream runs, `core` sends one data message for
+each frame that it keeps after it thins the stream to `max_fps` frames per second of frame time:
+`pack_polaris_frame(state, image)`. A data message holds the magic `SMPF`, the length of the JSON
+state (4 bytes, little endian), the JSON state, and then the PNG image to the end of the message.
+The image is a lossless 8-bit grayscale PNG with the size of the ROI, so a page can magnify it
+without interpolation and show the pixels as they are. The state describes the same frame. `core`
+skips frames when the window is full, so a slow consumer never makes `core` buffer, and while no
+stream is open `core` copies and encodes nothing. `core` sends `"seq": 0` in the state, because the
+hub of `web` numbers the frames that it receives and stamps the number. Only the frames that the
+fast analyzer receives go out, so the frames of the survey, the alignment, and the bursts never
+reach this channel.
 
 **Commands.** `encode_command` writes a command as `{"type": <name>, ...fields}`. The names are
 `start_alignment`, `stop_alignment`, `pause`, `resume`, `queue_burst`, `queue_sweep`,
@@ -82,6 +98,7 @@ from seeingmon.services.ipc.codec import (
 
 RPC_CHANNEL = "rpc"
 ALIGNMENT_CHANNEL = "alignment"
+POLARIS_CHANNEL = "polaris"
 
 METHOD_PING = "ping"
 METHOD_STATUS = "status"
@@ -89,6 +106,7 @@ METHOD_SUBMIT = "submit"
 METHOD_ALIGNMENT_STATE = "alignment_state"
 METHOD_DARK_LIBRARY = "dark_library"
 METHOD_ALIGNMENT_RESET_FOCUS = "alignment_reset_focus"
+METHOD_LIVE_SEEING = "live_seeing"
 METHODS = (
     METHOD_PING,
     METHOD_STATUS,
@@ -96,11 +114,15 @@ METHODS = (
     METHOD_ALIGNMENT_STATE,
     METHOD_DARK_LIBRARY,
     METHOD_ALIGNMENT_RESET_FOCUS,
+    METHOD_LIVE_SEEING,
 )
 
 FRAME_MAGIC = b"SMAF"
+POLARIS_MAGIC = b"SMPF"
 MAX_STATE_BYTES = 64 * 1024
 JPEG_MAGIC = b"\xff\xd8\xff"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+POLARIS_IMAGE_TYPE = "image/png"
 MAX_LIST_ITEMS = 256
 MAX_TEXT_CHARS = 4000
 
@@ -949,32 +971,194 @@ class AlignmentFrame:
     jpeg: bytes
 
 
-def pack_frame(state: AlignmentState, jpeg: bytes) -> bytes:
-    """The payload of one data message of the `alignment` channel."""
+def _pack_message(
+    magic: bytes, state: BaseModel, image: bytes, image_magic: bytes, label: str, image_name: str
+) -> bytes:
+    """The payload of a live-view message: the magic, the state length, the state, the image."""
     body = state.model_dump_json().encode("utf-8")
     if len(body) > MAX_STATE_BYTES:
-        raise ValueError("the alignment state is too large")
-    if not jpeg.startswith(JPEG_MAGIC):
-        raise ValueError("the frame is not a JPEG image")
-    return FRAME_MAGIC + struct.pack("<I", len(body)) + body + jpeg
+        raise ValueError(f"the {label} state is too large")
+    if not image.startswith(image_magic):
+        raise ValueError(f"the frame is not a {image_name} image")
+    return magic + struct.pack("<I", len(body)) + body + image
+
+
+def _split_message(
+    payload: bytes | bytearray | memoryview,
+    magic: bytes,
+    image_magic: bytes,
+    noun: str,
+    label: str,
+    image_name: str,
+) -> tuple[bytes, bytes]:
+    """The JSON state and the image of a live-view message. Raises `CodecError`."""
+    raw = bytes(payload)
+    if len(raw) < 8 or raw[:4] != magic:
+        raise CodecError(f"the message is not {noun}")
+    (length,) = struct.unpack_from("<I", raw, 4)
+    if length > MAX_STATE_BYTES or 8 + length >= len(raw):
+        raise CodecError(f"the {label} frame has a bad state length")
+    image = raw[8 + length :]
+    if not image.startswith(image_magic):
+        raise CodecError(f"the {label} frame holds no {image_name} image")
+    return raw[8 : 8 + length], image
+
+
+def pack_frame(state: AlignmentState, jpeg: bytes) -> bytes:
+    """The payload of one data message of the `alignment` channel."""
+    return _pack_message(FRAME_MAGIC, state, jpeg, JPEG_MAGIC, "alignment", "JPEG")
 
 
 def unpack_frame(payload: bytes | bytearray | memoryview) -> AlignmentFrame:
     """The inverse of `pack_frame`. Raises `CodecError` for a message that is not a frame."""
-    raw = bytes(payload)
-    if len(raw) < 8 or raw[:4] != FRAME_MAGIC:
-        raise CodecError("the message is not an alignment frame")
-    (length,) = struct.unpack_from("<I", raw, 4)
-    if length > MAX_STATE_BYTES or 8 + length >= len(raw):
-        raise CodecError("the alignment frame has a bad state length")
-    jpeg = raw[8 + length :]
-    if not jpeg.startswith(JPEG_MAGIC):
-        raise CodecError("the alignment frame holds no JPEG image")
+    body, jpeg = _split_message(
+        payload, FRAME_MAGIC, JPEG_MAGIC, "an alignment frame", "alignment", "JPEG"
+    )
     try:
-        state = AlignmentState.model_validate_json(raw[8 : 8 + length])
+        state = AlignmentState.model_validate_json(body)
     except ValidationError:
         raise CodecError("the alignment frame has an unreadable state") from None
     return AlignmentFrame(state, jpeg)
+
+
+# --- The live video of Polaris ---------------------------------------------------------------
+
+
+class PolarisStar(_View):
+    """Where the star is in this frame, and how wide it is.
+
+    `x` and `y` are pixels of the image, and the center of the first pixel is 0. A page that
+    magnifies the image by `k` draws the star at `((x + 0.5) * k, (y + 0.5) * k)`. `peak_fraction`
+    is the brightest pixel of the aperture as a share of the full scale of the ADC. `fwhm_arcsec`
+    is the width of this frame alone, from its second moments inside the aperture of the fast
+    analysis, so it jitters more than the width of a stored window, which averages it. When `found`
+    is false, the other fields are `null`.
+    """
+
+    found: bool
+    x: float | None = None
+    y: float | None = None
+    peak_fraction: float | None = Field(None, ge=0)
+    fwhm_arcsec: float | None = Field(None, ge=0)
+
+
+class PolarisStretch(_View):
+    """The levels of the stretch, in the counts that the camera delivers.
+
+    A frame of a 12-bit ADC in a 16-bit container reads 16 times its ADU. The image is black at
+    `black_dn` and below, and white at `white_dn` and above, with an `asinh` curve between them.
+    """
+
+    black_dn: float
+    white_dn: float
+
+
+class LiveSeeingView(_View):
+    """The rolling seeing value of the fast stream: a provisional number that `core` does not store.
+
+    `core` estimates the seeing from the newest `span_s` seconds of frames with the estimator of the
+    stored windows, and it repeats the estimate every few seconds. `t_utc_ns` is the end of the
+    span in frame time. `n_frames` counts the frames of the span, and `n_usable` those with a
+    usable centroid, and `valid_fraction` is `n_usable` over the frames that the camera produced
+    (the frames lost in between included). The `seeing_fwhm_*` and `r0_*` values follow the
+    records of the `seeing` series: the first of each pair comes from the variance of the motion,
+    and the second from its structure function. `flags` holds the window flags that apply
+    (`degraded`, `saturated`, and the context of the scheduler, such as `cloud`). A value that
+    `core` cannot give is `null`, and `quality` says why.
+    """
+
+    t_utc_ns: int
+    span_s: float = Field(gt=0)
+    n_frames: int = Field(ge=0)
+    n_usable: int = Field(ge=0)
+    valid_fraction: float = Field(ge=0, le=1)
+    seeing_fwhm_arcsec: float | None = None
+    seeing_fwhm_structure_arcsec: float | None = None
+    r0_cm: float | None = None
+    r0_structure_cm: float | None = None
+    image_motion_rms_x_arcsec: float | None = None
+    image_motion_rms_y_arcsec: float | None = None
+    width_fwhm_arcsec: float | None = None
+    stream_id: int = Field(ge=0)
+    readout_mode: str = Field(max_length=64)
+    exposure_us: int = Field(ge=0)
+    flags: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+    quality: dict[str, str] = Field(default_factory=dict, max_length=MAX_LIST_ITEMS)
+
+
+class PolarisState(_View):
+    """What a page shows next to one frame of the live video of Polaris.
+
+    `seq` is the number that the hub of `web` gives the frame (`core` sends 0), and a client that
+    polls passes the newest one as `after`. `t_utc` and `t_utc_ns` are the time of the frame, and
+    `stream_id`, `mode`, `exposure_us`, and `gain` name the stream that it belongs to. `roi` is the
+    rectangle of the sensor that the image shows, in pixels of the readout mode, and
+    `scale_arcsec_px` is the plate scale of that mode. `fast_fps` is the frame rate of the camera,
+    which is higher than the rate of the video.
+
+    The image has the type `image_type` and the size `image_width` by `image_height`, which is the
+    size of the ROI: the page magnifies it. The video is lossless (a PNG), so that the page can
+    magnify it with nearest-neighbor scaling and show the pixels of the star. `stretch` holds the
+    levels of the stretch of the image, `star` the star of this frame, and `live_seeing` the newest
+    rolling seeing value, or `null` while `core` has none. A value that `core` cannot give is
+    `null`, and `quality` says why.
+    """
+
+    seq: int = Field(0, ge=0)
+    t_utc: str = Field(max_length=40)
+    t_utc_ns: int
+    stream_id: int = Field(ge=0)
+    mode: str = Field(max_length=64)
+    exposure_us: int = Field(ge=0)
+    gain: int = Field(ge=0)
+    roi: RoiView
+    scale_arcsec_px: float | None = Field(None, gt=0)
+    fast_fps: float | None = Field(None, gt=0)
+    image_type: Literal["image/png"] = "image/png"
+    image_width: int = Field(gt=0)
+    image_height: int = Field(gt=0)
+    star: PolarisStar
+    stretch: PolarisStretch
+    live_seeing: LiveSeeingView | None = None
+    quality: dict[str, str] = Field(default_factory=dict, max_length=32)
+
+
+def decode_live_seeing(value: Any) -> LiveSeeingView | None:
+    """Check the JSON that `live_seeing` answered with. `None` means that `core` has no value."""
+    if value is None:
+        return None
+    try:
+        return LiveSeeingView.model_validate(value)
+    except ValidationError as error:
+        fields = ", ".join(
+            sorted({".".join(str(part) for part in e["loc"]) for e in error.errors()})
+        )
+        raise CodecError(f"the live seeing is not valid: {fields}") from None
+
+
+@dataclass(frozen=True, slots=True)
+class PolarisFrame:
+    """One frame of the live video of Polaris: the PNG image and the state that describes it."""
+
+    state: PolarisState
+    image: bytes
+
+
+def pack_polaris_frame(state: PolarisState, image: bytes) -> bytes:
+    """The payload of one data message of the `polaris` channel."""
+    return _pack_message(POLARIS_MAGIC, state, image, PNG_MAGIC, "Polaris", "PNG")
+
+
+def unpack_polaris_frame(payload: bytes | bytearray | memoryview) -> PolarisFrame:
+    """The inverse of `pack_polaris_frame`. Raises `CodecError` for a message that is no frame."""
+    body, image = _split_message(
+        payload, POLARIS_MAGIC, PNG_MAGIC, "a Polaris frame", "Polaris", "PNG"
+    )
+    try:
+        state = PolarisState.model_validate_json(body)
+    except ValidationError:
+        raise CodecError("the Polaris frame has an unreadable state") from None
+    return PolarisFrame(state, image)
 
 
 # --- The dark library ------------------------------------------------------------------------

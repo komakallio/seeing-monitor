@@ -35,23 +35,35 @@ from seeingmon.services.ipc.codec import CodecError, decode_json, encode_json
 from seeingmon.services.web.contract import (
     FRAME_MAGIC,
     METHODS,
+    POLARIS_MAGIC,
     ActivityView,
     AlignmentState,
     CoreStatus,
     FocusHistoryView,
     FocusView,
+    LiveSeeingView,
+    PolarisState,
     decode_alignment_state,
     decode_command,
     decode_dark_library,
+    decode_live_seeing,
     decode_result,
     decode_status,
     encode_command,
     encode_result,
     encode_status,
     pack_frame,
+    pack_polaris_frame,
     unpack_frame,
+    unpack_polaris_frame,
 )
-from tests.services.web.helpers import alignment_state, tiny_jpeg
+from tests.services.web.helpers import (
+    alignment_state,
+    live_seeing_view,
+    polaris_state,
+    tiny_jpeg,
+    tiny_png,
+)
 
 COMMANDS: list[Command] = [
     StartAlignment(),
@@ -476,6 +488,7 @@ def test_the_methods_are_the_documented_ones() -> None:
         "alignment_state",
         "dark_library",
         "alignment_reset_focus",
+        "live_seeing",
     )
 
 
@@ -550,6 +563,204 @@ def test_the_whole_history_of_120_values_stays_small() -> None:
     assert (
         len(AlignmentState(active=True, focus=FocusView(history=history)).model_dump_json()) < 7200
     )
+
+
+# --- The live video of Polaris ---------------------------------------------------------------
+
+
+def test_a_polaris_state_survives_the_round_trip_through_json() -> None:
+    for state in (polaris_state(seq=7), polaris_state(live=False, found=False)):
+        assert PolarisState.model_validate_json(state.model_dump_json()) == state
+
+
+def test_the_json_of_a_polaris_state_has_the_documented_fields_in_every_message() -> None:
+    body = json.loads(polaris_state().model_dump_json())
+    assert list(body) == [
+        "seq",
+        "t_utc",
+        "t_utc_ns",
+        "stream_id",
+        "mode",
+        "exposure_us",
+        "gain",
+        "roi",
+        "scale_arcsec_px",
+        "fast_fps",
+        "image_type",
+        "image_width",
+        "image_height",
+        "star",
+        "stretch",
+        "live_seeing",
+        "quality",
+    ]
+    assert body["image_type"] == "image/png"
+    assert body["image_width"] == body["roi"]["width"]
+    assert body["image_height"] == body["roi"]["height"]
+    assert list(body["roi"]) == ["x", "y", "width", "height"]
+    assert list(body["star"]) == ["found", "x", "y", "peak_fraction", "fwhm_arcsec"]
+    assert list(body["stretch"]) == ["black_dn", "white_dn"]
+
+
+def test_a_star_that_is_not_found_is_an_object_with_null_values() -> None:
+    body = json.loads(polaris_state(found=False).model_dump_json())
+    assert body["star"] == {
+        "found": False,
+        "x": None,
+        "y": None,
+        "peak_fraction": None,
+        "fwhm_arcsec": None,
+    }
+
+
+def test_the_image_type_defaults_to_png_and_nothing_else_is_accepted() -> None:
+    value = json.loads(polaris_state().model_dump_json())
+    del value["image_type"]
+    assert PolarisState.model_validate(value).image_type == "image/png"
+    value["image_type"] = "image/jpeg"
+    with pytest.raises(ValueError, match="image_type"):
+        PolarisState.model_validate(value)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"image_width": 0},
+        {"image_height": -1},
+        {"seq": -1},
+        {"gain": -1},
+        {"fast_fps": 0.0},
+        {"scale_arcsec_px": float("nan")},
+        {"star": {"found": "yes"}},
+        {"star": {"found": True, "x": float("inf")}},
+        {"stretch": {"black_dn": 1.0}},
+        {"roi": {"x": 1, "y": 2, "width": 3}},
+        {"live_seeing": {"t_utc_ns": 1}},
+        {"quality": {"a": 1}},
+    ],
+)
+def test_a_malformed_polaris_state_is_refused(change: dict[str, Any]) -> None:
+    value = json.loads(polaris_state().model_dump_json()) | change
+    with pytest.raises(ValueError, match="validation error"):
+        PolarisState.model_validate(value)
+
+
+def test_a_newer_core_may_add_fields_to_the_polaris_state() -> None:
+    value = json.loads(polaris_state().model_dump_json()) | {"later": 1}
+    value["star"]["later"] = 2
+    assert PolarisState.model_validate(value) == polaris_state()
+
+
+def test_a_polaris_frame_survives_the_round_trip() -> None:
+    state = polaris_state(seq=0)
+    image = tiny_png(shade=120)
+    payload = pack_polaris_frame(state, image)
+    assert payload.startswith(POLARIS_MAGIC)
+    frame = unpack_polaris_frame(memoryview(payload))
+    assert frame.state == state
+    assert frame.image == image
+
+
+def test_the_documented_layout_of_a_polaris_frame() -> None:
+    state = polaris_state(seq=0)
+    image = tiny_png()
+    payload = pack_polaris_frame(state, image)
+    assert payload[:4] == b"SMPF"
+    length = int.from_bytes(payload[4:8], "little")
+    assert json.loads(payload[8 : 8 + length]) == json.loads(state.model_dump_json())
+    assert payload[8 + length :] == image
+    assert image.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_pack_refuses_something_that_is_not_a_png() -> None:
+    for image in (b"not an image", tiny_jpeg()):
+        with pytest.raises(ValueError, match="PNG"):
+            pack_polaris_frame(polaris_state(), image)
+
+
+def test_pack_refuses_a_polaris_state_that_is_too_large() -> None:
+    state = polaris_state().model_copy(
+        update={"quality": {f"k{index}": "v" * 3000 for index in range(25)}}
+    )
+    with pytest.raises(ValueError, match="too large"):
+        pack_polaris_frame(state, tiny_png())
+
+
+def test_unpack_refuses_what_is_not_a_polaris_frame() -> None:
+    good = pack_polaris_frame(polaris_state(), tiny_png())
+    state_length = int.from_bytes(good[4:8], "little")
+    bad_length = POLARIS_MAGIC + (10**9).to_bytes(4, "little") + good[8:]
+    no_image = good[: 8 + state_length]
+    not_png = good[: 8 + state_length] + b"plain bytes here"
+    a_jpeg = good[: 8 + state_length] + tiny_jpeg()
+    bad_state = POLARIS_MAGIC + (4).to_bytes(4, "little") + b"nope" + tiny_png()
+    wrong_type = good.replace(b"image/png", b"image/gif", 1)
+    for payload in [
+        b"",
+        b"SMPF",
+        b"XXXX" + good[4:],
+        bad_length,
+        no_image,
+        not_png,
+        a_jpeg,
+        bad_state,
+        wrong_type,
+    ]:
+        with pytest.raises(CodecError):
+            unpack_polaris_frame(payload)
+
+
+def test_the_two_live_views_do_not_read_each_others_frames() -> None:
+    alignment = pack_frame(alignment_state(), tiny_jpeg())
+    polaris = pack_polaris_frame(polaris_state(), tiny_png())
+    assert alignment[:4] != polaris[:4]
+    with pytest.raises(CodecError, match="not a Polaris frame"):
+        unpack_polaris_frame(alignment)
+    with pytest.raises(CodecError, match="not an alignment frame"):
+        unpack_frame(polaris)
+
+
+def test_the_codec_messages_of_the_alignment_frame_are_unchanged() -> None:
+    good = pack_frame(alignment_state(), tiny_jpeg())
+    state_length = int.from_bytes(good[4:8], "little")
+    with pytest.raises(CodecError, match=r"^the message is not an alignment frame$"):
+        unpack_frame(b"")
+    with pytest.raises(CodecError, match=r"^the alignment frame has a bad state length$"):
+        unpack_frame(FRAME_MAGIC + (10**9).to_bytes(4, "little") + good[8:])
+    with pytest.raises(CodecError, match=r"^the alignment frame holds no JPEG image$"):
+        unpack_frame(good[: 8 + state_length] + b"plain")
+    with pytest.raises(CodecError, match=r"^the alignment frame has an unreadable state$"):
+        unpack_frame(FRAME_MAGIC + (4).to_bytes(4, "little") + b"nope" + tiny_jpeg())
+
+
+def test_the_live_seeing_of_core_decodes_and_null_means_no_value() -> None:
+    view = live_seeing_view(flags=["cloud"], quality={"r0_cm": "too few usable frames"})
+    assert decode_live_seeing(json.loads(view.model_dump_json())) == view
+    assert decode_live_seeing(None) is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"span_s": 0},
+        {"n_usable": -1},
+        {"valid_fraction": 1.5},
+        {"seeing_fwhm_arcsec": float("nan")},
+        {"flags": "cloud"},
+        {"quality": {"r0_cm": 3}},
+        {"stream_id": None},
+    ],
+)
+def test_a_malformed_live_seeing_is_refused(change: dict[str, Any]) -> None:
+    value = json.loads(live_seeing_view().model_dump_json()) | change
+    with pytest.raises(CodecError, match="the live seeing is not valid"):
+        decode_live_seeing(value)
+
+
+def test_a_live_seeing_value_is_frozen() -> None:
+    view: LiveSeeingView = live_seeing_view()
+    with pytest.raises(ValueError, match="frozen"):
+        view.span_s = 5.0  # type: ignore[misc]
 
 
 # --- The dark library ------------------------------------------------------------------------
