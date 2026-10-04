@@ -75,6 +75,12 @@ class FastPathConfig(SectionModel):
     # --- scintillation ---
     scintillation_trend_s: Positive = 1.0
 
+    # --- the live estimate ---
+    live_enabled: bool = True
+    live_span_s: Positive = 10.0
+    live_every_s: Positive = 2.0
+    live_min_span_s: Positive = 4.0
+
     # --- buffers ---
     max_buffered_metrics: Annotated[int, Field(ge=100)] = 200_000
 
@@ -84,4 +90,6 @@ class FastPathConfig(SectionModel):
             raise ValueError("structure_lag_max_s must not be below structure_lag_min_s")
         if self.min_window_s > self.window_s:
             raise ValueError("min_window_s must not exceed window_s")
+        if self.live_min_span_s > self.live_span_s:
+            raise ValueError("live_min_span_s must not exceed live_span_s")
         return self

@@ -25,11 +25,18 @@ runs once per window inside the `push` that closes it. It takes a few millisecon
 **Context.** `set_context` changes the flags, the heater duty, and the zenith angle that apply to
 windows that close afterwards. The zenith angle sets the conversion of `r0` to the zenith.
 
+**Live value.** `push` also keeps the recent frames in a ring, and every `live_every_s` seconds of
+frame time it estimates the seeing of the newest `live_span_s` seconds with the estimator of the
+windows (`seeingmon.fastpath.live`). `live` holds the newest value as an immutable `LiveSeeing`,
+and a thread other than the consumer may read it. A new stream clears it. `live_enabled` switches
+the estimate off.
+
 **Thread safety.** One consumer thread calls the analyzer, as `seeingmon.analysis.base` requires.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, replace
 from typing import Any
@@ -49,6 +56,7 @@ from seeingmon.fastpath.kernel import (
     KernelParams,
     measure_frame,
 )
+from seeingmon.fastpath.live import LiveEstimator, LiveSeeing, LiveStream
 from seeingmon.fastpath.scintillation import scintillation_index
 from seeingmon.fastpath.spectrum import MotionSpectrum, aliasing_expected, compute_spectrum
 from seeingmon.fastpath.windows import ClosedWindow, WindowAssembler, is_partial
@@ -57,6 +65,8 @@ from seeingmon.profile import Profile, ProfileError, derived
 from seeingmon.records import SeeingWindowRecord
 from seeingmon.records.seeing import SEEING_WINDOW_FLAGS
 from seeingmon.records.segments import segment_dtype
+
+_log = logging.getLogger(__name__)
 
 ALGORITHM_REVISION = "fast-1"
 """The algorithm revision that every window record carries in `provenance["algo"]`."""
@@ -115,6 +125,9 @@ class FastPathAnalyzer:
         self.star = NO_STAR
         self.frames_pushed = 0
         self.metrics_dropped = 0
+        self._live = LiveEstimator(self._config) if self._config.live_enabled else None
+        self.live: LiveSeeing | None = None
+        self.live_errors = 0
         aperture_m = profile.optics.aperture_mm * 1e-3
         models.outer_scale_ratio(aperture_m, self._config.outer_scale_m)  # warm the caches
         models.tilt_spectrum(aperture_m, self._config.outer_scale_m, self._config.assumed_wind_ms)
@@ -221,6 +234,22 @@ class FastPathAnalyzer:
             ),
         )
         windows = tuple(self._finalize(window) for window in closed) if closed else ()
+        live = self._live
+        if live is not None and live.add(
+            frame.t_utc_ns,
+            usable,
+            saturated,
+            measurement.x,
+            measurement.y,
+            measurement.width_x,
+            measurement.width_y,
+            measurement.noise_var_x,
+            measurement.noise_var_y,
+            peak,
+            flux_e,
+            frame.dropped_before,
+        ):
+            self._estimate_live(live, frame, stream)
         if found:
             x, y = measurement.x, measurement.y
             self._guess = (x, y)
@@ -236,6 +265,27 @@ class FastPathAnalyzer:
             self.star = NO_STAR
         self.frames_pushed += 1
         return FastUpdate(star=self.star, windows=windows)
+
+    def _estimate_live(self, live: LiveEstimator, frame: Frame, stream: _Stream) -> None:
+        """Estimate the rolling seeing value. An error never reaches the caller of `push`."""
+        try:
+            context = self._context
+            self.live = live.estimate(
+                LiveStream(
+                    frame.stream_id,
+                    frame.mode,
+                    frame.exposure_us,
+                    stream.settings,
+                    stream.plate_scale_arcsec_per_px,
+                    stream.known,
+                ),
+                context.flags,
+                context.zenith_angle_deg,
+            )
+        except Exception:
+            self.live_errors += 1
+            if self.live_errors <= 3:
+                _log.exception("the rolling seeing value failed")
 
     def flush(self, reason: str = "end") -> tuple[SeeingWindowRecord, ...]:
         """Close the open window early and return it (with `partial` when it is short)."""
@@ -262,6 +312,9 @@ class FastPathAnalyzer:
     ) -> _Stream:
         """Register the settings of a stream (a new one, or a changed one) and make it current."""
         stream = self._build_stream(mode, gain, exposure_us, adc_bits, container_bits)
+        if self._live is not None:
+            self._live.reset(None)  # a changed stream or setting starts the ring again
+            self.live = None
         if stream_id != self._stream_id:
             self._guess = None
             self.star = NO_STAR

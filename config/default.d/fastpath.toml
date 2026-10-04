@@ -55,5 +55,12 @@ vibration_min_hz = 4.0           # Lines below this frequency are not searched: 
 # --- scintillation ---
 scintillation_trend_s = 1.0      # Moving-average length that removes slow flux changes, in seconds.
 
+# --- the live estimate ---
+# The rolling seeing value for the live video: the same estimator as a window, on the newest frames.
+live_enabled = true              # `false` keeps no ring and computes no live value.
+live_span_s = 10.0               # The newest seconds of frame time that one estimate uses.
+live_every_s = 2.0               # The estimate repeats after this many seconds of frame time.
+live_min_span_s = 4.0            # No estimate until the stream has run this long.
+
 # --- buffers ---
 max_buffered_metrics = 200000    # Rows of per-frame metrics that wait for drain_metrics (4.4 MB at most).
