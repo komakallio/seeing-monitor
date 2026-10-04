@@ -26,9 +26,10 @@ PAGES = {
     "images.html": "images",
     "align.html": "align",
     "dark.html": "dark",
+    "flat.html": "flat",
     "api.html": "api",
 }
-NAV_PAGES = ("now", "history", "images", "align", "dark")
+NAV_PAGES = ("now", "history", "images", "align", "dark", "flat")
 SVG_NAMESPACE = "http://www.w3.org/2000/svg"
 MAX_FILE_BYTES = 120_000
 MAX_TOTAL_BYTES = 450_000
@@ -170,7 +171,7 @@ def test_a_page_loads_the_shared_script_first_and_names_itself_to_it(name: str, 
     assert html.count("<script") == len(sources)  # no inline script
 
 
-def test_the_five_pages_exist_and_are_linked_from_the_frame_in_order() -> None:
+def test_the_six_pages_exist_and_are_linked_from_the_frame_in_order() -> None:
     frame = text_of("js/common.js")
     tabs = (
         ("now", "./", "Now"),
@@ -178,12 +179,13 @@ def test_the_five_pages_exist_and_are_linked_from_the_frame_in_order() -> None:
         ("images", "images.html", "Images"),
         ("align", "align.html", "Align"),
         ("dark", "dark.html", "Dark"),
+        ("flat", "flat.html", "Flat"),
     )
     for page, href, label in tabs:
         assert f'{{ id: "{page}", href: "{href}", label: "{label}" }}' in frame
     positions = [frame.index(f'label: "{label}"') for _, _, label in tabs]
     assert positions == sorted(positions)
-    assert frame.count("href: ") >= 5
+    assert frame.count("href: ") >= 6
     for name in NAV_PAGES:
         assert any(page == name for page in PAGES.values())
 
@@ -466,6 +468,131 @@ def test_the_dark_page_reads_the_library_with_the_poller_so_that_a_hidden_tab_wa
     assert 'command("commands/dark"' in script
     assert '"mode", { mode: "paused" }' in script  # Cancel is the pause command
     assert '"mode", { mode: "auto" }' in script  # Resume is the resume command
+
+
+# --- The Flat page ---------------------------------------------------------------------------
+
+
+def test_the_flat_page_loads_the_logic_before_the_page_script() -> None:
+    html = text_of("flat.html")
+    sources = re.findall(r'<script src="(js/[a-z]+\.js)" defer></script>', html)
+    assert sources == ["js/common.js", "js/flattext.js", "js/flat.js"]
+
+
+def test_every_field_of_the_flat_form_has_a_label() -> None:
+    html = text_of("flat.html")
+    fields = re.findall(r'<input type="(?:text|checkbox)" id="([^"]+)"', html)
+    assert sorted(fields) == ["f-frames", "f-pause", "f-target"]
+    for field in fields:
+        assert f'for="{field}"' in html, field
+
+
+def test_the_flat_page_announces_progress_and_mistakes_to_a_screen_reader() -> None:
+    html = text_of("flat.html")
+    assert re.search(r'id="task-message" role="status" aria-live="polite"', html)
+    assert re.search(r'id="start-hint" aria-live="polite"', html)
+    assert re.search(r'id="command-note" aria-live="polite"', html)
+    assert re.search(r'id="review-note" aria-live="polite"', html)
+    assert re.search(r'id="flat-error" class="banner" hidden role="alert"', html)
+    for field in ("frames", "target"):
+        assert re.search(rf'id="e-{field}" hidden role="alert"', html), field
+
+
+def test_the_flat_page_has_the_four_steps_and_the_three_decisions_in_plain_words() -> None:
+    html = text_of("flat.html")
+    steps = re.search(r'<ol class="steps">(.*?)</ol>', html, re.S)
+    assert steps is not None
+    assert len(re.findall(r"<li>", steps.group(1))) == 4
+    for label in ("Take flat", "Use this flat", "Discard", "Take a second set", "Stop", "Resume"):
+        assert f">{label}</button>" in html, label
+
+
+def test_the_table_of_flats_keeps_its_roles_where_a_phone_turns_it_into_a_list() -> None:
+    html = text_of("flat.html")
+    for role in ('role="table"', 'role="rowgroup"', 'role="row"', 'role="columnheader"'):
+        assert role in html, role
+    script = text_of("js/flat.js")
+    assert 'role: "row"' in script
+    assert 'role: "cell"' in script
+    assert 'empty: "1"' in script  # the phone skips a cell with this mark
+    css = text_of("css/app.css")
+    assert "content: attr(data-label)" in css  # and shows the label in front of each value
+    assert ".sets td[data-empty]" in css
+    assert 'class="sets" id="flats-table"' in html  # the rules of the table of dark sets apply
+
+
+def test_no_script_gives_a_dataset_a_null_because_the_dataset_turns_it_into_text() -> None:
+    """A `null` in the dataset of an element becomes the text "null", and the attribute is there.
+
+    The Flat page once marked every cell of its table as empty this way, and a phone hid the table.
+    The helper `h` skips a `null` property, but it assigns the entries of a dataset as they are.
+    """
+    for path in scripts():
+        text = path.read_text(encoding="utf-8")
+        for literal in re.findall(r"dataset:\s*\{([^}]*)\}", text):
+            assert not re.search(r"\bnull\b|\bundefined\b", literal), (path.name, literal)
+
+
+def test_a_phase_of_a_flat_session_shows_its_state_in_words_and_not_in_color_alone() -> None:
+    script = text_of("js/flat.js")
+    assert '"aria-current": phase.state === "active" ? "step" : null' in script
+    assert 'class: "phase-name", text: phase.label' in script
+    assert 'class: "phase-detail", text: phase.detail' in script
+
+
+def test_a_verdict_and_the_level_of_the_frames_have_a_word_and_not_a_color_alone() -> None:
+    script = text_of("js/flat.js")
+    assert 'h("span", { class: "chip", text: word, dataset: { level } })' in script
+    assert "word.textContent = gauge.word" in script  # "On target", "Too dark", or "Too bright"
+    assert "word.textContent = review.word" in script  # "Good", "Check", or "Problem"
+    logic = text_of("js/flattext.js")
+    assert 'const WORDS = { good: "Good", warn: "Check", bad: "Problem" }' in logic
+
+
+def test_the_flat_page_reads_the_library_with_the_poller_so_that_a_hidden_tab_waits() -> None:
+    script = text_of("js/flat.js")
+    assert "poller(read, () => FlatText.pollInterval(" in script
+    assert 'api.get("flat")' in script
+    assert '"post", "flat/session"' in script
+    assert '"post", "flat/session/stop"' in script
+    assert '"flat/" + version + "/activate"' in script
+    assert "api.delete(path)" in script
+    assert '"post", "mode", { mode: "auto" }' in script  # Resume is the resume command
+
+
+def test_the_flat_page_resumes_a_paused_scheduler_only_after_the_session_is_queued() -> None:
+    script = text_of("js/flat.js")
+    start = script[
+        script.index("async function start(setNumber)") : script.index("async function startFirst")
+    ]
+    assert start.index('"flat/session"') < start.index('{ mode: "auto" }')
+    assert "answer && answer.accepted && wasPaused" in start
+
+
+def test_a_deletion_on_the_flat_page_asks_twice_and_a_use_asks_once() -> None:
+    script = text_of("js/flat.js")
+    assert 'const DESTRUCTIVE = ["discard", "delete"]' in script
+    assert '"Press again to " + kind' in script  # the first press only changes the button
+    assert "if (!DESTRUCTIVE.includes(kind))" in script
+    ask = script[script.index("function ask(kind, version)") : script.index("function renderTable")]
+    assert "setTimeout(() =>" in ask  # a deletion that nobody confirms lapses
+    assert "decide(kind, version)" in ask
+
+
+def test_the_flat_page_uses_only_the_tokens_of_the_style_sheet() -> None:
+    css = text_of("css/app.css")
+    tokens = set(re.findall(r"^\s+(--[a-z0-9-]+):", css, re.M))
+    for name in ("flat.html", "js/flat.js", "js/flattext.js"):
+        text = text_of(name)
+        for used in re.findall(r"var\((--[a-z0-9-]+)", text):
+            assert used in tokens, (name, used)
+        assert not re.search(r"#[0-9a-fA-F]{3,8}\b", text), name  # no color outside the tokens
+    start = css.index("/* --- Flat ")
+    block = css[start : css.index("/* --- The red night mode")]
+    for used in re.findall(r"var\((--[a-z0-9-]+)", block):
+        assert used in tokens, used
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
+    assert "rgb(" not in block
 
 
 # --- Contrast --------------------------------------------------------------------------------

@@ -6,10 +6,12 @@ stall detection, all against a fake socket and a fake clock), the pure helpers (
 values, the reading of a failed response, and the ticks of the plotter), the geometry of the sky
 overlay (projection against golden numbers from Python, clipping, and the rules that keep the grid
 from bunching up at the pole), and the words of the Align page (its sentences and the states of its
-cards), and the logic of the Dark page (the status line, the phases of a session, the check of the
-form, the polling interval, and the numbers of the chart). GitHub runners have Node, so CI runs
-them. A machine without Node skips them. The scenario files also run unchanged in a browser
-console, which is how they were checked on a machine without Node.
+cards), the logic of the Dark page (the status line, the phases of a session, the check of the
+form, the polling interval, and the numbers of the chart), and the logic of the Flat page (the
+words, the phases of a session and the gauge of its level, the verdicts on a new flat, the rows of
+the library, and the check of the form). GitHub runners have Node, so CI runs them. A machine
+without Node skips them. The scenario files also run unchanged in a browser console, which is how
+they were checked on a machine without Node.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ NODE = shutil.which("node")
         "skygrid.test.js",
         "aligntext.test.js",
         "darktext.test.js",
+        "flattext.test.js",
     ],
 )
 def test_the_scenarios_pass_in_node(name: str) -> None:
@@ -50,4 +53,8 @@ def test_the_scenarios_pass_in_node(name: str) -> None:
 def test_every_scenario_file_has_a_runner() -> None:
     scenarios = {path.name.removesuffix("_scenarios.js") for path in JS_DIR.glob("*_scenarios.js")}
     runners = {path.name.removesuffix(".test.js") for path in JS_DIR.glob("*.test.js")}
-    assert scenarios == runners == {"live_link", "helpers", "skygrid", "aligntext", "darktext"}
+    assert (
+        scenarios
+        == runners
+        == {"live_link", "helpers", "skygrid", "aligntext", "darktext", "flattext"}
+    )

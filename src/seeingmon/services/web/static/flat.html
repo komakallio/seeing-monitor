@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Seeing monitor: Flat</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/common.js" defer></script>
+<script src="js/flattext.js" defer></script>
+<script src="js/flat.js" defer></script>
+</head>
+<body>
+<main id="main">
+  <div class="page-title">
+    <h1>Flat</h1>
+    <p class="page-note" id="flat-note" aria-live="polite">Loading the library.</p>
+  </div>
+  <noscript><div class="banner" data-level="bad">This page needs JavaScript.</div></noscript>
+  <div id="flat-error" class="banner" hidden role="alert"></div>
+
+  <section class="panel" aria-labelledby="h-library">
+    <h2 id="h-library">Flat in use</h2>
+    <div class="row">
+      <span class="pill" id="use-pill" data-level="warn">Loading</span>
+      <span id="temperature-line"></span>
+    </div>
+    <p class="note" id="use-text"></p>
+  </section>
+
+  <div class="banner" id="blocker" data-level="warn" hidden>
+    <p><strong id="blocker-text"></strong></p>
+    <p><a href="dark.html">Open the Dark page</a></p>
+  </div>
+
+  <div class="flat-grid">
+    <section class="panel" aria-labelledby="h-take">
+      <h2 id="h-take">Take a flat</h2>
+      <ol class="steps">
+        <li>Cover the front of the guide scope with an even light: a light panel, or a white cloth in daylight.</li>
+        <li>Press Take flat, and keep the light steady.</li>
+        <li>Wait until the page shows the new flat.</li>
+        <li>Look at it. Press Use this flat, or Discard. Then remove the light and press Resume.</li>
+      </ol>
+      <form id="flat-form" novalidate>
+        <div class="row">
+          <button type="submit" class="primary" id="flat-start">Take flat</button>
+          <button type="button" id="flat-stop" hidden>Stop</button>
+          <button type="button" id="flat-resume" hidden>Resume</button>
+        </div>
+        <details class="advanced" id="advanced">
+          <summary>Advanced</summary>
+          <div class="form-grid">
+            <label for="f-frames">Frames</label>
+            <input type="text" id="f-frames" inputmode="numeric" autocomplete="off" aria-describedby="e-frames">
+            <p class="field-error" id="e-frames" hidden role="alert"></p>
+            <label for="f-target">Brightness target, in percent of the full scale</label>
+            <input type="text" id="f-target" inputmode="decimal" autocomplete="off" aria-describedby="e-target">
+            <p class="field-error" id="e-target" hidden role="alert"></p>
+          </div>
+          <label class="field" for="f-pause"><input type="checkbox" id="f-pause" checked> Pause the scheduler at the end, so that nothing records data while the light covers the camera</label>
+          <p class="hint">The station finds the exposure that reaches the target, and it takes the frames at that exposure. More frames make a quieter flat.</p>
+        </details>
+      </form>
+      <p class="hint" id="start-hint" aria-live="polite"></p>
+      <p class="hint" id="command-note" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" id="progress-panel" aria-labelledby="h-progress">
+      <h2 id="h-progress">Progress</h2>
+      <p class="empty" id="progress-empty">No session has run since the server started.</p>
+      <ol class="phases" id="phases" hidden></ol>
+      <div id="level-block" hidden>
+        <p class="row"><span class="chip" id="level-word">On target</span> <span id="level-text"></span></p>
+        <div class="gauge" aria-hidden="true">
+          <div class="fill" id="level-fill"></div>
+          <div class="mark" id="level-mark"></div>
+        </div>
+        <div class="scale" aria-hidden="true"><span>0 %</span><span>50 %</span><span>100 %</span></div>
+      </div>
+      <p id="task-message" role="status" aria-live="polite"></p>
+      <div class="banner" id="session-notes" data-level="warn" hidden>
+        <p><strong>The session noticed:</strong></p>
+        <ul class="notes" id="session-notes-list"></ul>
+      </div>
+      <div class="banner" id="result" hidden>
+        <p><strong id="result-title"></strong></p>
+        <p id="result-text"></p>
+      </div>
+      <div class="banner" id="resume-notice" data-level="warn" hidden>
+        <p><strong id="resume-title">Remove the light, then press Resume.</strong></p>
+        <p id="resume-text">The scheduler is paused, so the station records nothing until you resume it.</p>
+        <p><button type="button" class="primary" id="notice-resume">Resume</button></p>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel" id="review-panel" aria-labelledby="h-review" hidden>
+    <h2 id="h-review">Review the new flat</h2>
+    <div class="row">
+      <span class="chip" id="review-word">Good</span>
+      <span id="review-title"></span>
+    </div>
+    <p id="review-text"></p>
+    <div class="flat-review">
+      <figure class="flat-figure">
+        <img id="flat-image" alt="Preview of the new flat. A lighter area gets more light than the median pixel, and a darker area gets less." width="518" height="353">
+        <figcaption>The picture runs from 10 % less light (black) to 10 % more light (white) than the median pixel. The corners are dark because the lens loses light there.</figcaption>
+      </figure>
+      <div>
+        <dl class="facts verdicts" id="verdicts"></dl>
+        <div class="banner" id="flat-notes" data-level="warn" hidden>
+          <p><strong>Notes</strong></p>
+          <ul class="notes" id="flat-notes-list"></ul>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <button type="button" class="primary" id="flat-use">Use this flat</button>
+      <button type="button" id="flat-discard">Discard</button>
+    </div>
+    <div id="second-set" hidden>
+      <h3 id="h-second">Take a second set</h3>
+      <p class="note" id="second-why"></p>
+      <p class="row"><button type="button" id="flat-second">Take a second set</button> <span class="hint">Turn the light source by 180 degrees first.</span></p>
+    </div>
+    <p class="hint" id="review-note" aria-live="polite"></p>
+  </section>
+
+  <section class="panel" aria-labelledby="h-flats">
+    <h2 id="h-flats">Flats in the library</h2>
+    <p class="empty" id="flats-empty" hidden>The library holds no flat.</p>
+    <div class="table-wrap" id="flats-wrap" hidden>
+      <table class="sets" id="flats-table" role="table">
+        <thead role="rowgroup">
+          <tr role="row"><th scope="col" role="columnheader">Made</th><th scope="col" role="columnheader">State</th><th scope="col" role="columnheader">Corners</th><th scope="col" role="columnheader">Dust</th><th scope="col" role="columnheader">Noise</th><th scope="col" role="columnheader">Frames</th><th scope="col" role="columnheader">Actions</th></tr>
+        </thead>
+        <tbody id="flats-body" role="rowgroup"></tbody>
+      </table>
+    </div>
+    <p class="hint">The library keeps the newest 10 flats, and the one in use. A flat that you use again takes over from the next frame of the survey.</p>
+  </section>
+</main>
+</body>
+</html>

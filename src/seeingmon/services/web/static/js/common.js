@@ -15,6 +15,7 @@
     { id: "images", href: "images.html", label: "Images" },
     { id: "align", href: "align.html", label: "Align" },
     { id: "dark", href: "dark.html", label: "Dark" },
+    { id: "flat", href: "flat.html", label: "Flat" },
   ];
   const NIGHT_KEY = "seeingmon.night";
   const TOKEN_KEY = "seeingmon.token";
@@ -373,6 +374,7 @@
   const api = {
     get: (path, params, options) => request("GET", path, Object.assign({}, options, { params })),
     post: (path, body, options) => request("POST", path, Object.assign({}, options, { body: body === undefined ? {} : body })),
+    delete: (path, options) => request("DELETE", path, options),
     raw: (path, params, options) => request("GET", path, Object.assign({}, options, { params, raw: true })),
     url: (path) => (path.startsWith("/") ? path : API + "/" + path),
   };

@@ -1094,20 +1094,26 @@ label {
 
 /* --- Dark -------------------------------------------------------------------------------- */
 
-.dark-grid {
+.dark-grid,
+.flat-grid {
   display: grid;
   gap: var(--gap);
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 
-.dark-grid > .panel {
+.dark-grid > .panel,
+.flat-grid > .panel {
   margin-bottom: 0;
   min-width: 0;
 }
 
 .dark-grid + .dark-grid {
   margin-top: var(--gap);
+}
+
+.flat-grid {
+  margin-bottom: var(--gap);
 }
 
 .steps {
@@ -1267,6 +1273,67 @@ label {
   padding-left: 0;
 }
 
+/* --- Flat -------------------------------------------------------------------------------- */
+
+/* The review of a new flat: the picture, and the verdicts beside it (below it on a phone). */
+.flat-review {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  margin: 12px 0;
+}
+
+.flat-figure {
+  margin: 0;
+}
+
+.flat-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 518 / 353;
+  object-fit: contain;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.flat-figure figcaption {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 6px;
+}
+
+/* A verdict is a number, a word in a chip, and a sentence that says why. */
+.verdicts {
+  margin-bottom: 12px;
+}
+
+.facts .why {
+  display: block;
+}
+
+.notes {
+  margin: 4px 0 0;
+  padding-left: 1.2rem;
+}
+
+#level-block {
+  margin: 8px 0 12px;
+}
+
+#second-set {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+#second-set h3 {
+  font-size: 1rem;
+  margin-bottom: 4px;
+}
+
 /* --- The red night mode ------------------------------------------------------------------ */
 
 .night-overlay {
@@ -1285,7 +1352,9 @@ label {
     grid-column: span 2;
   }
 
-  .dark-grid {
+  .dark-grid,
+  .flat-grid,
+  .flat-review {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
@@ -1346,6 +1415,11 @@ label {
   .sets td::before {
     content: attr(data-label);
     color: var(--muted);
+  }
+
+  /* A cell with nothing in it, such as the actions of the flat in use, has no line of its own. */
+  .sets td[data-empty] {
+    display: none;
   }
 
   /* The tools keep their icons and lose their words, so that the title row stays one row. The
