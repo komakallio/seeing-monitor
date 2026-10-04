@@ -208,6 +208,20 @@ The costs belonged to each message and each frame, not to the bytes. The profile
 
 The frame has 4144 × 2822 pixels, 1,888 detections, and 1,394 stars that match the catalog, and the zero point uses 904 of them. The stages come from three separate jobs and the total from five frames, so on a noisy run they do not add up to the total. The peak of the worker was 444 MB on Linux before the case ran the sky quality step, so the step adds about 10 MB: the detection step already holds the largest arrays. The `solve` stage is the tracker, because the case gives the pipeline the solution of a previous frame.
 
+### Alignment live view with a solve
+
+The first light showed a live view that froze and lagged while the quick solve ran. The cause is the GIL: the detector (SEP) holds it for the whole of its background estimate and its extraction, so a solver thread in `core` freezes every other thread of `core` (the case measured 0.36 s for `sep.Background` and 2.45 s for `sep.extract` on a real 30 s frame, and a thread that woke every 0.5 ms got 2 and 5 wakeups). The table shows the effect on the live view of the helper. A producer thread hands a real 4144 × 2822 frame to `AlignmentHelper.sink` every 0.5 s, 0.1 s after its capture time, as the scheduler thread does. A receiver in another process reads the `alignment` stream as `web` does and timestamps each message. The lag is the time from the capture of the frame to the arrival of its preview.
+
+| Solver | Previews per second | Lag: median / 95th percentile / maximum (s) | Longest wait for a preview (s) |
+|---|---|---|---|
+| None | 2.00 | 0.28 / 0.47 / 0.48 | 0.67 |
+| A thread that sleeps 1 s (the GIL stays free) | 2.00 | 0.23 / 0.32 / 0.47 | 0.71 |
+| A thread that sleeps 3 s | 2.00 | 0.28 / 0.41 / 0.49 | 0.75 |
+| The detector in a thread of `core` (before) | 0.79 | 0.59 / 4.99 / 5.97 | 6.00 |
+| The detector in a worker process (after) | 2.00 | 0.44 / 0.56 / 0.74 | 0.81 |
+
+A sleeping solver never held the GIL, so it hid the problem. The detector rows ran 90 s on the real frame with a synthetic catalog, so each solve ended unsolved after the detection, which is the cost that matters. In the thread, the producer arrived up to 4 s late, which is the delay of the scheduler thread that reads the camera, and the preview rate fell to 0.79 per second. In the worker, the producer arrived at most 0.1 s late. The development machine ran other jobs during the runs, and the worker runs at the lower priority of the survey worker, so a solve took 4 to 15 s. The live view did not notice. With the quick-solve detection options (8 sigma, 300 stars), the same run in the worker gave 2.00 previews per second, a median lag of 0.41 s, and a 95th percentile of 0.56 s.
+
 ### Store and calibration
 
 | Figure | Linux / Windows |

@@ -79,6 +79,7 @@ from seeingmon.scheduler import (
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.alignment.helper import AlignmentHelper, Solver
 from seeingmon.services.core.alignment.solve import QuickSolver
+from seeingmon.services.core.alignment.worker import ProcessQuickSolver
 from seeingmon.services.core.commissioning.burst import BurstHandler
 from seeingmon.services.core.commissioning.replay import (
     ReplayHandler,
@@ -474,28 +475,54 @@ class CoreApp:
             site=load_site(self.config),
         )
 
-    def _make_quick_solver(self) -> QuickSolver | None:
+    def _make_quick_solver(self) -> Solver | None:
+        """The quick solve of the alignment helper, or `None` when the catalog does not load.
+
+        It follows the survey worker: in a worker process when both `[alignment] solver_mode` and
+        `[services.core.survey_worker] mode` say `process`, and in a thread of `core` otherwise.
+        The quick solve detects only the bright stars (`[alignment] detect_threshold_sigma` and
+        `detect_max_stars`), because the live view needs a few dozen stars and a fast answer.
+        """
         from seeingmon.survey.analyzer import analyzer_spec
+        from seeingmon.survey.catalog import read_info
         from seeingmon.survey.pipeline import build_pipeline
 
         assert self.tracker is not None
+        settings = self.alignment_settings
+        detect = self.survey_config.detect.model_copy(
+            update={
+                "threshold_sigma": settings.detect_threshold_sigma,
+                "max_stars": settings.detect_max_stars,
+            }
+        )
+        config = self.survey_config.model_copy(update={"detect": detect})
+        pointing = config.pointing
+        in_process = (
+            settings.solver_mode == "thread" or self.settings.survey_worker.mode != "process"
+        )
         try:
-            pipeline = build_pipeline(
-                analyzer_spec(
-                    profile=self.profile, station_id=self.station_id, config=self.survey_config
-                ),
-                self.clock,
-            )
+            spec = analyzer_spec(profile=self.profile, station_id=self.station_id, config=config)
+            if in_process:
+                return QuickSolver(
+                    build_pipeline(spec, self.clock),
+                    self.tracker,
+                    self.clock,
+                    min_stars=pointing.tracker_min_stars,
+                    max_rms_px=pointing.tracker_max_rms_px,
+                )
+            read_info(spec.catalog_path)  # a bad catalog fails here, not in the worker
         except Exception:
             _log.exception("the catalog does not load, so the alignment has no quick solve")
             return None
-        pointing = self.survey_config.pointing
-        return QuickSolver(
-            pipeline,
+        return ProcessQuickSolver(
             self.tracker,
             self.clock,
+            spec=spec,
             min_stars=pointing.tracker_min_stars,
             max_rms_px=pointing.tracker_max_rms_px,
+            nice=self.settings.survey_worker.nice,
+            oom_score_adj=self.settings.survey_worker.oom_score_adj,
+            timeout_s=settings.solve_timeout_s,
         )
 
     def _register_handlers(self) -> None:

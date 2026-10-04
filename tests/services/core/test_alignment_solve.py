@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 
@@ -13,7 +14,14 @@ pytest.importorskip("sep", reason="the survey path needs the survey extra")
 from seeingmon.clock import VirtualClock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile
-from seeingmon.services.core.alignment.solve import QuickSolver, focus_value
+from seeingmon.services.core.alignment.solve import (
+    QuickSolution,
+    QuickSolver,
+    adopt,
+    analyze_frame,
+    focus_value,
+    is_trusted,
+)
 from seeingmon.survey.catalog import CapCatalog
 from seeingmon.survey.detect import Detections, StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD, exp_so3
@@ -184,6 +192,93 @@ class TestSolving:
         assert not solution.solved
         assert solution.note == "analysis error: MemoryError"
         assert (solution.t_utc_ns, solution.seq) == (scene.first[0].t_utc_ns, 1)
+
+
+class TestPlainData:
+    """The solution crosses to another process as plain data, and the trust rule stays in `core`."""
+
+    def test_a_solved_frame_survives_the_trip_as_plain_data(self, scene: Scene) -> None:
+        solver, _ = quick_solver(scene)
+        solution = solver.solve(scene.first[0])
+        assert solution.solved
+        data = solution.to_dict()
+        assert json.loads(json.dumps(data)) == data  # numbers, text, and lists only
+        again = QuickSolution.from_dict(data)
+        assert again.attitude is not None
+        assert solution.attitude is not None
+        assert again.attitude.rotation == pytest.approx(solution.attitude.rotation, abs=1e-15)
+        assert (again.attitude.scale_rad_px, again.attitude.parity, again.attitude.center_px) == (
+            solution.attitude.scale_rad_px,
+            solution.attitude.parity,
+            solution.attitude.center_px,
+        )
+        assert again.to_dict() == data
+
+    def test_an_unsolved_frame_survives_it_without_an_attitude(self) -> None:
+        unsolved = QuickSolution(
+            123, 4, False, n_detected=2, focus_fwhm_px=2.5, elapsed_s=0.4, note="too few stars"
+        )
+        again = QuickSolution.from_dict(json.loads(json.dumps(unsolved.to_dict())))
+        assert again == unsolved
+
+    def test_data_that_lacks_a_field_is_refused(self) -> None:
+        data = QuickSolution(1, 2, False).to_dict()
+        del data["note"]
+        with pytest.raises(KeyError):
+            QuickSolution.from_dict(data)
+
+    def test_the_analysis_hands_the_pointing_solution_to_the_caller_and_not_to_the_tracker(
+        self, scene: Scene
+    ) -> None:
+        solver, _ = quick_solver(scene)
+        analysis = analyze_frame(
+            solver._pipeline,
+            scene.first[0],
+            previous=None,
+            reference=None,
+            index=0,
+            clock=VirtualClock(synth.NIGHT_UTC_NS),
+        )
+        assert analysis.solution.solved
+        assert analysis.pointing is not None
+        assert solver.tracker.solution is None  # `adopt` decides, and nothing adopted it yet
+        solution = adopt(analysis, solver.tracker, min_stars=8, max_rms_px=1.5)
+        assert solution == analysis.solution
+        assert solver.tracker.solution is analysis.pointing
+
+    def test_a_weak_fit_does_not_move_the_tracker(self, scene: Scene) -> None:
+        solver, _ = quick_solver(scene)
+        analysis = analyze_frame(
+            solver._pipeline,
+            scene.first[0],
+            previous=None,
+            reference=None,
+            index=0,
+            clock=VirtualClock(synth.NIGHT_UTC_NS),
+        )
+        assert analysis.pointing is not None
+        weak = adopt(analysis, solver.tracker, min_stars=100_000, max_rms_px=1.5)
+        assert weak.note == "the fit is too weak to move the tracker"
+        assert solver.tracker.solution is None
+        loose = adopt(analysis, solver.tracker, min_stars=8, max_rms_px=1e-6)
+        assert loose.note == "the fit is too weak to move the tracker"
+        assert solver.tracker.solution is None
+
+    def test_the_trust_rule_wants_enough_stars_and_a_small_residual(self, scene: Scene) -> None:
+        solver, _ = quick_solver(scene)
+        analysis = analyze_frame(
+            solver._pipeline,
+            scene.first[0],
+            previous=None,
+            reference=None,
+            index=0,
+            clock=VirtualClock(synth.NIGHT_UTC_NS),
+        )
+        pointing = analysis.pointing
+        assert pointing is not None
+        assert is_trusted(pointing, min_stars=pointing.n_matched, max_rms_px=10.0)
+        assert not is_trusted(pointing, min_stars=pointing.n_matched + 1, max_rms_px=10.0)
+        assert not is_trusted(pointing, min_stars=1, max_rms_px=1e-9)
 
 
 class TestFocusValue:

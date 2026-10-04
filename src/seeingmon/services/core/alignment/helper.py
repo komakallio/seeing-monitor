@@ -2,19 +2,28 @@
 
 **Intake.** In the `align` state the scheduler calls `sink(frame)` on its own thread for every
 frame. `sink` keeps the newest frame in two slots (one for the encoder, one for the solver) and
-returns at once. A frame that is still in a slot when the next one arrives is replaced and counted
-as dropped, so nothing queues: the live view always shows the newest frame that the machine could
-handle, and the latency stays at one exposure plus one encode.
+returns at once. A frame that is still in a slot when the next one arrives is replaced, so nothing
+queues: the live view always shows the newest frame that the machine could handle, and the latency
+stays at one exposure plus one encode. Each slot holds one frame, whatever the speed of its reader.
 
 **The encoder thread** takes the newest frame, makes the preview and the measures of the frame
 (`seeingmon.services.core.alignment.preview`), builds the `AlignmentState` with the latest solve,
-and sends `pack_frame(state, jpeg)` to every open live-view stream. A stream with no room in its
-window skips the frame, because a slow consumer must never make `core` buffer. While a stream is
-open, the thread tells the scheduler now and then that someone watches (`touch`), so the idle timer
-does not end `align`.
+and sends `pack_frame(state, jpeg)` to every open live-view stream. The preview never waits for a
+solve: the state carries whatever solution exists when the frame comes out, and it says from which
+frame that solution is and how old (`TimingView`). A stream with no room in its window skips the
+frame, because a slow consumer must never make `core` buffer. While a stream is open, the thread
+tells the scheduler now and then that someone watches (`touch`), so the idle timer does not end
+`align`.
 
-**The solver thread** takes the newest frame about once a second (`solve_interval_s`, measured from
-the start of the previous solve) and runs the quick solve on it. The result joins the next state.
+**The solver thread** takes the newest frame as soon as it has finished the previous solve, and
+runs the quick solve on it: the latest frame wins, and a solve in progress is never interrupted.
+When the tracker holds a valid pointing the solve is fast, and the overlay follows every frame that
+the machine can handle. `solve_interval_s` (zero by default) spaces the starts of the solves, for
+a machine that has no CPU to spare. The solver is a `QuickSolver` in this process or, in the
+default configuration, a `ProcessQuickSolver` in a worker process: the detector holds the GIL for
+seconds, and in this process it would freeze the encoder, the scheduler thread, and the connection
+layer (see `seeingmon.services.core.alignment.worker`). The helper calls `release` on a solver that
+has it when the alignment ends, and `close` when it stops.
 
 **For tests.** `process_frame` and `solve_frame` do the work of one loop turn on the calling thread,
 so a test needs no threads and no waiting. `start` launches the two threads for a real run.
@@ -29,10 +38,11 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from seeingmon.clock import NS_PER_S, Clock
-from seeingmon.frames import Frame
+from seeingmon.frames import Frame, FrameFlag, TimeQuality
 from seeingmon.profile import Profile
 from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.preview import (
@@ -64,9 +74,21 @@ WAKE_S = 0.5  # the longest that a worker thread waits before it looks around
 
 
 class Solver(Protocol):
-    """`QuickSolver` fits."""
+    """`QuickSolver` and `ProcessQuickSolver` fit.
+
+    A solver may also have `release()`, which the helper calls when the alignment ends, and
+    `close()`, which it calls when it stops. Both are optional.
+    """
 
     def solve(self, frame: Frame) -> QuickSolution: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _Arrival:
+    """A frame that `sink` took, with the time of its arrival (UTC of `core`)."""
+
+    frame: Frame
+    received_ns: int
 
 
 class AlignmentHelper:
@@ -97,19 +119,24 @@ class AlignmentHelper:
         self._wake = threading.Condition(self._lock)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
-        self._encode_slot: Frame | None = None
-        self._solve_slot: Frame | None = None
+        self._encode_slot: _Arrival | None = None
+        self._solve_slot: _Arrival | None = None
         self._summary: FrameSummary | None = None
         self._solution: QuickSolution | None = None
+        self._solve_elapsed_s: float | None = None
+        self._solving: tuple[int, int] | None = None  # (frame seq, start on the monotonic clock)
         self._best_fwhm: float | None = None
         self._senders: list[StreamSender] = []
         self._session = False
+        self._generation = 0  # counts the sessions, so that a late solve cannot leak into the next
+        self._logged_outcome: str | None = None
         self._last_publish_ns: int | None = None
         self._last_solve_ns: int | None = None
         self._next_touch_ns = 0
 
         self.frames_received = 0
-        self.frames_dropped = 0
+        self.frames_dropped = 0  # replaced in the encoder slot before the encoder took them
+        self.frames_unsolved = 0  # replaced in the solver slot: the solver never saw them
         self.frames_encoded = 0
         self.frames_sent = 0
         self.frames_skipped = 0
@@ -123,12 +150,17 @@ class AlignmentHelper:
 
     def sink(self, frame: Frame) -> None:
         """Take a frame of the alignment stream. Called on the scheduler thread, returns at once."""
+        arrival = _Arrival(frame, self._clock.utc_ns())
         with self._wake:
             self.frames_received += 1
+            self._session = True
             if self._encode_slot is not None:
                 self.frames_dropped += 1  # the encoder did not take the last one in time
-            self._encode_slot = frame
-            self._solve_slot = frame
+            self._encode_slot = arrival
+            if self._solver is not None:
+                if self._solve_slot is not None:
+                    self.frames_unsolved += 1  # the solver did not take the last one in time
+                self._solve_slot = arrival
             self._wake.notify_all()
 
     # --- The streams -----------------------------------------------------------------------
@@ -163,8 +195,19 @@ class AlignmentHelper:
         self, summary: FrameSummary, solution: QuickSolution | None, best: float | None
     ) -> AlignmentState:
         target = resolve_target(self._settings, self._tracker, summary.t_utc_ns, summary.mode)
+        with self._lock:
+            elapsed_s, solving = self._solve_elapsed_s, self._solving
+        now_ns = self._clock.monotonic_ns()
         state = build_state(
-            summary, solution, target, self._settings, best_fwhm_px=best, site=self._site
+            summary,
+            solution,
+            target,
+            self._settings,
+            best_fwhm_px=best,
+            site=self._site,
+            now_utc_ns=self._clock.utc_ns(),
+            solve_elapsed_s=elapsed_s,
+            solving=None if solving is None else (solving[0], (now_ns - solving[1]) / NS_PER_S),
         )
         if self._solver is not None:
             return state
@@ -181,9 +224,22 @@ class AlignmentHelper:
             self._session = False
             self._summary = None
             self._solution = None
+            self._solve_elapsed_s = None
             self._best_fwhm = None
             self._encode_slot = None
             self._solve_slot = None
+            self._logged_outcome = None
+            self._generation += 1
+        self._call_solver("release")
+
+    def _call_solver(self, name: str) -> None:
+        """Call `release` or `close` on a solver that has it. A failure goes to the log."""
+        method = getattr(self._solver, name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception:
+                _log.exception("the alignment solver failed to %s", name)
 
     # --- The work of one loop turn ---------------------------------------------------------
 
@@ -209,19 +265,30 @@ class AlignmentHelper:
             saturation=SaturationView(
                 fraction=fraction, warning=fraction > self._settings.saturation_warn_fraction
             ),
+            time_valid=not (
+                bool(frame.flags & FrameFlag.TIME_INVALID) or frame.t_quality == TimeQuality.INVALID
+            ),
         )
 
-    def process_frame(self, frame: Frame) -> bytes:
+    def process_frame(self, frame: Frame, received_ns: int | None = None) -> bytes:
         """Encode a frame, build its state, and send both to the open streams.
 
-        Returns the payload that went out (or would go out, with no stream open).
+        `received_ns` is the time when the frame reached `core` (`sink` records it), which the state
+        uses to tell how long the frame waited. Returns the payload that went out (or would go out,
+        with no stream open).
         """
         started = self._clock.monotonic_ns()
+        began_ns = self._clock.utc_ns() if received_ns is None else received_ns
         summary = self.summarize(frame)
         preview = make_preview(
             frame.data,
             max_pixels=self._settings.max_preview_pixels,
             quality=self._settings.jpeg_quality,
+        )
+        summary = replace(
+            summary,
+            received_ns=received_ns,
+            preview_s=max(0.0, (self._clock.utc_ns() - began_ns) / NS_PER_S),
         )
         with self._lock:
             self._summary = summary
@@ -234,13 +301,28 @@ class AlignmentHelper:
         return payload
 
     def solve_frame(self, frame: Frame) -> QuickSolution | None:
-        """Run the quick solve on a frame, and keep the result for the next states."""
+        """Run the quick solve on a frame, and keep the result for the next states.
+
+        A solve that finishes after the alignment ended is dropped, so that it cannot show in the
+        next session.
+        """
         if self._solver is None:
             return None
-        started = self._clock.monotonic_ns()
-        solution = self._solver.solve(frame)
         with self._lock:
+            generation = self._generation
+            started_ns = self._clock.monotonic_ns()
+            self._solving = (frame.seq, started_ns)
+        try:
+            solution = self._solver.solve(frame)
+        finally:
+            with self._lock:
+                self._solving = None
+        elapsed_s = (self._clock.monotonic_ns() - started_ns) / NS_PER_S
+        with self._lock:
+            if generation != self._generation:
+                return solution
             self._solution = solution
+            self._solve_elapsed_s = elapsed_s
             if solution.focus_fwhm_px is not None and (
                 self._best_fwhm is None or solution.focus_fwhm_px < self._best_fwhm
             ):
@@ -249,8 +331,30 @@ class AlignmentHelper:
             self.solves += 1
         else:
             self.solve_failures += 1
-        self.last_solve_s = (self._clock.monotonic_ns() - started) / NS_PER_S
+        self.last_solve_s = elapsed_s
+        self._log_outcome(solution)
         return solution
+
+    def _log_outcome(self, solution: QuickSolution) -> None:
+        """Say in the log when the solve starts to fail or starts to work again."""
+        outcome = "solved" if solution.solved else "unsolved"
+        if outcome == self._logged_outcome:
+            return
+        self._logged_outcome = outcome
+        if solution.solved:
+            _log.info(
+                "the alignment solve works: frame %d, %d stars matched, %s, %.2f s",
+                solution.seq,
+                solution.n_matched,
+                solution.solver or "a solver",
+                self.last_solve_s,
+            )
+        else:
+            _log.info(
+                "the alignment solve fails: frame %d, %s",
+                solution.seq,
+                solution.note or "no reason given",
+            )
 
     def _publish(self, payload: bytes) -> None:
         with self._lock:
@@ -316,10 +420,13 @@ class AlignmentHelper:
             thread.start()
 
     def stop(self, timeout_s: float = 10.0) -> None:
-        """Stop the threads and close the streams. Safe to call twice."""
+        """Stop the threads, close the streams, and end the solver. Safe to call twice."""
         self._stop.set()
         with self._wake:
             self._wake.notify_all()
+        # A solver process may need a moment to answer: close it first, so that the solver thread
+        # does not hold the join for its whole timeout.
+        self._call_solver("close")
         for thread in self._threads:
             thread.join(timeout_s)
         self._threads.clear()
@@ -328,39 +435,40 @@ class AlignmentHelper:
         for sender in senders:
             sender.close("core is shutting down")
 
-    def _take_for_encoding(self) -> Frame | None:
+    def _take_for_encoding(self) -> _Arrival | None:
         """Take the newest frame for the encoder, waiting up to `WAKE_S` for one."""
         with self._wake:
             if self._encode_slot is None and not self._stop.is_set():
                 self._wake.wait(WAKE_S)
-            frame, self._encode_slot = self._encode_slot, None
-            return frame
+            arrival, self._encode_slot = self._encode_slot, None
+            return arrival
 
-    def _take_for_solving(self) -> Frame | None:
+    def _take_for_solving(self) -> _Arrival | None:
         """Take the newest frame for the solver, waiting up to `WAKE_S` for one."""
         with self._wake:
             if self._solve_slot is None and not self._stop.is_set():
                 self._wake.wait(WAKE_S)
-            frame, self._solve_slot = self._solve_slot, None
-            return frame
+            arrival, self._solve_slot = self._solve_slot, None
+            return arrival
 
     def _encode_loop(self) -> None:
         interval_ns = round(self._settings.min_interval_s * NS_PER_S)
         while not self._stop.is_set():
-            frame = self._take_for_encoding()
-            if frame is not None:
+            arrival = self._take_for_encoding()
+            if arrival is not None:
+                frame = arrival.frame
                 now = self._clock.monotonic_ns()
                 last = self._last_publish_ns
                 if last is not None and now - last < interval_ns:
                     with self._wake:  # too soon: keep the frame, and look again shortly
                         if self._encode_slot is None:
-                            self._encode_slot = frame
+                            self._encode_slot = arrival
                         else:
                             self.frames_dropped += 1
                     self._stop.wait(min(self._settings.min_interval_s, WAKE_S))
                     continue
                 try:
-                    self.process_frame(frame)
+                    self.process_frame(frame, arrival.received_ns)
                     self._last_publish_ns = now
                 except Exception:
                     self.encode_errors += 1
@@ -377,15 +485,19 @@ class AlignmentHelper:
                 self._stop.wait(WAKE_S)
                 continue
             last = self._last_solve_ns
-            if last is not None and self._clock.monotonic_ns() - last < interval_ns:
+            if (
+                interval_ns > 0
+                and last is not None
+                and self._clock.monotonic_ns() - last < interval_ns
+            ):
                 self._stop.wait(0.05)
                 continue
-            frame = self._take_for_solving()
-            if frame is None or not self._is_active():
+            arrival = self._take_for_solving()
+            if arrival is None or not self._is_active():
                 continue
             self._last_solve_ns = self._clock.monotonic_ns()
             try:
-                self.solve_frame(frame)
+                self.solve_frame(arrival.frame)
             except Exception:
                 self.solve_failures += 1
-                _log.exception("the quick solve of frame %d failed", frame.seq)
+                _log.exception("the quick solve of frame %d failed", arrival.frame.seq)

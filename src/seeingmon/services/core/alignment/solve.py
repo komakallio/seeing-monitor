@@ -15,13 +15,21 @@ across the trail, so the focus value stays free of trailing.
 A frame that cannot be solved is a normal result (`solved` is false). The solver never raises: an
 unexpected error becomes an unsolved result with a note, because a bad frame must not stop the live
 view.
+
+**Two steps.** `analyze_frame` is the analysis: it runs the pipeline and returns the solution of the
+frame with the pointing solution that the tracker may adopt. It reads and changes nothing outside
+its arguments, so it can run in this process (`QuickSolver`) or in a worker process
+(`seeingmon.services.core.alignment.worker`), which keeps the detector away from the live view. The
+second step, `adopt`, judges the pointing solution against the trust rule, updates the tracker, and
+stays in the process of `core`, where the tracker lives. `QuickSolution` and `PointingSolution` turn
+into plain data (`to_dict`) for the trip between the processes.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, replace
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -50,7 +58,8 @@ class QuickSolution:
 
     `attitude` is the camera model at the time of the frame (CIRS to camera, in the pixels of the
     frame), and `polaris_colatitude_deg` is the angle between Polaris and the pole at that time.
-    The live view builds its sky view, the pole, and the orbit of Polaris from the two.
+    The live view builds its sky view, the pole, and the orbit of Polaris from the two. `elapsed_s`
+    is the time that the analysis took.
     """
 
     t_utc_ns: int
@@ -70,6 +79,86 @@ class QuickSolution:
     note: str = ""
     attitude: CameraAttitude | None = None
     polaris_colatitude_deg: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The solution as plain data (numbers, text, and lists), for another process."""
+        data: dict[str, Any] = {
+            "t_utc_ns": self.t_utc_ns,
+            "seq": self.seq,
+            "solved": self.solved,
+            "x_px": self.x_px,
+            "y_px": self.y_px,
+            "roll_deg": self.roll_deg,
+            "n_matched": self.n_matched,
+            "rms_arcsec": self.rms_arcsec,
+            "scale_arcsec_px": self.scale_arcsec_px,
+            "solver": self.solver,
+            "n_detected": self.n_detected,
+            "focus_fwhm_px": self.focus_fwhm_px,
+            "n_focus_stars": self.n_focus_stars,
+            "elapsed_s": self.elapsed_s,
+            "note": self.note,
+            "attitude": None,
+            "polaris_colatitude_deg": self.polaris_colatitude_deg,
+        }
+        if self.attitude is not None:
+            data["attitude"] = {
+                "rotation": [float(v) for v in self.attitude.rotation.reshape(-1)],
+                "scale_rad_px": self.attitude.scale_rad_px,
+                "parity": self.attitude.parity,
+                "center_px": [float(self.attitude.center_px[0]), float(self.attitude.center_px[1])],
+            }
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> QuickSolution:
+        """The inverse of `to_dict`. Raises `KeyError`, `TypeError`, or `ValueError` on bad data."""
+        attitude = None
+        raw = data["attitude"]
+        if raw is not None:
+            rotation = np.array(raw["rotation"], dtype=np.float64).reshape(3, 3)
+            centre = raw["center_px"]
+            attitude = CameraAttitude(
+                rotation=rotation,
+                scale_rad_px=float(raw["scale_rad_px"]),
+                parity=int(raw["parity"]),
+                center_px=(float(centre[0]), float(centre[1])),
+            )
+        return cls(
+            t_utc_ns=int(data["t_utc_ns"]),
+            seq=int(data["seq"]),
+            solved=bool(data["solved"]),
+            x_px=_optional_float(data["x_px"]),
+            y_px=_optional_float(data["y_px"]),
+            roll_deg=_optional_float(data["roll_deg"]),
+            n_matched=int(data["n_matched"]),
+            rms_arcsec=_optional_float(data["rms_arcsec"]),
+            scale_arcsec_px=_optional_float(data["scale_arcsec_px"]),
+            solver=str(data["solver"]),
+            n_detected=int(data["n_detected"]),
+            focus_fwhm_px=_optional_float(data["focus_fwhm_px"]),
+            n_focus_stars=int(data["n_focus_stars"]),
+            elapsed_s=float(data["elapsed_s"]),
+            note=str(data["note"]),
+            attitude=attitude,
+            polaris_colatitude_deg=_optional_float(data["polaris_colatitude_deg"]),
+        )
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class QuickAnalysis:
+    """The outcome of `analyze_frame`: the solution, and the pointing solution to offer the tracker.
+
+    `pointing` is `None` when the frame was not solved. The tracker has not seen it yet: `adopt`
+    judges it.
+    """
+
+    solution: QuickSolution
+    pointing: PointingSolution | None = None
 
 
 class Analyzer(Protocol):
@@ -104,12 +193,124 @@ def focus_value(detections: Detections | None) -> tuple[float | None, int]:
     return float(np.median(detections.fwhm_px[usable])), count
 
 
+def analyze_frame(
+    pipeline: Analyzer,
+    frame: Frame,
+    *,
+    previous: PointingSolution | None,
+    reference: ReferenceSolution | None,
+    index: int,
+    clock: Clock,
+) -> QuickAnalysis:
+    """Analyze one alignment frame with the pipeline. Never raises.
+
+    `previous` is the latest pointing solution (the tracker predicts the field from it) and
+    `reference` the saved reference. Nothing here touches the tracker, so the function runs in any
+    process that has a pipeline.
+    """
+    started = clock.monotonic_ns()
+    try:
+        analysis = pipeline.analyze(
+            frame,
+            previous=previous,
+            reference=reference,
+            index=index,
+            sky_quality=False,  # the live view needs no zero point, and the step costs a second
+        )
+    except Exception as error:
+        _log.exception("the quick solve of frame %d failed", frame.seq)
+        return QuickAnalysis(
+            QuickSolution(
+                frame.t_utc_ns,
+                frame.seq,
+                False,
+                elapsed_s=(clock.monotonic_ns() - started) / NS_PER_S,
+                note=f"analysis error: {type(error).__name__}",
+            )
+        )
+    elapsed_s = (clock.monotonic_ns() - started) / NS_PER_S
+    focus, n_focus = focus_value(analysis.detections)
+    n_detected = 0 if analysis.detections is None else len(analysis.detections)
+    note = analysis.notes[-1] if analysis.notes else ""
+    solution = analysis.solution
+    if solution is None or not analysis.solved:
+        return QuickAnalysis(
+            QuickSolution(
+                frame.t_utc_ns,
+                frame.seq,
+                False,
+                n_detected=n_detected,
+                focus_fwhm_px=focus,
+                n_focus_stars=n_focus,
+                elapsed_s=elapsed_s,
+                note=note or "the frame could not be solved",
+            )
+        )
+    position = solution.polaris_pixel(frame.t_utc_ns)
+    attitude = solution.attitude_at(frame.t_utc_ns)
+    return QuickAnalysis(
+        QuickSolution(
+            frame.t_utc_ns,
+            frame.seq,
+            True,
+            x_px=None if position is None else position[0],
+            y_px=None if position is None else position[1],
+            roll_deg=attitude.roll_deg(),
+            n_matched=solution.n_matched,
+            rms_arcsec=solution.rms_arcsec,
+            scale_arcsec_px=solution.scale_rad_px * ARCSEC_PER_RAD,
+            solver=solution.solver,
+            n_detected=n_detected,
+            focus_fwhm_px=focus,
+            n_focus_stars=n_focus,
+            elapsed_s=elapsed_s,
+            note=note,
+            attitude=attitude,
+            polaris_colatitude_deg=solution.polaris_colatitude_deg(frame.t_utc_ns),
+        ),
+        solution,
+    )
+
+
+def is_trusted(solution: PointingSolution, *, min_stars: int, max_rms_px: float) -> bool:
+    """Whether a pointing solution may update the tracker: enough stars and a small residual."""
+    rms_px = (
+        None
+        if solution.rms_arcsec is None
+        else solution.rms_arcsec / (solution.scale_rad_px * ARCSEC_PER_RAD)
+    )
+    return solution.n_matched >= min_stars and (rms_px is None or rms_px <= max_rms_px)
+
+
+def adopt(
+    analysis: QuickAnalysis,
+    tracker: PointingTracker,
+    *,
+    min_stars: int,
+    max_rms_px: float,
+) -> QuickSolution:
+    """Judge the pointing solution of an analysis, update the tracker, and return the solution.
+
+    A solution with fewer matched stars than `min_stars` or a residual above `max_rms_px` pixels
+    leaves the tracker alone, and its note says so.
+    """
+    pointing = analysis.pointing
+    if pointing is None:
+        return analysis.solution
+    if is_trusted(pointing, min_stars=min_stars, max_rms_px=max_rms_px):
+        tracker.update(pointing)
+        return analysis.solution
+    note = analysis.solution.note or "the fit is too weak to move the tracker"
+    return replace(analysis.solution, note=note)
+
+
 class QuickSolver:
     """Solves alignment frames with the survey pipeline and the shared tracker.
 
     `min_stars` and `max_rms_px` are the trust rule for updating the tracker: a solution with
     fewer matched stars or a larger residual (in pixels) leaves the tracker alone. Call `solve`
-    from one thread.
+    from one thread. The detector holds the GIL for seconds, so a live view in the same process
+    stalls while a solve runs: `ProcessQuickSolver` runs the same analysis in a worker process.
     """
 
     def __init__(
@@ -134,78 +335,22 @@ class QuickSolver:
     def tracker(self) -> PointingTracker:
         return self._tracker
 
-    def _trusted(self, solution: PointingSolution) -> bool:
-        rms_px = (
-            None
-            if solution.rms_arcsec is None
-            else solution.rms_arcsec / (solution.scale_rad_px * ARCSEC_PER_RAD)
-        )
-        return solution.n_matched >= self._min_stars and (
-            rms_px is None or rms_px <= self._max_rms_px
-        )
-
     def solve(self, frame: Frame) -> QuickSolution:
         """Solve one frame. Never raises."""
-        started = self._clock.monotonic_ns()
         index, self._index = self._index, self._index + 1
-        try:
-            analysis = self._pipeline.analyze(
-                frame,
-                previous=self._tracker.solution,
-                reference=self._tracker.reference,
-                index=index,
-                sky_quality=False,  # the live view needs no zero point, and the step costs a second
-            )
-        except Exception as error:
-            self.failures += 1
-            _log.exception("the quick solve of frame %d failed", frame.seq)
-            return QuickSolution(
-                frame.t_utc_ns,
-                frame.seq,
-                False,
-                elapsed_s=(self._clock.monotonic_ns() - started) / NS_PER_S,
-                note=f"analysis error: {type(error).__name__}",
-            )
-        elapsed_s = (self._clock.monotonic_ns() - started) / NS_PER_S
-        focus, n_focus = focus_value(analysis.detections)
-        n_detected = 0 if analysis.detections is None else len(analysis.detections)
-        note = analysis.notes[-1] if analysis.notes else ""
-        solution = analysis.solution
-        if solution is None or not analysis.solved:
-            self.failures += 1
-            return QuickSolution(
-                frame.t_utc_ns,
-                frame.seq,
-                False,
-                n_detected=n_detected,
-                focus_fwhm_px=focus,
-                n_focus_stars=n_focus,
-                elapsed_s=elapsed_s,
-                note=note or "the frame could not be solved",
-            )
-        if self._trusted(solution):
-            self._tracker.update(solution)
-        else:
-            note = note or "the fit is too weak to move the tracker"
-        position = solution.polaris_pixel(frame.t_utc_ns)
-        attitude = solution.attitude_at(frame.t_utc_ns)
-        self.solves += 1
-        return QuickSolution(
-            frame.t_utc_ns,
-            frame.seq,
-            True,
-            x_px=None if position is None else position[0],
-            y_px=None if position is None else position[1],
-            roll_deg=attitude.roll_deg(),
-            n_matched=solution.n_matched,
-            rms_arcsec=solution.rms_arcsec,
-            scale_arcsec_px=solution.scale_rad_px * ARCSEC_PER_RAD,
-            solver=solution.solver,
-            n_detected=n_detected,
-            focus_fwhm_px=focus,
-            n_focus_stars=n_focus,
-            elapsed_s=elapsed_s,
-            note=note,
-            attitude=attitude,
-            polaris_colatitude_deg=solution.polaris_colatitude_deg(frame.t_utc_ns),
+        analysis = analyze_frame(
+            self._pipeline,
+            frame,
+            previous=self._tracker.solution,
+            reference=self._tracker.reference,
+            index=index,
+            clock=self._clock,
         )
+        solution = adopt(
+            analysis, self._tracker, min_stars=self._min_stars, max_rms_px=self._max_rms_px
+        )
+        if analysis.pointing is None:
+            self.failures += 1
+        else:
+            self.solves += 1
+        return solution

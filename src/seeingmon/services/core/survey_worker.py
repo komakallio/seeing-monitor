@@ -24,8 +24,10 @@ import logging
 import multiprocessing
 import os
 import sys
+from collections.abc import Callable
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 from seeingmon.services.core.settings import SurveyWorkerSettings
 from seeingmon.survey.analyzer import InlineExecutor, init_worker
@@ -94,6 +96,24 @@ def init_survey_worker(spec: PipelineSpec, nice: int, oom_score_adj: int) -> Non
     init_worker(spec)
 
 
+def make_worker_pool(
+    initializer: Callable[..., None], initargs: tuple[Any, ...]
+) -> ProcessPoolExecutor:
+    """One worker process that runs `initializer(*initargs)` when it starts.
+
+    The pool uses the `spawn` method, so the worker holds no inherited state, and it starts the
+    process at the first job. Only plain data may cross the boundary (the rule of the module text).
+    This is the only place of the services that imports `multiprocessing`: the alignment helper
+    builds its own worker through it (`seeingmon.services.core.alignment.worker`).
+    """
+    return ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=initializer,
+        initargs=initargs,
+    )
+
+
 def make_survey_executor(spec: PipelineSpec, settings: SurveyWorkerSettings) -> Executor:
     """The executor for the survey analyzer, as the settings choose it.
 
@@ -104,9 +124,4 @@ def make_survey_executor(spec: PipelineSpec, settings: SurveyWorkerSettings) -> 
         return InlineExecutor()
     if settings.mode == "thread":
         return ThreadPoolExecutor(max_workers=1, thread_name_prefix="survey")
-    return ProcessPoolExecutor(
-        max_workers=1,
-        mp_context=multiprocessing.get_context("spawn"),
-        initializer=init_survey_worker,
-        initargs=(spec, settings.nice, settings.oom_score_adj),
-    )
+    return make_worker_pool(init_survey_worker, (spec, settings.nice, settings.oom_score_adj))

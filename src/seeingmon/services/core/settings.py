@@ -167,10 +167,21 @@ class AlignmentSettings(SectionModel):
     live view, the dashed circle with the radius of the orbit of Polaris, is centered on the aim.
 
     The preview holds at most `max_preview_pixels` pixels, and the helper sends at most one frame
-    each `min_interval_s`. A solve starts at most each `solve_interval_s`, and a solved position
-    older than `solution_max_age_s` no longer counts as current. A frame has a saturation warning
-    when more than `saturation_warn_fraction` of its pixels reach `saturation_level` of the
-    saturation level of the readout mode.
+    each `min_interval_s`. A frame has a saturation warning when more than
+    `saturation_warn_fraction` of its pixels reach `saturation_level` of the saturation level of
+    the readout mode.
+
+    **The quick solve.** The solver takes the newest frame as soon as it has finished the previous
+    solve. `solve_interval_s` spaces the starts of the solves (0, the default, means back to back),
+    for a machine that has no CPU to spare. A solved position older than `solution_max_age_s` no
+    longer counts as current. `solver_mode` says where the solve runs: `process` (the default) in
+    a worker process, so that the detector, which holds the GIL for seconds, never stalls the live
+    view, and `thread` in a thread of `core` (for a machine that cannot spare the memory of a
+    second process). A solve that takes longer than `solve_timeout_s` ends the worker. The quick
+    solve detects only the bright stars: a star must stand out by `detect_threshold_sigma` times
+    the noise, and the detector keeps the `detect_max_stars` brightest. The survey analysis keeps
+    its own settings (`[survey.detect]`), and a lower threshold and more stars only make the quick
+    solve slower.
     """
 
     target_x_px: float | None = None
@@ -184,8 +195,12 @@ class AlignmentSettings(SectionModel):
     max_preview_pixels: int = Field(1_000_000, ge=10_000)
     min_interval_s: float = Field(0.1, ge=0)
 
-    solve_interval_s: float = Field(1.0, ge=0)
+    solver_mode: Literal["process", "thread"] = "process"
+    solve_interval_s: float = Field(0.0, ge=0)
+    solve_timeout_s: float = Field(60.0, gt=0)
     solution_max_age_s: float = Field(10.0, gt=0)
+    detect_threshold_sigma: float = Field(8.0, gt=0)
+    detect_max_stars: int = Field(300, ge=8)
 
     histogram_bins: int = Field(64, ge=8, le=256)
     saturation_level: float = Field(0.98, gt=0, le=1)

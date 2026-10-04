@@ -234,9 +234,24 @@ jpeg_quality = 80
 max_preview_pixels = 1000000
 min_interval_s = 0.1
 
-# A solve starts at most this often, and a solved position older than the limit is not current.
-solve_interval_s = 1.0
+# The quick solve takes the newest frame as soon as it has finished the previous solve, and
+# `solve_interval_s` spaces the starts of the solves (0 means back to back). A solved position
+# older than `solution_max_age_s` is not current.
+solve_interval_s = 0.0
 solution_max_age_s = 10.0
+
+# `process` runs the quick solve in a worker process, so that the detector, which holds the GIL for
+# seconds, never stalls the live view. `thread` runs it in a thread of core, which needs no second
+# process and freezes the live view while the detector runs. A solve that takes longer than
+# `solve_timeout_s` ends the worker.
+solver_mode = "process"
+solve_timeout_s = 60.0
+
+# The quick solve detects only the bright stars: a star must stand out by this many times the
+# noise, and the detector keeps this many of the brightest. Lower values find more stars and take
+# longer. The survey analysis keeps its own settings in [survey.detect].
+detect_threshold_sigma = 8.0
+detect_max_stars = 300
 
 # The histogram, and the saturation warning: the share of pixels that reach `saturation_level` of
 # the saturation level of the readout mode.

@@ -549,6 +549,96 @@ class TestAimRingAndAdjustment:
         assert len(pack_frame(state, tiny_jpeg())) < MAX_STATE_BYTES // 16
 
 
+class TestTiming:
+    """The state says which frame each part comes from, and how old the frame is."""
+
+    def test_the_timing_names_the_frame_and_the_frame_of_the_solution(self) -> None:
+        state = build_state(
+            frame_summary(seq=9, received_ns=T0 + 100_000_000, preview_s=0.25),
+            solution(seq=6, t_utc_ns=T0 - 2 * NS_PER_S),
+            TARGET,
+            SETTINGS,
+            now_utc_ns=T0 + 400_000_000,
+            solve_elapsed_s=1.2,
+            solving=(8, 0.4),
+        )
+        timing = state.timing
+        assert timing is not None
+        assert (timing.frame_seq, timing.solution_frame_seq) == (9, 6)
+        assert timing.frame_t_utc == state.t_utc
+        assert timing.frame_age_s == pytest.approx(0.4)
+        assert timing.receive_lag_s == pytest.approx(0.1)
+        assert timing.preview_s == 0.25
+        assert timing.solve_elapsed_s == 1.2
+        assert (timing.solving_frame_seq, timing.solving_s) == (8, 0.4)
+        assert state.solved is not None
+        assert state.solved.age_s == pytest.approx(2.0)  # the age of the solution, as before
+
+    def test_without_a_solve_the_state_has_the_frame_and_nothing_of_the_solution(self) -> None:
+        state = build_state(frame_summary(), None, TARGET, SETTINGS, now_utc_ns=T0)
+        timing = state.timing
+        assert timing is not None
+        assert timing.frame_seq == 7
+        assert (timing.solution_frame_seq, timing.solve_elapsed_s) == (None, None)
+        assert (timing.solving_frame_seq, timing.solving_s) == (None, None)
+
+    def test_an_unsolved_frame_still_names_the_frame_that_the_solve_ran_on(self) -> None:
+        failed = solution(seq=4, solved=False, x_px=None, y_px=None, note="too few stars")
+        state = build_state(
+            frame_summary(), failed, TARGET, SETTINGS, now_utc_ns=T0, solve_elapsed_s=0.9
+        )
+        assert state.timing is not None
+        assert (state.timing.solution_frame_seq, state.timing.solve_elapsed_s) == (4, 0.9)
+        assert state.solved is None
+
+    def test_while_the_first_solve_runs_the_reason_says_so(self) -> None:
+        state = build_state(frame_summary(), None, TARGET, SETTINGS, solving=(4, 3.4))
+        reason = "the first solve is running (frame 4, 3 s so far)"
+        assert state.quality["solved"] == reason
+        assert state.quality["sky"] == reason
+
+    def test_the_ages_are_unknown_without_a_clock_reading(self) -> None:
+        timing = build_state(frame_summary(), None, None, AlignmentSettings()).timing
+        assert timing is not None
+        assert (timing.frame_age_s, timing.receive_lag_s) == (None, None)
+
+    def test_a_frame_without_a_valid_time_has_no_ages(self) -> None:
+        state = build_state(
+            frame_summary(time_valid=False, received_ns=T0),
+            None,
+            None,
+            AlignmentSettings(),
+            now_utc_ns=T0 + NS_PER_S,
+        )
+        assert state.timing is not None
+        assert (state.timing.frame_age_s, state.timing.receive_lag_s) == (None, None)
+
+    def test_an_age_is_never_negative(self) -> None:
+        state = build_state(
+            frame_summary(received_ns=T0 - 5),
+            None,
+            None,
+            AlignmentSettings(),
+            now_utc_ns=T0 - 1000,
+        )
+        assert state.timing is not None
+        assert (state.timing.frame_age_s, state.timing.receive_lag_s) == (0.0, 0.0)
+
+    def test_the_timing_survives_the_json_of_the_contract_and_stays_small(self) -> None:
+        state = build_state(
+            frame_summary(received_ns=T0, preview_s=0.2),
+            solution(),
+            TARGET,
+            SETTINGS,
+            now_utc_ns=T0 + 1,
+            solve_elapsed_s=0.5,
+            solving=(8, 1.0),
+        )
+        assert state.timing is not None
+        assert len(state.timing.model_dump_json()) < 400
+        assert decode_alignment_state(json.loads(state.model_dump_json())) == state
+
+
 def test_the_settings_take_the_aim_as_a_pair() -> None:
     assert AlignmentSettings().aim_xy is None
     assert AlignmentSettings(aim_x_px=10.0, aim_y_px=20.0).aim_xy == (10.0, 20.0)

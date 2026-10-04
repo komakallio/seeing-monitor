@@ -162,6 +162,23 @@ class TestCoreSettings:
         assert not AlignmentSettings().has_target
         assert AlignmentSettings(target_x_px=1.0, target_y_px=2.0).has_target
 
+    def test_the_quick_solve_runs_in_a_process_and_back_to_back_by_default(
+        self, tmp_path: Path
+    ) -> None:
+        config = load_config(local_file=tmp_path / "none.toml", env={})
+        settings = config.section("alignment", AlignmentSettings)
+        assert settings.solver_mode == "process"  # the detector holds the GIL for seconds
+        assert settings.solve_interval_s == 0.0  # the solver takes the newest frame when it is free
+        assert settings.solve_timeout_s == 60.0
+        assert (settings.detect_threshold_sigma, settings.detect_max_stars) == (8.0, 300)
+
+    def test_the_solver_mode_is_one_of_two(self, tmp_path: Path) -> None:
+        local = tmp_path / "local.toml"
+        local.write_text('[alignment]\nsolver_mode = "inline"\n')
+        config = load_config(local_file=local, env={})
+        with pytest.raises(ConfigError, match="solver_mode"):
+            config.section("alignment", AlignmentSettings)
+
     def test_a_misspelled_alignment_key_fails_loudly(self, tmp_path: Path) -> None:
         local = tmp_path / "local.toml"
         local.write_text("[alignment]\ntarget_x = 1.0\n")

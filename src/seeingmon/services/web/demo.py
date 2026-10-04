@@ -68,6 +68,7 @@ from seeingmon.services.web.contract import (
     SkyView,
     SolvedView,
     TargetView,
+    TimingView,
 )
 from seeingmon.services.web.core_client import FakeCoreClient
 from seeingmon.services.web.fake_dark import DarkScript
@@ -622,9 +623,11 @@ class StarField:
         fwhm = 2.4 + 0.25 * math.sin(t / 50)
         counts = [round(3.0e6 * math.exp(-0.63 * i)) for i in range(HISTOGRAM_BINS)]
         counts[-1] = round(saturation * FRAME_WIDTH_PX * FRAME_HEIGHT_PX)  # the saturated pixels
+        frame_t_utc = utc_ns_to_iso(now_ns + round(t * NS_PER_S), digits=3)
+        solution_age_s = round(0.35 + 0.25 * abs(math.sin(t)), 2)
         state = AlignmentState(
             active=True,
-            t_utc=utc_ns_to_iso(now_ns + round(t * NS_PER_S), digits=3),
+            t_utc=frame_t_utc,
             frame=AlignmentFrameInfo(
                 seq=seq,
                 width_px=FRAME_WIDTH_PX,
@@ -641,7 +644,7 @@ class StarField:
                 roll_deg=round(12.3 + roll, 3),
                 n_matched=round(40 + 3 * math.sin(t / 9)),
                 rms_arcsec=round(2.9 + 0.4 * math.sin(t / 13), 2),
-                age_s=round(0.35 + 0.25 * abs(math.sin(t)), 2),
+                age_s=solution_age_s,
             ),
             offset=OffsetView(
                 dx_px=round(dx, 2),
@@ -658,6 +661,15 @@ class StarField:
             histogram=HistogramView(counts=counts, min_dn=0.0, max_dn=65535.0),
             saturation=SaturationView(fraction=round(saturation, 5), warning=saturation > 0.001),
             sky=demo_sky(pole_right, pole_down, roll),
+            timing=TimingView(
+                frame_seq=seq,
+                frame_t_utc=frame_t_utc,
+                frame_age_s=round(0.32 + 0.08 * abs(math.sin(t / 3)), 3),
+                receive_lag_s=round(0.11 + 0.02 * abs(math.sin(t / 4)), 3),
+                preview_s=round(0.19 + 0.05 * abs(math.sin(t / 5)), 3),
+                solution_frame_seq=max(0, seq - round(solution_age_s / FRAME_PERIOD_S)),
+                solve_elapsed_s=round(0.45 + 0.15 * abs(math.sin(t / 6)), 3),
+            ),
         )
         return AlignmentFrame(state, jpeg)
 

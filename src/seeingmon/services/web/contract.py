@@ -622,6 +622,75 @@ class SkyView(_View):
         return cls.model_validate(dataclasses.asdict(geometry))
 
 
+class TimingView(_View):
+    """Where the time goes between the camera and the page, in seconds, for one state.
+
+    The state describes one frame, and the quick solve works on its own frame, which is usually
+    an older one: the solver takes the newest frame when it is free, and a solve runs while newer
+    frames arrive. `frame_seq` and `solution_frame_seq` say which two frames the state joins, and
+    the ages say how stale each part is. A time that `core` cannot know is `null`: a frame with
+    no valid time (the clock was not synchronized) has no age.
+    """
+
+    frame_seq: int = Field(
+        ge=0, description="The sequence number of the frame that the picture and `frame` show."
+    )
+    frame_t_utc: str | None = Field(
+        None,
+        max_length=40,
+        description="The capture time of that frame (the middle of its exposure), ISO 8601 UTC. "
+        "It equals `t_utc` of the state.",
+    )
+    frame_age_s: float | None = Field(
+        None,
+        ge=0,
+        description="The age of the frame when `core` sent this state: the time from its capture "
+        "to the send, which covers the transfer from the camera process, the wait for the "
+        "encoder, and the encoding. The state of `GET /alignment/state` has the age at the "
+        "request. It is `null` for a frame without a valid time.",
+    )
+    receive_lag_s: float | None = Field(
+        None,
+        ge=0,
+        description="The time from the capture of the frame to its arrival in `core`: the "
+        "transfer from the camera process and the wait for the scheduler thread. It is `null` "
+        "when `core` did not time the arrival, and for a frame without a valid time.",
+    )
+    preview_s: float | None = Field(
+        None,
+        ge=0,
+        description="The time that `core` needed for this frame, from its arrival to the finished "
+        "preview and state: the wait for the encoder plus the stretch, the histogram, and the "
+        "JPEG. It is `null` when `core` did not time the arrival.",
+    )
+    solution_frame_seq: int | None = Field(
+        None,
+        ge=0,
+        description="The sequence number of the frame that the latest finished solve ran on, "
+        "solved or not. `solved`, `offset`, `sky`, and `focus` come from that frame, and "
+        "`frame_seq` minus this number says how many frames the solve lags. It is `null` until a "
+        "solve has finished.",
+    )
+    solve_elapsed_s: float | None = Field(
+        None,
+        ge=0,
+        description="How long the latest finished solve took, from the start of its work to its "
+        "result, including the transfer of the frame to the solver process. It is `null` until a "
+        "solve has finished.",
+    )
+    solving_frame_seq: int | None = Field(
+        None,
+        ge=0,
+        description="The sequence number of the frame that the solver works on now, or `null` "
+        "while it idles. It is `null` too when the solver is not available.",
+    )
+    solving_s: float | None = Field(
+        None,
+        ge=0,
+        description="How long the solve in progress has run, or `null` while the solver idles.",
+    )
+
+
 class AlignmentState(_View):
     """What the Align page shows next to the live view. The answer of `alignment_state`.
 
@@ -630,7 +699,7 @@ class AlignmentState(_View):
     the size of the image that it shows. `reticle` is the fixed circle of the first layer, and it
     exists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the
     orbit of Polaris, and the camera model of the latest current solution. It exists whether or not
-    a target is set.
+    a target is set. `timing` says how old the frame and the solution are.
     """
 
     active: bool = False
@@ -644,6 +713,11 @@ class AlignmentState(_View):
     saturation: SaturationView | None = None
     reticle: ReticleView | None = None
     sky: SkyView | None = None
+    timing: TimingView | None = Field(
+        None,
+        description="The age of the frame, and the frame and the time of the quick solve. It is "
+        "`null` until a frame has arrived.",
+    )
     quality: dict[str, str] = Field(default_factory=dict, max_length=32)
 
 

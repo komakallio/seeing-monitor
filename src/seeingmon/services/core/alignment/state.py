@@ -28,6 +28,10 @@ With a site (`[site]`), the view adds the move in altitude and in azimuth that b
 the aim. It does not depend on the target, so a new install that has none still shows all of this.
 It follows the freshness rule of the solved position, and without a current solution `sky` is
 `None` and `quality["sky"]` says why.
+
+**The timing.** The frame and the solution are two different frames: the solver takes the newest
+frame when it is free, and it needs time. `timing` says which frame each part comes from and how old
+the frame is, so that the page can show the lag instead of hiding it (`TimingView`).
 """
 
 from __future__ import annotations
@@ -50,6 +54,7 @@ from seeingmon.services.web.contract import (
     SkyView,
     SolvedView,
     TargetView,
+    TimingView,
 )
 from seeingmon.survey.apparent import earth_rotation_angle
 from seeingmon.survey.pointing import polaris_colatitude_deg
@@ -59,7 +64,12 @@ from seeingmon.survey.tracker import PointingTracker
 
 @dataclass(frozen=True, slots=True)
 class FrameSummary:
-    """What the helper measured in one frame."""
+    """What the helper measured in one frame.
+
+    `received_ns` is the time of `core` (UTC) when the frame arrived, `preview_s` the time from
+    that arrival to the finished preview, and `time_valid` is false when the clock was not
+    synchronized when the camera took the frame, so that the frame has no age.
+    """
 
     seq: int
     t_utc_ns: int
@@ -71,6 +81,9 @@ class FrameSummary:
     plate_scale_arcsec_px: float | None
     histogram: HistogramView | None = None
     saturation: SaturationView | None = None
+    received_ns: int | None = None
+    preview_s: float | None = None
+    time_valid: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,11 +126,17 @@ def build_state(
     *,
     best_fwhm_px: float | None = None,
     site: SiteConfig | None = None,
+    now_utc_ns: int | None = None,
+    solve_elapsed_s: float | None = None,
+    solving: tuple[int, float] | None = None,
 ) -> AlignmentState:
     """The state that describes `frame`, with the latest solution and the target.
 
     `site` is the `[site]` of the configuration. With it, the sky view says how to move the camera
     in altitude and in azimuth, and without it the view gives the image directions only.
+    `now_utc_ns` is the time of the state, which gives the age of the frame. `solve_elapsed_s` is
+    the time of the latest finished solve, and `solving` is the frame that the solver works on now
+    with the seconds that it has worked.
     """
     quality: dict[str, str] = {}
     info = AlignmentFrameInfo(
@@ -137,7 +156,7 @@ def build_state(
     if target is None:
         quality["target"] = "no target is configured and no reference solution exists"
 
-    solved_view, reason = _current_solution(solution, frame, settings)
+    solved_view, reason = _current_solution(solution, frame, settings, solving)
     offset_view: OffsetView | None = None
     if reason is not None:
         quality["solved"] = reason
@@ -205,7 +224,35 @@ def build_state(
         saturation=frame.saturation,
         reticle=reticle_view,
         sky=sky_view,
+        timing=_timing(frame, solution, now_utc_ns, solve_elapsed_s, solving),
         quality=quality,
+    )
+
+
+def _timing(
+    frame: FrameSummary,
+    solution: QuickSolution | None,
+    now_utc_ns: int | None,
+    solve_elapsed_s: float | None,
+    solving: tuple[int, float] | None,
+) -> TimingView:
+    """The ages and the frames of one state. An age is `None` when `core` cannot know it."""
+
+    def age_s(t_ns: int | None) -> float | None:
+        if t_ns is None or not frame.time_valid:
+            return None
+        return max(0.0, (t_ns - frame.t_utc_ns) / NS_PER_S)
+
+    return TimingView(
+        frame_seq=frame.seq,
+        frame_t_utc=utc_ns_to_iso(frame.t_utc_ns),
+        frame_age_s=age_s(now_utc_ns),
+        receive_lag_s=age_s(frame.received_ns),
+        preview_s=frame.preview_s,
+        solution_frame_seq=None if solution is None else solution.seq,
+        solve_elapsed_s=None if solution is None else solve_elapsed_s,
+        solving_frame_seq=None if solving is None else solving[0],
+        solving_s=None if solving is None else solving[1],
     )
 
 
@@ -236,10 +283,18 @@ def _reticle(
 
 
 def _current_solution(
-    solution: QuickSolution | None, frame: FrameSummary, settings: AlignmentSettings
+    solution: QuickSolution | None,
+    frame: FrameSummary,
+    settings: AlignmentSettings,
+    solving: tuple[int, float] | None = None,
 ) -> tuple[SolvedView | None, str | None]:
     """The solved position when it is current, else the reason that it is not."""
     if solution is None:
+        if solving is not None:
+            return (
+                None,
+                f"the first solve is running (frame {solving[0]}, {solving[1]:.0f} s so far)",
+            )
         return None, "no solve has finished yet"
     if not solution.solved or solution.x_px is None or solution.y_px is None:
         return None, solution.note or "the latest frame could not be solved"

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
+import logging
+import threading
 from collections.abc import Callable, Iterator
 from typing import Any
 
 import numpy as np
 import pytest
 
-from seeingmon.clock import NS_PER_S, VirtualClock
-from seeingmon.frames import Frame
+from seeingmon.clock import NS_PER_S, VirtualClock, utc_ns_to_iso
+from seeingmon.frames import Frame, FrameFlag
 from seeingmon.profile import Profile, load_profile
 from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.helper import AlignmentHelper
@@ -42,6 +45,8 @@ T0 = 1_800_000_000 * NS_PER_S
 SETTINGS = AlignmentSettings(
     target_x_px=300.0, target_y_px=200.0, target_roll_deg=0.0, histogram_bins=16
 )
+SPACED = SETTINGS.model_copy(update={"solve_interval_s": 1.0})
+FAST = SETTINGS.model_copy(update={"min_interval_s": 0.0})  # no pause between two previews
 
 
 @pytest.fixture(scope="module")
@@ -437,14 +442,14 @@ class TestThreads:
     def test_the_solver_starts_a_solve_only_after_the_interval(self, build: Build) -> None:
         solver = StubSolver()
         clock = VirtualClock(T0)
-        helper = build(solver=solver, clock=clock)
+        helper = build(solver=solver, clock=clock, settings=SPACED)
         helper.start()
         helper.sink(sky_frame(1))
         assert wait_until(lambda: len(solver.frames) == 1)
         helper.sink(sky_frame(2))
         assert wait_until(lambda: helper.frames_encoded >= 1)
         assert solver.frames == [1]  # the second frame waits: the clock did not move
-        clock.advance(SETTINGS.solve_interval_s + 0.5)
+        clock.advance(SPACED.solve_interval_s + 0.5)
         assert wait_until(lambda: solver.frames == [1, 2])
 
     def test_the_encoder_keeps_the_pace_of_the_minimum_interval(self, build: Build) -> None:
@@ -481,3 +486,275 @@ class TestThreads:
         assert helper.viewers == 0
         with pytest.raises(IpcClosedError):
             read_until_closed(receiver)
+
+
+# --- Decoupling --------------------------------------------------------------------------------
+
+
+class BlockingSolver:
+    """A solver that waits for the test, so that a solve stays open as long as the test wants."""
+
+    def __init__(self) -> None:
+        self.frames: list[int] = []
+        self.started = threading.Semaphore(0)  # released when a solve starts
+        self.go = threading.Semaphore(0)  # the test releases one solve at a time
+
+    def solve(self, frame: Frame) -> QuickSolution:
+        self.frames.append(frame.seq)
+        self.started.release()
+        assert self.go.acquire(timeout=30.0)
+        return solution(seq=frame.seq, t_utc_ns=frame.t_utc_ns)
+
+
+def newest_encoded(helper: AlignmentHelper, seq: int) -> bool:
+    state = helper.state()
+    return state.frame is not None and state.frame.seq == seq
+
+
+class TestTheSolverNeverHoldsTheViewBack:
+    def test_the_preview_of_each_frame_comes_out_while_a_solve_is_open(self, build: Build) -> None:
+        solver = BlockingSolver()
+        helper = build(solver=solver, settings=FAST)
+        helper.start()
+        helper.sink(sky_frame(1))
+        assert solver.started.acquire(timeout=10.0)  # the solver works on frame 1, and stays there
+        for seq in range(2, 8):
+            helper.sink(sky_frame(seq))
+            assert wait_until(lambda seq=seq: newest_encoded(helper, seq))  # type: ignore[misc]
+        assert solver.frames == [1]  # not one frame went to the solver meanwhile
+        timing = helper.state().timing
+        assert timing is not None
+        assert (timing.frame_seq, timing.solving_frame_seq) == (7, 1)
+        assert timing.solution_frame_seq is None  # no solve has finished
+        solver.go.release()
+        solver.go.release()
+
+    def test_the_next_solve_starts_on_the_newest_frame_and_the_older_ones_are_dropped(
+        self, build: Build
+    ) -> None:
+        solver = BlockingSolver()
+        helper = build(solver=solver, settings=FAST)
+        helper.start()
+        helper.sink(sky_frame(1))
+        assert solver.started.acquire(timeout=10.0)
+        for seq in range(2, 8):
+            helper.sink(sky_frame(seq))
+        assert helper.frames_unsolved == 5  # frames 2 to 6 were replaced in the solver slot
+        solver.go.release()  # frame 1 finishes: nothing interrupted it
+        assert solver.started.acquire(timeout=10.0)
+        assert solver.frames == [1, 7]
+        solver.go.release()
+        assert wait_until(lambda: helper.solves == 2)
+        state = helper.state()
+        assert state.timing is not None
+        assert state.timing.solution_frame_seq == 7
+
+    def test_a_fast_solver_follows_every_frame(self, build: Build) -> None:
+        solver = StubSolver()
+        helper = build(solver=solver, settings=FAST)  # the interval is zero by default
+        helper.start()
+        for seq in range(1, 6):
+            helper.sink(sky_frame(seq))
+            assert wait_until(lambda seq=seq: helper.solves == seq)  # type: ignore[misc]
+        assert solver.frames == [1, 2, 3, 4, 5]
+
+    def test_without_a_solver_the_solver_slot_stays_empty(self, build: Build) -> None:
+        helper = build()
+        for seq in range(1, 5):
+            helper.sink(sky_frame(seq))
+        assert helper.frames_unsolved == 0
+
+    def test_a_solve_that_ends_after_the_alignment_does_not_show_in_the_next_session(
+        self, build: Build
+    ) -> None:
+        active = Active(True)
+        helpers: list[AlignmentHelper] = []
+
+        class EndsTheAlignment:
+            def solve(self, frame: Frame) -> QuickSolution:
+                active.value = False  # the alignment ends while the solve runs
+                helpers[0].state()  # and the next request of the page sees it
+                return solution(seq=frame.seq)
+
+        helper = build(is_active=active, solver=EndsTheAlignment())
+        helpers.append(helper)
+        helper.process_frame(sky_frame(1))
+        helper.solve_frame(sky_frame(1))
+        assert (helper.solves, helper.solve_failures) == (0, 0)
+        active.value = True
+        helper.process_frame(sky_frame(2))
+        state = helper.state()
+        assert state.solved is None  # the late solution is gone
+        assert state.focus is None
+        assert state.timing is not None
+        assert state.timing.solution_frame_seq is None
+
+
+class TestTheTimingOfTheState:
+    def test_the_state_says_how_old_the_frame_is_and_where_the_time_went(
+        self, build: Build
+    ) -> None:
+        clock = VirtualClock(T0)
+        helper = build(clock=clock)
+        frame = sky_frame(7, t_utc_ns=T0)
+        received = T0 + round(0.15 * NS_PER_S)  # the frame reached core 0.15 s after its capture
+        clock.advance(0.35)  # and the preview was ready 0.2 s later
+        timing = unpack_frame(helper.process_frame(frame, received)).state.timing
+        assert timing is not None
+        assert timing.frame_seq == 7
+        assert timing.frame_t_utc == utc_ns_to_iso(T0)
+        assert timing.frame_age_s == pytest.approx(0.35)
+        assert timing.receive_lag_s == pytest.approx(0.15)
+        assert timing.preview_s == pytest.approx(0.2)
+        assert (timing.solution_frame_seq, timing.solve_elapsed_s) == (None, None)
+        assert (timing.solving_frame_seq, timing.solving_s) == (None, None)
+
+    def test_the_age_of_the_frame_grows_in_the_state_that_a_request_reads(
+        self, build: Build
+    ) -> None:
+        clock = VirtualClock(T0)
+        helper = build(clock=clock)
+        helper.process_frame(sky_frame(1, t_utc_ns=T0))
+        clock.advance(4.0)  # no new frame for 4 seconds: the page can see the stall
+        timing = helper.state().timing
+        assert timing is not None
+        assert timing.frame_age_s == pytest.approx(4.0)
+
+    def test_a_frame_that_core_did_not_time_has_no_arrival_figures(self, build: Build) -> None:
+        helper = build()
+        timing = unpack_frame(helper.process_frame(sky_frame(1, t_utc_ns=T0))).state.timing
+        assert timing is not None
+        assert timing.receive_lag_s is None
+        assert timing.frame_age_s is not None
+        assert timing.preview_s == 0.0
+
+    def test_the_state_names_the_frame_of_the_solution_and_the_time_of_the_solve(
+        self, build: Build
+    ) -> None:
+        clock = VirtualClock(T0)
+
+        class Slow:
+            def solve(self, frame: Frame) -> QuickSolution:
+                clock.advance(2.0)
+                return solution(seq=frame.seq, t_utc_ns=frame.t_utc_ns)
+
+        helper = build(clock=clock, solver=Slow())
+        helper.solve_frame(sky_frame(5, t_utc_ns=T0))
+        later = sky_frame(9, t_utc_ns=T0 + 4 * NS_PER_S)
+        timing = unpack_frame(helper.process_frame(later)).state.timing
+        assert timing is not None
+        assert (timing.frame_seq, timing.solution_frame_seq) == (9, 5)
+        assert timing.solve_elapsed_s == pytest.approx(2.0)
+        assert helper.last_solve_s == pytest.approx(2.0)
+
+    def test_a_solve_in_progress_shows_its_frame_and_its_age(self, build: Build) -> None:
+        clock = VirtualClock(T0)
+        solver = BlockingSolver()
+        helper = build(clock=clock, solver=solver, settings=FAST)
+        helper.start()
+        helper.sink(sky_frame(1, t_utc_ns=T0))
+        assert solver.started.acquire(timeout=10.0)
+        assert wait_until(lambda: newest_encoded(helper, 1))
+        clock.advance(1.5)
+        state = helper.state()
+        assert state.timing is not None
+        assert (state.timing.solving_frame_seq, state.timing.solving_s) == (1, 1.5)
+        assert state.quality["solved"] == "the first solve is running (frame 1, 2 s so far)"
+        solver.go.release()
+        assert wait_until(lambda: helper.solves == 1)
+        finished = helper.state().timing
+        assert finished is not None
+        assert (finished.solving_frame_seq, finished.solving_s) == (None, None)
+
+    def test_a_frame_without_a_valid_time_has_no_age(self, build: Build) -> None:
+        helper = build()
+        frame = dataclasses.replace(sky_frame(1, t_utc_ns=T0), flags=FrameFlag.TIME_INVALID)
+        timing = unpack_frame(helper.process_frame(frame, T0)).state.timing
+        assert timing is not None
+        assert (timing.frame_age_s, timing.receive_lag_s) == (None, None)
+        assert timing.frame_seq == 1  # the frame is still named
+
+    def test_a_clock_that_runs_behind_the_frame_gives_an_age_of_zero(self, build: Build) -> None:
+        helper = build(clock=VirtualClock(T0))
+        frame = sky_frame(1, t_utc_ns=T0 + 5 * NS_PER_S)  # the frame claims a time in the future
+        timing = unpack_frame(helper.process_frame(frame)).state.timing
+        assert timing is not None
+        assert timing.frame_age_s == 0.0
+
+
+class Lifecycle(StubSolver):
+    """A solver that has `release` and `close`, and counts the calls."""
+
+    def __init__(self, release_error: bool = False) -> None:
+        super().__init__()
+        self.released = 0
+        self.closed = 0
+        self._release_error = release_error
+
+    def release(self) -> None:
+        self.released += 1
+        if self._release_error:
+            raise RuntimeError("cannot release")
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class TestTheLifeOfTheSolver:
+    def test_the_end_of_the_alignment_releases_the_solver_once(self, build: Build) -> None:
+        active = Active(True)
+        solver = Lifecycle()
+        helper = build(is_active=active, solver=solver)
+        helper.process_frame(sky_frame(1))
+        helper.solve_frame(sky_frame(1))
+        assert solver.released == 0  # the alignment runs
+        active.value = False
+        assert helper.state().active is False
+        assert helper.state().active is False
+        helper.housekeeping()
+        assert solver.released == 1  # once, not for every look at the state
+
+    def test_the_stop_closes_the_solver(self, build: Build) -> None:
+        solver = Lifecycle()
+        helper = build(solver=solver)
+        helper.start()
+        helper.stop()
+        assert solver.closed == 1
+
+    def test_a_solver_without_the_two_methods_is_fine(self, build: Build) -> None:
+        active = Active(True)
+        helper = build(is_active=active, solver=StubSolver())
+        helper.process_frame(sky_frame(1))
+        active.value = False
+        assert helper.state().active is False
+        helper.stop()
+
+    def test_a_solver_that_fails_to_release_does_not_stop_the_helper(
+        self, build: Build, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        active = Active(True)
+        helper = build(is_active=active, solver=Lifecycle(release_error=True))
+        helper.process_frame(sky_frame(1))
+        active.value = False
+        with caplog.at_level(logging.ERROR):
+            assert helper.state().active is False
+        assert "failed to release" in caplog.text
+
+
+class TestTheLog:
+    def test_the_log_says_when_the_solve_starts_to_fail_and_when_it_works_again(
+        self, build: Build, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        solver = StubSolver(solution(solved=False, x_px=None, y_px=None, note="too few stars"))
+        helper = build(solver=solver)
+        with caplog.at_level(logging.INFO, logger="seeingmon.services.core.alignment.helper"):
+            for seq in (1, 2, 3):
+                helper.solve_frame(sky_frame(seq))
+            solver.result = solution(seq=4)
+            helper.solve_frame(sky_frame(4))
+            helper.solve_frame(sky_frame(5))
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 2  # one line for each change, not one for each frame
+        assert "fails" in messages[0]
+        assert "too few stars" in messages[0]
+        assert "works" in messages[1]
