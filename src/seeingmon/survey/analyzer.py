@@ -26,7 +26,10 @@ uses the previous solution even if the earlier result has not come back.
 **Sky quality.** Each result carries a `sky_quality` record. The transparency needs a reference
 zero point from the clearest conditions of the recent past, and that history lives here, not in
 the worker: `submit` reads it (`seeingmon.survey.transparency.reference_zero_point`) and hands the
-worker one number. By default the history is a `MemoryHistory` that `poll` feeds with every
+worker one number. While the history holds too few usable zero points for a reference, `submit`
+hands over the provisional zero point of the last few hours instead (`provisional_zero_point`).
+It calibrates the sky brightness of a frame that has no zero point of its own, and it sets no
+transparency. By default the history is a `MemoryHistory` that `poll` feeds with every
 `sky_quality` record, and you seed it from the store at start-up (`history.add_record`). Pass
 your own `ZeroPointHistory` (the store, later) and the analyzer reads it and leaves the writing
 to you. The nightly star summary (`star_epoch`) accumulates in `poll` too: a frame of a new night
@@ -82,6 +85,7 @@ from seeingmon.survey.transparency import (
     MemoryHistory,
     ZeroPointHistory,
     ZeroPointReference,
+    provisional_zero_point,
     reference_zero_point,
 )
 
@@ -265,6 +269,8 @@ class SurveyPipelineAnalyzer:
         previous = self._tracker.solution
         reference = self._tracker.reference
         zp_reference = reference_zero_point(self._history, frame.t_utc_ns, self._transparency)
+        if zp_reference is None:  # the history is too short: the last few hours stand in
+            zp_reference = provisional_zero_point(self._history, frame.t_utc_ns, self._transparency)
         args = (
             encode_frame(frame),
             None if previous is None else previous.to_dict(),
@@ -278,6 +284,7 @@ class SurveyPipelineAnalyzer:
                 "n_nights": zp_reference.n_nights,
                 "window_days": zp_reference.window_days,
                 "quantile": zp_reference.quantile,
+                "provisional": zp_reference.provisional,
             },
         )
         self._submitted += 1

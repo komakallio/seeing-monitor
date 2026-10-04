@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import statistics
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -11,7 +12,11 @@ from seeingmon.clock import NS_PER_S, VirtualClock, iso_to_utc_ns
 from seeingmon.records.survey import SkyQualityRecord
 from seeingmon.services.core.history import StoreZeroPointHistory
 from seeingmon.store.db import Store
-from seeingmon.survey.transparency import MemoryHistory, reference_zero_point
+from seeingmon.survey.transparency import (
+    MemoryHistory,
+    provisional_zero_point,
+    reference_zero_point,
+)
 
 NOW = iso_to_utc_ns("2026-03-01T12:00:00Z")
 DAY_NS = 86_400 * NS_PER_S
@@ -147,3 +152,26 @@ class TestARestart:
         with Store.open(path) as second:
             history = StoreZeroPointHistory(second, clock=VirtualClock(NOW))
             assert reference_zero_point(history, NOW) is None
+
+    def test_the_provisional_zero_point_comes_from_the_store_after_the_restart(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "results.sqlite"
+        values = [19.0 + index / 100 for index in range(10)]  # fewer than the 20 of a reference
+        with Store.open(path) as first:
+            for index, value in enumerate(values):
+                first.write(record(NOW - (10 - index) * 3600 * NS_PER_S, value))
+            first.write(record(NOW - 90 * 60 * NS_PER_S, None, rms=None, stars=0))  # no zero point
+        with Store.open(path) as second:  # core starts again
+            history = StoreZeroPointHistory(second, clock=VirtualClock(NOW))
+            assert reference_zero_point(history, NOW) is None
+            provisional = provisional_zero_point(history, NOW)
+        assert provisional is not None
+        assert provisional.provisional
+        # The window of 6 hours holds the samples 6, 5, 4, 3, 2, and 1 hours old: the last six.
+        assert provisional.n_samples == 6
+        assert provisional.zero_point_mag == pytest.approx(statistics.median(values[-6:]))
+        expected = MemoryHistory()
+        for index, value in enumerate(values):
+            expected.add_record(record(NOW - (10 - index) * 3600 * NS_PER_S, value))
+        assert provisional == provisional_zero_point(expected, NOW)

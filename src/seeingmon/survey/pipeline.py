@@ -370,9 +370,12 @@ class SurveyPipeline:
 
         `index` counts the frames that the caller has analyzed, and it picks the frames for the
         second-solver check. `zp_reference` is the reference zero point of the clearest
-        conditions (see `seeingmon.survey.transparency`), which gives the transparency.
-        `sky_quality` forces the sky quality step on or off. The default (`None`) runs it for
-        frames with an exposure of at least `SkyConfig.min_exposure_s`.
+        conditions (see `seeingmon.survey.transparency`), which gives the transparency. While the
+        history is too short for a reference, it can be the provisional zero point of the last few
+        hours instead. That one calibrates the sky brightness of a frame without a zero point of
+        its own, and it sets neither a transparency nor the expected signal of the cloud
+        fraction. `sky_quality` forces the sky quality step on or off. The default (`None`) runs it
+        for frames with an exposure of at least `SkyConfig.min_exposure_s`.
         """
         timings: dict[str, float] = {}
         started = self._clock.monotonic_ns()
@@ -463,7 +466,10 @@ class SurveyPipeline:
                 edge_px=self._config.cloud.edge_px,
                 match_radius_px=self._config.cloud.match_radius_px,
             )
-        cloud = self._cloud_fraction(frame, detections, coverage, zp_reference)
+        # A provisional zero point is no clear-sky level, so the cloud fraction keeps the
+        # photometric prior of the profile, as it does while no reference exists.
+        cloud_reference = None if zp_reference is None or zp_reference.provisional else zp_reference
+        cloud = self._cloud_fraction(frame, detections, coverage, cloud_reference)
         focus = self._focus(detections)
         solution: PointingSolution | None = None
         if attitude is not None and fit is not None:

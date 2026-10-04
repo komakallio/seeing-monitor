@@ -145,6 +145,8 @@ class TransparencyConfig(SectionModel):
     max_cloud_fraction: float = 0.2  # a frame with more clouds does not set the reference
     cloud_flag_fraction: float = 0.3  # the `cloud` flag
     transparency_flag: float = 0.6
+    # A frame without a zero point may use the median of this many hours; 0 turns it off.
+    fallback_hours: float = 6.0
 
 
 class StarEpochConfig(SectionModel):

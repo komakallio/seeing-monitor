@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +25,7 @@ from seeingmon.survey.analyzer import (
     create_survey_analyzer,
 )
 from seeingmon.survey.catalog import CapCatalog, write_catalog
-from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.config import SurveyConfig, TransparencyConfig
 from seeingmon.survey.dark import DarkLibrary
 from seeingmon.survey.pipeline import FrameAnalysis, SurveyPipeline
 from seeingmon.survey.star_epoch import FrameStars
@@ -181,11 +182,21 @@ def test_the_analyzer_feeds_its_history_and_the_reference_appears_after_enough_f
     for index in range(24):
         analyzer.submit(small_frame(EVENING + index * STEP_NS))
         assert len(analyzer.poll()) == 1
-    # The first 20 frames build the history, so the 21st is the first to get a reference.
-    assert [r is None for r in pipeline.references[:20]] == [True] * 20
-    assert pipeline.references[20] is not None
+    # The first frame finds no history. The 19 that follow get the provisional zero point of the
+    # frames before them, and the 21st is the first to get the reference.
+    assert pipeline.references[0] is None
+    for index in range(1, 20):
+        stand_in = pipeline.references[index]
+        assert stand_in is not None
+        assert stand_in.provisional
+        assert stand_in.n_samples == index
+        assert stand_in.zero_point_mag == pytest.approx(19.3)
+    first = pipeline.references[20]
+    assert first is not None
+    assert not first.provisional
     reference = pipeline.references[-1]
     assert reference is not None
+    assert not reference.provisional
     assert reference.zero_point_mag == pytest.approx(19.3)
     assert reference.n_samples >= 20
     samples = analyzer.history.zero_points(0, 2**62)
@@ -232,6 +243,163 @@ def test_a_history_that_only_reads_works_as_well(profile: Profile, catalog: CapC
     assert reader.calls == [(EVENING - 60 * 86400 * NS_PER_S, EVENING)]  # a 60 day window
     assert pipeline.references[0] is not None
     assert pipeline.references[0].zero_point_mag == pytest.approx(19.1)
+    analyzer.close()
+
+
+# --- The provisional zero point ---------------------------------------------------------------
+
+
+class RecordingHistory:
+    """A history that answers from a list of samples and records the questions."""
+
+    def __init__(self, samples: list[ZeroPointSample]) -> None:
+        self.calls: list[tuple[int, int]] = []
+        self._memory = MemoryHistory(samples)
+
+    def zero_points(self, since_utc_ns: int, until_utc_ns: int) -> tuple[ZeroPointSample, ...]:
+        self.calls.append((since_utc_ns, until_utc_ns))
+        return self._memory.zero_points(since_utc_ns, until_utc_ns)
+
+
+def zero_points_before(t_utc_ns: int, values: list[float]) -> list[ZeroPointSample]:
+    """Good samples, 50 minutes apart, the newest 50 minutes before `t_utc_ns`."""
+    return [
+        ZeroPointSample(t_utc_ns - (i + 1) * 3000 * NS_PER_S, value, 0.03, 60, 0.0)
+        for i, value in enumerate(values)
+    ]
+
+
+SIX_GOOD_FRAMES = [18.70, 18.82, 18.95, 18.74, 18.88, 18.78]  # their median is 18.80
+
+
+def test_a_short_history_gives_the_worker_the_provisional_zero_point(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    history = RecordingHistory(zero_points_before(EVENING, SIX_GOOD_FRAMES))
+    analyzer, pipeline = scripted(profile, catalog, history=history)
+    analyzer.submit(small_frame(EVENING))
+    assert len(analyzer.poll()) == 1
+    (reference,) = pipeline.references
+    assert reference is not None
+    assert reference.provisional
+    assert reference.n_samples == 6
+    assert reference.zero_point_mag == pytest.approx(18.80)  # the median, not the 90th percentile
+    assert reference.quantile == 0.5
+    assert reference.window_days == pytest.approx(0.25)
+    # The analyzer asks for the 60 days of the reference first, and then for the last 6 hours.
+    assert history.calls == [
+        (EVENING - 60 * 86400 * NS_PER_S, EVENING),
+        (EVENING - 6 * 3600 * NS_PER_S, EVENING),
+    ]
+    analyzer.close()
+
+
+def test_the_reference_wins_over_the_provisional_zero_point(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    values = [19.0 + i / 100.0 for i in range(25)]
+    history = RecordingHistory(zero_points_before(EVENING, values))
+    analyzer, pipeline = scripted(profile, catalog, history=history)
+    analyzer.submit(small_frame(EVENING))
+    assert len(analyzer.poll()) == 1
+    (reference,) = pipeline.references
+    assert reference is not None
+    assert not reference.provisional
+    assert reference.n_samples == 25
+    assert reference.zero_point_mag == pytest.approx(float(np.quantile(values, 0.9)))
+    assert reference.zero_point_mag > float(np.median(values)) + 0.05  # not the stand-in
+    assert history.calls == [(EVENING - 60 * 86400 * NS_PER_S, EVENING)]  # no second question
+    analyzer.close()
+
+
+def test_zero_points_older_than_the_fallback_window_give_no_provisional_zero_point(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    old = [
+        ZeroPointSample(EVENING - (7 + i) * 3600 * NS_PER_S, 18.8, 0.03, 60, 0.0) for i in range(5)
+    ]
+    analyzer, pipeline = scripted(profile, catalog, history=MemoryHistory(old))
+    analyzer.submit(small_frame(EVENING))
+    assert len(analyzer.poll()) == 1
+    assert pipeline.references == [None]
+    analyzer.close()
+    longer = SurveyConfig(transparency=TransparencyConfig(fallback_hours=12.0))
+    analyzer, pipeline = scripted(profile, catalog, history=MemoryHistory(old), config=longer)
+    analyzer.submit(small_frame(EVENING))
+    assert len(analyzer.poll()) == 1
+    (reference,) = pipeline.references
+    assert reference is not None
+    assert reference.n_samples == 5
+    assert reference.window_days == pytest.approx(0.5)
+    analyzer.close()
+
+
+def test_a_fallback_of_zero_hours_leaves_a_short_history_without_a_reference(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    history = RecordingHistory(zero_points_before(EVENING, SIX_GOOD_FRAMES))
+    off = SurveyConfig(transparency=TransparencyConfig(fallback_hours=0.0))
+    analyzer, pipeline = scripted(profile, catalog, history=history, config=off)
+    analyzer.submit(small_frame(EVENING))
+    assert len(analyzer.poll()) == 1
+    assert pipeline.references == [None]
+    assert history.calls == [(EVENING - 60 * 86400 * NS_PER_S, EVENING)]  # the window is not read
+    analyzer.close()
+
+
+def test_a_frame_without_a_pointing_solution_keeps_its_sky_brightness_while_the_history_is_short(
+    profile: Profile, catalog: CapCatalog, tmp_path: Path
+) -> None:
+    """The history holds six good zero points, and the pointing solution is lost."""
+    write_catalog(tmp_path / "cap.smcat", catalog)
+    layout = DataLayout(tmp_path / "data")
+    DarkLibrary.from_layout(layout).add_set(
+        np.full((1200, 1600), 40, dtype=np.uint16),
+        mode="bin2",
+        gain=120,
+        exposure_s=30.0,
+        temperature_c=15.0,
+        temperature_spread_c=0.1,
+        t_utc_ns=synth.NIGHT_UTC_NS - 3600 * NS_PER_S,
+        n_frames=9,
+        n_bias_frames=9,
+        bias_dn=40.0,
+        read_noise_dn=2.1,
+        adc_bits=14,
+        dark_dn=40.0,
+    )
+    frame, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0),
+        zero_point_mag=19.3,
+        sky_e_per_s_px=3.0,
+        seed=8,
+    )
+    history = MemoryHistory(zero_points_before(frame.t_utc_ns, SIX_GOOD_FRAMES))
+    config = SurveyConfig(catalog_path=str(tmp_path / "cap.smcat"), solvers=())
+    analyzer = create_survey_analyzer(
+        profile=profile,
+        station_id="test",
+        config=config,
+        executor=InlineExecutor(),
+        layout=layout,
+        history=history,
+    )
+    analyzer.submit(frame)
+    (output,) = analyzer.poll()
+    sky = next(r for r in output.records if isinstance(r, SkyQualityRecord))
+    assert not output.solved  # no solver and no tracker: the pointing is lost
+    assert sky.zero_point_mag is None
+    assert sky.sky_rate_e_per_s_arcsec2 is not None
+    assert sky.sky_mag_arcsec2 is not None
+    expected = 18.80 - 2.5 * math.log10(sky.sky_rate_e_per_s_arcsec2)  # the median of the six
+    assert sky.sky_mag_arcsec2 == pytest.approx(expected, abs=1e-6)
+    assert sky.quality is not None
+    assert "provisional zero point" in sky.quality["sky_mag_arcsec2"]
+    assert "the median of 6 frames of the last 6 h" in sky.quality["sky_mag_arcsec2"]
+    assert sky.transparency is None
+    assert sky.provenance["zp_ref_provisional"] == "true"
     analyzer.close()
 
 

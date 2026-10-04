@@ -19,7 +19,11 @@ makes the `sky_quality` record and the stars for the nightly summary. The steps:
 
 A value that the frame cannot support is `None`, and the reason is in `quality`. A frame without
 a pointing solution has no matched stars, so it has no zero point, but it can still have a sky
-rate and, with a reference zero point, a sky brightness that the reference calibrates.
+rate and, with a reference zero point, a sky brightness that the reference calibrates. While the
+history is too short for a reference, the provisional zero point of the last few hours
+(`seeingmon.survey.transparency.provisional_zero_point`) calibrates the sky in its place. The
+`quality` map and the `zp_ref_provisional` provenance key say so, and the provisional zero point
+sets no transparency.
 
 The `moon` and `twilight` flags need the position of the Sun and the Moon at the site. The survey
 path knows no site, so `core` sets them with the scheduler's ephemeris. The `dew` flag needs the
@@ -134,6 +138,7 @@ class QualityOptions:
                 cloud_flag_fraction=trans.cloud_flag_fraction,
                 transparency_flag=trans.transparency_flag,
                 night_split_utc_hour=config.night_split_utc_hour,
+                fallback_hours=trans.fallback_hours,
             ),
             min_snr=photo.min_snr,
             g_min=zp.g_min,
@@ -245,7 +250,8 @@ def assess_frame(
     the catalog row that each detection matched (-1 for none). `field_rows` and `field_vectors`
     are the catalog stars of the field with their apparent places, and `attitude` is the camera
     model of the frame, or `None` when the pointing failed. `hot_pixels` is a mask in the array
-    of `data`, and `zp_reference` the reference zero point, or `None` while the history is short.
+    of `data`, and `zp_reference` the reference zero point. While the history is short it is the
+    provisional zero point (its `provisional` field is true), or `None` when even that is missing.
     """
     reasons: dict[str, str] = {}
     exposure_s = frame.exposure_us / 1e6
@@ -325,7 +331,15 @@ def assess_frame(
     sky_note = None
     if sky_zero_point is None and sky is not None and zp_reference is not None:
         sky_zero_point = zp_reference.zero_point_mag
-        sky_note = "calibrated with the reference zero point, because the frame has none"
+        if zp_reference.provisional:
+            hours = zp_reference.window_days * 24.0
+            sky_note = (
+                "calibrated with a provisional zero point "
+                f"(the median of {zp_reference.n_samples} frames of the last {hours:g} h), "
+                "because the frame has none"
+            )
+        else:
+            sky_note = "calibrated with the reference zero point, because the frame has none"
     sky_mag = (
         None
         if sky is None or sky_zero_point is None
@@ -353,7 +367,7 @@ def assess_frame(
     transparency_value: float | None = None
     if fit is None:
         reasons["transparency"] = "no zero point"
-    elif zp_reference is None:
+    elif zp_reference is None or zp_reference.provisional:  # a median is no clear-sky level
         reasons["transparency"] = "no reference yet: the history holds too few clear zero points"
     else:
         transparency_value = transparency(fit.zero_point_mag, zp_reference)
@@ -409,6 +423,8 @@ def assess_frame(
     if zp_reference is not None:
         out_provenance["zp_ref"] = f"{zp_reference.zero_point_mag:.4f}"
         out_provenance["zp_ref_n"] = str(zp_reference.n_samples)
+        if zp_reference.provisional:
+            out_provenance["zp_ref_provisional"] = "true"
     if stars is not None and stars.n_growth_stars:
         out_provenance["ap_corr"] = f"{stars.aperture_correction:.4f}"
 

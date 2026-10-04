@@ -394,6 +394,101 @@ def test_an_unsolved_frame_is_calibrated_with_the_reference_zero_point_when_ther
     assert "reference zero point" in record.quality["sky_mag_arcsec2"]
 
 
+# --- A provisional zero point --------------------------------------------------------------
+
+
+def provisional_at(zero_point: float = ZP_TRUE) -> ZeroPointReference:
+    """The stand-in that `provisional_zero_point` gives: six frames of the last six hours."""
+    return ZeroPointReference(zero_point, 6, 1, 0.25, 0.5, provisional=True)
+
+
+def test_an_unsolved_frame_is_calibrated_with_a_provisional_zero_point_when_that_is_all_there_is(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth], tmp_path: Path
+) -> None:
+    record = sky_record(
+        analyze(
+            profile,
+            catalog,
+            *clear,
+            library=dark_library(tmp_path),
+            reference=provisional_at(19.10),
+            solve=False,
+        )
+    )
+    assert record.zero_point_mag is None  # the stand-in is no measurement of this frame
+    assert record.n_stars_used == 0
+    assert record.sky_mag_arcsec2 is not None
+    assert abs(record.sky_mag_arcsec2 - true_sky_mag(19.10)) < 0.03  # the sky follows the stand-in
+    assert record.quality is not None
+    assert record.quality["sky_mag_arcsec2"] == (
+        "calibrated with a provisional zero point (the median of 6 frames of the last 6 h), "
+        "because the frame has none"
+    )
+    assert record.transparency is None
+    assert record.quality["transparency"] == "no zero point"
+    assert record.provenance["zp_ref"] == "19.1000"
+    assert record.provenance["zp_ref_n"] == "6"
+    assert record.provenance["zp_ref_provisional"] == "true"
+
+
+def test_a_provisional_zero_point_sets_no_transparency_for_a_frame_with_its_own_zero_point(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth], tmp_path: Path
+) -> None:
+    record = sky_record(
+        analyze(
+            profile,
+            catalog,
+            *clear,
+            library=dark_library(tmp_path),
+            reference=provisional_at(),
+        )
+    )
+    assert record.zero_point_mag is not None
+    assert abs(record.zero_point_mag - ZP_TRUE) < 0.03
+    assert record.transparency is None  # a median of recent frames is no clear-sky level
+    assert record.quality is not None
+    assert "no reference yet" in record.quality["transparency"]
+    assert "cloud" not in record.flags
+    assert record.sky_mag_arcsec2 is not None  # the frame's own zero point calibrates its sky
+    assert abs(record.sky_mag_arcsec2 - true_sky_mag()) < 0.03
+    assert "sky_mag_arcsec2" not in record.quality
+    assert record.provenance["zp_ref_provisional"] == "true"
+
+
+def test_a_strict_reference_leaves_the_provisional_mark_out(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth], tmp_path: Path
+) -> None:
+    record = sky_record(
+        analyze(
+            profile,
+            catalog,
+            *clear,
+            library=dark_library(tmp_path),
+            reference=reference_at(),
+            solve=False,
+        )
+    )
+    assert record.provenance["zp_ref"] == "19.3000"
+    assert "zp_ref_provisional" not in record.provenance
+    assert record.quality is not None
+    assert "provisional" not in record.quality["sky_mag_arcsec2"]
+
+
+def test_a_provisional_zero_point_does_not_set_the_expected_signal_of_the_cloud_fraction(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth]
+) -> None:
+    """The cloud fraction keeps the profile's prior, as it does while no reference exists."""
+    far_off = 15.0  # a zero point so low that a reference of it expects no star at all
+    prior = analyze(profile, catalog, *clear, sky_quality=False)
+    provisional = analyze(
+        profile, catalog, *clear, reference=provisional_at(far_off), sky_quality=False
+    )
+    strict = analyze(profile, catalog, *clear, reference=reference_at(far_off), sky_quality=False)
+    assert prior.cloud_fraction is not None
+    assert provisional.cloud_fraction == prior.cloud_fraction
+    assert strict.cloud_fraction is None  # too few expected stars: the reference does count
+
+
 # --- The nightly summary ------------------------------------------------------------------
 
 

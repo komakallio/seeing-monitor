@@ -155,6 +155,8 @@ max_rms_mag = 0.15
 max_cloud_fraction = 0.2
 cloud_flag_fraction = 0.3
 transparency_flag = 0.6
+# A frame without a zero point may use the median of this many hours. 0 turns it off.
+fallback_hours = 6.0
 
 # The nightly star summary (the star_epoch record).
 [survey.star_epoch]

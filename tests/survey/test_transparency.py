@@ -33,6 +33,18 @@ def sample(
     )
 
 
+def recent(
+    hours_ago: float,
+    zero_point: float = 19.2,
+    *,
+    rms: float | None = 0.02,
+    n_stars: int = 80,
+    cloud: float | None = 0.0,
+) -> tr.ZeroPointSample:
+    """A sample from `hours_ago` hours before `NOW_NS`."""
+    return sample(hours_ago / 24.0, zero_point, rms=rms, n_stars=n_stars, cloud=cloud)
+
+
 def record(t_utc_ns: int, zero_point: float | None = 19.2, **extra: object) -> SkyQualityRecord:
     return SkyQualityRecord(
         station_id="test-station",
@@ -206,6 +218,128 @@ def test_the_options_refuse_nonsense() -> None:
         tr.TransparencyOptions(quantile=0.0)
     with pytest.raises(ValueError, match="invalid transparency options"):
         tr.TransparencyOptions(window_days=-1.0)
+
+
+# --- The provisional zero point -----------------------------------------------------------
+
+
+def test_a_reference_is_not_provisional_unless_it_says_so() -> None:
+    assert not tr.ZeroPointReference(19.2, 100, 30, 60.0, 0.9).provisional
+    history = tr.MemoryHistory(recent(0.5 + i / 4.0) for i in range(25))
+    reference = tr.reference_zero_point(history, NOW_NS)
+    assert reference is not None
+    assert not reference.provisional
+
+
+def test_the_provisional_zero_point_is_the_median_of_the_last_hours() -> None:
+    history = tr.MemoryHistory([recent(0.5, 19.0), recent(1.0, 19.4), recent(2.0, 19.1)])
+    provisional = tr.provisional_zero_point(history, NOW_NS)
+    assert provisional is not None
+    # The middle value: the 90th percentile would be 19.34 and the mean 19.17.
+    assert provisional.zero_point_mag == pytest.approx(19.1)
+    assert provisional.n_samples == 3
+    assert provisional.n_nights == 1
+    assert provisional.window_days == pytest.approx(0.25)  # 6 hours
+    assert provisional.quantile == 0.5
+    assert provisional.provisional
+    # An even number of samples gives the mean of the two in the middle.
+    even = tr.MemoryHistory([recent(1.0, 19.0), recent(2.0, 19.2)])
+    two = tr.provisional_zero_point(even, NOW_NS)
+    assert two is not None
+    assert two.zero_point_mag == pytest.approx(19.1)
+
+
+def test_the_provisional_zero_point_counts_the_nights_that_it_spans() -> None:
+    now = iso_to_utc_ns("2026-10-02T13:00:00Z")  # an hour after the end of the night
+    history = tr.MemoryHistory(
+        [
+            tr.ZeroPointSample(now - 30 * 60 * NS_PER_S, 19.0, 0.02, 80, 0.0),  # 12:30
+            tr.ZeroPointSample(now - 2 * 3600 * NS_PER_S, 19.2, 0.02, 80, 0.0),  # 11:00
+        ]
+    )
+    provisional = tr.provisional_zero_point(history, now)
+    assert provisional is not None
+    assert provisional.n_samples == 2
+    assert provisional.n_nights == 2
+
+
+def test_the_provisional_zero_point_honors_its_window() -> None:
+    history = tr.MemoryHistory(
+        [
+            sample(0.0, 21.0),  # at `now`: the window ends before it
+            recent(5.9, 19.0),
+            recent(6.0, 19.2),  # at the start of the window: it counts
+            recent(6.1, 17.0),
+            sample(3.0, 16.0),
+        ]
+    )
+    default = tr.provisional_zero_point(history, NOW_NS)
+    assert default is not None
+    assert default.n_samples == 2
+    assert default.zero_point_mag == pytest.approx(19.1)
+    wider = tr.provisional_zero_point(history, NOW_NS, tr.TransparencyOptions(fallback_hours=12.0))
+    assert wider is not None
+    assert wider.n_samples == 3
+    assert wider.zero_point_mag == pytest.approx(19.0)  # the median of 17.0, 19.0, and 19.2
+    assert wider.window_days == pytest.approx(0.5)
+    narrow = tr.TransparencyOptions(fallback_hours=1.0)
+    assert tr.provisional_zero_point(history, NOW_NS, narrow) is None  # nothing in the last hour
+
+
+def test_the_provisional_zero_point_ignores_unusable_samples() -> None:
+    clear = [recent(1.0, 19.0), recent(2.0, 19.2)]
+    bad = [
+        recent(0.2, 19.8, cloud=0.5),  # clouds
+        recent(0.3, 19.8, n_stars=5),  # few stars
+        recent(0.4, 19.8, rms=0.4),  # a poor fit
+        recent(0.5, float("nan")),
+    ]
+    provisional = tr.provisional_zero_point(tr.MemoryHistory(clear + bad), NOW_NS)
+    assert provisional is not None
+    assert provisional.n_samples == 2
+    assert provisional.zero_point_mag == pytest.approx(19.1)
+    assert tr.provisional_zero_point(tr.MemoryHistory(bad), NOW_NS) is None
+    # A sample with no scatter or cloud information counts, as it does for the reference.
+    unknown = tr.MemoryHistory([recent(1.0, 19.0, rms=None, cloud=None)])
+    assert tr.provisional_zero_point(unknown, NOW_NS) is not None
+
+
+def test_one_usable_sample_is_enough_for_the_provisional_zero_point() -> None:
+    assert tr.provisional_zero_point(tr.MemoryHistory(), NOW_NS) is None
+    one = tr.MemoryHistory([recent(3.0, 19.05)])
+    provisional = tr.provisional_zero_point(one, NOW_NS)
+    assert provisional is not None
+    assert provisional.n_samples == 1
+    assert provisional.zero_point_mag == pytest.approx(19.05)
+    assert tr.reference_zero_point(one, NOW_NS) is None  # the reference needs 20
+
+
+def test_a_fallback_of_zero_hours_turns_the_provisional_zero_point_off() -> None:
+    history = tr.MemoryHistory([recent(1.0), recent(2.0)])
+    assert tr.provisional_zero_point(history, NOW_NS) is not None
+    off = tr.TransparencyOptions(fallback_hours=0.0)
+    assert tr.provisional_zero_point(history, NOW_NS, off) is None
+
+
+def test_the_provisional_zero_point_stands_in_until_the_reference_exists() -> None:
+    few = tr.MemoryHistory(recent(0.5 + i / 4.0, 19.0 + i / 100.0) for i in range(19))
+    assert tr.reference_zero_point(few, NOW_NS) is None
+    stand_in = tr.provisional_zero_point(few, NOW_NS)
+    assert stand_in is not None
+    assert stand_in.provisional
+    assert stand_in.n_samples == 19
+    enough = tr.MemoryHistory(recent(0.5 + i / 4.0, 19.0 + i / 100.0) for i in range(20))
+    reference = tr.reference_zero_point(enough, NOW_NS)
+    assert reference is not None
+    assert not reference.provisional
+
+
+def test_the_options_refuse_a_negative_or_unbounded_fallback() -> None:
+    assert tr.TransparencyOptions().fallback_hours == 6.0
+    assert tr.TransparencyOptions(fallback_hours=0.0).fallback_hours == 0.0  # off, not invalid
+    for bad in (-1.0, -0.001, math.nan, math.inf):
+        with pytest.raises(ValueError, match="invalid transparency options"):
+            tr.TransparencyOptions(fallback_hours=bad)
 
 
 # --- Detectability and the limiting magnitude ---------------------------------------------

@@ -20,6 +20,14 @@ that a caller seeds from the store at start-up (`samples_from_records`). The ana
 the history when it submits a frame and passes the reference to the worker as a number, so a
 worker process needs no access to the store.
 
+**The provisional zero point.** The reference needs `min_samples` usable zero points (20 by
+default), and a young history holds fewer. Until the reference exists, `provisional_zero_point`
+stands in for it: the median of the usable zero points of the last `fallback_hours` (6 by
+default). It serves a frame that has no zero point of its own, so that the sky brightness does
+not drop out after a lost pointing solution or a restart. It never sets a transparency, because
+a median of recent frames does not describe the clearest conditions that the transparency
+measures against.
+
 **The limiting magnitude** is the magnitude at which the frame detects half of the catalog
 stars in its field. The function bins the stars by G, makes the detected fraction fall
 steadily with magnitude, and interpolates to 0.5. A clear frame detects more than half of the
@@ -48,6 +56,7 @@ from seeingmon.survey.geometry import FloatArray
 from seeingmon.survey.nights import night_label
 
 BoolArray = npt.NDArray[np.bool_]
+SECONDS_PER_HOUR = 3_600.0
 SECONDS_PER_DAY = 86_400.0
 
 
@@ -142,21 +151,34 @@ class TransparencyOptions:
     cloud_flag_fraction: float = 0.3
     transparency_flag: float = 0.6
     night_split_utc_hour: float = 12.0
+    # A frame without a zero point may use the median of this many hours while no reference
+    # exists (`provisional_zero_point`). 0 turns the fallback off.
+    fallback_hours: float = 6.0
 
     def __post_init__(self) -> None:
-        if not 0.0 < self.quantile <= 1.0 or self.window_days <= 0 or self.min_samples < 1:
+        if (
+            not 0.0 < self.quantile <= 1.0
+            or self.window_days <= 0
+            or self.min_samples < 1
+            or not 0.0 <= self.fallback_hours < math.inf
+        ):
             raise ValueError("invalid transparency options")
 
 
 @dataclass(frozen=True, slots=True)
 class ZeroPointReference:
-    """The zero point of the clearest conditions, and what it rests on."""
+    """The zero point of the clearest conditions, and what it rests on.
+
+    A `provisional` reference is the stand-in of `provisional_zero_point`: a median of the last
+    few hours, which calibrates the sky of a frame without a zero point and sets no transparency.
+    """
 
     zero_point_mag: float
     n_samples: int
     n_nights: int
     window_days: float
     quantile: float
+    provisional: bool = False
 
 
 def usable_samples(
@@ -199,6 +221,43 @@ def reference_zero_point(
         n_nights=len(nights),
         window_days=cfg.window_days,
         quantile=cfg.quantile,
+    )
+
+
+def provisional_zero_point(
+    history: ZeroPointHistory,
+    now_ns: int,
+    options: TransparencyOptions | None = None,
+) -> ZeroPointReference | None:
+    """A stand-in for the reference zero point, from the last few hours, or `None`.
+
+    The stand-in is the median of the usable zero points (`usable_samples`) in the window that
+    reaches `fallback_hours` back and ends just before `now_ns`. One usable sample is enough.
+    The result has `provisional` set, a `quantile` of 0.5, and a `window_days` of
+    `fallback_hours / 24`. It serves a frame that has no zero point of its own, such as one
+    that follows a lost pointing solution or a restart, so that its sky brightness does not drop
+    out. It never sets a transparency, because a median of recent frames does not describe the
+    clearest conditions. Use it only while `reference_zero_point` gives `None`.
+
+    The result is `None` when `fallback_hours` is 0 (the fallback is off) or when the window
+    holds no usable sample.
+    """
+    cfg = options or TransparencyOptions()
+    if cfg.fallback_hours <= 0:
+        return None
+    since = now_ns - round(cfg.fallback_hours * SECONDS_PER_HOUR * NS_PER_S)
+    usable = usable_samples(history.zero_points(since, now_ns), cfg)
+    if not usable:
+        return None
+    values = np.array([sample.zero_point_mag for sample in usable])
+    nights = {night_label(sample.t_utc_ns, cfg.night_split_utc_hour) for sample in usable}
+    return ZeroPointReference(
+        zero_point_mag=float(np.median(values)),
+        n_samples=len(usable),
+        n_nights=len(nights),
+        window_days=cfg.fallback_hours / 24.0,
+        quantile=0.5,
+        provisional=True,
     )
 
 

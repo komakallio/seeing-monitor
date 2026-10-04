@@ -9,7 +9,9 @@ import pytest
 from pydantic import BaseModel
 
 from seeingmon.config import ConfigError, load_config
-from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.config import SurveyConfig, TransparencyConfig
+from seeingmon.survey.quality import QualityOptions
+from seeingmon.survey.transparency import TransparencyOptions
 
 
 def read_defaults(repo_root: Path) -> dict[str, object]:
@@ -45,6 +47,7 @@ def test_the_configuration_layers_load_the_survey_section(tmp_path: Path) -> Non
     assert section.solvers == ("astrometry.net", "astap")
     assert section.pointing.validity_s == 43_200.0
     assert section.fit.match_radius_px == (4.0, 2.0, 1.2)
+    assert section.transparency.fallback_hours == 6.0
 
 
 def test_the_local_file_and_the_environment_override_the_defaults(tmp_path: Path) -> None:
@@ -60,6 +63,28 @@ def test_the_local_file_and_the_environment_override_the_defaults(tmp_path: Path
     assert section.solve.max_stars == 1000  # a key that no layer overrides keeps its default
     assert section.solve.pole_hint_radius_deg == 15.0
     assert section.pointing.moved_arcmin == 7.5
+
+
+def test_the_fallback_hours_reach_the_options_of_the_quality_step(tmp_path: Path) -> None:
+    assert QualityOptions.from_config(SurveyConfig()).transparency.fallback_hours == 6.0
+    local = tmp_path / "config.toml"
+    local.write_text("[survey.transparency]\nfallback_hours = 2.5\n", encoding="utf-8")
+    config = load_config(local_file=local, env={})
+    quality = QualityOptions.from_config(config.section("survey", SurveyConfig))
+    assert quality.transparency.fallback_hours == 2.5
+    off = load_config(
+        local_file=tmp_path / "missing.toml",
+        env={"SEEINGMON_SURVEY__TRANSPARENCY__FALLBACK_HOURS": "0"},
+    )
+    assert QualityOptions.from_config(off.section("survey", SurveyConfig)).transparency == (
+        TransparencyOptions(fallback_hours=0.0)
+    )
+
+
+def test_a_negative_fallback_is_an_error_when_the_options_are_built() -> None:
+    config = SurveyConfig(transparency=TransparencyConfig(fallback_hours=-1.0))
+    with pytest.raises(ValueError, match="invalid transparency options"):
+        QualityOptions.from_config(config)
 
 
 def test_a_misspelled_key_is_an_error_that_names_it(tmp_path: Path) -> None:
