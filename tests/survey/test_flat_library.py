@@ -551,6 +551,25 @@ class TestTheSessionFolder:
         library.session.sweep(NOW)
         assert not library.session.directory.exists()
 
+    def test_the_idle_sweep_deletes_what_expired_when_no_session_captures(
+        self, library: fl.FlatLibrary
+    ) -> None:
+        library.session.save(a_session(library, "flat-1a2b3c4d"))
+        assert library.session.sweep_idle(NOW + 60 * NS_PER_S) is False  # a young session stays
+        assert library.session.sweep_idle(NOW + 25 * 3600 * NS_PER_S) is True
+        assert not library.session.directory.exists()
+
+    def test_the_idle_sweep_leaves_the_folder_to_a_session_that_captures(
+        self, library: fl.FlatLibrary
+    ) -> None:
+        library.session.directory.mkdir(parents=True)
+        library.session.ser_path(1).write_bytes(b"frames that arrive")  # no session file yet
+        with library.session.capturing():
+            assert library.session.sweep_idle(NOW) is False
+            assert library.session.ser_path(1).exists()
+        assert library.session.sweep_idle(NOW) is True  # nobody captures now, and nobody owns it
+        assert not library.session.directory.exists()
+
     @pytest.mark.parametrize(
         "text",
         ["", "{", "[]", '{"version": "x"}', '{"t_utc_ns": "soon"}'],

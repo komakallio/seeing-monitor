@@ -44,7 +44,7 @@ import os
 import re
 import shutil
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -77,6 +77,8 @@ PREVIEW_MAX_WIDTH_PX = 1024
 PREVIEW_QUALITY = 85
 MAX_LISTED_SHADOWS = 12
 VERSION_PATTERN = re.compile(r"^flat-[0-9a-f]{8}$")
+UNKNOWN_FLAT = "There is no flat with that name."
+FLAT_IN_USE = "The flat is in use. Activate another flat first."
 
 FloatArray = npt.NDArray[np.float32]
 
@@ -108,7 +110,9 @@ class FlatInfo:
 
     `exposures_s` and `level_fractions` have one value for each set. A level is the median of the
     middle of the frame above the bias, as a fraction of the full scale. `temperature_c` is the
-    mean sensor temperature of the frames, or `None` when the camera gave none.
+    mean sensor temperature of the frames, or `None` when the camera gave none. `warnings` are the
+    notes of the session itself (a drifting light, a saturating one), which the report keeps next
+    to the warnings of `make_flat`.
     """
 
     t_utc_ns: int
@@ -118,6 +122,7 @@ class FlatInfo:
     exposures_s: tuple[float, ...]
     level_fractions: tuple[float, ...]
     temperature_c: float | None
+    warnings: tuple[str, ...] = ()
 
 
 def _number(value: float | None, digits: int = 3) -> float | None:
@@ -234,7 +239,7 @@ def build_report(result: MakeResult, info: FlatInfo) -> dict[str, Any]:
         },
         "edge_artifacts": len(summary.edge_artifacts),
         "agreement": agreement,
-        "warnings": ui_warnings(result),
+        "warnings": [*info.warnings, *ui_warnings(result)],
     }
 
 
@@ -314,6 +319,7 @@ class FlatSession:
     gain: int
     width_px: int
     height_px: int
+    warnings: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -328,6 +334,7 @@ class FlatSession:
             "gain": self.gain,
             "width_px": self.width_px,
             "height_px": self.height_px,
+            "warnings": list(self.warnings),
         }
 
     @classmethod
@@ -349,6 +356,7 @@ class FlatSession:
                 gain=int(data["gain"]),
                 width_px=int(data["width_px"]),
                 height_px=int(data["height_px"]),
+                warnings=tuple(str(text) for text in data.get("warnings", ())),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -366,10 +374,17 @@ class FlatSessionStore:
 
     def __init__(self, directory: Path) -> None:
         self._directory = directory
+        self._capturing = threading.Lock()
 
     @property
     def directory(self) -> Path:
         return self._directory
+
+    @contextlib.contextmanager
+    def capturing(self) -> Iterator[None]:
+        """Hold the folder while a session writes into it, so that `sweep_idle` leaves it alone."""
+        with self._capturing:
+            yield
 
     def ser_path(self, number: int) -> Path:
         """Where the frames of set `number` (1 or 2) go."""
@@ -420,6 +435,19 @@ class FlatSessionStore:
             return True
         return False
 
+    def sweep_idle(self, now_ns: int) -> bool:
+        """`sweep` for a thread that is not the session: it does nothing while a session captures.
+
+        A first set that nobody uses stays on disk until the next start or the next session, so
+        `core` calls this from time to time to give the space back 24 hours after the first set.
+        """
+        if not self._capturing.acquire(blocking=False):
+            return False
+        try:
+            return self.sweep(now_ns)
+        finally:
+            self._capturing.release()
+
 
 # --- The library --------------------------------------------------------------------------------
 
@@ -449,7 +477,7 @@ class FlatLibrary:
 
     def _path(self, version: str, suffix: str) -> Path:
         if not is_version(version):
-            raise FlatLibraryError("unknown", "There is no flat with that name.")
+            raise FlatLibraryError("unknown", UNKNOWN_FLAT)
         return self._directory / f"{version}{suffix}"
 
     # --- Reading ------------------------------------------------------------------------------
@@ -514,7 +542,7 @@ class FlatLibrary:
         except FlatLibraryError:
             raise
         except FileNotFoundError:
-            raise FlatLibraryError("unknown", "There is no flat with that name.") from None
+            raise FlatLibraryError("unknown", UNKNOWN_FLAT) from None
         except (OSError, ValueError, SkyError):
             raise FlatLibraryError("invalid", "The flat file cannot be read.") from None
 
@@ -581,7 +609,7 @@ class FlatLibrary:
         with self._lock:
             entry = self.get(version)
             if entry is None:
-                raise FlatLibraryError("unknown", "There is no flat with that name.")
+                raise FlatLibraryError("unknown", UNKNOWN_FLAT)
             model = self.load(version)
             if expect_shape is not None and model.shape != expect_shape:
                 raise FlatLibraryError(
@@ -607,9 +635,9 @@ class FlatLibrary:
         """Delete a flat that is not the active one. Raises `FlatLibraryError`."""
         with self._lock:
             if self.get(version) is None:
-                raise FlatLibraryError("unknown", "There is no flat with that name.")
+                raise FlatLibraryError("unknown", UNKNOWN_FLAT)
             if self.active_version() == version:
-                raise FlatLibraryError("active", "The flat is in use. Activate another flat first.")
+                raise FlatLibraryError("active", FLAT_IN_USE)
             self._remove_files(version)
 
     def prune(self, keep: int = KEEP_FLATS) -> tuple[str, ...]:
