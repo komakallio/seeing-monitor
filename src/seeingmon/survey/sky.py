@@ -9,6 +9,21 @@ median of the pixels that remain. Unresolved stars stay in the sky, as they do f
     sky rate = level (counts) * (electrons per count) / exposure     [e-/s per pixel]
              / (plate scale in arcsec per pixel) ** 2                 [e-/s per arcsec^2]
 
+**The clipped median.** The sample holds up to a million pixels, and the clipping needs up to ten
+medians of the whole sample (two for each of five steps). They took 0.08 to 0.15 s, between a
+fifth and a third of the sky quality step. A sample of 100,000 values or more therefore goes
+through a histogram. Equal bins, 200 for each robust spread of a rough subsample, cover the values
+out to 8 spreads on each side. The median and the half-width that gives the sigma come from the
+cumulative counts of the bins, with the values spread evenly inside a bin, and a clip cuts the
+counts outside its window. The picked pixels, the dither, and the number of steps stay as they
+were. The result differs from the sorted computation by less than 0.2 of `sigma / sqrt(n)` for the
+median and 0.25 for the sigma, where `n` is the number of values. That is a fifth of the
+statistical error that the sample size gives anyway: on three real 30 s frames the median differs
+by 0.0003 to 0.0067 count out of 680 to 1,470, which moves the sky brightness by under 0.00001 mag
+and, through the sigma, the limiting magnitude by under 0.0002 mag. The histogram takes 7 to 10 ms
+where the sort took 75 to 145 ms. A smaller sample, a value that is not finite, and a sample that
+the bins cannot describe go through the sorted computation.
+
 **The magnitude.** With the zero point `ZP` of the frame (the magnitude of a star of one
 electron per second), the surface brightness in the camera band is
 
@@ -53,6 +68,13 @@ G_MINUS_V = (-0.02704, 0.01424, -0.2156, 0.01426)
 G_MINUS_V_RANGE = (-0.5, 5.0)
 G_MINUS_V_SCATTER_MAG = 0.03
 _SAMPLE_SEED = 0x5C1
+# The clipped median of a large sample works on a histogram (`_histogram_clipped_median`).
+_HISTOGRAM_MIN_SAMPLES = 100_000  # a smaller sample takes a few milliseconds to sort
+_HISTOGRAM_ROUGH_SAMPLE = 20_000  # the values that give the rough center and spread
+_HISTOGRAM_HALF_WIDTH = 8.0  # the half-width of the histogram, in rough spreads
+_HISTOGRAM_BINS_PER_SPREAD = 200
+_HISTOGRAM_CHUNK = 1 << 17  # the values of one pass, so that the temporaries stay in the cache
+_MAD_TO_SIGMA = 1.4826  # the sigma of a normal distribution with this median absolute deviation
 
 
 class SkyError(Exception):
@@ -286,7 +308,139 @@ def measure_sky(
 
 
 def _clipped_median(values: npt.NDArray[np.float32], cfg: SkyOptions) -> tuple[float, float]:
-    """The sigma-clipped median and the robust sigma of the values."""
+    """The sigma-clipped median and the robust sigma of the values.
+
+    A sample of `_HISTOGRAM_MIN_SAMPLES` values or more goes through the histogram, which agrees
+    with the exact computation to a fraction of the standard error of the median (see the module
+    text). A smaller sample, a sample with a value that is not finite, and a sample that the
+    histogram cannot describe go through the exact computation.
+    """
+    if values.size >= _HISTOGRAM_MIN_SAMPLES:
+        found = _histogram_clipped_median(values, cfg)
+        if found is not None:
+            return found
+    return _exact_clipped_median(values, cfg)
+
+
+@dataclass(frozen=True, slots=True)
+class _Cdf:
+    """The cumulative counts of a sample at the edges of equal bins.
+
+    `edges` holds the edges of the bins, and `below` the number of values under each edge. The
+    first entry of `below` counts the values under the first bin. Inside a bin the values count as
+    evenly spread, so the counts between two edges follow a straight line.
+    """
+
+    edges: FloatArray
+    below: FloatArray
+
+    def count_below(self, x: float | FloatArray) -> FloatArray:
+        """The number of values below `x`, which is a position inside the histogram."""
+        return np.asarray(np.interp(x, self.edges, self.below), dtype=np.float64)
+
+    def position_of(self, count: float) -> float:
+        """The position that has `count` values below it."""
+        index = int(np.searchsorted(self.below, count, side="right")) - 1
+        index = min(max(index, 0), self.below.size - 2)
+        span = float(self.below[index + 1] - self.below[index])
+        fraction = 0.5 if span <= 0.0 else (count - float(self.below[index])) / span
+        step = float(self.edges[index + 1] - self.edges[index])
+        return float(self.edges[index]) + min(max(fraction, 0.0), 1.0) * step
+
+    def half_width(self, center: float, low: float, high: float) -> float | None:
+        """The half-width of the interval around `center` that holds half of a part of the sample.
+
+        The part is the values between the counts `low` and `high`. The function returns `None`
+        when that interval would reach beyond the histogram.
+        """
+        reach = min(center - float(self.edges[0]), float(self.edges[-1]) - center)
+        # The count inside [center - w, center + w] is a straight line between the widths at which
+        # one end meets an edge, so the half-width follows from a search among those widths.
+        widths = np.sort(np.concatenate(([0.0], np.abs(self.edges - center))))
+        widths = widths[widths <= reach]
+        inside = np.clip(self.count_below(center + widths), low, high) - np.clip(
+            self.count_below(center - widths), low, high
+        )
+        target = 0.5 * (high - low)
+        index = int(np.searchsorted(inside, target, side="left"))
+        if index == 0 or index >= widths.size:
+            return None
+        before, after = float(widths[index - 1]), float(widths[index])
+        count_before, count_after = float(inside[index - 1]), float(inside[index])
+        return before + (target - count_before) / (count_after - count_before) * (after - before)
+
+
+def _bin_counts(values: npt.NDArray[np.float32], center: float, spread: float) -> _Cdf:
+    """The cumulative counts of equal bins that cover `center` plus and minus a few spreads."""
+    bins = round(2.0 * _HISTOGRAM_HALF_WIDTH * _HISTOGRAM_BINS_PER_SPREAD)
+    width = spread / _HISTOGRAM_BINS_PER_SPREAD
+    first = center - _HISTOGRAM_HALF_WIDTH * spread
+    counts = np.zeros(bins + 2, dtype=np.int64)  # under the first bin, the bins, over the last bin
+    shift, scale = np.float32(first - width), np.float32(1.0 / width)
+    for start in range(0, values.size, _HISTOGRAM_CHUNK):
+        keys = (values[start : start + _HISTOGRAM_CHUNK] - shift) * scale
+        np.clip(keys, 0.0, bins + 1.0, out=keys)
+        counts += np.bincount(keys.astype(np.intp), minlength=bins + 2)
+    edges = np.asarray(first + width * np.arange(bins + 1), dtype=np.float64)
+    below = counts[0] + np.concatenate(([0], np.cumsum(counts[1 : bins + 1])))
+    return _Cdf(edges, below.astype(np.float64))
+
+
+def _histogram_clipped_median(
+    values: npt.NDArray[np.float32], cfg: SkyOptions
+) -> tuple[float, float] | None:
+    """The sigma-clipped median and the robust sigma from a histogram of the values.
+
+    A rough median and spread, from a regular subsample, place equal bins around the values: 200
+    bins for each rough spread, out to 8 spreads on each side. Every step of the clipping works on
+    the cumulative counts of the bins. The median is the position with half of the counted values
+    below it, the sigma is 1.4826 times the half-width that holds half of them around the median,
+    and a clip drops the counts outside the window of the median plus and minus `clip_sigma`
+    sigmas. The result matches `_exact_clipped_median` to a fraction of the standard error of the
+    median (the module text gives the figures).
+
+    Returns `None` when the histogram cannot describe the values: one of them is not finite, the
+    rough spread is zero, or the median, a window, or the half-width falls beyond the bins.
+    """
+    if not math.isfinite(float(np.add.reduce(values, dtype=np.float64))):
+        return None
+    rough = values[:: max(1, values.size // _HISTOGRAM_ROUGH_SAMPLE)]
+    center = float(np.median(rough))
+    spread = _MAD_TO_SIGMA * float(np.median(np.abs(rough - np.float32(center))))
+    if not spread > 0.0:
+        return None
+    cdf = _bin_counts(values, center, spread)
+    low, high = 0.0, float(values.size)  # the counts below the first and the last value that stays
+    median = sigma = 0.0
+    for step in range(cfg.clip_iterations + 1):
+        middle = low + 0.5 * (high - low)
+        if not float(cdf.below[0]) < middle < float(cdf.below[-1]):
+            return None
+        median = cdf.position_of(middle)
+        width = cdf.half_width(median, low, high)
+        if width is None:
+            return None
+        sigma = _MAD_TO_SIGMA * width
+        if step == cfg.clip_iterations or sigma <= 0.0:
+            break
+        limit = cfg.clip_sigma * sigma
+        if median - limit < cdf.edges[0] or median + limit > cdf.edges[-1]:
+            return None
+        new_low = max(low, float(cdf.count_below(median - limit)))
+        new_high = min(high, float(cdf.count_below(median + limit)))
+        kept = new_high - new_low
+        if kept >= high - low - 0.5 or kept < 100:  # nothing left to clip, or too little would stay
+            break
+        low, high = new_low, new_high
+    return median, sigma
+
+
+def _exact_clipped_median(values: npt.NDArray[np.float32], cfg: SkyOptions) -> tuple[float, float]:
+    """The sigma-clipped median and the robust sigma of the values, from the sorted values.
+
+    The function takes about a tenth of a second for a million values on a laptop: ten medians of
+    the whole sample. It is the reference of `_histogram_clipped_median`.
+    """
     kept = values
     median = float(np.median(kept))
     sigma = 1.4826 * float(np.median(np.abs(kept - np.float32(median))))

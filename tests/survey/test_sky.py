@@ -216,6 +216,160 @@ def test_the_options_refuse_nonsense() -> None:
         sky.SkyOptions(max_samples=10)
 
 
+# --- The clipped median --------------------------------------------------------------------
+#
+# A sample of 100,000 values or more goes through a histogram. It may differ from the sorted
+# computation by 0.2 of `sigma / sqrt(n)` for the median and 0.25 for the sigma, where `n` is the
+# number of values. That is a fifth of the statistical error that the sample size gives anyway.
+
+MEDIAN_TOLERANCE = 0.2
+SIGMA_TOLERANCE = 0.25
+SKIES = (
+    "gaussian",
+    "wide gaussian",
+    "narrow gaussian",
+    "skewed",
+    "wings and hot pixels",
+    "heavy tailed",
+    "gradient",
+    "dithered counts",
+)
+
+
+def made_up_sky(kind: str, n: int = 300_000) -> npt.NDArray[np.float32]:
+    """The values of a sky that the clipping has to cope with, from a seed that the kind fixes."""
+    rng = np.random.default_rng(100 + SKIES.index(kind))
+    values: FloatArray
+    if kind == "gaussian":
+        values = 800.0 + 25.0 * rng.standard_normal(n)
+    elif kind == "wide gaussian":
+        values = 9000.0 + 100.0 * rng.standard_normal(n)
+    elif kind == "narrow gaussian":
+        values = 100.0 + 0.5 * rng.standard_normal(n)
+    elif kind == "skewed":
+        values = 200.0 + 12.0 * rng.gamma(4.0, 1.0, n)
+    elif kind == "wings and hot pixels":  # 5% of faint star wings and 1% of hot pixels
+        values = 800.0 + 25.0 * rng.standard_normal(n)
+        values[: n // 20] += 250.0
+        values[n // 20 : n // 20 + n // 100] += 25_000.0
+        rng.shuffle(values)
+    elif kind == "heavy tailed":
+        values = 400.0 + 15.0 * rng.standard_t(3, n)
+    elif kind == "gradient":
+        values = 700.0 + 40.0 * rng.uniform(-1.0, 1.0, n) + 20.0 * rng.standard_normal(n)
+    else:  # whole counts with the dither that `measure_sky` adds
+        values = np.rint(300.0 + 1.2 * rng.standard_normal(n)) + rng.uniform(-0.5, 0.5, n)
+    return values.astype(np.float32)
+
+
+@pytest.mark.parametrize("kind", SKIES)
+@pytest.mark.parametrize(
+    ("clip_sigma", "iterations"), [(3.0, 4), (2.0, 4), (3.0, 1), (4.0, 0)], ids=str
+)
+def test_the_histogram_agrees_with_the_sorted_computation_to_a_fifth_of_the_error(
+    kind: str, clip_sigma: float, iterations: int
+) -> None:
+    values = made_up_sky(kind)
+    cfg = sky.SkyOptions(clip_sigma=clip_sigma, clip_iterations=iterations)
+    exact_median, exact_sigma = sky._exact_clipped_median(values, cfg)
+    found = sky._histogram_clipped_median(values, cfg)
+    assert found is not None
+    unit = exact_sigma / math.sqrt(values.size)
+    assert abs(found[0] - exact_median) <= MEDIAN_TOLERANCE * unit
+    assert abs(found[1] - exact_sigma) <= SIGMA_TOLERANCE * unit
+
+
+def test_the_histogram_is_the_path_of_a_large_sample_and_the_sort_the_path_of_a_small_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = sky.SkyOptions()
+    large = made_up_sky("gaussian", sky._HISTOGRAM_MIN_SAMPLES)
+    small = large[:-1]
+    assert sky._clipped_median(small, cfg) == sky._exact_clipped_median(small, cfg)  # to the bit
+    assert sky._clipped_median(large, cfg) == sky._histogram_clipped_median(large, cfg)
+    monkeypatch.setattr(sky, "_exact_clipped_median", lambda values, cfg: pytest.fail("sorted"))
+    sky._clipped_median(large, cfg)  # a large sample never sorts the whole sample
+
+
+def test_a_subsample_that_is_blind_to_the_values_gives_the_exact_result() -> None:
+    values = made_up_sky("gaussian")
+    values[:: values.size // sky._HISTOGRAM_ROUGH_SAMPLE] = 800.0  # what the rough step reads
+    cfg = sky.SkyOptions()
+    assert sky._histogram_clipped_median(values, cfg) is None  # a spread of zero
+    assert sky._clipped_median(values, cfg) == sky._exact_clipped_median(values, cfg)
+
+
+def test_bins_that_are_too_narrow_for_the_values_give_the_exact_result() -> None:
+    values = made_up_sky("gaussian")
+    rough = slice(None, None, values.size // sky._HISTOGRAM_ROUGH_SAMPLE)
+    values[rough] = 800.0 + 0.1 * np.linspace(-1.0, 1.0, values[rough].size)  # a spread of 0.07
+    cfg = sky.SkyOptions()  # the rest of the values have a spread of 25
+    assert sky._histogram_clipped_median(values, cfg) is None  # the half-width lies out of reach
+    assert sky._clipped_median(values, cfg) == sky._exact_clipped_median(values, cfg)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_a_value_that_is_not_finite_gives_what_the_sort_gives(bad: float) -> None:
+    values = made_up_sky("gaussian")
+    values[12_345] = bad
+    cfg = sky.SkyOptions()
+    assert sky._histogram_clipped_median(values, cfg) is None
+    got = sky._clipped_median(values, cfg)
+    expected = sky._exact_clipped_median(values, cfg)
+    assert [math.isnan(v) for v in got] == [math.isnan(v) for v in expected]
+    assert all(a == b for a, b in zip(got, expected, strict=True) if not math.isnan(a))
+
+
+def test_a_constant_sample_has_a_median_and_no_spread() -> None:
+    values = np.full(200_000, 812.5, dtype=np.float32)
+    assert sky._clipped_median(values, sky.SkyOptions()) == (812.5, 0.0)
+
+
+def test_the_cumulative_counts_place_the_median_and_the_half_width_of_a_flat_sample() -> None:
+    # Ten bins of ten values each, from 0 to 10: the values lie evenly between 0 and 10.
+    flat = sky._Cdf(np.arange(11.0), 10.0 * np.arange(11.0))
+    assert flat.position_of(25.0) == pytest.approx(2.5)
+    assert flat.position_of(50.0) == pytest.approx(5.0)
+    assert flat.half_width(5.0, 0.0, 100.0) == pytest.approx(2.5)  # 20 values for each unit
+    # The middle 60 values only: half of them (30) lie within 1.5 of the center.
+    assert flat.half_width(5.0, 20.0, 80.0) == pytest.approx(1.5)
+    # A center near the end of the bins leaves less than half of the values within reach.
+    assert flat.half_width(2.0, 0.0, 100.0) is None  # half of the values need a width of 5 > 2
+
+
+def test_the_counts_keep_the_values_outside_the_bins_in_the_ends() -> None:
+    rng = np.random.default_rng(1)
+    inside = (500.0 + 10.0 * rng.standard_normal(10_000)).astype(np.float32)
+    values = np.concatenate([inside, np.full(30, -9000.0), np.full(7, 9000.0)]).astype(np.float32)
+    cdf = sky._bin_counts(values, 500.0, 15.0)
+    assert cdf.below[0] == 30  # under the first bin
+    assert cdf.below[-1] == values.size - 7  # the 7 values over the last bin are not counted
+    assert np.all(np.diff(cdf.below) >= 0.0)
+    assert cdf.edges[0] == pytest.approx(500.0 - 8.0 * 15.0)
+    assert cdf.edges[-1] == pytest.approx(500.0 + 8.0 * 15.0)
+
+
+def test_the_sky_measurement_is_the_same_with_the_histogram_and_with_the_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = sky_frame(
+        shape=(1500, 1500), seed=5
+    )  # more than a million pixels: a sample of a million
+    with_histogram = measure(data)
+    monkeypatch.setattr(sky, "_HISTOGRAM_MIN_SAMPLES", 10**9)  # everything goes through the sort
+    with_sort = measure(data)
+    assert with_histogram is not None
+    assert with_sort is not None
+    unit = with_sort.noise_dn / math.sqrt(with_sort.n_pixels)
+    assert abs(with_histogram.level_dn - with_sort.level_dn) <= MEDIAN_TOLERANCE * unit
+    assert abs(with_histogram.noise_dn - with_sort.noise_dn) <= SIGMA_TOLERANCE * unit
+    assert with_histogram.n_pixels == with_sort.n_pixels
+    assert with_histogram.raw_dn == with_sort.raw_dn  # the median before the calibration
+    assert with_histogram.rate_e_per_s_arcsec2 == pytest.approx(
+        with_sort.rate_e_per_s_arcsec2, rel=1e-4
+    )
+
+
 # --- The flat model ------------------------------------------------------------------------
 
 
