@@ -8675,7 +8675,7 @@
     },
     "/api/v1/events": {
       "get": {
-        "description": "Return events, newest first by default. Their text has no paths or addresses.",
+        "description": "Return events, newest first by default. Their text has no paths or addresses.\n\nA value of the `detail` that gives the Sun's elevation, such as `sun_elevation_deg`, is\n`null`, because a series of elevations would show the site.",
         "operationId": "get_events",
         "parameters": [
           {

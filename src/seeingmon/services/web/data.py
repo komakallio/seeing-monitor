@@ -8,7 +8,9 @@ the history of a record type.
 **The record JSON.** A record is the `Record.to_row` dict, plus `t_utc`, the start time as an ISO
 8601 UTC string (the integer `t_utc_ns` is too large for a JavaScript number to hold exactly).
 A field that the settings withhold (`withhold_fields`) is `null` with the `quality` note
-`withheld`. The text of an event goes through `seeingmon.services.web.privacy.scrub_text`.
+`withheld`. The text of an event goes through `seeingmon.services.web.privacy.scrub_text`, and
+each value of its detail that gives the Sun's elevation (`sun_elevation_deg` of `sky.dark`, for
+example) is `null`, because a series of elevations with their times shows the site.
 
 **History.** `history` returns the records of a type between two times, oldest first. A range
 is `from` (included) and `to` (excluded). Without `step`, each record is one item. With a step of
@@ -53,7 +55,7 @@ from seeingmon.clock import NS_PER_S, Clock, iso_to_utc_ns, utc_ns_to_iso
 from seeingmon.config import ConfigError
 from seeingmon.records.base import RECORD_TYPES, Record, field_specs, get_record_type
 from seeingmon.services.web.config import WebSettings
-from seeingmon.services.web.privacy import scrub_json, scrub_text
+from seeingmon.services.web.privacy import scrub_json, scrub_text, withhold_sun_elevation
 from seeingmon.sinks.base import StoredRow
 from seeingmon.store.db import DEFAULT_LIMIT, StoreError
 
@@ -351,7 +353,7 @@ class StoreData:
             row["provenance"] = scrub_json(row["provenance"])
         if cls.record_type == "event":
             row["message"] = scrub_text(str(row["message"]))
-            row["detail"] = scrub_json(row.get("detail"))
+            row["detail"] = scrub_json(withhold_sun_elevation(row.get("detail")))
         return row
 
     @staticmethod

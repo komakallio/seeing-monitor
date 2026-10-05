@@ -8,6 +8,9 @@ the text that the first layer cannot see.
 - `scrub_text` replaces a URL, a file path, and an IPv4 address inside free text, such as the text
   of an event or of an exception, with a marker.
 - `scrub_json` applies `scrub_text` to every string of a JSON value.
+- `withhold_sun_elevation` replaces each value that gives the Sun's elevation, such as the
+  `sun_elevation_deg` of the event `sky.dark`, with `None`. A series of elevations with their times
+  shows the site, so the API never serves one, as the scheduler status leaves the elevation out.
 - `public_config` reduces the effective configuration to the sections that describe how the station
   computes. It drops the sections that describe where and how one installation runs.
 """
@@ -59,6 +62,9 @@ _UNC_PATH = re.compile(r"\\\\[^\s\"'<>|]+")
 _POSIX_PATH = re.compile(r"(?<![\w.:/~-])/(?:[\w.@+=,-]+/)+[\w.@+=,-]*")
 _HOME_PATH = re.compile(r"(?<![\w.:/-])~/[\w.@+=,/-]*")
 _IPV4 = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)")
+# A key that gives the Sun's elevation: `sun_elevation_deg`, `sun_altitude_deg`, `sun_deg`, or a
+# name that ends in one of them after an underscore, such as `dark_sun_deg`.
+_SUN_ELEVATION_KEY = re.compile(r"(?:^|_)sun(?:_elevation|_altitude)?_deg$")
 
 
 def scrub_text(text: str) -> str:
@@ -78,6 +84,22 @@ def scrub_json(value: Any, *, _depth: int = 0) -> Any:
         return {key: scrub_json(item, _depth=_depth + 1) for key, item in value.items()}
     if isinstance(value, list | tuple):
         return [scrub_json(item, _depth=_depth + 1) for item in value]
+    return value
+
+
+def withhold_sun_elevation(value: Any, *, _depth: int = 0) -> Any:
+    """A copy of a JSON value in which every key that gives the Sun's elevation maps to `None`."""
+    if _depth > MAX_DEPTH:
+        return HIDDEN
+    if isinstance(value, Mapping):
+        return {
+            key: None
+            if _SUN_ELEVATION_KEY.search(str(key))
+            else withhold_sun_elevation(item, _depth=_depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [withhold_sun_elevation(item, _depth=_depth + 1) for item in value]
     return value
 
 

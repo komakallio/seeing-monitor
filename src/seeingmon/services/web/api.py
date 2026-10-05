@@ -561,7 +561,11 @@ def get_events(
         str | None, Query(max_length=128, description="The `next_cursor` of a page.")
     ] = None,
 ) -> JSONResponse:
-    """Return events, newest first by default. Their text has no paths or addresses."""
+    """Return events, newest first by default. Their text has no paths or addresses.
+
+    A value of the `detail` that gives the Sun's elevation, such as `sun_elevation_deg`, is
+    `null`, because a series of elevations would show the site.
+    """
     time_range = ctx.data.resolve_range(from_, to)
     page = ctx.data.events(
         time_range=time_range,

@@ -14,6 +14,7 @@ from seeingmon.services.web.privacy import (
     public_config,
     scrub_json,
     scrub_text,
+    withhold_sun_elevation,
 )
 
 WINDOWS_PATH = "C:\\Users\\someone\\data\\db.sqlite"  # repo-check: allow
@@ -78,6 +79,27 @@ def test_scrub_json_stops_at_a_depth_limit() -> None:
     for _ in range(50):
         deep = [deep]
     assert HIDDEN in str(scrub_json(deep))
+
+
+def test_every_value_that_gives_the_suns_elevation_is_withheld() -> None:
+    value = {
+        "sun_elevation_deg": -18.73,
+        "nested": {"dark_sun_deg": -19.1, "sun_altitude_deg": -5.0, "frames": 5},
+        "list": [{"first_visible_sun_deg": 4.2}],
+        "sky_mag_arcsec2": 20.5,
+        "sun_elevation_limit_deg": -3.0,  # a setting, not a measurement at a time
+        "sunset_count": 1,
+    }
+    assert withhold_sun_elevation(value) == {
+        "sun_elevation_deg": None,
+        "nested": {"dark_sun_deg": None, "sun_altitude_deg": None, "frames": 5},
+        "list": [{"first_visible_sun_deg": None}],
+        "sky_mag_arcsec2": 20.5,
+        "sun_elevation_limit_deg": -3.0,
+        "sunset_count": 1,
+    }
+    assert value["sun_elevation_deg"] == -18.73  # the input stays as it was
+    assert withhold_sun_elevation(None) is None
 
 
 EFFECTIVE: dict[str, Any] = {

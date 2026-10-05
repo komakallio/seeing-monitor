@@ -156,6 +156,36 @@ def test_the_text_of_an_event_loses_its_paths_and_addresses(
     assert event["detail"]["count"] == 3
 
 
+def test_an_event_serves_no_suns_elevation(
+    writer: Store, reader: StoreReader, settings: WebSettings, clock: VirtualClock
+) -> None:
+    """The elevation at the time of the event shows the site, so the API withholds it."""
+    detail = {"sky_mag_arcsec2": 20.5, "slope_mag_per_hour": 0.1, "sun_elevation_deg": -18.73}
+    writer.write(
+        sample_record(
+            "event",
+            **common(NOW_NS, level="info", kind="sky.dark", message="Dark.", detail=detail),
+        )
+    )
+    data = StoreData(reader, settings, clock, station_id=STATION)
+    event = data.latest("event")
+    assert event is not None
+    assert event["detail"] == {
+        "sky_mag_arcsec2": 20.5,
+        "slope_mag_per_hour": 0.1,
+        "sun_elevation_deg": None,
+    }
+    (listed,) = data.events(
+        time_range=TimeRange(NOW_NS, NOW_NS + 1),
+        limit=10,
+        cursor=None,
+        min_level="info",
+        kind="sky.",
+        descending=True,
+    ).items
+    assert listed["detail"]["sun_elevation_deg"] is None
+
+
 def test_only_the_records_of_the_station_are_served(
     seeded: Store, reader: StoreReader, settings: WebSettings, clock: VirtualClock
 ) -> None:
