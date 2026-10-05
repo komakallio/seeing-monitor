@@ -83,7 +83,7 @@ Neither effect stops a reading. The flags let a user decide.
 These already exist on a solved survey frame: `n_detected` in `survey_frame`, and `cloud_fraction`, `limiting_mag`, and `sky_mag_arcsec2` in `sky_quality`. The cloud fraction takes its expected stars from the noise of the frame, so it already tells a bright sky from a cloudy one. The design adds:
 
 - **`n_expected` in `sky_quality`.** The number of catalog stars that the cloud fraction expects, to compare with `n_detected`.
-- **`sky.dark`.** An event when the sky brightness changes by less than `survey.darkness.max_slope_mag_per_deg` (0.05 mag per degree of Sun elevation) over `survey.darkness.frames` (3) solved frames in a row. It also works in summer, when the Sun never reaches −18°.
+- **`sky.dark`.** An event when a line fitted to the sky brightness of the last `survey.darkness.frames` (5) solved frames changes by less than `survey.darkness.max_slope_mag_per_hour` (0.3 mag per hour). A rule per degree of Sun elevation would never fire, because near the Sun's lowest point the elevation barely changes. The rule per hour also works in summer, when the Sun never reaches −18°, and fires near the darkest time of the night.
 - **`sky.clear_verdict`.** An event once per evening, `survey.darkness.verdict_frames` (5) solved frames after `sky.dark`, with the share of frames at or below the cloud tracker's `clear_threshold`.
 
 ### The visibility summary
@@ -122,8 +122,8 @@ All values are provisional.
 | `survey.twilight.target_background_fraction` | 0.3 | The background that the long exposure aims for |
 | `survey.twilight.min_exposure_s` | 1.0 | The shortest adaptive long exposure |
 | `survey.twilight.max_saturated_fraction` | 0.01 | The share of saturated pixels that sets `saturated_sky` |
-| `survey.darkness.max_slope_mag_per_deg` | 0.05 | The slope of the sky brightness that counts as dark |
-| `survey.darkness.frames` | 3 | Solved frames in a row for `sky.dark` |
+| `survey.darkness.max_slope_mag_per_hour` | 0.3 | The change of the sky brightness per hour that counts as dark |
+| `survey.darkness.frames` | 5 | Solved frames in the fit for `sky.dark` |
 | `survey.darkness.verdict_frames` | 5 | Solved frames after `sky.dark` for the clear verdict |
 
 `scheduler.daylight.sun_elevation_limit_deg` and `sun_resume_margin_deg` no longer gate the camera, so they go away. `twilight_elevation_deg` stays for the flag.

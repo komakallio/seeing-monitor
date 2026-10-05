@@ -53,6 +53,7 @@ A read of the code before step 1 found five gaps in the design. The owner approv
    - A check burst above the limit needs `search.confirm_bursts` detections in a row, as a search does.
    - The warning that the limit is too low is the event `polaris.search_limit_low`.
    - TOML has no null, so the default file cannot write `None` for `search.max_sun_elevation_deg`. A value of 90 or more means no limit.
+6. **`sky.dark` from the change per hour.** The design's rule, less than 0.05 mag per degree of Sun elevation, never fires: the twilight sky changes by about 1 mag per degree at −12° and still by about 0.2 near −18°, and near the Sun's lowest point on a summer night a change per degree is noise. The sky counts as dark when a line fitted to the last `survey.darkness.frames` (5) solved frames changes by less than `survey.darkness.max_slope_mag_per_hour` (0.3 mag per hour). The owner approved this on October 5, 2026 (step 7).
 
 ## Out of scope
 
