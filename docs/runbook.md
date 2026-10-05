@@ -915,6 +915,65 @@ A light smoothing takes the noise out of a shadow that the update takes from the
 
 Set `flat_file` in the `[survey]` table of `local/config.toml` to the path of the file on the Pi, and restart `core`. A unit flat stays the default until you do. The `sky_quality` records then carry `provenance.flat` with the name of the flat. Without a panel flat, the tilt of the optics, about 1% at the frame edges, stays in your sky quality values. The previews and the live view use this flat too, as they use a panel flat.
 
+## Focus with the rapid mode
+
+The **Align** page reads the width of Polaris 20 times a second while you turn the focuser, and it draws the readings as a curve next to the live video of the star. Use it for the last turns of the focuser, after the stars look sharp in the normal view. The normal view measures the median width of the stars of the whole frame twice a second, in steps of 3.82 arcseconds, which is too slow and too coarse to find the bottom of a focus curve. The rapid mode switches the camera to a ROI of 128 by 128 pixels (4.1 arcminutes) around Polaris at 1.91 arcseconds per pixel, and it measures every frame, about 82 a second. While it runs, the page does not show the whole frame.
+
+### When the page offers it
+
+The mode is offered only while the alignment runs and `core` can place the ROI. The state `rapid_focus` (in `GET /api/v1/alignment/state`) says whether it is offered (`available`), and when it is not, `reason` says in words what is missing. Three things have to hold:
+
+1. Five focus values have come in, which takes about 3 seconds of frames. Before that, the reason reads "the quick solve has measured 3 of the 5 focus values that it needs".
+1. The coarse focus is good: the median width of the stars is at most 12 arcseconds (`[alignment] rapid_focus_max_fwhm_arcsec`), and it rests on at least five stars. Wider stars spill out of the aperture of the measurement, so the curve flattens and misleads. Focus by eye in the normal view until the focus value falls under 12 arcseconds, and the offer comes by itself.
+1. `core` has located Polaris. It uses the current solution, or the last solution when that is less than 10 minutes old (`rapid_focus_max_solution_age_s`), or, when no solution exists, the brightest star if it is at least five times as bright as the next one. The position must lie at least 80 bin2 pixels (5 arcminutes) inside the frame. `located_by` says which of the three applied. Align the mount first (see [Point the camera and align it](#point-the-camera-and-align-it)), because the ROI follows the star only a little.
+
+### Start, read, and stop
+
+1. Start the mode from the Align page, or send `POST /api/v1/alignment/rapid-focus/start` with the token. The camera switches streams in about a second, and the video of the star appears. The **Now** page names the phase: "Rapid focus on Polaris".
+1. Turn the focuser slowly. A reading comes every 50 ms, and the curve shows the last 30 seconds.
+1. Stop at the bottom of the curve, and stop the mode (the Align page, or `POST /api/v1/alignment/rapid-focus/stop`). The alignment shows the whole frame again.
+
+| Number | What it means |
+|---|---|
+| Width | The FWHM of Polaris in arcseconds, from the second moments of the star, as the median of the frames of one reading. It includes the seeing, so it never falls to zero. |
+| Best value | The lowest smoothed width of the run: the median of the last second of readings that are neither spikes nor saturated. It sits a little above the lowest single reading, on purpose, because each reading scatters by a few percent. |
+| Stars | The stars that the width rests on. The mode measures Polaris only, so it is 1, and 0 while the newest frame does not show the star. |
+| Peak | The brightest pixel as a share of the full scale. Watch it for saturation (see below). |
+| Frames | The frames in the reading, 4 or 5. |
+| Spike | A reading above twice the median of the ten before it. |
+
+### Read the curve
+
+A star out of focus is wide. As you turn toward focus, the width falls, and past focus it rises again, so the curve is a V with a rounded bottom, and the bottom is the focus. Turn past it on purpose and then back, to see both sides: a focus that you approach from one side hides the bottom. A slow turn gives a clearer curve than a quick one. A tap on the telescope or a gust makes a reading jump to more than twice its neighbors. That reading carries the flag `spike`, the page leaves it out of its scale, and it never sets the best value. A change that lasts is a spike for its first five readings only. After you refocus on purpose, restart the best value with `POST /api/v1/alignment/focus/reset`. The next readings that count set a new best, and the curve keeps both runs.
+
+### If the star saturates
+
+The width of a saturated star reads too small, because the core of the star is clipped, and the curve then leads you to a wrong focus. `core` flags such a reading (`saturated`), keeps it out of the best value, and adds the note "the star reaches the saturation level, so its width reads too small: shorten the exposure or lower the gain". The star gets brighter as it narrows, because the same light falls on fewer pixels, so a star that is fine at 8 arcseconds can saturate at 3. If the peak climbs toward 0.8 as you near focus, start the mode again with a shorter exposure, for example `POST /api/v1/alignment/rapid-focus/start` with the body `{"exposure_us": 1000}`, or with a lower `gain`. The stream restarts on a ROI centered on the star, and the run, its readings, and its idle timer go on. A start without an exposure or a gain keeps the settings that run.
+
+### When the mode ends
+
+The mode ends when you stop it, when the alignment ends or you pause the scheduler, when the star is missing from the window for 450 frames (about 5 seconds, `[scheduler.fast] missing_star_frames`), and after 2 minutes without use (`[scheduler.align] rapid_focus_idle_timeout_s`). A command counts as use, and so does a start that you send again and a person who watches the live view, so the Align page keeps the mode alive while it is open. The state says why the mode ended (`ended_reason`). The alignment itself ends after 30 minutes without use, as it always did. The mode writes no seeing record, because no frame reaches the fast analyzer.
+
+### Settings
+
+| Setting | Default | Effect |
+|---|---|---|
+| `[alignment] rapid_focus_max_fwhm_arcsec` | 12 | The widest coarse focus at which the mode is offered. |
+| `[alignment] rapid_focus_max_solution_age_s` | 600 | The oldest last solution that still places Polaris. |
+| `[scheduler.align] rapid_focus_idle_timeout_s` | 120 | The idle time that ends the mode. |
+| `[scheduler.fast] exposure_us`, `gain` | 2000, 0 | The settings of the mode when you give none. |
+| `[scheduler.fast] roi_arcmin`, `roi_edge_margin_px`, `edge_cooldown_s`, `missing_star_frames` | 4.1, 16, 5, 450 | The size of the ROI, when it recenters, and when the mode ends. |
+
+### What only the real camera confirms
+
+The tests run the mode against a scripted camera and synthetic stars, and the page against the demo (`seeingmon web --demo`), which plays a person who turns the focuser through focus. Nothing here ran on the real camera or on a Pi, so check these points at first light:
+
+- Whether the camera holds about 82 frames a second on the ROI at 2 ms over your USB link, and whether `core` keeps up on a Pi 4. A frame takes 50 to 64 microseconds on the development machine. The factor of four to six that this document uses makes about 0.3 ms on a Pi 4, which is 3% of a frame period, and the video adds its PNG encoder while you watch.
+- Whether the widths agree with what you see. The correction of the background was checked on synthetic stars only, and the stored windows still use the median of the kernel, so the width of the rapid mode and the width in the stored records can differ for the same star.
+- Whether the star stays in the window while you touch the focuser. The ROI recenters 16 pixels from the edge, at most once in 5 seconds.
+- Whether 12 arcseconds is a good limit for the coarse focus on your optics, and whether the brightest star of the field is Polaris when no solution exists.
+- How far the curve lags behind your hand. A reading covers 50 ms, the video runs at 20 frames a second, and the network adds its own time.
+
 ## Save the pointing reference
 
 The **Pointing** card shows how far the camera has moved from a reference solution: a pointing solution that you save once, after you align the camera. Until you save one, the large value of the card stays empty, and its note says "no reference solution". With a reference, each `pointing` record carries `offset_arcmin` (the angle between the boresight of the record and the boresight of the reference) and `reference_id`. A record gets the `moved` flag when the offset exceeds `moved_arcmin` (5 arcminutes) or the roll changed by more than `moved_roll_deg` (0.5 degrees), both in `[survey.pointing]`. The reference is not the target of the **Align** page, which stays your setting in `[alignment]`.
@@ -1037,7 +1096,7 @@ Apart from the address of the web UI, the banner prints no coordinate, no path, 
 
 ### Point the camera and align it
 
-Open the **Align** page, enter the token when the page asks for it, and press **Start alignment**. The camera streams bin2 frames of 0.5 s at gain 120, and the page shows the newest one. The first quick solve has no pointing to start from, so it detects the stars and runs a plate solver, which takes a few seconds. The quick solve runs in a worker process that starts with the alignment and needs about 3 seconds to load, so the live view appears at once and the first solution a few seconds later. A slow solve never slows the live view: it only makes the overlay lag behind the picture, and the state says which frame the solution comes from (`timing`). When it succeeds, the pole card replaces "Waiting for a solution." with a sentence that tells you how to move the camera in altitude and in azimuth (it uses `[site]`), the orbit sentence says whether the circle of Polaris fits in the frame, and the **Solution and frame** card lists the matched stars and the residual. Move the mount until the pole sits on the aim, check the focus curve, and press **Stop alignment**, so that the camera goes back to measuring. In daylight the frames saturate, and the page shows a saturation warning. When the quick solve fails, the offset card gives the reason, such as too few stars for a solver or a solver that found no solution. The aim ring on the dashed circle stays: it needs only the orientation of the picture and the time, and a move of the mount changes the orientation only a little (a move of 0.5 degrees shifts the ring by 4 pixels at most), so `core` takes the ring from the last good solution and says how old that solution is (`aim_ring.source` is `last solution`). You can go on moving the camera until Polaris sits in the ring, even while the solver finds no stars. The focus value is the median star width of the frame, in pixels and in arcseconds, and the state keeps the last 120 values with their times for a rolling curve. A value that jumps to more than twice its recent level is a spike (a touch of the telescope), and a spike never sets the best value. After you refocus, restart the best value with `POST /api/v1/alignment/focus/reset` (it needs the token), and the next value that counts becomes the best. The pole marker and the grid need the pointing of the current frame, and they return with the next solution. When the pole sits on the aim and the **Pointing** card shows a solution, save the pointing reference (see [Save the pointing reference](#save-the-pointing-reference)). The text of the page may change until you approve its look (blocker B8).
+Open the **Align** page, enter the token when the page asks for it, and press **Start alignment**. The camera streams bin2 frames of 0.5 s at gain 120, and the page shows the newest one. The first quick solve has no pointing to start from, so it detects the stars and runs a plate solver, which takes a few seconds. The quick solve runs in a worker process that starts with the alignment and needs about 3 seconds to load, so the live view appears at once and the first solution a few seconds later. A slow solve never slows the live view: it only makes the overlay lag behind the picture, and the state says which frame the solution comes from (`timing`). When it succeeds, the pole card replaces "Waiting for a solution." with a sentence that tells you how to move the camera in altitude and in azimuth (it uses `[site]`), the orbit sentence says whether the circle of Polaris fits in the frame, and the **Solution and frame** card lists the matched stars and the residual. Move the mount until the pole sits on the aim, check the focus curve (for the last turns of the focuser, use [Focus with the rapid mode](#focus-with-the-rapid-mode)), and press **Stop alignment**, so that the camera goes back to measuring. In daylight the frames saturate, and the page shows a saturation warning. When the quick solve fails, the offset card gives the reason, such as too few stars for a solver or a solver that found no solution. The aim ring on the dashed circle stays: it needs only the orientation of the picture and the time, and a move of the mount changes the orientation only a little (a move of 0.5 degrees shifts the ring by 4 pixels at most), so `core` takes the ring from the last good solution and says how old that solution is (`aim_ring.source` is `last solution`). You can go on moving the camera until Polaris sits in the ring, even while the solver finds no stars. The focus value is the median star width of the frame, in pixels and in arcseconds, and the state keeps the last 120 values with their times for a rolling curve. A value that jumps to more than twice its recent level is a spike (a touch of the telescope), and a spike never sets the best value. After you refocus, restart the best value with `POST /api/v1/alignment/focus/reset` (it needs the token), and the next value that counts becomes the best. The pole marker and the grid need the pointing of the current frame, and they return with the next solution. When the pole sits on the aim and the **Pointing** card shows a solution, save the pointing reference (see [Save the pointing reference](#save-the-pointing-reference)). The text of the page may change until you approve its look (blocker B8).
 
 ### Watch the night start
 
