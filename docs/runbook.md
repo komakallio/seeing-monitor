@@ -1105,7 +1105,7 @@ Add `--asi-library <path>` when the variable is not set. The launcher checks you
 Seeing monitor, real sky (asi driver): real time, full sensor.
 Web UI: http://127.0.0.1:8080/
 Real: the camera, the system clock, the star catalog, the plate solvers, and the site (the last three come from your local configuration). Nothing about the sky is simulated.
-No pointing solution is seeded. The first survey frame goes to the plate solvers, in this order: astap.
+No pointing solution is seeded. On a new data folder, the first survey frame goes to the plate solvers, in this order: astap. A later run starts from the newest solution in the store.
 The scheduler follows the real Sun at your site (by the clock of this machine). It stays in safe while the Sun is above -3 degrees, so by day it takes no survey frame and records no seeing window. The Align page and a dark session run in safe too.
 Of your local configuration, only [site], [survey], [alignment], [web], and [auth] reach the system: no sink, heater, SQM-LE, or power setting does. As in every dev run, the windows are 20 s and a dark session takes 5 frames of each kind.
 Real star images ran through the detector, the pointing tracker, and the sky quality at the first light (October 4, 2026). ASTAP has solved real frames offline only, so watch the first solve of your run.
@@ -1126,8 +1126,8 @@ Open the **Align** page, enter the token when the page asks for it, and press **
 
 | When | What happens | Where you see it |
 |---|---|---|
-| At the start | `core` has no pointing, logs which solvers it will try, and starts in `safe`. | `core.log`, and the **System** card (State) |
-| The Sun passes -4 degrees (the gate is -3 degrees, and the scheduler resumes a degree lower) | The scheduler enters `auto`, finds no pointing, writes the warning event `scheduler.solve_requested`, and takes a survey step: a 1 ms frame (bin2, gain 0) and a 30 s frame (bin2, gain 120). | **Latest events**, and `core.log` |
+| At the start | On a new data folder, `core` has no pointing, logs which solvers it will try, and starts in `safe`. A later run on the same folder starts with the newest stored solution, and the log names its time and its age. | `core.log`, and the **System** card (State) |
+| The Sun passes -4 degrees (the gate is -3 degrees, and the scheduler resumes a degree lower) | The scheduler enters `auto`. Without a pointing solution, it writes the warning event `scheduler.solve_requested` and takes a survey step: a 1 ms frame (bin2, gain 0) and a 30 s frame (bin2, gain 120). With a stored solution, it starts the fast stream at once. | **Latest events**, and `core.log` |
 | A few seconds after each frame | The analysis finds the stars, runs the solvers in order, and fits the pointing. A full bin2 frame took 2 to 3 s to analyze on the dev machine, before the time of the solver. | The `survey frame` lines of `core.log` |
 | After the first solution | The scheduler starts the fast stream with the ROI on Polaris. The first seeing window closes after 20 s. | The **Seeing** card |
 | Every 3 minutes | The survey step repeats. The tracker solves each frame from the last solution, so the log shows a solver run only when the tracker loses the field. | `core.log`, and the **Pointing** card |

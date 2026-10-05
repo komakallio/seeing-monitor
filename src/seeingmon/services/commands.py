@@ -153,7 +153,8 @@ def register(subparsers: Subparsers) -> None:
         "the system clock, and the exposure of the profile. The sky stays simulated, so a camera "
         "that sees a room or a dark reports no stars. Add --real-sky (with --data-dir) for a real "
         "night: the site, the star catalog, and the plate solvers come from your local "
-        "configuration, and the first pointing solution comes from the first survey frame."
+        "configuration, and on a new data folder the first pointing solution comes from the first "
+        "survey frame."
     )
     dev.add_argument(
         "--driver",
@@ -178,8 +179,9 @@ def register(subparsers: Subparsers) -> None:
     dev.add_argument(
         "--real-sky",
         action="store_true",
-        help="run on the real sky: no simulated catalog and no seed solution, so core solves the "
-        "first survey frame with your plate solvers. It needs --driver asi and --data-dir. The "
+        help="run on the real sky: no simulated catalog and no seed solution, so on a new data "
+        "folder core solves the first survey frame with your plate solvers, and a later run starts "
+        "from the newest solution in the store. It needs --driver asi and --data-dir. The "
         "[site] table (latitude_deg, longitude_deg, and elevation_m), the [survey] table (a "
         "catalog_path that exists, and the solvers), and the [alignment] table come from your "
         "local configuration and the variables SEEINGMON_SITE__*, SEEINGMON_SURVEY__*, and "

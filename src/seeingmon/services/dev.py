@@ -43,21 +43,23 @@ and the site stay synthetic, so a camera that sees a room or a dark reports no s
 seeing windows and the sky quality stay empty.
 
 **A real sky.** `--real-sky` (with `--driver asi` and `--data-dir`) drops the synthetic sky. The
-launcher writes no simulated catalog and no seed solution, so `core` starts with no pointing and
-solves the first survey frame and the alignment frames with your plate solvers, as a production
-start does. The site, the catalog, and the solvers come from your local configuration: the
-launcher layers the `[site]`, `[survey]`, and `[alignment]` tables of `local/config.toml` and the
-variables `SEEINGMON_SITE__*`, `SEEINGMON_SURVEY__*`, and `SEEINGMON_ALIGNMENT__*`, the way that it
-layers `[web]` and `[auth]`, and it gives them to `core` alone, in the environment of that child.
-`[site]` needs all three values, and `[survey]` needs a catalog file that exists. The launcher
-refuses to start without them, and its message names the table and the setting, never a value. The
-scheduler follows the real Sun at the real site. The survey cloud limits are the production
-defaults, because the simulated limits suit a synthetic star field only, and the windows (20 s) and
-the dark session (5 frames of each kind) stay short. The banner says what is real, names the
-solvers that run, and warns about a solver program or a folder that it does not find. It prints no
-coordinate and no path. The logs of the children go to the folder `logs/<start time>` of your data
-folder, so that they outlive the run, and the banner names that folder relative to your data
-folder. The level of the logs is `info`, so that they show each solver run.
+launcher writes no simulated catalog and no seed solution. On a new data folder, `core` starts with
+no pointing and solves the first survey frame and the alignment frames with your plate solvers, as a
+first production start does. A later run on the same folder starts from the newest solution in the
+store, as a production restart does. The site, the catalog, and the solvers come from your local
+configuration: the launcher layers the `[site]`, `[survey]`, and `[alignment]` tables of
+`local/config.toml` and the variables `SEEINGMON_SITE__*`, `SEEINGMON_SURVEY__*`, and
+`SEEINGMON_ALIGNMENT__*`, the way that it layers `[web]` and `[auth]`, and it gives them to `core`
+alone, in the environment of that child. `[site]` needs all three values, and `[survey]` needs a
+catalog file that exists. The launcher refuses to start without them, and its message names the
+table and the setting, never a value. The scheduler follows the real Sun at the real site. The
+survey cloud limits are the production defaults, because the simulated limits suit a synthetic star
+field only, and the windows (20 s) and the dark session (5 frames of each kind) stay short. The
+banner says what is real, names the solvers that run, and warns about a solver program or a folder
+that it does not find. It prints no coordinate and no path. The logs of the children go to the
+folder `logs/<start time>` of your data folder, so that they outlive the run, and the banner names
+that folder relative to your data folder. The level of the logs is `info`, so that they show each
+solver run.
 
 **Isolation.** A simulated run must never reach a real sink, device, or data directory. Each child
 gets a clean environment: no `SEEINGMON_*` variable of yours reaches it, and `--local-config`
@@ -848,8 +850,10 @@ def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str
         "(the last three come from your local configuration). Nothing about the sky is simulated."
     )
     notes.append(
-        "No pointing solution is seeded. The first survey frame goes to the plate solvers, in this "
-        f"order: {', '.join(solvers) if solvers else 'none (the list is empty)'}."
+        "No pointing solution is seeded. On a new data folder, the first survey frame goes to the "
+        "plate solvers, in this order: "
+        f"{', '.join(solvers) if solvers else 'none (the list is empty)'}. A later run starts from "
+        "the newest solution in the store."
     )
     notes.append(
         "The scheduler follows the real Sun at your site (by the clock of this machine). It stays "
