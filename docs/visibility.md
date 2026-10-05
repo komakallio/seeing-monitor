@@ -43,10 +43,12 @@ The 12-hour limit has no physical reason. A `PointingSolution` stores the camera
 
 The fast stream replaces the Sun's elevation as the gate. It runs in one of two modes whenever a solution exists and the sky is not saturated:
 
-- **Search.** A burst of `search.burst_frames` (50) fast frames every `search.interval_s` (15 s), on the region where the solution predicts Polaris. A detection in `search.confirm_bursts` (2) bursts in a row switches to measure. Between bursts the camera is idle, which keeps the CPU load, the power, and the sensor heat low during a cloudy night or a day when Polaris is too faint.
+- **Search.** A burst of `search.burst_frames` (50) fast frames every `search.interval_s` (15 s), on the region where the solution predicts Polaris. A detection in `search.confirm_bursts` (2) bursts in a row switches to measure. A burst keeps the camera busy for about 3 % of the time, and the camera is idle between bursts.
 - **Measure.** The fast stream as it runs now: continuous frames, seeing windows, and recentering at the ROI edge. When the star is missing for `fast.missing_star_frames` (450) frames in a row, the stream returns to search. It no longer starts a solve.
 
 The scheduler writes the event `polaris.visible` when the stream switches to measure and `polaris.hidden` when it switches back, each with the Sun's elevation. These events give the visibility statistics.
+
+**When to search.** Search runs only where Polaris can appear: while the Sun is below `search.max_sun_elevation_deg`, and at night under clouds. The default comes from the detection estimate (see "Open questions") plus a margin of a few degrees. If the estimate says that Polaris is detectable in full daylight, there is no limit, and the system measures instead of searching. Above the limit, one burst every `search.probe_interval_s` (600 s) checks that the limit is not too low, so that the statistics are not cut off by the system's own setting. When a probe burst finds Polaris, the system measures, and it writes a warning event that the limit is too low.
 
 **The detection.** The fast analyzer already reports whether it found the star. Search adds the signal-to-noise ratio (SNR) of the star in each burst, from the aperture flux and the background noise. A burst counts as a detection at `search.detect_snr` (10) or more within `search.radius_px` of the prediction.
 
@@ -113,6 +115,8 @@ All values are provisional.
 | `scheduler.search.detect_snr` | 10.0 | The SNR of a detection |
 | `scheduler.search.radius_px` | 20.0 | How far from the prediction a detection may lie, in fast-mode pixels |
 | `scheduler.search.confirm_bursts` | 2 | Bursts with a detection in a row that start measure |
+| `scheduler.search.max_sun_elevation_deg` | From the estimate | Search runs while the Sun is below this. None means always. |
+| `scheduler.search.probe_interval_s` | 600.0 | The time between check bursts above the limit |
 | `scheduler.fast.target_background_fraction` | 0.3 | The background that the fast exposure aims for |
 | `scheduler.fast.max_noise_bias` | 0.05 | The seeing bias that sets `noisy` |
 | `survey.twilight.target_background_fraction` | 0.3 | The background that the long exposure aims for |
@@ -127,7 +131,7 @@ All values are provisional.
 ## Open questions
 
 - **How bright a sky still shows Polaris?** The lane computes the SNR of Polaris in a fast frame against the Sun's elevation, from +60° to −18°. The simulator's twilight model (`src/seeingmon/drivers/sim/sky.py`) stops at +10°, so the lane extends it with a published daylight sky brightness near the pole and cites the source in `docs/research-notes.md`. The real sky decides in phase 3.
-- **The cost of a day of searching.** Search bursts all day, and measure whenever Polaris shows, keep the camera and the CPU busier than now. The lane measures the CPU load, the memory, and the sensor temperature against the performance budgets. A warmer sensor also affects the dark library.
+- **The cost of measuring in daylight.** Searching costs little. If Polaris is visible in daylight, though, the system measures all day: the camera and the CPU work continuously, and the sensor warms in the sun. The lane measures the CPU load, the memory, and the sensor temperature of a day of measuring against the performance budgets. A warmer sensor also affects the dark library.
 - **Where the seeing is measured.** The readings describe the line of sight to Polaris, corrected to the zenith. A planet low in the south looks through more air. The architecture already reports the zenith value, and the History page should say so.
 
 ## For phase 3

@@ -24,8 +24,8 @@ Each step ends with tests that pass and a push.
    Done when: tests cover a solution that is 30 days old (tracker and seeding), a positive limit that still expires, a failed solve after a good one, and 450 missing frames without a solve.
 2. **The detection estimate.** Compute the SNR of Polaris in a fast frame (bin1, gain 0, at most 2 ms) against the Sun's elevation from +60° to −18°. Extend the simulator's sky model above +10° with a published daylight sky brightness near the pole, and cite it. Add a section to `docs/research-notes.md` with the table and the elevation where the SNR crosses 10.
    Done when: the section exists, and a test reproduces its numbers.
-3. **Search and measure.** Add `[scheduler.search]`, the search bursts, the switch between the modes, and the events `polaris.visible` and `polaris.hidden`. Remove the Sun's elevation as a gate, and keep the measured saturation gate and the brightness watch.
-   Done when: scheduler tests with the fake driver cover a day with and without a visible Polaris, a cloud gap at night, a saturated sky, no solution, an unsynchronized clock, and a missing site. A simulated day and night with `seeingmon dev --driver sim` measures seeing from the elevation that step 2 predicts, within 1°.
+3. **Search and measure.** Add `[scheduler.search]`, the search bursts, the search limit from step 2 with its check bursts above it, the switch between the modes, and the events `polaris.visible` and `polaris.hidden`. Remove the Sun's elevation as a gate, and keep the measured saturation gate and the brightness watch.
+   Done when: scheduler tests with the fake driver cover a day with and without a visible Polaris, no search above the limit except the check bursts, a check burst that finds Polaris, a cloud gap at night, a saturated sky, no solution, an unsynchronized clock, and a missing site. A simulated day and night with `seeingmon dev --driver sim` measures seeing from the elevation that step 2 predicts, within 1°.
 4. **The adaptive fast exposure.** Add the exposure loop between windows, and the background level and the SNR in the window record. Regenerate `docs/quantities.md` and `docs/openapi.json` as `docs/development.md` describes.
    Done when: the window exposure follows a simulated twilight without saturating, and the record and generated-file tests pass.
 5. **Bias in a bright sky.** Measure the bias of the seeing against the simulator's truth across background levels and exposures. Add the flags `noisy` and `daylight`.
@@ -36,7 +36,7 @@ Each step ends with tests that pass and a push.
    Done when: simulated nights with and without clouds give the right verdict, and a simulated summer night, where the Sun stays above −18°, still fires `sky.dark`.
 8. **The visibility summary.** Declare `visibility_summary`, let `core` write it at the split hour, and add `seeingmon visibility stats`.
    Done when: the end-to-end night test (`tests/services/e2e/`) produces a summary with every field set or explained, and the command prints it, with censored nights counted separately.
-9. **The cost.** Measure the CPU load, the memory, and the sensor temperature of a simulated day of searching with the performance harness, and add budget lines to `docs/performance.md`.
+9. **The cost.** Measure the CPU load, the memory, and the sensor temperature of a simulated day of measuring, and of a cloudy night of searching, with the performance harness, and add budget lines to `docs/performance.md`.
    Done when: the budget tests pass on the dev machine.
 10. **The documentation.** Move the built design into `docs/architecture.md` (the "Scheduler", "Pointing", and "Transparency and clouds" sections, and the decisions table), leave `docs/visibility.md` as background with a pointer, and add a visibility check to the commissioning steps in `docs/runbook.md`.
 
