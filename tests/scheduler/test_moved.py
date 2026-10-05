@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from seeingmon.clock import iso_to_utc_ns
+from seeingmon.clock import ClockStatus, VirtualClock, iso_to_utc_ns
 from seeingmon.records import PointingRecord
 from tests.scheduler.scenario import World
 
@@ -19,6 +19,13 @@ NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
 
 def moved_times(world: World) -> list[float]:
     return [world.seconds(e.t_utc_ns) for e in world.events("pointing.moved")]
+
+
+def set_synchronized(world: World, synchronized: bool) -> None:
+    assert isinstance(world.clock, VirtualClock)
+    world.clock.set_status(
+        ClockStatus(synchronized=synchronized, error_bound_ns=None, source="test")
+    )
 
 
 def flagged(world: World, flag: str) -> list[PointingRecord]:
@@ -69,6 +76,21 @@ def test_a_frame_without_a_valid_time_does_not_count_as_a_move() -> None:
     world.run_until(1400)
     (time,) = moved_times(world)
     assert 1050 <= time < 1060  # the frame of 1035, the first with the flag and a valid time
+    world.close()
+
+
+def test_a_solve_while_the_clock_is_not_synchronized_does_not_count_as_a_move() -> None:
+    """The scheduler marks the result `time_invalid` itself, and the record does not say so."""
+    world = World(start_utc_ns=NIGHT)
+    world.at(400, lambda w: set_synchronized(w, False))
+    world.at(1000, lambda w: set_synchronized(w, True))
+    world.pointing_flags(400, 1300, "moved")  # no record carries time_invalid of its own
+    world.run_until(1400)
+    untimed = flagged(world, "time_invalid")
+    assert [round(world.seconds(r.t_utc_ns)) for r in untimed] == [495, 675, 855]
+    assert all("moved" in r.flags for r in untimed)
+    (time,) = moved_times(world)
+    assert 1050 <= time < 1060  # the frame of 1035, the first after the clock came back
     world.close()
 
 
