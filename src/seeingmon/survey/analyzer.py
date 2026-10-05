@@ -4,8 +4,15 @@
 `submit` with a survey frame, which returns at once, and later collects the results with
 `poll`. The heavy work (detection, solving, the fit) runs on an `Executor`:
 
-- With no executor, a private single-thread pool runs the work in this process. NumPy and SEP
-  release the GIL for most of it, but a worker process isolates the survey path better.
+- With no executor, a private single-thread pool runs the work in this process. Use it in tests
+  and tools only. NumPy releases the GIL in its large array operations, but SEP does not: it holds
+  the GIL for the whole of its background estimate and its extraction. On a real 30 s frame those
+  calls took 0.36 s and 2.45 s, and a thread that should wake every 0.5 ms woke 2 and 5 times
+  during them (see "Alignment live view with a solve" in `docs/performance.md`). The pool thread
+  therefore freezes every other thread of the process while the detector runs, among them the
+  connection layer and the thread that reads the camera. This is why `core` runs the survey in a
+  worker process, and why the quick solve of the alignment helper does too
+  (`seeingmon.services.core.alignment.worker`).
 - Pass a `ProcessPoolExecutor` made by `make_process_executor(spec)` to run the work in a
   worker process, as the architecture describes. The worker builds its own pipeline from a
   `PipelineSpec` (plain data), loads the catalog once, and never shares memory with this process.
