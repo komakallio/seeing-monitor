@@ -8,10 +8,11 @@ the web UI, and stops every child when you press Ctrl+C.
 **What a simulated run is.** The star field of the simulator, the cap catalog, and the first
 pointing solution come from one seed (`seeingmon.services.simsky`), so `core` follows the simulated
 Polaris from the first second with no plate solver. The sensor is small by default (`--sensor full`
-makes the reference sensor). With the small sensor, Polaris leaves the field after about two
-hours of simulated time, because it drifts about 2.5 pixels a minute across 640 by 480 pixels, so a
-long run needs `--sensor full`. The fast stream uses a longer exposure and a dimmer Polaris than a
-real night, because a scaled clock multiplies the frame rate that the machine must sustain.
+makes the reference sensor). With the small sensor, Polaris starts 86 pixels left of the middle
+of the 640 by 480 pixel field and drifts right by about 2.5 pixels a minute, so it leaves the field
+after nearly three hours of simulated time, and a long run needs `--sensor full`. The fast stream
+uses a longer exposure and a dimmer Polaris than a real night, because a scaled clock multiplies
+the frame rate that the machine must sustain.
 
 **The cover.** A simulated camera has no lens cap, so a dark session needs a stand-in. The
 launcher gives the `sim` driver a cover file, named `cover` in the run folder. The camera shows

@@ -27,7 +27,7 @@ from seeingmon.drivers.sim.sky import (
     ScintillationConfig,
     Site,
 )
-from seeingmon.drivers.sim.stars import Pointing, StarField
+from seeingmon.drivers.sim.stars import ApparentPlaces, Pointing, StarField
 from seeingmon.drivers.sim.turbulence import Layer, TurbulenceConfig
 
 
@@ -38,11 +38,13 @@ class SimOptions:
     `turbulence=None` builds `TurbulenceConfig(seed=seed, zenith_angle_deg=...)` with the zenith
     angle of the celestial pole at the site, so that the line of sight matches the camera.
     `stars=None` builds `make_polar_field(seed)`, and `pointing=None` centres Polaris at the time
-    when you create the driver. The turbulence has its own clock: its time is the seconds since
-    `epoch_utc_ns`, so a given seed gives the same atmosphere at the same time, whatever the
-    clock's start. The sensor reads `ambient_c + sensor_rise_c` degrees, because an uncooled
-    camera runs warm. `max_lag_frames` is how many frames the camera buffers before a slow reader
-    loses frames.
+    when you create the driver. `places` puts the stars at their apparent places of date and turns
+    them about the true pole of date, as the real sky turns (see `SkyProjector`). The default
+    `None` turns the field's own positions about the pole of their frame. The turbulence has its
+    own clock: its time is the seconds since `epoch_utc_ns`, so a given seed gives the same
+    atmosphere at the same time, whatever the clock's start. The sensor reads
+    `ambient_c + sensor_rise_c` degrees, because an uncooled camera runs warm. `max_lag_frames` is
+    how many frames the camera buffers before a slow reader loses frames.
     `keep_truth_frames` bounds the per-frame truth that the driver keeps (`None` keeps all).
 
     **A cover.** A real camera has no lens cap, so the owner covers it by hand to take darks.
@@ -57,6 +59,7 @@ class SimOptions:
     turbulence: TurbulenceConfig | None = None
     stars: StarField | None = None
     pointing: Pointing | None = None
+    places: ApparentPlaces | None = None
     site: Site = SYNTHETIC_SITE
     epoch_utc_ns: int = DEFAULT_START_UTC_NS
     sky_mag_arcsec2: float = 20.5

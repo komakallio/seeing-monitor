@@ -9,12 +9,14 @@ import pytest
 
 pytest.importorskip("sep", reason="the survey path needs the survey extra")
 
-from seeingmon.clock import iso_to_utc_ns
+from seeingmon.clock import NS_PER_S, VirtualClock, iso_to_utc_ns
 from seeingmon.drivers.sim.params import SimParams
 from seeingmon.drivers.sim.stars import Pointing, SkyProjector, make_polar_field
 from seeingmon.profile import load_profile
+from seeingmon.services.acquire.factory import create_camera_driver
 from seeingmon.services.simsky import (
     MIN_SEED_STARS,
+    apparent_places,
     polaris_rows,
     read_seed,
     seed_solution,
@@ -147,13 +149,40 @@ class TestTheSeedSolution:
         tracker = PointingTracker(profile)
         tracker.update(fit.solution)
         params = SimParams.modes_from_profile(profile)["bin2"]
-        projector = SkyProjector(field, pointing)
+        projector = SkyProjector(field, pointing, places=apparent_places)
         x, y = projector.project(START, params.pixel_rad, params.width, params.height)
         polaris = int(np.flatnonzero(projector.indices == polaris_rows(field)[0])[0])
         found = tracker.polaris_position(START, "bin2")
         assert found is not None
         assert found[0] == pytest.approx(float(x[polaris]), abs=0.5)
         assert found[1] == pytest.approx(float(y[polaris]), abs=0.5)
+
+    @pytest.mark.parametrize("later_s", [12 * 3600, 30 * 86400, 365 * 86400])
+    def test_a_solution_predicts_the_simulated_polaris_on_a_later_night(self, later_s: int) -> None:
+        # The simulated sky turns about the true pole of date by the Earth rotation angle, as the
+        # tracker's model does, so a solution of any age predicts the star. Before the fix, the
+        # two were 570 bin1 pixels apart after 12 hours and 141 pixels after 30 days. At the mean
+        # sidereal rate, they were 0.51 pixel apart after a year.
+        profile = load_profile("asi294mm-gs250")
+        fit = seed_solution(profile, sim_field(1), Pointing(t_ref_utc_ns=START), START)
+        tracker = PointingTracker(profile, validity_s=1e9)
+        tracker.update(fit.solution)
+        driver = create_camera_driver(
+            "sim",
+            profile=profile,
+            clock=VirtualClock(START),
+            options={"seed": 1, "polaris": "real", "pointing": {"t_ref_utc_ns": START}},
+        )
+        later = START + later_s * NS_PER_S
+        stars = driver.truth.star_positions(later, "bin1")  # type: ignore[attr-defined]
+        polaris = int(np.flatnonzero(stars.index == polaris_rows(sim_field(1))[0])[0])
+        found = tracker.polaris_position(later, "bin1")
+        assert found is not None
+        miss = float(np.hypot(found[0] - stars.x[polaris], found[1] - stars.y[polaris]))
+        # 0.24 px is the proper motion of Polaris since the catalog epoch, which the tracker
+        # applies and the simulated field leaves out. It grows by about 0.024 px a year, to 0.26
+        # px after a year.
+        assert miss < 0.3  # bin1 pixels
 
     def test_a_pointing_away_from_the_field_is_refused(self, tmp_path: Path) -> None:
         profile = load_profile(str(write_small_profile(tmp_path)))

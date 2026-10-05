@@ -219,9 +219,9 @@ def register(subparsers: Subparsers) -> None:
         choices=("small", "full"),
         default=None,
         help=(
-            "small keeps the simulation fast, but Polaris leaves its field after about two hours "
-            "of simulated time. full is the reference sensor, and it keeps Polaris in view for "
-            "the whole run (default small). --driver asi ignores it: the real camera has the "
+            "small keeps the simulation fast, but Polaris leaves its field after nearly three "
+            "hours of simulated time. full is the reference sensor, and it keeps Polaris in view "
+            "for the whole run (default small). --driver asi ignores it: the real camera has the "
             "full sensor"
         ),
     )

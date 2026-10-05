@@ -36,6 +36,7 @@ from seeingmon.drivers.sim.sky import (
     Site,
 )
 from seeingmon.drivers.sim.stars import (
+    ApparentPlaces,
     Pointing,
     SkyProjector,
     StarField,
@@ -47,6 +48,7 @@ from seeingmon.drivers.sim.turbulence import Layer, TurbulenceConfig, Turbulence
 
 __all__ = [
     "SYNTHETIC_SITE",
+    "ApparentPlaces",
     "CloudEvent",
     "Clouds",
     "FrameTruth",

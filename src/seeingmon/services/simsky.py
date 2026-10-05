@@ -12,17 +12,23 @@ machine without the solver programs does not have). This module makes all three 
   cap catalog of the same stars, so that every simulated star is a catalog star. Polaris sits where
   the survey code predicts the real one, so the star that the scheduler follows is the star that
   the simulator draws.
+- `apparent_places` gives the simulator the apparent places of the field at any time, so the
+  simulated sky turns about the true pole of date, as the real sky and the survey code do.
 - `seed_solution` computes the pointing solution that the simulated camera has at a time. It fits
   the rotation that carries the apparent places of the catalog stars onto the pixel positions that
   the simulator gives them (a Kabsch fit with the known pairs), for both parities of the image.
   `core` loads the solution as the first state of its pointing tracker (the setting
   `[services.core] seed_solution_file`), and the survey analysis tracks the field from there.
 
-The simulator turns the sky about its own pole, which sits 0.618 degrees from its Polaris, and the
-survey code turns it about the true pole of date. The two agree at the time of the seed solution and
-drift apart by about 0.4 pixel a minute (27 pixels an hour in bin2). The survey step renews the
-solution every few minutes, so a simulated run follows the star, but a solution that is an hour old
-points at empty sky.
+With `apparent_places`, which the `sim` driver of `acquire` uses for `polaris = "real"`, the
+simulator renders the stars at their apparent places of date (precession, nutation, light
+deflection, and annual aberration) and turns them about the true pole of date by the Earth rotation
+angle, as the pointing tracker does. A solution therefore predicts the simulated Polaris at any
+later time, as it predicts the real one: the two agree to 0.3 bin1 pixel after 12 hours, 30 days,
+and a year. The 0.24 pixel that remains is the proper motion of Polaris since the catalog epoch
+(0.5 arcsec in 2026), which the tracker applies and the simulated field leaves out, and it grows by
+about 0.02 pixel a year. Without `apparent_places`, the simulator turns the catalog positions about
+the catalog pole, and the two drift apart by 570 bin1 pixels in 12 hours.
 
 The helpers need the simulator and the survey path, so import this module only where you use them.
 """
@@ -48,7 +54,7 @@ from seeingmon.profile import Profile
 from seeingmon.survey import apparent
 from seeingmon.survey.catalog import CapCatalog
 from seeingmon.survey.catalog_build import propagate
-from seeingmon.survey.geometry import ARCSEC_PER_RAD, vector_to_radec
+from seeingmon.survey.geometry import ARCSEC_PER_RAD, FloatArray, vector_to_radec
 from seeingmon.survey.pointing import PointingSolution
 from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
 
@@ -126,6 +132,25 @@ def sim_field(seed: int = 1, *, polaris_mag: float | None = None) -> StarField:
     return StarField(ra, dec, mag)
 
 
+def apparent_places(field: StarField, t_utc_ns: int) -> FloatArray:
+    """The apparent places of a simulated field at a time, as CIRS unit vectors.
+
+    The field's positions are catalog positions at the catalog epoch with no proper motion, as
+    `sim_catalog` writes them for every star but Polaris. Pass this function to the simulator as
+    `SimOptions.places`, so that its sky turns about the true pole of date.
+    """
+    zeros = np.zeros(len(field))
+    return apparent.apparent_vectors(
+        field.ra_deg,
+        field.dec_deg,
+        zeros,
+        zeros,
+        zeros,
+        apparent.epoch_from_utc_ns(t_utc_ns, 0.0),
+        catalog_epoch_jyear=apparent.CATALOG_EPOCH_JYEAR,
+    )
+
+
 def sim_catalog(seed: int = 1, *, polaris_mag: float | None = None) -> tuple[CapCatalog, StarField]:
     """The cap catalog of the star field that the simulator renders for `seed`, and the field."""
     field = sim_field(seed, polaris_mag=polaris_mag)
@@ -184,14 +209,15 @@ def seed_solution(
 ) -> SeedFit:
     """The pointing solution of the simulated camera at `t_utc_ns`, in the survey readout mode.
 
-    The brightest `max_stars` stars that fall inside the frame give the pairs. Raises `ValueError`
-    when fewer than `MIN_SEED_STARS` stars fall inside, which means that the pointing and the
-    profile disagree.
+    The camera is a simulator with `field`, `pointing`, and `apparent_places`, as the `sim` driver
+    of `acquire` builds it with `polaris = "real"`. The brightest `max_stars` stars that fall inside
+    the frame give the pairs. Raises `ValueError` when fewer than `MIN_SEED_STARS` stars fall
+    inside, which means that the pointing and the profile disagree.
     """
     mode = mode or profile.survey_mode.mode
     readout = profile.mode(mode)
     params = SimParams.modes_from_profile(profile)[mode]
-    projector = SkyProjector(field, pointing)
+    projector = SkyProjector(field, pointing, places=apparent_places)
     x, y = projector.project(t_utc_ns, params.pixel_rad, params.width, params.height)
     stars = projector.stars
     inside = (x > 2) & (x < params.width - 3) & (y > 2) & (y < params.height - 3)

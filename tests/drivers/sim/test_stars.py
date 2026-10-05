@@ -10,6 +10,7 @@ import pytest
 from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S
 from seeingmon.drivers.sim.params import SimParams
 from seeingmon.drivers.sim.stars import (
+    EARTH_ROTATION_RATE_RAD_PER_S,
     POLARIS_DEC_DEG,
     POLARIS_MAG,
     POLARIS_RA_DEG,
@@ -189,6 +190,82 @@ def test_a_subset_projects_like_the_whole(projector: SkyProjector) -> None:
     x, y = projector.project_stars(indices, T0, BIN2.pixel_rad, BIN2.width, BIN2.height)
     assert np.allclose(x, x_all[indices])
     assert np.allclose(y, y_all[indices])
+
+
+class _ShiftedPlaces:
+    """Places that move every star along +x of the frame by 1 arcsec per hour, and count calls."""
+
+    def __init__(self) -> None:
+        self.times: list[int] = []
+
+    def __call__(self, stars: StarField, t_utc_ns: int) -> np.ndarray:
+        self.times.append(t_utc_ns)
+        hours = (t_utc_ns - T0) / (3600 * NS_PER_S)
+        vectors = stars.unit_vectors() + np.asarray([hours / 206_264.8, 0.0, 0.0])
+        return np.asarray(vectors / np.linalg.norm(vectors, axis=1, keepdims=True))
+
+
+def test_apparent_places_replace_the_positions_of_the_field(field: StarField) -> None:
+    places = _ShiftedPlaces()
+    moved = SkyProjector(field, Pointing(t_ref_utc_ns=T0), places=places, places_step_s=600.0)
+    plain = SkyProjector(field, Pointing(t_ref_utc_ns=T0))
+    args = (BIN1.pixel_rad, BIN1.width, BIN1.height)
+    # At the reference time, the places are those of that time: here, the field's own.
+    assert np.allclose(moved.project(T0, *args)[0], plain.project(T0, *args)[0], atol=1e-6)
+    assert places.times == [T0]
+    # Within half a step of a step's middle, the projector reuses the places of the middle, and
+    # just past half a step it takes the places of the next middle.
+    moved.project(T0 + 299 * NS_PER_S, *args)
+    moved.project(T0 - 299 * NS_PER_S, *args)
+    assert places.times == [T0]
+    moved.project(T0 + 301 * NS_PER_S, *args)
+    assert places.times == [T0, T0 + 600 * NS_PER_S]
+    # Two hours later the places have moved by 2 arcsec, about 1 bin1 pixel, and the pole stays.
+    later = T0 + 7200 * NS_PER_S
+    x_moved, y_moved = moved.project(later, *args)
+    x_plain, y_plain = plain.project(later, *args)
+    assert places.times[-1] == later
+    shift_px = np.hypot(x_moved - x_plain, y_moved - y_plain)
+    assert np.allclose(shift_px, 2.0 / BIN1.plate_scale_arcsec_per_px, rtol=0.05)
+    assert moved.pole_pixel(later, *args) == pytest.approx(plain.pole_pixel(later, *args))
+    some = np.array([0, 3])
+    assert np.allclose(moved.project_stars(some, later, *args)[0], x_moved[some])
+
+
+def test_apparent_places_turn_at_the_rate_of_the_earth_rotation_angle(field: StarField) -> None:
+    def fixed(stars: StarField, t_utc_ns: int) -> np.ndarray:
+        return np.asarray(stars.unit_vectors())
+
+    assert pytest.approx(7.292115147e-5, rel=1e-9) == EARTH_ROTATION_RATE_RAD_PER_S
+    moved = SkyProjector(field, Pointing(t_ref_utc_ns=T0), places=fixed)
+    plain = SkyProjector(field, Pointing(t_ref_utc_ns=T0))
+    args = (BIN1.pixel_rad, BIN1.width, BIN1.height)
+    # After 365 turns of the Earth rotation angle, the CIRS places are back where they started.
+    turns_s = 365 * 2 * math.pi / EARTH_ROTATION_RATE_RAD_PER_S
+    later = T0 + round(turns_s * NS_PER_S)
+    x0, y0 = moved.project(T0, *args)
+    x1, y1 = moved.project(later, *args)
+    assert np.allclose(x1, x0, atol=1e-3)  # pixels
+    assert np.allclose(y1, y0, atol=1e-3)
+    # The mean sidereal rate turns the plain field 46 arcsec further in that time, the precession
+    # in right ascension, so a star moves by 46 sin(theta) arcsec.
+    extra_rad = (SIDEREAL_RATE_RAD_PER_S - EARTH_ROTATION_RATE_RAD_PER_S) * turns_s
+    assert extra_rad * 206_264.806 == pytest.approx(46.0, abs=0.2)  # arcsec
+    x2, y2 = plain.project(later, *args)
+    polar = np.radians(90.0 - plain.stars.dec_deg)
+    expected_px = extra_rad * np.sin(polar) / BIN1.pixel_rad
+    assert np.allclose(np.hypot(x2 - x0, y2 - y0), expected_px, rtol=0.01)
+
+
+def test_places_must_give_one_vector_for_each_star(field: StarField) -> None:
+    def too_few(stars: StarField, t_utc_ns: int) -> np.ndarray:
+        return np.asarray(stars.unit_vectors()[:-1])
+
+    projector = SkyProjector(field, Pointing(t_ref_utc_ns=T0), places=too_few)
+    with pytest.raises(ValueError, match="one unit vector"):
+        projector.project(T0, BIN1.pixel_rad, BIN1.width, BIN1.height)
+    with pytest.raises(ValueError, match="places_step_s"):
+        SkyProjector(field, Pointing(), places_step_s=0.0)
 
 
 def test_the_pointing_validates() -> None:

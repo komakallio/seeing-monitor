@@ -11,6 +11,18 @@ the pole moves `15.041 sin(theta)` arcseconds per second. The projection is gnom
 optical axis, as a real lens of this focal length works, so a solver that fits a TAN world
 coordinate system finds no residual.
 
+**Apparent places.** By default the projector turns the field's own positions about the pole of
+their frame, at the mean sidereal rate. The real sky turns about the true pole of date, and its
+stars sit at their apparent places, which precession, nutation, and annual aberration move by up
+to tens of arcseconds a year. Give `SkyProjector` a `places` function that returns the apparent
+places of date as unit vectors in the Celestial Intermediate Reference System (CIRS), whose pole
+is the true pole of date. The projector then turns those places about that pole by the Earth
+rotation angle, as the real sky turns, and a camera model that is fixed to the ground predicts the
+simulated stars at any later time. The mean sidereal rate would be wrong there: it includes the
+precession in right ascension, which the CIRS places already carry, so the sky would turn 46
+arcsec a year too far. The projector asks for new places every `places_step_s` seconds of sky
+time, and the places move by less than 0.01 arcsec in that time.
+
 **Conventions.** The image shows the sky as seen from inside the celestial sphere, with east to
 the left when north is up. `roll_deg` is the position angle of north in the image, measured
 counter-clockwise from the image's up direction (toward the left). With zero roll, the pole
@@ -22,6 +34,7 @@ on the centre of the full frame of a readout mode.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,8 +45,22 @@ from seeingmon.drivers.sim.params import ARCSEC_PER_RAD
 
 FloatArray = npt.NDArray[np.float64]
 
+ApparentPlaces = Callable[["StarField", int], FloatArray]
+"""A function of a field and a UTC time in nanoseconds that returns the apparent places of the
+field's stars at that time, as CIRS unit vectors of shape `(n, 3)`. CIRS is the frame of the true
+pole of date. `seeingmon.services.simsky.apparent_places` is one."""
+
+DEFAULT_PLACES_STEP_S = 600.0
+"""How often the projector asks for new apparent places, in seconds of sky time."""
+
 SIDEREAL_RATE_RAD_PER_S = 7.292115855e-5
-"""Earth's rotation rate: 15.041 arcseconds per second of time."""
+"""Earth's rotation rate against the mean equinox: 15.041 arcseconds per second of time."""
+
+EARTH_ROTATION_RATE_RAD_PER_S = 2.0 * math.pi * 1.00273781191135448 / 86_400.0
+"""The rate of the Earth rotation angle, which turns the CIRS frame of the apparent places.
+
+It is 46 arcsec a year slower than `SIDEREAL_RATE_RAD_PER_S`, the precession in right ascension.
+"""
 
 POLARIS_MAG = 2.02
 POLARIS_POLE_DISTANCE_DEG = 0.618
@@ -216,13 +243,30 @@ class SkyProjector:
 
     The constructor keeps only the stars that can reach the sensor: those within the field of
     view of the pole's position. `max_field_radius_deg` is the largest angle from the optical
-    axis to a sensor corner.
+    axis to a sensor corner. `places` puts the stars at their apparent places of date (see the
+    module notes), and `places_step_s` sets how often it runs. The places of one step are the
+    places at the middle of the step, and the steps start half a step before the reference time
+    of the pointing, so the places at the reference time are exact. With `places`, the sky turns
+    at `EARTH_ROTATION_RATE_RAD_PER_S`. Without it, the projector turns the field's own positions
+    at `SIDEREAL_RATE_RAD_PER_S`.
     """
 
     def __init__(
-        self, field: StarField, pointing: Pointing, *, max_field_radius_deg: float = 2.9
+        self,
+        field: StarField,
+        pointing: Pointing,
+        *,
+        max_field_radius_deg: float = 2.9,
+        places: ApparentPlaces | None = None,
+        places_step_s: float = DEFAULT_PLACES_STEP_S,
     ) -> None:
+        if not places_step_s > 0:
+            raise ValueError("places_step_s must be positive")
         self._pointing = pointing
+        self._places = places
+        self._rate = SIDEREAL_RATE_RAD_PER_S if places is None else EARTH_ROTATION_RATE_RAD_PER_S
+        self._places_step_ns = round(places_step_s * NS_PER_S)
+        self._places_cache: tuple[int, FloatArray] | None = None
         pole_distance = pointing.pole_distance_deg
         reach = pole_distance + max_field_radius_deg + 0.5
         polar = 90.0 - field.dec_deg
@@ -259,9 +303,29 @@ class SkyProjector:
         """The index of each kept star in the original field."""
         return self._kept
 
+    def vectors_at(self, t_utc_ns: int) -> FloatArray:
+        """The unit vectors of the kept stars at a time, before the rotation of the sky.
+
+        Without `places`, they are the field's own positions at every time. The result is shared,
+        so do not change it.
+        """
+        if self._places is None:
+            return self._vectors
+        step_ns = self._places_step_ns
+        step = (int(t_utc_ns) - self._pointing.t_ref_utc_ns + step_ns // 2) // step_ns
+        cached = self._places_cache
+        if cached is not None and cached[0] == step:
+            return cached[1]
+        middle = self._pointing.t_ref_utc_ns + step * step_ns
+        vectors = np.asarray(self._places(self._field, middle), dtype=np.float64)
+        if vectors.shape != self._vectors.shape:
+            raise ValueError("places must return one unit vector for each star of the field")
+        self._places_cache = (step, vectors)
+        return vectors
+
     def _rotation_angle(self, t_utc_ns: int | FloatArray) -> float | FloatArray:
         elapsed = (np.asarray(t_utc_ns) - self._pointing.t_ref_utc_ns) / NS_PER_S
-        return SIDEREAL_RATE_RAD_PER_S * elapsed
+        return self._rate * elapsed
 
     def _tangent(self, vectors: FloatArray, t_utc_ns: int) -> tuple[FloatArray, FloatArray]:
         """Image-plane tangent coordinates (right, up) in radians for unit vectors at a time."""
@@ -291,7 +355,7 @@ class SkyProjector:
         self, t_utc_ns: int, pixel_rad: float, width: int, height: int
     ) -> tuple[FloatArray, FloatArray]:
         """Pixel coordinates `(x, y)` of the kept stars at a time, in the full frame of a mode."""
-        right, up = self._tangent(self._vectors, t_utc_ns)
+        right, up = self._tangent(self.vectors_at(t_utc_ns), t_utc_ns)
         return self._to_pixels(right, up, pixel_rad, width, height)
 
     def project_stars(
@@ -303,7 +367,7 @@ class SkyProjector:
         height: int,
     ) -> tuple[FloatArray, FloatArray]:
         """Pixel coordinates of some of the kept stars (given by position in `stars`)."""
-        right, up = self._tangent(self._vectors[indices], t_utc_ns)
+        right, up = self._tangent(self.vectors_at(t_utc_ns)[indices], t_utc_ns)
         return self._to_pixels(right, up, pixel_rad, width, height)
 
     def pole_pixel(

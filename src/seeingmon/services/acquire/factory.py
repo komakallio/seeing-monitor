@@ -139,7 +139,8 @@ def _create_sim(profile: Any, clock: Clock, options: Mapping[str, Any]) -> Camer
     plus the offset), and the optional `roll_deg`, `offset_x_arcsec`, and `offset_y_arcsec`. Without
     it the simulator takes the time of its creation as the reference time. A fixed reference time
     lets another process compute where every simulated star is. `polaris = "real"` puts Polaris
-    where the survey code predicts the real one, and `polaris_mag` makes it fainter (see
+    where the survey code predicts the real one and every star at its apparent place of date, so
+    the sky turns about the true pole of date, and `polaris_mag` makes Polaris fainter (see
     `seeingmon.services.simsky`).
     """
     from dataclasses import replace
@@ -176,10 +177,14 @@ def _create_sim(profile: Any, clock: Clock, options: Mapping[str, Any]) -> Camer
             ),
         )
     if polaris == "real":
-        from seeingmon.services.simsky import sim_field
+        from seeingmon.services.simsky import apparent_places, sim_field
 
         magnitude = None if polaris_mag is None else float(polaris_mag)
-        sim_options = replace(sim_options, stars=sim_field(sim_options.seed, polaris_mag=magnitude))
+        sim_options = replace(
+            sim_options,
+            stars=sim_field(sim_options.seed, polaris_mag=magnitude),
+            places=apparent_places,
+        )
     return create_driver("sim", profile=profile, clock=clock, options=sim_options)
 
 
