@@ -252,7 +252,11 @@ class TestTheThreadsOfTheWatchdog:
         rig.app.start()
         try:
             assert wait_until(lambda: notes.count("WATCHDOG=1") >= 3, 30.0)
-            assert notes.lines()[0] == "READY=1"
+            lines = notes.lines()
+            # A status line may come before READY=1 when the threads run late, so the test checks
+            # that the service is ready before its first heartbeat, not that READY=1 is the first line.
+            assert "READY=1" in lines
+            assert lines.index("READY=1") < lines.index("WATCHDOG=1")
             camera.hold.set()  # the next read never returns
             assert wait_until(camera.holding.is_set, 30.0)
             assert wait_until(lambda: not rig.app.scheduler_alive(), 30.0)
