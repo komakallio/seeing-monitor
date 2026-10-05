@@ -31,6 +31,11 @@ path. `acquire` raises the priority of its capture thread on the real camera, an
 also asks for a 1 ms system timer (the simulator never does, because it renders inside the read).
 `--no-raise-priority` turns both off, so that you can compare two runs: the health line of
 `acquire` in its log shows the priority, the timer, and the share of late and lost frames.
+On Windows the launcher also holds a power request for the whole run (`KeepAwake`), so that the
+machine does not sleep when it sits idle. Without it, Windows Modern Standby froze `acquire` and
+`core` and cut the power of the camera at the first light. The request stops idle sleep only: the
+display may turn off, and closing the lid still sleeps the laptop unless the power settings set
+the lid action to Do nothing. `--no-keep-awake` turns the request off.
 `--data-dir` keeps the store, the dark library, and the images in a folder that survives the run.
 Without it, the run keeps its temporary folder. The sky catalog, the first pointing solution,
 and the site stay synthetic, so a camera that sees a room or a dark reports no stars, and the
@@ -79,6 +84,7 @@ Windows each child has its own process group, and the launcher stops it with a c
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import secrets
@@ -147,6 +153,16 @@ DEV_DARK_POLL_S = 2.0
 REAL_DRIVER = "asi"
 REAL_PROFILE = "asi294mm-gs250"
 ASI_LIBRARY_VARIABLE = "SEEINGMON_ASI__LIBRARY_PATH"
+# The power request of a real-camera run on Windows: the flags of `SetThreadExecutionState`.
+# `ES_CONTINUOUS` keeps the state until the next call, and `ES_SYSTEM_REQUIRED` says that the
+# system is in use, so that Windows does not enter idle sleep. The display is not part of it.
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+KEEP_AWAKE_NOTE = (
+    "Windows stays awake for this run: it does not sleep when it sits idle, and the display may "
+    "still turn off. Closing the lid sleeps the laptop unless the power settings set the lid "
+    "action to Do nothing. --no-keep-awake turns the request off."
+)
 # The real sky (`--real-sky`): the tables of your local configuration that `core` needs, the keys
 # of the site that all have to be there, and the folder of your data folder that holds the logs of
 # the children, in one subfolder for each run.
@@ -192,6 +208,8 @@ class DevOptions:
     # Whether acquire raises the priority of its capture thread on the real camera (and, on
     # Windows, asks for a 1 ms timer). A comparison turns it off. The simulator never raises it.
     raise_priority: bool = True
+    # Whether a run on the real camera holds a Windows power request that stops idle sleep.
+    keep_awake: bool = True
 
 
 @dataclass(slots=True)
@@ -875,6 +893,81 @@ def _merge(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+# --- The power request -------------------------------------------------------------------------
+
+
+if sys.platform == "win32":
+
+    def _load_kernel32() -> Any:
+        """The Windows library that holds `SetThreadExecutionState`, with the types of the call."""
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")  # a private copy, so the argument types stay ours
+        kernel32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+        kernel32.SetThreadExecutionState.restype = ctypes.c_uint32
+        return kernel32
+
+else:
+
+    def _load_kernel32() -> Any:
+        """Another platform has no such library, and needs no request."""
+        raise OSError("this platform has no kernel32")
+
+
+def keeps_awake(options: DevOptions, system: str) -> bool:
+    """Whether the run holds the power request: the real camera on Windows, unless you opt out."""
+    return options.keep_awake and options.acquire_driver == REAL_DRIVER and system == "win32"
+
+
+class KeepAwake:
+    """A Windows power request that stops idle sleep, held from `request` to `release`.
+
+    `request` calls `SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`, and
+    `release` clears the state with `ES_CONTINUOUS` alone. The display may still turn off. Windows
+    keeps the state for the thread that sets it, so call both methods from one thread. The state
+    also ends with the thread, so a run that dies never leaves it behind.
+
+    No call raises. `kernel32` is the library that holds the function: a test passes a stand-in,
+    and without one the first `request` loads the real library through `ctypes`.
+    """
+
+    def __init__(self, *, kernel32: Any = None) -> None:
+        self._kernel32 = kernel32
+        self._held = False
+
+    @property
+    def held(self) -> bool:
+        """Whether Windows accepted the request, and `release` has not cleared it."""
+        return self._held
+
+    def request(self) -> str | None:
+        """Ask Windows to stay awake. Returns `None`, or a sentence that says why it could not."""
+        try:
+            kernel32 = self._kernel32 if self._kernel32 is not None else _load_kernel32()
+            previous = kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        except Exception as error:  # a library that does not load, or a call that raises
+            return (
+                f"the request to keep Windows awake failed with {type(error).__name__}, so the "
+                "machine may sleep during the run. Turn off sleep in the power settings."
+            )
+        if not previous:  # the function returns the previous state, and 0 for a failure
+            return (
+                "Windows refused the request to stay awake, so the machine may sleep during the "
+                "run. Turn off sleep in the power settings."
+            )
+        self._kernel32 = kernel32
+        self._held = True
+        return None
+
+    def release(self) -> None:
+        """Clear the request. Safe to call twice, and when `request` held nothing."""
+        if not self._held:
+            return
+        self._held = False
+        with contextlib.suppress(Exception):  # the thread is ending, and Windows clears it anyway
+            self._kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+
+
 # --- The children ------------------------------------------------------------------------------
 
 
@@ -1037,6 +1130,7 @@ def options_from_args(args: argparse.Namespace) -> DevOptions:
         data_dir=None if not data_dir else Path(data_dir).expanduser().resolve(),
         real_sky=real_sky,
         raise_priority=bool(getattr(args, "raise_priority", True)),
+        keep_awake=bool(getattr(args, "keep_awake", True)),
     )
 
 
@@ -1049,12 +1143,16 @@ def run_dev(
     web_command: Sequence[str] | None = None,
     wait: Callable[[DevPlan, Mapping[str, Child]], None] | None = None,
     directory: Path | None = None,
+    kernel32: Any = None,
+    system: str = sys.platform,
 ) -> int:
     """Run the dev system until you press Ctrl+C. Returns the exit code.
 
     `wait` replaces the wait for Ctrl+C: a test passes a function that looks at the running system
     and returns. `directory` names the run folder, which a test wants to read, and the run removes
-    it at the end unless `--keep-data` is set.
+    it at the end unless `--keep-data` is set. A run on the real camera holds a Windows power
+    request from the start of the children to the end of the run (`KeepAwake`): `system` is the
+    platform, and `kernel32` the library that a test replaces with a stand-in.
     """
     options = options_from_args(args)
     real_sky = options.real_sky
@@ -1065,6 +1163,7 @@ def run_dev(
     run_directory = directory or Path(tempfile.mkdtemp(prefix="smon-dev-"))
     plan: DevPlan | None = None
     children: dict[str, Child] = {}
+    awake = KeepAwake(kernel32=kernel32) if keeps_awake(options, system) else None
     try:
         try:
             plan = build_plan(
@@ -1081,6 +1180,12 @@ def run_dev(
                 f"cannot prepare the {'real-sky' if real_sky else 'simulated'} run: "
                 f"{type(error).__name__}: {error}"
             ) from None
+        if awake is not None:  # the banner says whether Windows accepted the request
+            problem = awake.request()
+            if problem is None:
+                plan.notes.append(KEEP_AWAKE_NOTE)
+            else:
+                plan.warnings.append(problem)
         for spec in plan.children:
             children[spec.name] = Child(spec)
         for name in ("acquire", "core"):  # core connects to acquire, so acquire comes first
@@ -1098,6 +1203,8 @@ def run_dev(
     except KeyboardInterrupt:
         return 0
     finally:
+        if awake is not None:
+            awake.release()  # first, and it never raises, so nothing below can keep the request
         out("Stopping ...")
         for name in ("web", "core", "acquire"):
             if name in children:

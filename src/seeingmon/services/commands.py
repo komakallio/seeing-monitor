@@ -195,6 +195,15 @@ def register(subparsers: Subparsers) -> None:
         "this option to compare a run with it. The simulator never raises them",
     )
     dev.add_argument(
+        "--no-keep-awake",
+        dest="keep_awake",
+        action="store_false",
+        help="with --driver asi on Windows, do not ask Windows to stay awake. The default holds a "
+        "power request for the run that stops idle sleep, and the display may still turn off. "
+        "Closing the lid still sleeps the laptop unless the power settings set the lid action to "
+        "Do nothing",
+    )
+    dev.add_argument(
         "--speed",
         type=float,
         default=1.0,

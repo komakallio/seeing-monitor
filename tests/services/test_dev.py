@@ -7,6 +7,7 @@ test binds one of them: the plan only decides what the children receive and whic
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -14,7 +15,8 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -27,15 +29,21 @@ from seeingmon.config import load_config
 from seeingmon.fastpath import FastPathConfig
 from seeingmon.scheduler import SchedulerConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
+from seeingmon.services import dev
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.dev import (
+    ES_CONTINUOUS,
+    ES_SYSTEM_REQUIRED,
+    KEEP_AWAKE_NOTE,
     DevOptions,
     DevPlan,
+    KeepAwake,
     banner,
     build_plan,
     child_environment,
     default_start_utc_ns,
     flatten_env,
+    keeps_awake,
     options_from_args,
     owner_settings,
     render_env_value,
@@ -503,6 +511,335 @@ class TestThePriorityOfTheCaptureThread:
             speed=1.0, port=None, sensor=None, seed=1, start=None, keep_data=False
         )
         assert options_from_args(namespace).raise_priority is True
+
+
+class StandInKernel32:
+    """The function of `kernel32` that the power request uses, with an answer to choose.
+
+    Every call goes to `events`, a list that a test can share with other stand-ins.
+    """
+
+    def __init__(
+        self,
+        result: int = ES_CONTINUOUS,
+        *,
+        raises: Exception | None = None,
+        raises_on_release: bool = False,
+        events: list[str] | None = None,
+    ) -> None:
+        self.result = result
+        self.raises = raises
+        self.raises_on_release = raises_on_release
+        self.calls: list[int] = []
+        self.events = [] if events is None else events
+
+    def SetThreadExecutionState(self, flags: int) -> int:  # noqa: N802 - a Windows function
+        self.calls.append(flags)
+        self.events.append("release" if flags == ES_CONTINUOUS else "request")
+        if self.raises is not None or (self.raises_on_release and flags == ES_CONTINUOUS):
+            raise self.raises or OSError("gone")
+        return self.result
+
+
+def holds(awake: KeepAwake) -> bool:
+    """Whether the request is held. A function, so that a type checker reads it again."""
+    return awake.held
+
+
+class TestKeepAwake:
+    """The power request that stops idle sleep. No test makes a real call."""
+
+    def test_the_flags_are_the_ones_that_windows_documents(self) -> None:
+        assert ES_CONTINUOUS == 0x80000000
+        assert ES_SYSTEM_REQUIRED == 0x00000001
+
+    def test_the_request_holds_the_system_state_until_the_release_clears_it(self) -> None:
+        kernel32 = StandInKernel32()
+        awake = KeepAwake(kernel32=kernel32)
+        assert awake.request() is None
+        assert holds(awake)
+        assert kernel32.calls == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED]  # the display is not in it
+        awake.release()
+        assert not holds(awake)
+        assert kernel32.calls[-1] == ES_CONTINUOUS  # the state is cleared, so the idle timer runs
+        awake.release()
+        assert len(kernel32.calls) == 2  # a second release makes no call
+
+    def test_a_release_without_a_request_calls_nothing(self) -> None:
+        kernel32 = StandInKernel32()
+        KeepAwake(kernel32=kernel32).release()
+        assert kernel32.calls == []
+
+    def test_a_request_that_windows_refuses_is_a_warning_and_holds_nothing(self) -> None:
+        kernel32 = StandInKernel32(result=0)  # the function returns 0 for a failure
+        awake = KeepAwake(kernel32=kernel32)
+        warning = awake.request()
+        assert warning is not None
+        assert "refused" in warning
+        assert "power settings" in warning  # the person can do it by hand
+        assert not holds(awake)
+        awake.release()
+        assert kernel32.calls == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED]  # no release of nothing
+
+    def test_a_call_that_raises_is_a_warning_and_never_an_exception(self) -> None:
+        awake = KeepAwake(kernel32=StandInKernel32(raises=OSError("no")))
+        warning = awake.request()
+        assert warning is not None
+        assert "OSError" in warning
+        assert not holds(awake)
+
+    def test_a_release_that_raises_is_ignored(self) -> None:
+        awake = KeepAwake(kernel32=StandInKernel32(raises_on_release=True))
+        assert awake.request() is None
+        awake.release()  # the thread is ending anyway, and Windows clears the state with it
+        assert not holds(awake)
+
+    def test_a_library_that_does_not_load_is_a_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken() -> Any:
+            raise OSError("no library")
+
+        monkeypatch.setattr(dev, "_load_kernel32", broken)
+        awake = KeepAwake()
+        warning = awake.request()
+        assert warning is not None
+        assert "OSError" in warning
+        assert not holds(awake)
+        awake.release()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the Windows library")
+    def test_the_real_library_loads_privately_with_typed_arguments(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kernel32 = MagicMock()
+        kernel32.SetThreadExecutionState.return_value = ES_CONTINUOUS
+        opened: list[str] = []
+
+        def win_dll(name: str) -> MagicMock:
+            opened.append(name)
+            return kernel32
+
+        monkeypatch.setattr(ctypes, "WinDLL", win_dll, raising=False)
+        awake = KeepAwake()
+        assert awake.request() is None
+        assert opened == ["kernel32"]  # a private copy, and not the shared `windll`
+        # The flags do not fit a signed 32-bit integer, which is what an untyped call would take.
+        assert kernel32.SetThreadExecutionState.argtypes == [ctypes.c_uint32]
+        assert kernel32.SetThreadExecutionState.restype is ctypes.c_uint32
+        kernel32.SetThreadExecutionState.assert_called_once_with(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        awake.release()
+        kernel32.SetThreadExecutionState.assert_called_with(ES_CONTINUOUS)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="another platform has no kernel32")
+    def test_another_platform_gets_a_warning_and_never_an_import_error(self) -> None:
+        warning = KeepAwake().request()
+        assert warning is not None
+        assert "OSError" in warning
+
+
+class TestWhenTheRunHoldsTheRequest:
+    @pytest.mark.parametrize(
+        ("options", "system", "expected"),
+        [
+            (DevOptions(acquire_driver="asi"), "win32", True),
+            (DevOptions(acquire_driver="asi", keep_awake=False), "win32", False),
+            (DevOptions(acquire_driver="asi"), "linux", False),
+            (DevOptions(acquire_driver="asi"), "darwin", False),
+            (DevOptions(), "win32", False),  # the simulator is not a camera that Windows can lose
+        ],
+    )
+    def test_only_the_real_camera_on_windows_holds_it_unless_you_opt_out(
+        self, options: DevOptions, system: str, expected: bool
+    ) -> None:
+        assert keeps_awake(options, system) is expected
+
+    def test_the_command_line_option_turns_it_off(self) -> None:
+        parser = build_parser()
+        arguments = ["dev", "--driver", "asi"]
+        assert options_from_args(parser.parse_args(arguments)).keep_awake is True
+        off = options_from_args(parser.parse_args([*arguments, "--no-keep-awake"]))
+        assert off.keep_awake is False
+
+    def test_a_namespace_without_the_option_keeps_the_default(self) -> None:
+        namespace = argparse.Namespace(
+            speed=1.0, port=None, sensor=None, seed=1, start=None, keep_data=False
+        )
+        assert options_from_args(namespace).keep_awake is True
+
+
+class FakeChild:
+    """A child that starts nothing, so that a run reaches its end at once."""
+
+    events: ClassVar[list[str]] = []
+    fail_to_start: ClassVar[str | None] = None
+
+    def __init__(self, spec: Any) -> None:
+        self.spec = spec
+        self.running = True
+        self.returncode = None
+
+    def start(self) -> None:
+        self.events.append(f"start {self.spec.name}")
+        if self.fail_to_start == self.spec.name:
+            raise CliError(f"{self.spec.name} exited with code 1")
+
+    def stop(self, timeout_s: float = 0.0) -> None:
+        self.events.append(f"stop {self.spec.name}")
+        self.running = False
+
+    def log_tail(self, lines: int = 15) -> str:
+        return ""
+
+
+class TestTheRunHoldsTheRequest:
+    """`run_dev` asks before the children start, and it gives the request back at the end."""
+
+    @pytest.fixture
+    def events(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        shared: list[str] = []
+        monkeypatch.setattr(FakeChild, "events", shared)
+        monkeypatch.setattr(FakeChild, "fail_to_start", None)
+        monkeypatch.setattr(dev, "Child", FakeChild)
+        monkeypatch.setattr(dev, "wait_until_ready", lambda *args, **kwargs: None)
+        monkeypatch.setattr(dev, "wait_for_web", lambda *args, **kwargs: True)
+        return shared
+
+    def args(self, **changes: Any) -> argparse.Namespace:
+        values: dict[str, Any] = {
+            "speed": 1.0,
+            "port": None,
+            "sensor": None,
+            "seed": 1,
+            "start": None,
+            "keep_data": False,
+            "log_level": "warning",
+            "driver": "asi",
+        }
+        values.update(changes)
+        return argparse.Namespace(**values)
+
+    def run(
+        self,
+        tmp_path: Path,
+        events: list[str],
+        kernel32: StandInKernel32 | None,
+        *,
+        wait: Any = None,
+        system: str = "win32",
+        **changes: Any,
+    ) -> tuple[list[str], int]:
+        lines: list[str] = []
+        code = run_dev(
+            self.args(**changes),
+            local_file=tmp_path / "none.toml",
+            env={},
+            out=lines.append,
+            wait=wait or (lambda plan, children: events.append("wait")),
+            directory=tmp_path / "run",
+            kernel32=kernel32,
+            system=system,
+        )
+        return lines, code
+
+    def test_the_request_comes_before_the_children_and_the_release_before_they_stop(
+        self, tmp_path: Path, events: list[str]
+    ) -> None:
+        kernel32 = StandInKernel32(events=events)
+        _, code = self.run(tmp_path, events, kernel32)
+        assert code == 0
+        assert events == [
+            "request",
+            "start acquire",
+            "start core",
+            "start web",
+            "wait",
+            "release",
+            "stop web",
+            "stop core",
+            "stop acquire",
+        ]
+        assert kernel32.calls == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED, ES_CONTINUOUS]
+
+    def test_the_banner_says_in_one_line_what_it_does_and_what_it_does_not(
+        self, tmp_path: Path, events: list[str]
+    ) -> None:
+        lines, _ = self.run(tmp_path, events, StandInKernel32(events=events))
+        notes = [line for line in lines if "stays awake" in line]
+        assert notes == [KEEP_AWAKE_NOTE]
+        assert "display may still turn off" in notes[0]
+        assert "Closing the lid" in notes[0]
+        assert "Do nothing" in notes[0]
+        assert "--no-keep-awake" in notes[0]
+        assert not any(line.startswith("Warning:") for line in lines)
+
+    def test_a_run_that_fails_to_start_gives_the_request_back(
+        self, tmp_path: Path, events: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(FakeChild, "fail_to_start", "core")
+        kernel32 = StandInKernel32(events=events)
+        with pytest.raises(CliError, match="core exited"):
+            self.run(tmp_path, events, kernel32)
+        assert kernel32.calls == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED, ES_CONTINUOUS]
+        assert not (tmp_path / "run").exists()
+
+    def test_ctrl_c_gives_the_request_back(self, tmp_path: Path, events: list[str]) -> None:
+        def interrupt(plan: DevPlan, children: Any) -> None:
+            raise KeyboardInterrupt
+
+        kernel32 = StandInKernel32(events=events)
+        _, code = self.run(tmp_path, events, kernel32, wait=interrupt)
+        assert code == 0
+        assert kernel32.calls == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED, ES_CONTINUOUS]
+
+    def test_an_error_in_the_run_gives_the_request_back(
+        self, tmp_path: Path, events: list[str]
+    ) -> None:
+        def fail(plan: DevPlan, children: Any) -> None:
+            raise RuntimeError("an unexpected error")
+
+        kernel32 = StandInKernel32(events=events)
+        with pytest.raises(RuntimeError, match="unexpected"):
+            self.run(tmp_path, events, kernel32, wait=fail)
+        assert kernel32.calls[-1] == ES_CONTINUOUS
+
+    def test_a_refusal_is_a_warning_in_the_banner_and_the_run_goes_on(
+        self, tmp_path: Path, events: list[str]
+    ) -> None:
+        kernel32 = StandInKernel32(result=0, events=events)
+        lines, code = self.run(tmp_path, events, kernel32)
+        assert code == 0
+        assert "wait" in events  # the run went on
+        warnings = [line for line in lines if line.startswith("Warning:")]
+        assert len(warnings) == 1
+        assert "refused the request to stay awake" in warnings[0]
+        assert not any("stays awake" in line for line in lines)
+        assert kernel32.calls == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED]  # nothing to give back
+
+    def test_a_call_that_raises_is_a_warning_and_the_run_goes_on(
+        self, tmp_path: Path, events: list[str]
+    ) -> None:
+        kernel32 = StandInKernel32(raises=OSError("no"), events=events)
+        lines, code = self.run(tmp_path, events, kernel32)
+        assert code == 0
+        assert "wait" in events
+        assert [line for line in lines if line.startswith("Warning:") and "OSError" in line]
+
+    @pytest.mark.parametrize(
+        ("changes", "system"),
+        [
+            ({"keep_awake": False}, "win32"),  # --no-keep-awake
+            ({}, "linux"),
+            ({"driver": "sim"}, "win32"),
+        ],
+    )
+    def test_nothing_is_requested_when_the_run_does_not_need_it(
+        self, tmp_path: Path, events: list[str], changes: dict[str, Any], system: str
+    ) -> None:
+        kernel32 = StandInKernel32(events=events)
+        lines, _ = self.run(tmp_path, events, kernel32, system=system, **changes)
+        assert kernel32.calls == []
+        assert not any("stays awake" in line or line.startswith("Warning:") for line in lines)
 
 
 class TestTheVendorLibrary:
