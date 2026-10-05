@@ -374,7 +374,7 @@ def test_a_mount_that_moved_beyond_the_hint_solves_again_with_the_pole_hint(
     assert (pole.center_ra_deg, pole.center_dec_deg, pole.radius_deg) == (0.0, 90.0, 15.0)
     # The trail model of the old solution misshaped the stars, so the retry detected them again
     # without it: a frame with no model gives 264 reliable stars, against none with it.
-    assert pole.stars is not near.stars
+    assert not np.array_equal(pole.stars.x, near.stars.x)
     assert second.detections is not None
     assert int(second.detections.reliable().sum()) > 200
     assert [(a.hint, a.outcome) for a in second.attempts] == [
