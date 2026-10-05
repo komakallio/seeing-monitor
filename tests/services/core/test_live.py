@@ -45,6 +45,7 @@ from seeingmon.services.web.contract import (
     POLARIS_CHANNEL,
     LiveSeeingView,
     PolarisFrame,
+    RapidFocusView,
     unpack_polaris_frame,
 )
 from seeingmon.testing import FakeFastAnalyzer
@@ -123,11 +124,16 @@ class FailingRenderer(PolarisRenderer):
         super().__init__(scale_for=lambda mode: 1.91)
         self.failures = failures
 
-    def render(self, slot: FrameSlot, live: LiveSeeingView | None = None) -> PolarisFrame:
+    def render(
+        self,
+        slot: FrameSlot,
+        live: LiveSeeingView | None = None,
+        rapid: RapidFocusView | None = None,
+    ) -> PolarisFrame:
         if self.failures > 0:
             self.failures -= 1
             raise ValueError("this frame cannot be rendered")
-        return super().render(slot, live)
+        return super().render(slot, live, rapid)
 
 
 def make_stream(
