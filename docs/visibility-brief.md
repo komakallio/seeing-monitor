@@ -1,6 +1,6 @@
 # Visibility lane brief
 
-Status: waiting for the owner's approval of [`visibility.md`](visibility.md). Start when the owner approves it, and build only the approved parts.
+Status: on hold. The owner approved [`visibility.md`](visibility.md) on October 5, 2026, and asked not to start yet. Start only when the owner says so.
 
 You are the visibility lane. You make the system measure seeing whenever Polaris is visible: pointing without an age limit, the search and measure modes of the fast stream, the adaptive exposures, the darkness and clear-sky events, and the visibility summary that `docs/visibility.md` describes. That file is the design for this lane. Where it and `docs/architecture.md` disagree, the visibility design wins for this feature, and you update the architecture to match.
 

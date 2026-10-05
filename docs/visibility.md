@@ -1,6 +1,6 @@
 # Seeing whenever Polaris is visible
 
-Status: proposal. The owner asked for it on October 5, 2026, and has not approved it yet. When the owner approves it, the approved parts move into `docs/architecture.md`, and this file then holds only the background. Every number here is provisional, and commissioning (phase 3) sets the final values.
+Status: approved by the owner on October 5, 2026. Implementation is on hold until the owner says to start. When the lane builds it, the built parts move into `docs/architecture.md`, and this file then holds only the background. Every number here is provisional, and commissioning (phase 3) sets the final values.
 
 The lane brief is [`visibility-brief.md`](visibility-brief.md).
 
