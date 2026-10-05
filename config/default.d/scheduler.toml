@@ -47,7 +47,7 @@ resume_saturation = 0.35         # Hysteresis before `auto` resumes.
 # The response to clouds. The survey analysis reports the cloud fraction.
 [scheduler.cloud]
 threshold = 0.5             # At or above: shorten the fast period, survey more often.
-clear_threshold = 0.3       # At or below: back to normal.
+clear_threshold = 0.3       # At or below: back to normal. The clear verdict counts such frames.
 fast_window_s = 60.0
 survey_cadence_s = 100.0       # More often than normal, but long enough for the cycle.
 

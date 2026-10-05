@@ -147,14 +147,16 @@ class TestTheClockTheSchedulerTrusts:
 class TestTheEventList:
     @staticmethod
     def source_kinds() -> set[str]:
-        package = Path(__file__).resolve().parents[2] / "src" / "seeingmon" / "scheduler"
+        src = Path(__file__).resolve().parents[2] / "src" / "seeingmon"
+        package = src / "scheduler"
+        sources = [s for s in package.glob("*.py") if s.name != "events.py"]
+        # `core` writes the kinds of the darkness of the sky from the survey results.
+        sources.append(src / "services" / "core" / "darkness.py")
         kinds: set[str] = set()
-        for source in package.glob("*.py"):
-            if source.name == "events.py":
-                continue
-            # The scheduler's own kinds, and the kinds of the sky and the camera that it writes.
+        for source in sources:
+            # The scheduler's own kinds, and the kinds of the sky and the camera.
             text = source.read_text(encoding="utf-8")
-            kinds |= set(re.findall(r'"((?:scheduler|pointing)\.[a-z_]+)"', text))
+            kinds |= set(re.findall(r'"((?:scheduler|pointing|sky)\.[a-z_]+)"', text))
         return kinds
 
     def test_every_kind_in_the_source_is_in_the_list(self) -> None:

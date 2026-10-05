@@ -184,6 +184,20 @@ class StarEpochConfig(SectionModel):
     min_snr: float = 20.0
 
 
+class DarknessConfig(SectionModel):
+    """The events `sky.dark` and `sky.clear_verdict` (`seeingmon.services.core.darkness`)."""
+
+    # The sky counts as dark when a line fitted to the sky brightness of the last `frames` solved
+    # frames in a row changes by less than this, in magnitudes per hour.
+    max_slope_mag_per_hour: float = Field(0.3, gt=0, allow_inf_nan=False)
+    frames: int = Field(5, ge=2)
+    # A longer time between two frames of the run starts it again, in seconds.
+    max_gap_s: float = Field(600.0, gt=0, allow_inf_nan=False)
+    # The clear verdict covers this many frames with a cloud fraction after `sky.dark`, solved or
+    # not.
+    verdict_frames: int = Field(5, ge=1)
+
+
 class SurveyConfig(SectionModel):
     """Settings of the survey path. Every key has a default that suits the reference camera."""
 
@@ -213,3 +227,4 @@ class SurveyConfig(SectionModel):
     sky: SkyConfig = SkyConfig()
     transparency: TransparencyConfig = TransparencyConfig()
     star_epoch: StarEpochConfig = StarEpochConfig()
+    darkness: DarknessConfig = DarknessConfig()

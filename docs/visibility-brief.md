@@ -55,6 +55,12 @@ A read of the code before step 1 found five gaps in the design. The owner approv
    - TOML has no null, so the default file cannot write `None` for `search.max_sun_elevation_deg`. A value of 90 or more means no limit.
 6. **`sky.dark` from the change per hour.** The design's rule, less than 0.05 mag per degree of Sun elevation, never fires: the twilight sky changes by about 1 mag per degree at −12° and still by about 0.2 near −18°, and near the Sun's lowest point on a summer night a change per degree is noise. The sky counts as dark when a line fitted to the last `survey.darkness.frames` (5) solved frames changes by less than `survey.darkness.max_slope_mag_per_hour` (0.3 mag per hour). The owner approved this on October 5, 2026 (step 7).
 
+## Departures awaiting a decision
+
+The lane built these differently from the design. Each waits for the owner's decision, and [`visibility.md`](visibility.md) keeps the approved text until then.
+
+1. **The clear verdict counts every frame with a cloud fraction (step 7).** The design counts `verdict_frames` solved frames after `sky.dark`. Since step 1, a frame that does not solve still gets a cloud fraction from the stored pointing, and thick clouds are what keeps a frame from solving. A verdict over solved frames only waits for the gaps between the clouds and calls a cloudy night clear. The code counts the long frames with a cloud fraction after `sky.dark`, solved or not, so an overcast after dark gives a clear share of 0 at once. Going back to solved frames only is a one-line change in `DarknessWatch.update` (`src/seeingmon/services/core/darkness.py`).
+
 ## Out of scope
 
 - Web UI changes, beyond what the new fields and flags need to show up where records already show.

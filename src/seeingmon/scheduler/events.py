@@ -14,6 +14,9 @@ kind that you register a handler for. A handler may write events of its own thro
 
 A kind that describes the sky or the camera rather than the scheduler has its own prefix, such as
 `pointing.moved`, which the scheduler writes when a survey result shows that the camera moved.
+`core` writes two kinds of the sky from the survey results that the scheduler polls, `sky.dark` and
+`sky.clear_verdict` (`seeingmon.services.core.darkness`), and the list names them too, so that it
+holds every kind that the survey results lead to.
 """
 
 from __future__ import annotations
@@ -59,4 +62,6 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.stop_failed": "The camera did not stop cleanly when the scheduler ended a stream.",
     "scheduler.internal_error": "The loop hit an unexpected error and went on.",
     "scheduler.stalled": "The loop did not run for a while: the machine may have been suspended.",
+    "sky.dark": "The sky stopped getting darker. `core` writes it once a night.",
+    "sky.clear_verdict": "The share of clear frames after `sky.dark`, from `core` once a night.",
 }

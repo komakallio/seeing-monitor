@@ -153,7 +153,11 @@ class CloudConfig(SectionModel):
     """A cloud fraction at or above this value starts the cloud response."""
 
     clear_threshold: Fraction = 0.3
-    """A cloud fraction at or below this value ends it."""
+    """A cloud fraction at or below this value ends it.
+
+    `core` reads it too: the event `sky.clear_verdict` counts the frames at or below it as clear
+    (`seeingmon.services.core.darkness`).
+    """
 
     fast_window_s: Seconds = 60.0
     """The length of the fast period under cloud, in seconds."""

@@ -26,8 +26,8 @@ calibration_dir = ""
 # has a set for the frame.
 flat_file = ""
 # The UTC hour that ends one night and starts the next. Pick an hour when the Sun is up at your
-# site, so that no night splits in two. The star epochs and the transparency reference group by
-# night.
+# site, so that no night splits in two. The star epochs, the transparency reference, and the events
+# sky.dark and sky.clear_verdict ([survey.darkness]) group by night.
 night_split_utc_hour = 12.0
 # The solver programs. Each runs as a separate process, so its GPL or MPL code stays outside
 # this MIT code base.
@@ -192,3 +192,29 @@ fallback_hours = 6.0
 [survey.star_epoch]
 min_frames = 3
 min_snr = 20.0
+
+# The events sky.dark and sky.clear_verdict, which core writes from the survey results, each at
+# most once a night (night_split_utc_hour). sky.dark needs the sky brightness of the frames, which
+# needs a dark set, and the verdict follows sky.dark, so a station without a dark set gets neither.
+# All four values are provisional.
+[survey.darkness]
+# The sky counts as dark when a line fitted to the sky brightness of the last `frames` solved frames
+# changes by less than this many magnitudes per hour. The sky stops changing near the darkest time
+# of every night, so the rule fires on a summer night too, when the Sun stays above -18 degrees. On
+# a winter night at mid-northern latitudes, the twilight sky still changes by about 1.5 mag an hour
+# as the Sun passes -18 degrees. Provisional.
+max_slope_mag_per_hour = 0.3
+# The solved frames in the fit, at least 2. A long survey frame that did not solve, or that has no
+# sky brightness, starts the run again, so that the line never spans a cloudy stretch, such as one
+# from the dusk to the dawn. At the survey cadence of 180 s, 5 frames span 12 minutes. Provisional.
+frames = 5
+# The longest time between two frames of the fit, in seconds. A longer gap starts the run again, so
+# that the line never spans hours without frames, such as while the scheduler is paused or degraded.
+# Keep it above [scheduler.survey] cadence_s (180 s): 600 s lets the scheduler skip two survey steps
+# in a row. Provisional.
+max_gap_s = 600.0
+# The frames after sky.dark that the clear verdict covers: the long frames with a cloud fraction,
+# solved or not, because a frame that thick clouds keep from solving still gets a cloud fraction
+# from the stored pointing. The verdict gives the share of them at or below [scheduler.cloud]
+# clear_threshold. Provisional.
+verdict_frames = 5

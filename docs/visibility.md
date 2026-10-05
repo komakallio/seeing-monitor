@@ -124,6 +124,7 @@ All values are provisional.
 | `survey.twilight.max_saturated_fraction` | 0.01 | The share of saturated pixels that sets `saturated_sky` |
 | `survey.darkness.max_slope_mag_per_hour` | 0.3 | The change of the sky brightness per hour that counts as dark |
 | `survey.darkness.frames` | 5 | Solved frames in the fit for `sky.dark` |
+| `survey.darkness.max_gap_s` | 600.0 | The longest time between two frames of the fit. A longer gap starts the fit again. |
 | `survey.darkness.verdict_frames` | 5 | Solved frames after `sky.dark` for the clear verdict |
 
 `scheduler.daylight.sun_elevation_limit_deg` and `sun_resume_margin_deg` no longer gate the camera, so they go away. `twilight_elevation_deg` stays for the flag.

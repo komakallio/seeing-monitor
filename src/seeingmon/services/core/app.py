@@ -14,6 +14,8 @@ right order. The parts, and where they come from:
   worker process at a low priority. The `PointingTracker` of the analyzer is the pointing provider.
 - **Survey frames:** `SurveyFrames` wraps the survey analyzer. It keeps the newest frames in RAM,
   and it writes the previews and the FITS files (`seeingmon.services.core.survey_frames`).
+- **Darkness:** the scheduler polls the survey through `SkyDarkness`, which writes the events
+  `sky.dark` and `sky.clear_verdict` from the results (`seeingmon.services.core.darkness`).
 - **Preview calibration:** one `PreviewCalibrator` takes the dark level, the vignetting, and the
   dust shadows out of the previews of the survey frames and out of the live view of the alignment
   helper (`seeingmon.services.core.alignment.calibration`). It reads the active flat of the flat
@@ -87,6 +89,7 @@ from seeingmon.scheduler import (
     QueueFlat,
     Scheduler,
     SchedulerConfig,
+    SiteConfig,
     State,
     build_scheduler,
     load_site,
@@ -109,6 +112,7 @@ from seeingmon.services.core.commissioning.replay import (
     resolve_source,
 )
 from seeingmon.services.core.context import ContextProvider
+from seeingmon.services.core.darkness import DarknessWatch, SkyDarkness
 from seeingmon.services.core.driver_proxy import InfoDriver
 from seeingmon.services.core.escalation import Escalator
 from seeingmon.services.core.events import EventPump, EventSource, EventWriter
@@ -303,6 +307,7 @@ class CoreApp:
         self._build_hardware()
         self._build_alignment()
         site = load_site(config)
+        self.darkness = self._build_darkness(scheduler_config, site)
         self.escalator = Escalator(
             writer=self.events,
             clock=self.beat_clock,
@@ -316,7 +321,7 @@ class CoreApp:
             config,
             driver=self.driver,
             fast=self.live_fast,
-            survey=self.survey,
+            survey=self.darkness,
             pointing=self.pointing,
             records=SkyFlagWriter(
                 storage.store.as_record_writer(),
@@ -505,6 +510,27 @@ class CoreApp:
         self.pointing: PointingProvider = parts.pointing or (
             self.tracker if self.tracker is not None else _NoPointing()
         )
+
+    def _build_darkness(
+        self, scheduler_config: SchedulerConfig, site: SiteConfig | None
+    ) -> SkyDarkness:
+        """The events `sky.dark` and `sky.clear_verdict`: the scheduler polls the survey through it.
+
+        The watch takes up the night that a restart interrupted from the store, and a failed read
+        only costs that: the events may then come twice in this night.
+        """
+        assert self.storage is not None
+        watch = DarknessWatch(
+            self.survey_config.darkness,
+            clear_threshold=scheduler_config.cloud.clear_threshold,
+            split_utc_hour=self.survey_config.night_split_utc_hour,
+            site=site,
+        )
+        try:
+            watch.restore(self.storage.store, self.clock.utc_ns())
+        except Exception:
+            _log.exception("could not read the darkness events of this night from the store")
+        return SkyDarkness(self.survey, watch, emit=self.events.emit)
 
     def _build_dark(self) -> None:
         """The dark library of the survey analysis, and the state of the dark task.
