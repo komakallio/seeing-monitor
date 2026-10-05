@@ -28,9 +28,9 @@ electrons and gives the saturation level. The kernel never rescales the pixels i
 a table of aperture weights for 16 x 16 sub-pixel positions of the aperture center. The table
 quantizes the aperture position to 1/16 pixel. Because the aperture follows the star, the
 quantization changes the centroid by less than 0.001 pixel (the leakage of the aperture, about 2%,
-times half a step). `measure_frame` takes about 100 microseconds for a 128 x 128 frame on a
-desktop (`seeingmon.fastpath.benchmark` measures it), and `measure_stack` handles a 3-D stack with
-the same code, so the two agree exactly.
+times half a step). `measure_frame` takes about 30 microseconds for a 128 x 128 frame on a quiet
+desktop, 10 of them for the matched filter (`seeingmon.fastpath.benchmark` measures it), and
+`measure_stack` handles a 3-D stack with the same code, so the two agree exactly.
 
 **Noise.** `Measurement.noise_var_x` and `noise_var_y` hold the modeled variance of the centroid
 from photon noise and pixel noise, in square pixels: `sigma_x^2 / F + n^2 K / F^2`, where `F` is
@@ -38,16 +38,33 @@ the flux in electrons, `n^2` the pixel noise variance in electrons squared, and 
 the aperture weights times the squared distance from the center along one axis. The estimator
 subtracts it from the motion variance. The model counts the read noise only, and not the sky.
 
-**Detection.** The signal-to-noise ratio of the star is `F / sqrt(F + A v)`, where `A` is the area
-of the aperture and `v` the variance of one pixel in electrons squared: the larger of the modeled
-pixel noise (read noise and quantization) and the square of the measured sky noise, because the
-measured noise already holds the read noise. Here `F` is the aperture sum above the trimmed mean
-of the border (its central 68%), which rounds far less than the median of whole counts: in a
-faint twilight sky the median can sit half an ADC step off, and over the aperture that looks like
-a star. A star below `min_snr` counts as missing, so a bright sky does not make a star out of its
-own noise. The SNR leaves out the noise of the background level, as the detection estimate in
-`docs/research-notes.md` does ("Polaris in a bright sky"), which makes it about 1.3 times too high
-in a sky that dominates the noise.
+**Detection.** Two signal-to-noise ratios describe the star, and both take the sky from the
+trimmed mean of the border (its central 68%), which rounds far less than the median of whole
+counts: in a faint twilight sky the median can sit half an ADC step off, and over the aperture
+that looks like a star. Both take `v`, the variance of one pixel in electrons squared, as the
+larger of the modeled pixel noise (read noise and quantization) and the square of the measured
+sky noise, because the measured noise already holds the read noise.
+
+- `matched_snr` decides whether the star is there. It is the SNR of a filter matched to the image
+  of the star (`seeingmon.fastpath.matched`), at its best position within about 1.4 px of the
+  centroid. A star below `min_snr` counts as missing, so a bright sky does not make a star out of
+  its own noise. A frame whose centroid strays farther from the star, as the centroid of a faint
+  star in a bright sky can, counts as missing too, and its centroid would not be usable. The
+  filter needs `matched_fwhm_px`.
+- `snr` is the SNR of the centroid aperture, `F / sqrt(F + A v)`, where `A` is the area of the
+  aperture and `F` the aperture sum above the trimmed mean. It describes the noise of the
+  centroid, and the window reports its median as `star_snr`. On a sky that dominates the noise,
+  it is about a fifth of `matched_snr`, because the aperture adds the noise of about 200 pixels
+  of sky. Without `matched_fwhm_px`, it decides instead.
+
+Both leave out the noise of the background level. For the aperture, that makes the SNR about 1.2
+times too high in a sky that dominates the noise. For the matched filter, it is about 1% of the
+variance.
+
+**Search.** `search_frame` serves the search bursts: it finds the star with the matched filter
+within a radius of a predicted position (`seeingmon.fastpath.matched.search`), and it reports the
+position, `matched_snr`, and the SNR of the centroid aperture at that position, without the
+centroid loop.
 """
 
 from __future__ import annotations
@@ -60,6 +77,7 @@ from typing import Any, NamedTuple
 import numpy as np
 import numpy.typing as npt
 
+from seeingmon.fastpath import matched
 from seeingmon.frames import FrameData
 
 FloatArray = npt.NDArray[np.float64]
@@ -98,11 +116,12 @@ class KernelParams:
     that gives the background, and the median uses the pixels of the ring whose row and column are
     both multiples of `border_step` (1 uses the whole ring, and 2 uses a quarter of it). A star
     closer to the ROI edge than the aperture radius plus `edge_margin_px` carries the edge flag. A
-    star whose aperture sum has a signal-to-noise ratio below `min_snr` counts as missing.
+    star whose matched filter has a signal-to-noise ratio below `min_snr` counts as missing.
     `spike_ratio` enables the isolated-pixel test: when the neighbors of the brightest pixel of the
     aperture box stay below `spike_ratio` times its excess over the background, the frame carries
     the hot-pixel flag. Use `None` for a mode that undersamples the star, because a real star can
-    fill one pixel there.
+    fill one pixel there. `matched_fwhm_px` is the FWHM of the matched filter, in pixels. With
+    `None`, the kernel uses no matched filter, and the SNR of the aperture decides instead.
     """
 
     aperture_diameter_px: float = 16.0
@@ -112,6 +131,7 @@ class KernelParams:
     edge_margin_px: float = 1.0
     min_snr: float = 6.0
     spike_ratio: float | None = 0.03
+    matched_fwhm_px: float | None = None
 
     def __post_init__(self) -> None:
         if not 3.0 <= self.aperture_diameter_px <= 60.0:
@@ -124,6 +144,8 @@ class KernelParams:
             raise ValueError("min_snr and edge_margin_px must not be negative")
         if self.spike_ratio is not None and not 0.0 < self.spike_ratio < 1.0:
             raise ValueError("spike_ratio must be between 0 and 1, or None")
+        if self.matched_fwhm_px is not None and not 0.3 <= self.matched_fwhm_px <= 20.0:
+            raise ValueError("matched_fwhm_px must be between 0.3 and 20, or None")
 
     @property
     def radius_px(self) -> float:
@@ -238,8 +260,10 @@ class Measurement(NamedTuple):
     both in container counts. `flux_dn` is the aperture sum minus the background, in container
     counts. `noise_var_x` and `noise_var_y` are the modeled centroid noise in square pixels, and
     `flags` holds the analysis flags (`FLAG_*`). `bg_sigma_dn` is the sky noise of the border in
-    container counts, for every frame. `snr` is the signal-to-noise ratio of the star, `NaN` when
-    `found` is false or when the calibration has no electron scale.
+    container counts, for every frame. `snr` is the signal-to-noise ratio of the star in the
+    centroid aperture, and `matched_snr` the one of the matched filter, which decides whether the
+    star is there. Both are `NaN` when `found` is false or when the calibration has no electron
+    scale, and `matched_snr` also without a matched filter.
     """
 
     found: bool
@@ -255,6 +279,7 @@ class Measurement(NamedTuple):
     flags: int
     bg_sigma_dn: float = _NAN
     snr: float = _NAN
+    matched_snr: float = _NAN
 
 
 # --- helpers --------------------------------------------------------------------------------
@@ -465,13 +490,27 @@ def _measure_at(
     peak = float(pixels[peak_index])
     flux_e = s0 * calibration.e_per_dn
     snr = _NAN
+    matched_snr = _NAN
     if flux_e == flux_e and calibration.pixel_var_e2 == calibration.pixel_var_e2:
         detected_e = (s0 + (background - level) * sums[0]) * calibration.e_per_dn
         if not detected_e > 0.0:
             return _not_found(data, background, sigma)
-        noise_e2 = detected_e + tables.area * _pixel_variance_e2(sigma, calibration)
-        snr = detected_e / math.sqrt(noise_e2)
-        if snr < params.min_snr:
+        pixel_var = _pixel_variance_e2(sigma, calibration)
+        snr = detected_e / math.sqrt(detected_e + tables.area * pixel_var)
+        if params.matched_fwhm_px is not None:
+            best = matched.near(
+                data,
+                round(gx),
+                round(gy),
+                matched.matched_filter(params.matched_fwhm_px),
+                level,
+                calibration.e_per_dn,
+                pixel_var,
+            )
+            matched_snr = best.snr
+            if not matched_snr >= params.min_snr:
+                return _not_found(data, background, sigma)
+        elif snr < params.min_snr:
             return _not_found(data, background, sigma)
     elif peak - background < params.min_snr:
         return _not_found(data, background, sigma)
@@ -498,6 +537,96 @@ def _measure_at(
         flags,
         sigma,
         snr,
+        matched_snr,
+    )
+
+
+def search_frame(
+    data: FrameData,
+    roi_x: int,
+    roi_y: int,
+    params: KernelParams,
+    calibration: FrameCalibration,
+    at: tuple[float, float] | None = None,
+    radius_px: float | None = None,
+) -> Measurement:
+    """Look for the star with the matched filter, for a frame of a search burst.
+
+    `at` is where the star should be, in sensor pixels, and the filter looks within `radius_px` of
+    it. Without `at` or `radius_px`, it looks over the whole frame. The star is found when the
+    matched filter reaches `min_snr` at its best position. The result holds that position,
+    `matched_snr`, the brightest pixel and the flux of the centroid aperture placed there with
+    the SNR of that aperture, and the saturation and edge flags. It has no widths and no centroid
+    noise, because the centroid loop does not run.
+
+    Without `matched_fwhm_px` or an electron scale, the result is that of `measure_frame` from
+    `at`, which may lie anywhere in the frame.
+    """
+    if params.matched_fwhm_px is None or not (
+        calibration.e_per_dn == calibration.e_per_dn
+        and calibration.pixel_var_e2 == calibration.pixel_var_e2
+    ):
+        return measure_frame(data, roi_x, roi_y, params, calibration, at)
+    height, width = data.shape
+    flat = data.reshape(-1)
+    background, sigma, level = _border_level(
+        flat, _border(height, width, params.border_px, params.border_step)
+    )
+    if at is None or radius_px is None:
+        cx, cy = 0.5 * (width - 1), 0.5 * (height - 1)
+        radius = math.hypot(width, height)  # the whole frame, from its center
+    else:
+        cx, cy, radius = at[0] - roi_x, at[1] - roi_y, radius_px
+    pixel_var = _pixel_variance_e2(sigma, calibration)
+    found = matched.search(
+        data,
+        cx,
+        cy,
+        radius,
+        matched.matched_filter(params.matched_fwhm_px),
+        level,
+        calibration.e_per_dn,
+        pixel_var,
+    )
+    if found is None or not found.snr >= params.min_snr:
+        return _not_found(data, background, sigma)
+    gx, gy = found.x, found.y
+    half = params.half_box_px
+    box = 2 * half + 1
+    tables = _tables(params.radius_px, half)
+    qx = round(gx * PHASES)
+    qy = round(gy * PHASES)
+    px = (qx + _HALF_PHASE) // PHASES
+    py = (qy + _HALF_PHASE) // PHASES
+    kx = qx - px * PHASES + _HALF_PHASE
+    ky = qy - py * PHASES + _HALF_PHASE
+    pixels = _read_box(data, px - half, py - half, box, background)
+    s0 = float(tables.moments[ky, kx, 0] @ pixels) - background * tables.sums_list[ky][kx][0]
+    detected_e = (s0 + (background - level) * tables.sums_list[ky][kx][0]) * calibration.e_per_dn
+    snr = _NAN
+    if detected_e > 0.0:
+        snr = detected_e / math.sqrt(detected_e + tables.area * pixel_var)
+    peak = float(pixels.max())
+    flags = 0
+    if peak >= calibration.saturation_dn:
+        flags |= FLAG_SATURATED
+    if min(gx, width - 1.0 - gx, gy, height - 1.0 - gy) < params.radius_px + params.edge_margin_px:
+        flags |= FLAG_EDGE
+    return Measurement(
+        True,
+        roi_x + gx,
+        roi_y + gy,
+        _NAN,
+        _NAN,
+        peak,
+        s0,
+        background,
+        _NAN,
+        _NAN,
+        flags,
+        sigma,
+        snr,
+        found.snr,
     )
 
 
@@ -535,6 +664,7 @@ def _not_found(data: FrameData, background: float, sigma: float) -> Measurement:
         FLAG_NO_STAR,
         sigma,
         _NAN,
+        _NAN,
     )
 
 
@@ -558,6 +688,7 @@ class StackMeasurements:
     flags: npt.NDArray[np.int64]
     bg_sigma_dn: FloatArray
     snr: FloatArray
+    matched_snr: FloatArray
 
     def __len__(self) -> int:
         return int(self.found.shape[0])
@@ -578,6 +709,7 @@ class StackMeasurements:
             int(self.flags[index]),
             float(self.bg_sigma_dn[index]),
             float(self.snr[index]),
+            float(self.matched_snr[index]),
         )
 
 
@@ -602,15 +734,16 @@ def measure_stack(
     count = stack.shape[0]
     found = np.zeros(count, dtype=np.bool_)
     flags = np.zeros(count, dtype=np.int64)
-    # x, y, width_x, width_y, peak, flux, bg, noise_x, noise_y, bg_sigma, snr
-    columns = np.full((11, count), _NAN)
+    # x, y, width_x, width_y, peak, flux, bg, noise_x, noise_y, bg_sigma, snr, matched_snr
+    columns = np.full((12, count), _NAN)
     last = guess
     for index in range(count):
         m = measure_frame(stack[index], roi_x, roi_y, params, calibration, last)
         found[index] = m.found
         flags[index] = m.flags
         columns[:, index] = (m.x, m.y, m.width_x, m.width_y, m.peak_dn, m.flux_dn, m.bg_dn,
-                             m.noise_var_x, m.noise_var_y, m.bg_sigma_dn, m.snr)  # fmt: skip
+                             m.noise_var_x, m.noise_var_y, m.bg_sigma_dn, m.snr,
+                             m.matched_snr)  # fmt: skip
         last = (m.x, m.y) if m.found else None
     return StackMeasurements(
         found,
@@ -626,4 +759,5 @@ def measure_stack(
         flags,
         columns[9],
         columns[10],
+        columns[11],
     )

@@ -25,16 +25,18 @@ the stream in use (flushing the fast analyzer's window and its metrics), calls
 `CameraDriver.configure`, and then `FastAnalyzer.begin_stream`. A window therefore never spans two
 streams, and the camera never serves two modes at once.
 
-**Search and measure.** In `auto` with a pointing solution, the fast stream searches for Polaris
-or measures it. These are modes inside `auto`, not states. A search period takes the slot of a
-fast period in the cycle: every `[scheduler.search] interval_s` it starts a burst of
-`burst_frames` fast frames on the ROI where the solution predicts Polaris, one frame per step, and
-the camera idles between bursts. The frames of a burst go to `FastAnalyzer.measure`, so they reach
-no seeing window, no metric row, and no live video. `confirm_bursts` detecting bursts in a row
-switch to measure, and the fast stream runs for the rest of the period. In measure, a star that
-stays missing for `[scheduler.fast] missing_star_frames` frames ends the period early and returns
-the stream to search. The search state lives on the scheduler, because a fault and every entry
-into `auto` replace the cycle. While the Sun is above `max_sun_elevation_deg`, only one probe
+**Search and measure.** In `auto` with a pointing solution, the fast stream searches for Polaris or
+measures it. These are modes inside `auto`, not states. A search period takes the slot of a fast
+period in the cycle: every `[scheduler.search] interval_s` it starts a burst of `burst_frames` fast
+frames on the ROI where the solution predicts Polaris, one frame per step, and the camera idles
+between bursts. The frames of a burst go to `FastAnalyzer.measure`, which looks for the star within
+`radius_px` of the prediction and returns its matched SNR, the statistic that decides a detection.
+They reach no seeing window, no metric row, and no live video. With the default
+`max_sun_elevation_deg` of 90, the Sun never limits the search. `confirm_bursts` detecting bursts in
+a row switch to measure, and the fast stream runs for the rest of the period. In measure, a star
+that stays missing for `[scheduler.fast] missing_star_frames` frames ends the period early and
+returns the stream to search. The search state lives on the scheduler, because a fault and every
+entry into `auto` replace the cycle. While the Sun is above `max_sun_elevation_deg`, only one probe
 burst every `probe_interval_s` runs, and a probe that detects Polaris is confirmed at the normal
 interval. The events `polaris.visible` and `polaris.hidden` mark every start and every end of
 measure. The Sun's elevation gates nothing else: the daylight gate reads the measured sky alone.
@@ -2364,7 +2366,7 @@ class Scheduler:
         return StepKind.WORK
 
     def _burst_step(self, burst: _Burst) -> StepKind:
-        """Read one frame of a burst and measure the star where the solution predicts it.
+        """Read one frame of a burst and look for the star where the solution predicts it.
 
         The prediction of the start of the burst serves all its frames: Polaris moves 0.16 arcsec
         a second, a few hundredths of a pixel in a burst. The median of each frame gives the sky
@@ -2379,13 +2381,14 @@ class Scheduler:
         self._counters.search_frames += 1
         burst.backgrounds_dn.append(median_dn(frame))
         predicted = burst.predicted
-        star = self._fast.measure(frame, predicted)
+        star = self._fast.measure(frame, predicted, config.radius_px)
         snr = 0.0
         if star.found and star.x_px is not None and star.y_px is not None:
             offset = math.hypot(star.x_px - predicted[0], star.y_px - predicted[1])
             burst.offsets_px.append(offset)
-            if offset <= config.radius_px and star.snr is not None and math.isfinite(star.snr):
-                snr = star.snr
+            matched = star.matched_snr
+            if offset <= config.radius_px and matched is not None and math.isfinite(matched):
+                snr = matched
         burst.snrs.append(snr)
         if len(burst.snrs) >= config.burst_frames:
             self._finish_burst(burst)
@@ -2395,7 +2398,7 @@ class Scheduler:
         """End the stream of a burst, and decide whether it detected Polaris.
 
         A burst detects Polaris when the median of the SNR of its frames reaches `detect_snr`. A
-        frame counts with the SNR of its star when the star lies within `radius_px` of the
+        frame counts with the matched SNR of its star when the star lies within `radius_px` of the
         prediction, and with 0 otherwise, so the median also says that the star sat where the
         solution puts it in at least half of the frames. Measure needs a centroid in every frame,
         and the median frame stands for them, which the SNR of the summed frames would not.

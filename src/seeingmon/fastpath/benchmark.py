@@ -11,6 +11,8 @@ cannot hide the cost of fresh pixels. The benchmark reports
 - `stack_us`: `measure_stack` over the same frames;
 - `push_us`: the whole `FastPathAnalyzer.push`, which adds the metrics row, the window
   bookkeeping, and the star state to the kernel;
+- `search_us`: `search_frame`, the matched filter of a search burst within 20 pixels of the
+  center of the ROI (the default `[scheduler.search] radius_px`);
 - `close_ms`: the time that `flush` takes to close one full window of frames (the fits, the
   spectrum, and the corrections). It runs inside the `push` that closes a window.
 
@@ -41,7 +43,7 @@ import numpy.typing as npt
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.fastpath.analyzer import FastPathAnalyzer
 from seeingmon.fastpath.config import FastPathConfig
-from seeingmon.fastpath.kernel import measure_frame, measure_stack
+from seeingmon.fastpath.kernel import measure_frame, measure_stack, search_frame
 from seeingmon.frames import (
     ActiveStream,
     Frame,
@@ -54,6 +56,7 @@ from seeingmon.frames import (
 from seeingmon.profile import Profile, load_profile
 
 POOL = 64  # distinct frames that the benchmark cycles through
+SEARCH_RADIUS_PX = 20.0  # the default `[scheduler.search] radius_px`
 _REFERENCE_PROFILE = "asi294mm-gs250"
 _CASES = (
     ("bin1_128x128_uint16", "bin1", (128, 128), 2000, 0),
@@ -78,6 +81,7 @@ class CaseResult:
     push_us: float
     push_best_us: float
     close_ms: float
+    search_us: float
 
 
 def star_frames(
@@ -178,9 +182,16 @@ def run_case(
             m = measure_frame(data, roi.x, roi.y, params, calibration, guess)
             guess = (m.x, m.y) if m.found else None
 
+    center = (roi.x + 0.5 * (shape[1] - 1), roi.y + 0.5 * (shape[0] - 1))
+
+    def search() -> None:
+        for data in arrays:
+            search_frame(data, roi.x, roi.y, params, calibration, center, SEARCH_RADIUS_PX)
+
     kernel_runs: list[float] = []
     stack_runs: list[float] = []
     push_runs: list[float] = []
+    search_runs: list[float] = []
     for _ in range(repeats):
         kernel_runs.append(_microseconds_per_frame(timer, frames, kernel))
         stack_runs.append(
@@ -196,6 +207,7 @@ def run_case(
                 target.push(item)
 
         push_runs.append(_microseconds_per_frame(timer, frames, push))
+        search_runs.append(_microseconds_per_frame(timer, frames, search))
     # Fill a full window and time how long `flush` takes to close it.
     analyzer = new_analyzer()
     for i in range(max(1, round(close_window_s * NS_PER_S / period_ns))):
@@ -214,6 +226,7 @@ def run_case(
         push_us=statistics.median(push_runs),
         push_best_us=min(push_runs),
         close_ms=close_ms,
+        search_us=statistics.median(search_runs),
     )
 
 
@@ -252,7 +265,7 @@ def format_report(results: Sequence[CaseResult]) -> str:
     return "\n".join(
         f"{r.name}: kernel {r.kernel_us:.1f} us/frame (best {r.kernel_best_us:.1f}), "
         f"stack {r.stack_us:.1f}, push {r.push_us:.1f} (best {r.push_best_us:.1f}), "
-        f"close one window {r.close_ms:.1f} ms"
+        f"close one window {r.close_ms:.1f} ms, search {r.search_us:.1f} us/frame"
         for r in results
     )
 

@@ -72,12 +72,13 @@ def test_the_defaults_follow_the_architecture() -> None:
 
 
 def test_the_search_defaults_follow_the_visibility_design() -> None:
-    """`docs/visibility.md`, "Settings": the detection estimate's +8.9 degrees plus 3 is +12."""
+    """`docs/visibility.md`, "Settings": no Sun limit, because the detection estimate keeps
+    Polaris detectable in full daylight."""
     search = SchedulerConfig().search
     assert (search.burst_frames, search.interval_s, search.confirm_bursts) == (50, 15.0, 2)
     assert (search.detect_snr, search.radius_px) == (10.0, 20.0)
-    assert (search.max_sun_elevation_deg, search.probe_interval_s) == (12.0, 600.0)
-    assert search.limited
+    assert (search.max_sun_elevation_deg, search.probe_interval_s) == (90.0, 600.0)
+    assert not search.limited
 
 
 def test_the_adaptive_exposure_follows_the_visibility_design() -> None:

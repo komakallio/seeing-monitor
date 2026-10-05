@@ -6,6 +6,7 @@ The package turns the frames of the fast stream into per-frame metrics and into 
 `FastPathConfig` for the settings. The modules, in the order that the data flows through them:
 
 - `kernel`: background, centroid, widths, flux, and flags of one frame (or a stack).
+- `matched`: the matched filter, whose SNR decides whether the star is in a frame.
 - `windows`: groups frames into windows of frame time and counts the frames that a window lost.
 - `estimator` and `models`: the image-motion variance, `r0`, and the seeing, with the
   corrections for outer scale, exposure, detrending, and the finite aperture of the centroid.

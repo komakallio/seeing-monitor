@@ -492,10 +492,26 @@ class TestTheRealCamera:
         assert lines[0] == "Seeing monitor, real camera (asi driver): real time, full sensor."
         assert any(line.startswith("Web UI: ") for line in lines)
         assert sum("reports no stars" in line for line in lines) == 1
-        assert sum("probe burst" in line and "synthetic site" in line for line in lines) == 1
+        assert (
+            sum("does not limit the search" in line and "synthetic site" in line for line in lines)
+            == 1
+        )
         assert "Cover the camera by hand for a dark session." in lines
         assert not [line for line in lines if "simulated camera" in line]  # no cover file
         assert not [line for line in lines if "--sensor" in line]  # nobody chose a sensor
+
+    def test_a_search_limit_below_90_degrees_names_the_probe_bursts(self) -> None:
+        # The banner reads the default settings, which have no limit. A limit takes the other
+        # branch of the same helper.
+        from seeingmon.scheduler.config import SearchConfig
+        from seeingmon.services.dev import _search_note
+
+        assert _search_note().endswith("The height of the Sun does not limit the search.")
+        limited = _search_note(SearchConfig(max_sun_elevation_deg=12.0))
+        assert limited.endswith(
+            "While the Sun is above 12 degrees, one probe burst every 10 min looks instead."
+        )
+        assert "does not limit" not in limited
 
     def test_a_sensor_that_the_person_chose_gets_a_one_line_note(self, tmp_path: Path) -> None:
         plan = self.real(tmp_path, sensor="small", sensor_given=True)

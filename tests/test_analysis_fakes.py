@@ -133,7 +133,7 @@ class TestFakeFastAnalyzer:
         assert analyzer.push(driver.read_frame(5.0)).star == NO_STAR
         snr[0] = 12.0
         star = analyzer.push(driver.read_frame(5.0)).star
-        assert (star.found, star.snr) == (True, 12.0)
+        assert (star.found, star.snr, star.matched_snr) == (True, 12.0, 12.0)  # one SNR, twice
 
     def test_a_window_reports_its_background_and_the_median_snr_of_its_star(
         self, driver: FakeCameraDriver
@@ -172,9 +172,9 @@ class TestFakeFastAnalyzer:
     ) -> None:
         analyzer = FakeFastAnalyzer()
         stream_of(driver)
-        star = analyzer.measure(driver.read_frame(5.0), (ROI.x + 32.0, ROI.y + 32.0))
+        star = analyzer.measure(driver.read_frame(5.0), (ROI.x + 32.0, ROI.y + 32.0), 20.0)
         assert (star.found, star.x_px, star.y_px) == (True, ROI.x + 32, ROI.y + 32)
-        assert star.snr == 4900.0
+        assert star.snr == star.matched_snr == 4900.0
         assert (analyzer.frames_measured, analyzer.frames_pushed) == (1, 0)
         assert analyzer.drain_metrics() is None
         assert analyzer.flush() == ()

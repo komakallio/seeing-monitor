@@ -353,9 +353,14 @@ class LiveFastAnalyzer:
         self._stream.offer(frame, update)
         return update
 
-    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
+    def measure(
+        self,
+        frame: Frame,
+        at: tuple[float, float] | None = None,
+        radius_px: float | None = None,
+    ) -> StarState:
         # A frame of a search burst stays out of the video, as it stays out of the windows.
-        return self._inner.measure(frame, at)
+        return self._inner.measure(frame, at, radius_px)
 
     def flush(self, reason: str = "end") -> tuple[SeeingWindowRecord, ...]:
         return self._inner.flush(reason)

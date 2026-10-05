@@ -21,8 +21,10 @@ pytest.importorskip("sep", reason="the survey path needs the survey extra")
 pytest.importorskip("scipy", reason="the fast path needs the fast extra")
 
 from seeingmon.clock import NS_PER_S, iso_to_utc_ns
-from seeingmon.drivers.sim.detection import DetectionModel
+from seeingmon.drivers.sim.detection import DETECTION_SNR, DetectionModel
 from seeingmon.drivers.sim.params import SimParams
+from seeingmon.drivers.sim.sky import DAYLIGHT_SKY_MAG_ARCSEC2
+from seeingmon.fastpath.config import FastPathConfig
 from seeingmon.records import RunRecord
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
 from seeingmon.store.db import StoreReader
@@ -110,86 +112,108 @@ class TestTheDaylightGate:
         """The Sun gates nothing. The simulator's sky at +6 degrees is far from saturating the
         brightness frame, so `auto` starts at once and the search looks for Polaris.
 
-        The fast frames of these nights take 250 us, and at that exposure the detection estimate
-        (`seeingmon.drivers.sim.detection`) puts the median-frame SNR of 10 at -0.54 degrees. The
-        second detecting burst in a row starts measure, so `polaris.visible` comes there or a
-        little later. 1 degree is the tolerance of the brief, for the bursts that run only in the
-        fast slots of the cycle and the noise of the SNR of one burst.
+        The fast frames of these nights take 250 us. At that exposure, the detection estimate
+        (`seeingmon.drivers.sim.detection`) keeps the matched SNR of the median frame above 10 at
+        every Sun elevation (22 at +6 degrees), so it has no crossing, and the first two bursts
+        find Polaris by day. With the SNR of the centroid aperture, the search waited for the
+        Sun to reach -0.5 degrees.
         """
         start = "2026-01-01T14:30:00Z"
         night = build_night(tmp_path, start=start)
         try:
-            night.run_for(30 * 60.0)  # the Sun is still above the horizon
+            night.run_until(lambda: night.records("seeing_window"), limit_s=30 * 60.0, slice_s=60.0)
+            (change,) = night.events("scheduler.state_change")
+            assert change.t_utc_ns - iso_to_utc_ns(start) < 60 * NS_PER_S  # the first frame
             status = night.app.scheduler.status()
             assert status.state == "auto"
             assert status.search is not None
-            assert status.search.mode == "search"
-            assert status.counters.search_bursts > 10
-            assert night.records("seeing_window") == []  # Polaris does not show in 250 us yet
-            night.run_until(
-                lambda: night.records("seeing_window"), limit_s=3 * 3600.0, slice_s=60.0
-            )
-            (change,) = night.events("scheduler.state_change")
-            assert change.t_utc_ns - iso_to_utc_ns(start) < 60 * NS_PER_S  # the first frame
+            assert status.search.mode == "measure"
             (visible,) = night.events("polaris.visible")
             params = SimParams.from_profile(night.app.profile, night.app.profile.fast_mode.mode)
-            estimate = DetectionModel.for_simulator(params, max_exposure_us=250).crossing_deg()
-            assert estimate is not None
-            assert visible.detail["sun_elevation_deg"] == pytest.approx(estimate, abs=1.0)
+            model = DetectionModel.for_simulator(params, max_exposure_us=250)
+            assert model.crossing_deg() is None
+            sun = visible.detail["sun_elevation_deg"]
+            assert sun > 5.0  # the first bursts, with the Sun near +6 degrees
+            # The burst's median matched SNR against the median frame of the estimate. The run
+            # gave 23.0 against 22.5, at +5.9 degrees, after 2 bursts.
+            assert visible.detail["snr"] == pytest.approx(model.row(sun).snr_matched, rel=0.1)
+            assert status.counters.search_bursts == 2
             first = night.records("seeing_window")[0]
             assert first.t_utc_ns >= visible.t_utc_ns - NS_PER_S
-            assert "twilight" in first.flags  # the Sun is near the horizon, not 18 degrees down
+            assert "twilight" in first.flags  # the Sun is up, not 18 degrees down
         finally:
             night.app.stop()
 
 
 @pytest.mark.slow
 class TestPolarisAtDusk:
-    def test_seeing_starts_where_the_detection_estimate_puts_polaris(self, tmp_path: Path) -> None:
+    def test_seeing_runs_where_the_detection_estimate_puts_polaris(self, tmp_path: Path) -> None:
         """A spring dusk with the fast stream of the camera: the full reference sensor, the real
         Polaris, at most 2 ms, and the adaptive exposure (`target_background_fraction` 0.3).
 
-        The detection estimate (`seeingmon.drivers.sim.detection`) puts the median-frame SNR of
-        Polaris at 10 where the Sun is +8.9 degrees up, with the exposure that the adaptive
-        exposure picks there (1.48 ms). The run starts with the Sun at +11.5 degrees, below the
-        search limit, and seeing windows must start within 1 degree of that elevation: the tolerance
-        of the brief, for the bursts that run once a cycle (one degree is 7 minutes here), the
-        noise of the SNR of a burst, the offset that the loop counts as sky (0.1 degree), and the
-        two detecting bursts in a row that measure needs.
+        The detection estimate (`seeingmon.drivers.sim.detection`) decides by the matched SNR of
+        the median frame. It keeps that SNR at 41 or more in the model's full daylight, so it has
+        no crossing of 10, and the search has no Sun limit. The run starts with the Sun at +11.5
+        degrees, in the brightest sky of the model (its daylight sky holds from +10 degrees up),
+        and seeing must run there: the first bursts find Polaris, and the first seeing window
+        comes while the Sun is still above +10 degrees. An estimate with a crossing would need
+        the run to start above it, and seeing to start within 1 degree of it: the tolerance of
+        the brief, for the bursts that run once a cycle (one degree is 7 minutes here), the noise
+        of the SNR of a burst, and the two detecting bursts in a row that measure needs.
+
+        The centroids of these windows come from the wide aperture and are noisy in daylight, so
+        the test checks no seeing value. Step 5 of the visibility lane measures that bias.
         """
         start = "2026-04-20T17:45:00Z"  # the Sun at +11.5 degrees on the synthetic site
         night = build_night(tmp_path, start=start, sensor="full", fast_exposure_us=2000)
         try:
             profile = night.app.profile
-            params = SimParams.from_profile(profile, profile.fast_mode.mode)
-            model = DetectionModel.for_simulator(params)
-            crossing = model.crossing_deg()
-            assert crossing is not None
+            mode = profile.fast_mode.mode
+            fastpath = night.config.section("fastpath", FastPathConfig)
+            model = DetectionModel.for_simulator(
+                SimParams.from_profile(profile, mode),
+                matched_fwhm_px=fastpath.matched_fwhm_airy_widths * profile.airy_fwhm_px(mode),
+            )
             assert night.app.scheduler.config.fast.target_background_fraction == pytest.approx(
                 model.target_background_fraction
             )
+            start_sun = sun_elevation_deg(night.start_utc_ns, SIM_LATITUDE_DEG, 0.0)
+            crossing = model.crossing_deg()
+            if crossing is not None:  # pragma: no cover - the current estimate has none
+                assert crossing < start_sun - 1.0  # the run must start above the crossing
             night.run_until(lambda: windows_with_r0(night), limit_s=40 * 60.0, slice_s=30.0)
             first = windows_with_r0(night)[0]
             sun = sun_elevation_deg(first.t_utc_ns, SIM_LATITUDE_DEG, 0.0)
-            assert sun == pytest.approx(crossing, abs=1.0)
             (visible,) = night.events("polaris.visible")
-            assert visible.detail["sun_elevation_deg"] == pytest.approx(crossing, abs=1.0)
-            assert visible.detail["probe"] is False  # the Sun was below the search limit
-            # The adaptive exposure: the background sits near its target, and the star near the
-            # median-frame SNR of the estimate at that Sun. The run gave 1484 us against 1523 us,
-            # 0.299, and an SNR of 10.97 against 10.33.
+            visible_sun = visible.detail["sun_elevation_deg"]
+            if crossing is None:
+                # The brightest sky of the model: the daylight sky, which holds above +10 degrees.
+                for elevation in (visible_sun, sun):
+                    sky = model.row(elevation).sky_mag_arcsec2
+                    assert sky == pytest.approx(DAYLIGHT_SKY_MAG_ARCSEC2), elevation
+                assert model.row(sun).snr_matched >= DETECTION_SNR
+            else:  # pragma: no cover - the current estimate has none
+                assert sun == pytest.approx(crossing, abs=1.0)
+                assert visible_sun == pytest.approx(crossing, abs=1.0)
+            assert visible.detail["probe"] is False  # no limit, so no probe
+            # The burst that confirmed Polaris: its median matched SNR sits near the median frame
+            # of the estimate. The run gave 38.7 against 41.4, at +11.4 degrees, with an exposure
+            # 2.4% short.
+            assert visible.detail["snr"] == pytest.approx(
+                model.row(visible_sun).snr_matched, rel=0.1
+            )
+            # The adaptive exposure: the background sits near its target. The run gave 1196 us
+            # against 1226 us and 0.300.
             assert first.exposure_us < 2000
             # The loop counts the offset as sky, which makes the exposure 2.4% short
-            # (`tests/scheduler/test_exposure.py`), and the background that it scales may be up to
-            # a cycle (60 s) old, while the sky here darkens by 2.4% a minute.
+            # (`tests/scheduler/test_exposure.py`).
             assert first.exposure_us == pytest.approx(model.row(sun).exposure_us, rel=0.05)
-            # The window counts the offset as background too, so only that lag moves it from the
-            # target: by at most 2.4% of 0.3, about 0.007.
+            # The window counts the offset as background too, so the background sits on the target.
             assert first.background_fraction == pytest.approx(0.3, abs=0.01)
-            # The tolerance of the crossing, 1 degree of Sun, which moves the SNR by 16 to 18%.
+            # The window's star_snr is the SNR of the centroid aperture, a fifth of the matched
+            # one. The run gave 8.2 against 8.3 for the median frame of the estimate.
             assert first.star_snr is not None
-            assert model.row(sun + 1.0).snr_median < first.star_snr
-            assert first.star_snr < model.row(sun - 1.0).snr_median
+            assert first.star_snr == pytest.approx(model.row(sun).snr_centroid, rel=0.1)
             assert "twilight" in first.flags
             # At most 2 ms, Polaris does not saturate in any window of the run.
             for window in night.records("seeing_window"):

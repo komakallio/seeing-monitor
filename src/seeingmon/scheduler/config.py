@@ -199,9 +199,10 @@ class SearchConfig(SectionModel):
     detect_snr: Positive = 10.0
     """The median SNR of the star in the frames of a burst that counts as a detection.
 
-    The SNR of a frame is the aperture flux over the root of its photon noise and of the area
-    times the variance of one pixel, measured on the ROI border (see `docs/research-notes.md`,
-    "Polaris in a bright sky")."""
+    The SNR of a frame is the one of a filter matched to the image of the star
+    (`StarState.matched_snr`): the pixels weighted by that image, over the root of the sky noise,
+    measured on the ROI border, and the star's photon noise that the weights carry (see
+    `docs/research-notes.md`, "Polaris in a bright sky")."""
 
     radius_px: Positive = 20.0
     """How far from the prediction the star of a detection may lie, in fast-mode pixels."""
@@ -209,12 +210,13 @@ class SearchConfig(SectionModel):
     confirm_bursts: PositiveInt = 2
     """The number of detecting bursts in a row that switch the stream to measure."""
 
-    max_sun_elevation_deg: Finite = 12.0
+    max_sun_elevation_deg: Finite = NO_SUN_LIMIT_DEG
     """The search runs while the Sun is below this elevation, in degrees.
 
     Above it, one probe burst every `probe_interval_s` checks that the limit is not too low. A
-    value of 90 or more means no limit. Without a site, or with a clock that is not synchronized,
-    the Sun is unknown, and the search always runs."""
+    value of 90 or more, the default, means no limit: in the detection estimate, Polaris stays
+    detectable in full daylight. Without a site, or with a clock that is not synchronized, the
+    Sun is unknown, and the search always runs."""
 
     probe_interval_s: Seconds = 600.0
     """The time between two probe bursts while the Sun is above the limit, in seconds."""

@@ -390,9 +390,11 @@ class SeeingWindowRecord(Record):
         ge=0,
         default=None,
         definition=(
-            "The median signal-to-noise ratio of the star in the frames with a usable centroid: "
-            "the aperture flux over the root of its photon noise and of the aperture area times "
-            "the variance of one pixel, measured on the ROI border."
+            "The median signal-to-noise ratio of the star in the centroid aperture over the "
+            "frames with a usable centroid, which tells the noise of the centroids: the aperture "
+            "flux over the root of its photon noise and of the aperture area times the variance "
+            "of one pixel, measured on the ROI border (in a bright sky, the SNR of the matched "
+            "filter that decides whether the star is there is several times higher)."
         ),
     )
 

@@ -32,11 +32,16 @@ class StarState:
 
     Coordinates are sensor pixels of the readout mode (not ROI pixels), so they stay valid
     when the ROI moves. `edge_distance_px` is the distance from the star to the nearest ROI
-    edge, which the scheduler uses to recenter the ROI before the star leaves it. `snr` is the
-    signal-to-noise ratio of the star in the frame: its aperture flux over the root of its photon
+    edge, which the scheduler uses to recenter the ROI before the star leaves it.
+
+    Two signal-to-noise ratios describe the star in the frame, each `None` when the analysis cannot
+    tell. `snr` is the one of the centroid aperture: the aperture flux over the root of its photon
     noise and of the aperture area times the variance of one pixel, measured on the ROI border.
-    It is `None` when the analysis cannot tell, and the search of the scheduler then counts no
-    detection.
+    `matched_snr` is the one of a filter matched to the image of the star: the pixels weighted by
+    that image, over the root of the sky noise and the star's photon noise that the weights carry.
+    It is the statistic that decides whether the star is there. The search of the scheduler counts
+    a detection by it, and counts none when it is `None`. On a sky that dominates the noise, the
+    aperture adds the noise of many empty pixels, so `snr` is far below `matched_snr`.
     """
 
     found: bool
@@ -45,6 +50,7 @@ class StarState:
     peak_fraction: float | None = None  # brightest pixel as a share of the saturation level
     edge_distance_px: float | None = None
     snr: float | None = None
+    matched_snr: float | None = None
 
 
 NO_STAR = StarState(found=False)
@@ -122,13 +128,19 @@ class FastAnalyzer(Protocol):
         """Analyze one frame. A frame from a new stream starts that stream."""
         ...
 
-    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
-        """Measure the star in one frame, outside the windows.
+    def measure(
+        self,
+        frame: Frame,
+        at: tuple[float, float] | None = None,
+        radius_px: float | None = None,
+    ) -> StarState:
+        """Look for the star in one frame, outside the windows.
 
         The search bursts of the scheduler use it. `at` is where the star should be, in sensor
-        pixels of the frame's readout mode, and the measurement starts there. The frame reaches
-        no window, no metric row, and no live value, and the state of `push` stays as it was. The
-        result carries the star's SNR.
+        pixels of the frame's readout mode, and the search looks within `radius_px` of it, or
+        over the whole frame when either is `None`. The frame reaches no window, no metric row,
+        and no live value, and the state of `push` stays as it was. The result carries the star's
+        SNRs, `matched_snr` among them.
         """
         ...
 

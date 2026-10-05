@@ -150,9 +150,11 @@ class SchedulerMachine(RuleBasedStateMachine):
             check(frame, {"fast", "commission"})
             return push(frame)
 
-        def audited_measure(frame: Frame, at: tuple[float, float] | None = None) -> Any:
+        def audited_measure(
+            frame: Frame, at: tuple[float, float] | None = None, radius_px: float | None = None
+        ) -> Any:
             check(frame, {"search"})
-            return measure(frame, at)
+            return measure(frame, at, radius_px)
 
         def audited_submit(frame: Frame) -> None:
             check(frame, {"survey"})

@@ -3,14 +3,16 @@
 In `auto` with a pointing solution, the fast stream searches for Polaris in short bursts, and two
 detecting bursts in a row switch it to measure, the fast stream with seeing windows. A star that
 stays missing in measure returns the stream to search. While the Sun is above the search limit
-(`[scheduler.search] max_sun_elevation_deg`, 12 degrees), only a probe burst every 10 minutes
-looks for Polaris. The Sun's elevation gates nothing else.
+(`[scheduler.search] max_sun_elevation_deg`: no limit by default, and 12 degrees in the
+scenarios), only a probe burst every 10 minutes looks for Polaris. The Sun's elevation gates
+nothing else.
 
 The scenarios run on the virtual clock at the synthetic site of `tests.scheduler.scenario`. A
-burst there takes 3 frames of 2 s, and the SNR of Polaris follows the formula of the detection
-estimate: Polaris is detectable (an SNR of 10) while the sky at 1 ms in bin2 stays below 0.29 of
-saturation, and the fast analysis loses it (an SNR of 6) above 0.80. `pole_sky` gives the sky of
-the simulator near the pole, scaled to a daylight value:
+burst there takes 3 frames of 2 s, and the SNR of Polaris follows the centroid aperture's formula
+of the detection estimate, which the scenarios use so that a hazy sky can hide Polaris: Polaris is
+detectable (an SNR of 10) while the sky at 1 ms in bin2 stays below 0.29 of saturation, and the
+fast analysis loses it (an SNR of 6) above 0.80. `pole_sky` gives the sky of the simulator near
+the pole, scaled to a daylight value:
 
 - 0.21 (the simulator's daylight) keeps Polaris visible all day.
 - 0.85 (a hazy day) hides it: measure loses it at +9.6 degrees, and the search finds it again
@@ -28,11 +30,13 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
+from seeingmon.analysis import StarState
 from seeingmon.clock import NS_PER_S, ClockStatus, VirtualClock, iso_to_utc_ns
+from seeingmon.frames import Frame
 from seeingmon.scheduler import Command, Pause, QueueSweep, Resume, State
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.config import SearchConfig
@@ -657,4 +661,68 @@ class TestTheBursts:
         assert shorts == [pytest.approx(120.0, abs=0.1)]
         world.run_until(400)
         assert world.burst_starts()[2] == pytest.approx(CYCLE_S, abs=0.1)  # the next period
+        world.close()
+
+
+class TestTheStatisticOfABurst:
+    """A burst decides by the matched SNR of its frames, and it looks within its radius.
+
+    The fake analysis gives each star one SNR, so these tests replace the two SNRs of the stars
+    that `measure` returns: the centroid aperture's `snr` and the matched filter's `matched_snr`.
+    """
+
+    @staticmethod
+    def night_with_snrs(
+        monkeypatch: pytest.MonkeyPatch, snr: float, matched_snr: float
+    ) -> tuple[World, list[tuple[tuple[float, float] | None, float | None]]]:
+        """A night whose search frames report these SNRs, and the place and radius of each."""
+        world = World(start_utc_ns=NIGHT)
+        calls: list[tuple[tuple[float, float] | None, float | None]] = []
+        measure = world.fast.measure
+
+        def replaced(
+            frame: Frame, at: tuple[float, float] | None = None, radius_px: float | None = None
+        ) -> StarState:
+            calls.append((at, radius_px))
+            star = measure(frame, at, radius_px)
+            return replace(star, snr=snr, matched_snr=matched_snr) if star.found else star
+
+        monkeypatch.setattr(world.fast, "measure", replaced)
+        return world, calls
+
+    def test_a_high_matched_snr_detects_where_the_aperture_would_not(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The matched SNR of 30 detects, though the aperture's 4 is below `detect_snr`."""
+        world, _ = self.night_with_snrs(monkeypatch, snr=4.0, matched_snr=30.0)
+        world.run_until(60)
+        assert world.visible_times() == [pytest.approx(21.0, abs=0.1)]  # the second burst
+        world.close()
+
+    def test_a_low_matched_snr_detects_nothing_where_the_aperture_would(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The matched SNR of 4 detects nothing, though the aperture's 30 is above `detect_snr`."""
+        world, _ = self.night_with_snrs(monkeypatch, snr=30.0, matched_snr=4.0)
+        world.run_until(100)
+        assert len(world.burst_starts()) >= 6
+        assert world.events("polaris.visible") == []
+        status = world.scheduler.status()
+        assert status.search is not None
+        assert status.search.detections == 0
+        world.close()
+
+    def test_a_frame_of_a_burst_is_searched_within_the_radius_of_the_prediction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        world, calls = self.night_with_snrs(monkeypatch, snr=30.0, matched_snr=30.0)
+        world.run_until(8)  # the first burst
+        assert len(calls) == TEST_CONFIG.search.burst_frames
+        start = world.configures(purpose="search")[0].t_utc_ns
+        predicted = world.star_position(start)
+        for at, radius_px in calls:
+            assert radius_px == TEST_CONFIG.search.radius_px
+            assert at is not None
+            # 0.5 px: the star drifts 0.087 px a second, and the burst keeps its first prediction.
+            assert at == pytest.approx(predicted, abs=0.5)
         world.close()

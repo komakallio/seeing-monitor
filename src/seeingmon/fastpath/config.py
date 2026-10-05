@@ -46,8 +46,9 @@ class FastPathConfig(SectionModel):
     border_step: Annotated[int, Field(ge=1)] = 2
     edge_margin_px: NonNegative = 1.0
     saturation_fraction: Annotated[float, Field(gt=0, le=1)] = 0.98
-    min_star_snr: NonNegative = 6.0
+    min_star_snr: NonNegative = 6.0  # of the matched filter
     hot_pixel_ratio: Annotated[float, Field(gt=0, lt=1)] = 0.03
+    matched_fwhm_airy_widths: Annotated[float, Field(ge=0.25, le=5)] = 1.0
 
     # --- the seeing estimator ---
     outer_scale_m: Positive = 20.0

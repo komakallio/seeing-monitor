@@ -102,7 +102,7 @@ Storage: a row of a SQLite table. Retention: kept forever.
 | `centroid_gain_correction_factor` | `float` | none | The factor by which the estimator multiplied the variance to correct for the difference between the centroid in the finite aperture and the G-tilt. | Yes |
 | `motion_psd_dof` | `float` | none | The degrees of freedom of each bin of the full-resolution image-motion spectrum, which sets the relative scatter of a bin to the square root of 2 divided by this number. | Yes |
 | `background_fraction` | `float` | none | The mean local background as a share of the saturation level of the readout mode and gain, from 0 to 1, with the offset of the camera counted as background. | Yes |
-| `star_snr` | `float` | none | The median signal-to-noise ratio of the star in the frames with a usable centroid: the aperture flux over the root of its photon noise and of the aperture area times the variance of one pixel, measured on the ROI border. | Yes |
+| `star_snr` | `float` | none | The median signal-to-noise ratio of the star in the centroid aperture over the frames with a usable centroid, which tells the noise of the centroids: the aperture flux over the root of its photon noise and of the aperture area times the variance of one pixel, measured on the ROI border (in a bright sky, the SNR of the matched filter that decides whether the star is there is several times higher). | Yes |
 
 Codes for `flags`:
 

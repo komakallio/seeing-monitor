@@ -56,6 +56,7 @@ def test_the_benchmark_reports_microseconds_per_frame_for_both_cases(profile: Pr
         assert result.kernel_us == pytest.approx(50.0 / 30.0, rel=1e-6)
         assert result.stack_us == pytest.approx(50.0 / 30.0, rel=1e-6)
         assert result.push_us == pytest.approx(50.0 / 30.0, rel=1e-6)
+        assert result.search_us == pytest.approx(50.0 / 30.0, rel=1e-6)
         assert result.close_ms == pytest.approx(0.05)
         assert result.kernel_best_us <= result.kernel_us
 
@@ -75,6 +76,7 @@ def test_the_default_timer_gives_finite_positive_numbers(profile: Profile) -> No
             result.push_us,
             result.push_best_us,
             result.close_ms,
+            result.search_us,
         ):
             assert math.isfinite(value)
             assert value > 0.0
@@ -107,7 +109,7 @@ def test_the_report_names_every_case(profile: Profile) -> None:
     text = format_report(results)
     assert "bin1_128x128_uint16" in text
     assert "bin2_64x64_uint16" in text
-    assert text.count("us/frame") == 2
+    assert text.count("us/frame") == 4  # the kernel and the search of each case
     assert "close one window" in text
 
 

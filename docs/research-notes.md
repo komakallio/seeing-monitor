@@ -481,7 +481,7 @@ The newest recording folder holds two SharpCap 4.1 captures from the ASI294MM, e
 
 ## Polaris in a bright sky
 
-This section was added on October 5, 2026, for the visibility design ([visibility.md](visibility.md)). It estimates how bright a sky still shows Polaris in one fast frame, from the simulator's own photon budget, and it sets the provisional search limit. `seeingmon.drivers.sim.detection` computes the table, and `tests/drivers/sim/test_detection.py` reproduces it.
+This section was added on October 5, 2026, for the visibility design ([visibility.md](visibility.md)), and revised the same day, when the detection moved from the fast path's centroid aperture to a matched filter. It estimates how bright a sky still shows Polaris in one fast frame, from the simulator's own photon budget, and it sets the provisional search limit. `seeingmon.drivers.sim.detection` computes the table, and `tests/drivers/sim/test_detection.py` reproduces it.
 
 ### Sources
 
@@ -506,47 +506,54 @@ What the model leaves out:
 - The date and the haze. The measured points scatter by 1.5 mag (3.2 to 4.7 mag/arcsec²) for these reasons.
 - The color. The daylight sky is bluer than Polaris, and the camera band reaches 900 nm, so the camera sees the sky fainter, relative to Polaris, than V does. The model uses the V value unchanged, which errs toward a bright sky.
 - The site's height, snow on the ground, and clouds. In the simulator, clouds dim the stars and leave the sky as it is.
-- A measured sky between 0° and +10°. The crossing below falls on the straight line there.
+- A measured sky between 0° and +10°. The centroid aperture's crossing of 10 below (+8.9°) falls on the straight line there. The matched filter has no crossing.
 
 ### The SNR of Polaris in one fast frame
 
+Whether Polaris shows in a frame depends on the star, the sky, and the image: the star's electrons in the frame, the sky's variance in one pixel, and the number of pixels that the image spreads over. The detection that uses them best weights each pixel by the image of the star, a matched filter. An aperture also sums the noise of every empty pixel inside it, so what it loses is a property of the method, not of the sky.
+
 Inputs (D): the reference profile `asi294mm-gs250` in bin1, normal readout, gain 0, through the simulator's photon budget. A magnitude-0 star gives 4.6 × 10⁷ e⁻/s, so Polaris (V = 2.02) gives 7.16 × 10⁶ e⁻/s, and the simulator applies no extinction. A pixel covers 3.648 arcsec², the read noise is 2.65 e⁻, the gain is 3.5 e⁻/ADU, and the ADC clips at 14,332 e⁻ (the full well). The dark current is 0.18 e⁻/s at 19 °C. The dark sky is 20.5 mag/arcsec².
 
-- **Exposure.** At most 2 ms (`[scheduler.fast] exposure_us`), shortened so that the sky and the dark sit at no more than 0.3 of the full well (the design value of `scheduler.fast.target_background_fraction`), and never below 32 µs (the profile's shortest exposure).
-- **Aperture.** The fast path's soft-edged aperture: 16.0 px across (12 Airy FWHM of 1.333 px), 201 px² of area. It holds 97.0% of Polaris in the simulator's image at an `r0` of 10 cm at the zenith, seen 35° from the zenith, averaged over the star's position within a pixel.
-- **SNR.** `F / sqrt(F + A σ²)`, where `F` is the star's electrons in the aperture, `A` the area, and `σ²` the sky and dark electrons of a pixel plus the read noise squared plus `e_per_adu² / 12`.
+- **Exposure.** At most 2 ms (`[scheduler.fast] exposure_us`), shortened so that the sky and the dark sit at no more than 0.3 of the full well (`[scheduler.fast] target_background_fraction`), and never below 32 µs (the profile's shortest exposure).
+- **The image.** The simulator's image of Polaris at an `r0` of 10 cm at the zenith, seen 35° from the zenith. At 600 nm, D/r0 is about 0.45, so the image is the Airy pattern of the 50 mm aperture (1.33 px FWHM in bin1) with a weak halo. Averaged over the star's position within a pixel, its pixel shares `P` give `1 / ΣP² = 5.9 px²`: the area of an aperture with the same noise in a bright sky. The estimate builds this image from the simulator's Gaussian-mixture model of diffraction and seeing. The simulated frames use wave optics, whose image is about 6% larger by the same measure (6.2 px² at 1.2 ms), and the filter below reaches about 6.3 to 6.4 px² on it against 5.96 on the mixture, so a simulated frame gives 3 to 4% less matched SNR than the estimate in a sky that dominates the noise.
+- **The matched filter.** The filter of the fast path (`seeingmon.fastpath.matched`): a Gaussian of the Airy FWHM, integrated over each pixel, on a grid of positions a quarter of a pixel apart. Its SNR is `S / sqrt(v Σw² + F Σw³)`, where `S = Σw (I − b)`, `F = S / Σw²` is the star's flux, and `v` the variance of one pixel: the sky and dark electrons plus the read noise squared plus `e_per_adu² / 12`. Filters of 1.0 to 1.2 Airy FWHM give the highest SNR in daylight, within 0.4% of each other, and `[fastpath] matched_fwhm_airy_widths` is 1.0. The estimate averages over 64 positions of the star within a pixel, each 1/16 px from the grid.
+- **The centroid aperture.** The fast path's soft-edged aperture, whose centroid gives the seeing: 16.0 px across (12 Airy FWHM), 201 px² of area, holding 97.0% of the star. Its SNR is `F f / sqrt(F f + A v)` for the share `f` inside it and the area `A`. A window reports its median as `star_snr`, and step 5 of the visibility lane measures the bias of the seeing against it. It no longer decides the detection.
 - **Scintillation.** The simulator's rms at the pole is 0.46 at 1.2 ms and 0.42 at 2 ms, so the median frame carries 0.91 to 0.92 of the mean flux. A search counts a burst by the median SNR of its frames, so the median frame decides.
-- **Left out.** The noise of the background, which the kernel takes from the median of 496 pixels of the ROI border. It adds 64% to the pixel-noise term of the variance, which lowers the true SNR in a bright sky to 0.78 of the values here. The SNR that the search computes leaves it out too, unless step 3 adds it.
+- **Left out.** The noise of the background level, which the kernel takes from the trimmed mean of 496 pixels of the ROI border (its central 68%, whose variance is 1.10 times that of a plain mean). It adds 1.1% to the variance of the matched filter, and 45% to the pixel-noise term of the centroid aperture, which lowers the aperture's true SNR in a bright sky to about 0.83 of the values here.
 
-| Sun (°) | Sky (mag/arcsec²) | Exposure (ms) | Background (share of full well) | Polaris (e⁻) | SNR, mean frame | SNR, median frame | SNR, matched aperture, median frame |
-|---|---|---|---|---|---|---|---|
-| +10 to +60 | 4.20 | 1.23 | 0.30 | 8,780 | 9.1 | 8.3 | 35.1 |
-| +9 | 4.38 | 1.45 | 0.30 | 10,360 | 10.7 | 9.8 | 40.7 |
-| +8 | 4.56 | 1.71 | 0.30 | 12,230 | 12.6 | 11.6 | 47.1 |
-| +7 | 4.74 | 2.00 | 0.30 | 14,310 | 14.8 | 13.7 | 54.0 |
-| +6 | 4.92 | 2.00 | 0.25 | 14,310 | 16.1 | 14.9 | 56.8 |
-| +5 | 5.10 | 2.00 | 0.21 | 14,310 | 17.5 | 16.1 | 59.7 |
-| +4 | 5.28 | 2.00 | 0.18 | 14,310 | 18.9 | 17.5 | 62.4 |
-| +3 | 5.46 | 2.00 | 0.15 | 14,310 | 20.5 | 18.9 | 65.0 |
-| +2 | 5.64 | 2.00 | 0.13 | 14,310 | 22.2 | 20.5 | 67.5 |
-| +1 | 5.82 | 2.00 | 0.11 | 14,310 | 24.1 | 22.2 | 69.9 |
-| 0 | 6.00 | 2.00 | 0.09 | 14,310 | 26.0 | 24.0 | 72.1 |
-| −2 | 8.00 | 2.00 | 0.01 | 14,310 | 57.6 | 53.6 | 86.3 |
-| −4 | 10.00 | 2.00 | 0.00 | 14,310 | 93.1 | 88.0 | 89.4 |
-| −6 | 12.00 | 2.00 | 0.00 | 14,310 | 107.8 | 102.8 | 89.9 |
-| −9 | 15.00 | 2.00 | 0.00 | 14,310 | 111.3 | 106.3 | 90.0 |
-| −12 | 18.00 | 2.00 | 0.00 | 14,310 | 111.5 | 106.6 | 90.0 |
-| −18 | 20.50 | 2.00 | 0.00 | 14,310 | 111.5 | 106.6 | 90.0 |
+**The physical limit.** In the model's daylight sky, the median frame holds `F` = 7,980 e⁻ of Polaris at 1.23 ms, and a pixel of sky has a variance `v` of 4,310 e⁻². Counting only the sky, the best SNR is `F / sqrt(v · 5.9 px²)` = 50. The star's own photons fall on the same few pixels, and the best that any weighting of the pixels reaches, with the weights `P / (v + F P)`, is 41.5. The matched filter reaches 41.4. In a dark sky, the star's photons dominate: there the best weighting gives 110, and the matched filter gives 96, which is 0.84 times the root of the star's electrons.
 
-**The crossing.** The SNR of the median frame falls to 10 at a Sun elevation of **+8.9°**, where the sky is 4.40 mag/arcsec² and the exposure is 1.48 ms. The mean frame crosses at +9.4°. Above +10°, the median frame stays at 8.3, so in the model Polaris is not detectable frame by frame in daylight with the fast path's aperture.
+| Sun (°) | Sky (mag/arcsec²) | Exposure (ms) | Background (share of full well) | Polaris (e⁻) | SNR, matched filter, median frame | SNR, centroid aperture, median frame |
+|---|---|---|---|---|---|---|
+| +10 to +60 | 4.20 | 1.23 | 0.30 | 8,780 | 41.4 | 8.3 |
+| +9 | 4.38 | 1.45 | 0.30 | 10,360 | 47.8 | 9.8 |
+| +8 | 4.56 | 1.71 | 0.30 | 12,230 | 54.9 | 11.6 |
+| +7 | 4.74 | 2.00 | 0.30 | 14,310 | 62.7 | 13.7 |
+| +6 | 4.92 | 2.00 | 0.25 | 14,310 | 65.6 | 14.9 |
+| +5 | 5.10 | 2.00 | 0.21 | 14,310 | 68.5 | 16.1 |
+| +4 | 5.28 | 2.00 | 0.18 | 14,310 | 71.2 | 17.5 |
+| +3 | 5.46 | 2.00 | 0.15 | 14,310 | 73.8 | 18.9 |
+| +2 | 5.64 | 2.00 | 0.13 | 14,310 | 76.2 | 20.5 |
+| +1 | 5.82 | 2.00 | 0.11 | 14,310 | 78.5 | 22.2 |
+| 0 | 6.00 | 2.00 | 0.09 | 14,310 | 80.6 | 24.0 |
+| −2 | 8.00 | 2.00 | 0.01 | 14,310 | 93.1 | 53.6 |
+| −4 | 10.00 | 2.00 | 0.00 | 14,310 | 95.7 | 87.9 |
+| −6 | 12.00 | 2.00 | 0.00 | 14,310 | 96.2 | 102.8 |
+| −9 | 15.00 | 2.00 | 0.00 | 14,310 | 96.2 | 106.3 |
+| −12 | 18.00 | 2.00 | 0.00 | 14,310 | 96.2 | 106.6 |
+| −18 | 20.50 | 2.00 | 0.00 | 14,310 | 96.2 | 106.6 |
 
-**Sensitivity to the daylight sky.** At the brightest measured sky near the pole (3.2 mag/arcsec²) the median frame has an SNR of 3.2 at 0.49 ms, and at the darkest (4.7 mag/arcsec²) it has 13.2 at 1.94 ms. The threshold of 10 falls at 4.40 mag/arcsec², inside the measured range. Whether Polaris shows in full daylight therefore depends on the day, and phase 3 measures it.
+**No crossing.** The matched SNR of the median frame never falls below 41.4 between −18° and +90°, so it does not cross 10, and in the model Polaris stays detectable frame by frame in full daylight. It falls to 10 only in a sky of 2.53 mag/arcsec² (at 0.26 ms), which is 1.67 mag brighter than the model's daylight and 0.67 mag brighter than the brightest sky that Nickel and Calderwood measured near the pole's angle from the Sun. At that brightest sky (3.2 mag/arcsec², 0.49 ms) it gives 18.0, and at the darkest (4.7 mag/arcsec², 1.94 ms) 61.1.
 
-**A matched aperture (information only).** A soft-edged aperture with a radius of 1.0 px (3.4 px² of area, holding 62% of the flux) gives the highest SNR when the sky dominates the noise. In daylight it gives 35 for the median frame, 4.2 times the fast path's 8.3, and 15 at the brightest measured sky. In a dark sky it gives 0.84 times the fast path's SNR, because there the photons of the star dominate. A detection with such an aperture, or a matched filter, would keep Polaris detectable in full daylight in this model. The centroid for the seeing still needs the wide aperture.
+**What the centroid aperture loses.** The fast path's aperture holds 97% of the star but sums the variance of 201 pixels, 34 times the 5.9 px² of the image. In daylight it gives 8.3, a fifth of the matched filter's 41.4, and its SNR falls to 10 at +8.9°, where the sky is 4.40 mag/arcsec². That was the crossing of the first version of this estimate, and the search limit of +12° came from it: it was a limit of the method, not of the sky. In a dark sky, where the star's photons dominate, the aperture gives 106.6 against the filter's 96.2. The aperture still gives the centroids of the seeing windows, so a window in a bright sky has noisy centroids.
 
-**The search limit.** The crossing plus a margin of 3° gives a provisional `scheduler.search.max_sun_elevation_deg` of **12°**. The check bursts above the limit find Polaris on days when the sky is darker than the model.
+**The search limit.** Without a crossing, the default of `scheduler.search.max_sun_elevation_deg` is **90°**, which means no limit: the search runs at any height of the Sun, and the probe bursts run only when a person sets a lower limit. The real sky decides in phase 3, through the measured gate of the brightness frame and the detections themselves.
 
-**A simulated dusk.** The slow end-to-end test `TestPolarisAtDusk` (`tests/services/e2e/test_night.py`) runs `core` with the production analyzers on the simulator: the full reference sensor, the real Polaris, at most 2 ms, and the adaptive exposure, on the evening of April 20, 2026, from a Sun at +11.5°. The search finds Polaris at **+8.69°**, 0.19° below the crossing, because one burst runs in each cycle of 60 s and measure needs two detections in a row. The first window takes 1.48 ms, its background sits at 0.30 of saturation, and its star has a median SNR of 11.0, against 10.3 for the median frame of the estimate at that Sun. Its `r0` reads 4.8 cm against the injected 10 cm: the noise model of the centroid still leaves out the sky, and step 5 of the visibility lane measures that bias.
+**False detections.** A burst detects Polaris when the median of its 50 frames reaches an SNR of 10, and each frame reports the highest matched SNR within 20 px of the prediction (`[scheduler.search] radius_px`). On a frame without a star, that is the highest of 22,848 positions of noise: the brightest pixel of the filtered image lies within 20 px (1,257 pixels), and the grid of the filter spans the 3 × 3 pixels around it, so the reported position is one of 16 positions in one of at most 1,428 pixels. Each is a unit Gaussian under the sky noise, and the star's photon term only lowers the SNR, so the union bound `22,848 Q(t)` caps the chance that a frame reaches `t`. At 10, that is 1.7 × 10⁻¹⁹ per frame. A burst needs at least 25 of its 50 independent frames above 10, which caps its chance at `C(50, 25) p²⁵`, about 10⁻⁴⁵⁴, and measure needs two such bursts in a row. In 2,000 simulated starless frames of the daylight sky, the noise peak of a frame had a median of 3.43 and stayed below 5.7. It reached 4.5 in 1.7% and 5 in 0.3% of the frames, below the bound's 7.8% and 0.65%, so its tail is no heavier than a Gaussian one, and the median of every burst of 50 frames stayed below 3.7. A starless burst therefore sits far below 10, and the missing-star threshold of the kernel (`[fastpath] min_star_snr`, 6) also stays above the noise peaks. A hot pixel cannot imitate the star at the fast exposures: a pixel with a dark current of 1,000 e⁻/s collects 2 e⁻ in 2 ms. `tests/fastpath/test_matched.py` checks the tail and the bound.
+
+**The cost.** On the dev desktop (`python -m seeingmon.fastpath.benchmark`), the matched filter of the missing-star test adds about 10 µs to the kernel of a 128 × 128 frame (from 22 to 31 µs, about 40%), and a frame of a search burst takes 53 µs. The search filters only the square around its circle of 20 px, never the whole frame. The Pi 4 ran the kernel without the filter in 132 µs, 6.9 times the dev desktop's 19 µs ([performance.md](performance.md), "Results on a Raspberry Pi 4"). On the Pi, the filter therefore adds about 60 µs to each fast frame, which is 0.6% of a core in bin1 at 98 frames per second and about 1.7% in bin2 64 × 64 at 360 frames per second, and a burst frame costs about 0.35 ms, during the 4% of the time that bursts run. The `kernel` case of the performance harness times both, as `<mode>.kernel` and `<mode>.search`, so the next run on the Pi measures them.
+
+**A simulated dusk.** The slow end-to-end test `TestPolarisAtDusk` (`tests/services/e2e/test_night.py`) runs `core` with the production analyzers on the simulator: the full reference sensor, the real Polaris, at most 2 ms, and the adaptive exposure, on the evening of April 20, 2026, from a Sun at +11.5°, in the model's daylight sky. The first two bursts find Polaris, at **+11.4°**, with a median matched SNR of 38.7, 7% below the 41.4 of the estimate. Most of the difference has known causes: the wave-optics image of the simulated frames costs 3 to 4% (see "The image" above), the short exposure below about 1.2%, and the noise of the background level about 0.5%. The first window takes 1.20 ms against 1.23 ms (the loop counts the camera's offset as sky, which makes the exposure 2.4% short), its background sits at 0.300 of saturation, and its `star_snr` (the centroid aperture) is 8.2 against 8.3. Its `r0` reads 3.4 cm against the injected 10 cm: the centroids come from the wide aperture, and the noise model of the centroid leaves out the sky, so the seeing of a daylight window is biased until step 5 of the visibility lane corrects it. With the first version of this estimate, the same run found Polaris at +8.69°, read an `r0` of 4.8 cm there, and missed the daylight.
 
 ## Calculations
 

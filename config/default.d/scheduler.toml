@@ -58,18 +58,21 @@ brightness_resume_fraction = 0.6 # Provisional. Hysteresis of the clip before `a
 # The search mode of the fast stream, which looks for Polaris before it measures. A burst reads
 # burst_frames fast frames on the ROI where the pointing solution predicts Polaris, and it detects
 # Polaris when the median SNR of the star in its frames reaches detect_snr within radius_px of the
-# prediction. confirm_bursts detections in a row switch the stream to measure. All values are
-# provisional: phase 3 sets them from real skies.
+# prediction. The SNR of a frame is the one of a filter matched to the star's image ([fastpath]
+# matched_fwhm_airy_widths). confirm_bursts detections in a row switch the stream to measure. All
+# values are provisional: phase 3 sets them from real skies.
 [scheduler.search]
 burst_frames = 50              # Provisional. About 0.6 s of bin1 frames, 4% of the time.
 interval_s = 15.0              # Provisional. From the start of one burst to the next.
-detect_snr = 10.0              # Provisional. The median SNR of a detection, per frame.
+detect_snr = 10.0              # Provisional. The median matched SNR of a detection, per frame.
 radius_px = 20.0               # Provisional. The largest offset of a detection, in fast-mode px.
 confirm_bursts = 2             # Provisional. Detecting bursts in a row that start measure.
-# Provisional. The search runs while the Sun is below this. It is the detection estimate's +8.9
-# degrees (docs/research-notes.md, "Polaris in a bright sky") plus a margin of 3. Above it, one
-# probe burst every probe_interval_s looks. TOML has no null: 90 or more means no limit.
-max_sun_elevation_deg = 12.0
+# Provisional. The search runs while the Sun is below this. Above it, one probe burst every
+# probe_interval_s looks. TOML has no null: 90 or more means no limit. The default is no limit:
+# in the detection estimate (docs/research-notes.md, "Polaris in a bright sky"), the matched SNR
+# of Polaris in the median frame of a daylight sky is 41, and it falls to 10 only in a sky 1.7 mag
+# brighter than the model's daylight, so the SNR never crosses 10 between -18 and +90 degrees.
+max_sun_elevation_deg = 90.0
 probe_interval_s = 600.0       # Provisional. The time between probe bursts above the limit.
 
 # The response to clouds. The survey analysis reports the cloud fraction.

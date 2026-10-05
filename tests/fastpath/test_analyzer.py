@@ -84,26 +84,39 @@ def test_the_analyzer_satisfies_the_protocol(profile: Profile) -> None:
 
 
 class TestMeasure:
-    """`measure` serves the search bursts: the star and its SNR, and nothing else changes."""
+    """`measure` serves the search bursts: the star and its SNRs, and nothing else changes."""
 
     def test_measure_finds_the_star_with_its_snr_and_leaves_no_trace(
         self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
     ) -> None:
         stream_of(driver)
         frames = read(driver, 5)
-        stars = [analyzer.measure(frame, (232.0, 332.0)) for frame in frames]
+        stars = [analyzer.measure(frame, (232.0, 332.0), 20.0) for frame in frames]
         for star in stars:
             assert star.found
-            assert star.x_px == pytest.approx(232.0, abs=0.01)
-            assert star.y_px == pytest.approx(332.0, abs=0.01)
+            # 0.02 px: the matched filter places the star on a grid of a quarter pixel, refined.
+            assert star.x_px == pytest.approx(232.0, abs=0.02)
+            assert star.y_px == pytest.approx(332.0, abs=0.02)
             assert star.snr is not None
             assert star.snr > 50.0  # 30,000 e- at gain 120 on a dark sky
+            assert star.matched_snr is not None
+            # The star (1 px sigma) is wider than the filter of the Airy FWHM (0.57 px sigma).
+            assert star.matched_snr > 40.0
         assert analyzer.frames_measured == 5
         assert analyzer.frames_pushed == 0
         assert analyzer.drain_metrics() is None  # no metric row
         assert analyzer.flush() == ()  # no window
         assert analyzer.star == NO_STAR  # the state of `push` stays
         assert analyzer.live is None
+
+    def test_measure_looks_only_within_the_radius(
+        self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
+    ) -> None:
+        stream_of(driver)
+        (frame,) = read(driver, 1)
+        assert analyzer.measure(frame, (232.0 + 25.0, 332.0), 20.0) == NO_STAR
+        assert analyzer.measure(frame, (232.0 + 15.0, 332.0), 20.0).found
+        assert analyzer.measure(frame, (232.0 + 25.0, 332.0)).found  # no radius: the whole frame
 
     def test_measure_of_a_frame_without_a_star_is_no_star(self, profile: Profile) -> None:
         fake = FakeCameraDriver(VirtualClock(), frame_factory=flat)
@@ -130,6 +143,8 @@ class TestMeasure:
         star = analyzer.push(driver.read_frame(5.0)).star
         assert star.snr is not None
         assert star.snr > 50.0
+        assert star.matched_snr is not None
+        assert star.matched_snr > 40.0  # the star is wider than the filter, as above
 
 
 class TestBehaviorOfTheFake:

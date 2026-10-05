@@ -18,9 +18,11 @@ electron units and no noise model.
 **Tracking.** The kernel starts each frame at the centroid of the previous one. A lost star
 sends the next frame back to the brightest-patch search.
 
-**Search.** `measure` runs the kernel on one frame of a search burst, from the position that the
-scheduler predicts, and returns the star with its SNR. The frame reaches no window, no metric row,
-and no live value.
+**Search.** `measure` looks for the star in one frame of a search burst with the matched filter
+(`seeingmon.fastpath.kernel.search_frame`), within a radius of the position that the scheduler
+predicts, and returns the star with its matched SNR, which decides the detection, and the SNR of
+the centroid aperture at that position. The frame reaches no window, no metric row, and no live
+value. In `push`, the matched SNR around the centroid decides whether the star is missing.
 
 **Cost.** `push` does the kernel, a few list appends, and the window bookkeeping, and it finishes
 in well under a frame period. The work of a window (the fits, the spectrum, the corrections)
@@ -60,6 +62,7 @@ from seeingmon.fastpath.kernel import (
     KernelParams,
     Measurement,
     measure_frame,
+    search_frame,
 )
 from seeingmon.fastpath.live import LiveEstimator, LiveSeeing, LiveStream
 from seeingmon.fastpath.scintillation import scintillation_index
@@ -269,12 +272,18 @@ class FastPathAnalyzer:
         self.frames_pushed += 1
         return FastUpdate(star=self.star, windows=windows)
 
-    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
-        """Measure the star in one frame without a window, a metric row, or a live value.
+    def measure(
+        self,
+        frame: Frame,
+        at: tuple[float, float] | None = None,
+        radius_px: float | None = None,
+    ) -> StarState:
+        """Look for the star in one frame without a window, a metric row, or a live value.
 
-        The kernel starts at `at` (sensor pixels), and it falls back to the brightest patch of the
-        frame when it finds no star there, as in `push`. The stream of `push`, its guess, and its
-        star stay as they were.
+        The matched filter looks within `radius_px` of `at` (sensor pixels), or over the whole
+        frame without one of them. The stream of `push`, its guess, and its star stay as they
+        were. For a readout mode that the profile does not know, the kernel measures the frame as
+        `push` does, from `at`.
         """
         data = frame.data
         container_bits = 8 if data.dtype.itemsize == 1 else 16
@@ -288,7 +297,9 @@ class FastPathAnalyzer:
             while len(self._measure_streams) > _KEPT_STREAMS:
                 del self._measure_streams[next(iter(self._measure_streams))]
         roi = frame.roi
-        measurement = measure_frame(data, roi.x, roi.y, stream.kernel, stream.calibration, at)
+        measurement = search_frame(
+            data, roi.x, roi.y, stream.kernel, stream.calibration, at, radius_px
+        )
         self.frames_measured += 1
         if not measurement.found:
             return NO_STAR
@@ -396,6 +407,9 @@ class FastPathAnalyzer:
             diameter = max(config.aperture_min_px, widths)
         # A real star fills a pixel only when the pixels undersample it.
         spike = config.hot_pixel_ratio if airy_px == airy_px and airy_px >= 1.0 else None
+        matched_fwhm = None
+        if airy_px == airy_px:
+            matched_fwhm = min(max(config.matched_fwhm_airy_widths * airy_px, 0.3), 20.0)
         kernel = KernelParams(
             aperture_diameter_px=diameter,
             recenter_iterations=config.recenter_iterations,
@@ -404,6 +418,7 @@ class FastPathAnalyzer:
             edge_margin_px=config.edge_margin_px,
             min_snr=config.min_star_snr,
             spike_ratio=spike,
+            matched_fwhm_px=matched_fwhm,
         )
         calibration = FrameCalibration.for_container(
             adc_bits=sat_adc,
@@ -651,7 +666,9 @@ class FastPathAnalyzer:
         The background as a share of saturation divides the mean background by the profile's
         saturation level, the level that the scheduler's gate and exposure use. The offset of the
         camera counts as background, because the profile does not know it. The SNR is the median
-        over the frames with a usable centroid.
+        over the frames with a usable centroid, in the centroid aperture, because it tells the
+        noise of the centroids. The matched SNR, which decides whether the star is there, stays
+        out of the record.
         """
         out: dict[str, Any] = {}
         if window.n_frames == 0:
@@ -699,7 +716,7 @@ _ANALYSIS_FIELDS = (
 
 
 def _star_state(measurement: Measurement, roi: Roi, stream: _Stream) -> StarState:
-    """The state of a found star: its position, peak, distance to the ROI edge, and SNR."""
+    """The state of a found star: its position, peak, distance to the ROI edge, and both SNRs."""
     x, y = measurement.x, measurement.y
     return StarState(
         found=True,
@@ -708,6 +725,7 @@ def _star_state(measurement: Measurement, roi: Roi, stream: _Stream) -> StarStat
         peak_fraction=measurement.peak_dn / stream.calibration.full_scale_dn,
         edge_distance_px=roi.distance_to_edge(x, y),
         snr=_finite(measurement.snr),
+        matched_snr=_finite(measurement.matched_snr),
     )
 
 

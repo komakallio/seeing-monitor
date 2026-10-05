@@ -252,6 +252,25 @@ class TestDecorator:
         assert offered == []  # the video sees no burst frame
         assert inner.frames_pushed == 0
 
+    def test_a_frame_of_a_search_burst_reaches_the_analyzer_with_its_place_and_radius(
+        self,
+    ) -> None:
+        calls: list[tuple[tuple[float, float] | None, float | None]] = []
+
+        class Recording(FakeFastAnalyzer):
+            def measure(
+                self,
+                frame: Frame,
+                at: tuple[float, float] | None = None,
+                radius_px: float | None = None,
+            ) -> StarState:
+                calls.append((at, radius_px))
+                return super().measure(frame, at, radius_px)
+
+        wrapper = LiveFastAnalyzer(Recording(), make_stream())
+        assert wrapper.measure(fast_frame(0, data=star_frame()), (60.5, 61.5), 20.0).found
+        assert calls == [((60.5, 61.5), 20.0)]
+
     def test_other_attributes_of_the_analyzer_stay_reachable(self) -> None:
         inner = FakeFastAnalyzer()
         wrapper = LiveFastAnalyzer(inner, make_stream())

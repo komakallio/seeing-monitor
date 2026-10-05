@@ -7,11 +7,11 @@ bin1, 1.91 arcseconds per pixel, about 82 frames a second), and `RapidFocusHelpe
 frame.
 
 **The frame.** The kernel of the fast path (`seeingmon.fastpath.kernel.measure_frame`) gives the
-centroid, the second-moment widths, and the peak of each frame in about 20 to 100 microseconds on a
-development machine, with the aperture and the saturation level that the fast analyzer uses for the
-stream. The helper hands the frame to the video of Polaris with the star that it found, so the video
-and the star of each frame come from the code of the Now page. It never gives a frame to the fast
-analyzer, so no frame reaches a stored window.
+centroid, the second-moment widths, and the peak of each frame in about 30 to 100 microseconds on a
+development machine (about 0.2 ms on a Pi 4), with the aperture and the saturation level that the
+fast analyzer uses for the stream. The helper hands the frame to the video of Polaris with the star
+that it found, so the video and the star of each frame come from the code of the Now page. It never
+gives a frame to the fast analyzer, so no frame reaches a stored window.
 
 **The background of the width.** The kernel takes the background from the median of the border of
 the ROI. The pixels are whole counts, and the noise of the camera at gain 0 (0.76 counts) dithers

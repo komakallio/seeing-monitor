@@ -9,9 +9,12 @@ describes the world as functions of time, and the frame factory of the fake came
   in `safe` and enters `auto` at about -2.8 degrees. `pole_sky` is the simulator's sky near the
   pole, which never saturates it, for a day in `auto`. `light` adds a floodlight on top.
 - **Polaris.** The fake fast analysis takes the SNR of the star from the truth of the world: the
-  formula of the detection estimate in `docs/research-notes.md` ("Polaris in a bright sky") for a
-  2 ms bin1 frame, with the sky of the curve and the transparency of the clouds. Polaris is
-  detectable (an SNR of 10) while the sky at 1 ms in bin2 stays below about 0.29 of saturation.
+  centroid aperture's formula of the detection estimate in `docs/research-notes.md` ("Polaris in
+  a bright sky") for a 2 ms bin1 frame, with the sky of the curve and the transparency of the
+  clouds. Polaris is detectable (an SNR of 10) while the sky at 1 ms in bin2 stays below about
+  0.29 of saturation. The real fast path decides by the matched SNR, which is about five times
+  higher in a bright sky, and the scenarios keep the lower SNR so that a sky in `auto` can hide
+  Polaris.
 - **Clouds.** `cloud` sets the cloud fraction that the survey analysis reports and dims the star.
   A cloud of 0.8 leaves Polaris at an SNR of about 40 in a dark sky, so it stays detectable.
 - **The star.** Polaris sits near the middle of the bin1 sensor and drifts 0.087 pixels a second.
@@ -103,8 +106,11 @@ MAX_REAL_EXPOSURE_US = 100_000  # a longer fast exposure is the slow stream of t
 SMALL_BIN2 = (640, 480)  # the full bin2 frame of the fake camera, much smaller than the real one
 
 # The SNR of Polaris in a fast frame: the inputs of the detection estimate in
-# `docs/research-notes.md` ("Polaris in a bright sky"), for bin1 at gain 0. The fast path's
-# aperture holds 97% of the star on 201 square pixels.
+# `docs/research-notes.md` ("Polaris in a bright sky"), for bin1 at gain 0, through the fast path's
+# centroid aperture, which holds 97% of the star on 201 square pixels. It is the estimate's lower
+# column, not the matched SNR that the real fast path decides by: the matched SNR stays above 10
+# up to a sky that clips the brightness frame, and the scenarios need skies in `auto` that hide
+# Polaris. The fake analysis reports this SNR as its matched SNR.
 APERTURE_FRACTION = 0.97
 APERTURE_PX2 = 201.0
 POLARIS_E_PER_MS = PROFILE.star_electron_rate_e_per_s(POLARIS_MAG) * 1e-3
@@ -121,8 +127,9 @@ TEST_CONFIG = SchedulerConfig(
         missing_star_frames=10,
         target_background_fraction=0.0,  # the slow stream keeps its exposure (see above)
     ),
-    # A burst of 3 frames of 2 s takes 6 s, which fits the interval of 15 s.
-    search=SearchConfig(burst_frames=3),
+    # A burst of 3 frames of 2 s takes 6 s, which fits the interval of 15 s. The default has no
+    # Sun limit, and the scenarios set one, so that they cover the probe bursts above it.
+    search=SearchConfig(burst_frames=3, max_sun_elevation_deg=12.0),
     loop=LoopConfig(max_sleep_s=5.0),
 )
 
@@ -471,10 +478,10 @@ class World:
     def snr(self, t_utc_ns: int, exposure_ms: float = REAL_FAST_EXPOSURE_MS) -> float:
         """The SNR of Polaris in a bin1 frame at gain 0, from the truth of the world.
 
-        It is the formula of the detection estimate: the star's electrons in the aperture over
-        the root of their photon noise and of the aperture area times the variance of a pixel
-        (the sky, the read noise, and the rounding of the ADC). Clouds dim the star by their
-        transparency. A hidden star has an SNR of 0.
+        It is the centroid aperture's formula of the detection estimate: the star's electrons in
+        the aperture over the root of their photon noise and of the aperture area times the
+        variance of a pixel (the sky, the read noise, and the rounding of the ADC). Clouds dim the
+        star by their transparency. A hidden star has an SNR of 0.
         """
         if not self.star_visible(t_utc_ns):
             return 0.0

@@ -52,6 +52,7 @@ class FakeFastAnalyzer:
     its SNR reaches `min_snr`. The SNR comes from `snr_model` when a test gives one. Without it,
     the SNR is the contrast of the brightest pixel over the robust standard deviation of the frame
     (at least one count), so a frame without noise shows its star at the SNR of its contrast.
+    The fake has one SNR, and the star carries it as both `snr` and `matched_snr`.
     `min_snr` defaults to 0, which finds a star by its contrast alone. A window shorter than
     `partial_below` of `window_s` closes with the `partial` flag, and a window with more than 5%
     dropped frames carries `degraded`. `measure` finds the star the same way, without a window.
@@ -135,10 +136,15 @@ class FakeFastAnalyzer:
         self.frames_pushed += 1
         return FastUpdate(star=self.star, windows=closed)
 
-    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
+    def measure(
+        self,
+        frame: Frame,
+        at: tuple[float, float] | None = None,
+        radius_px: float | None = None,
+    ) -> StarState:
         """Find the brightest pixel as `push` does, without a window or a metric row.
 
-        The fake looks at the whole frame, so `at` changes nothing.
+        The fake looks at the whole frame, so `at` and `radius_px` change nothing.
         """
         self.frames_measured += 1
         return self._find(frame)[0]
@@ -178,6 +184,7 @@ class FakeFastAnalyzer:
             peak_fraction=peak / float(np.iinfo(data.dtype).max),
             edge_distance_px=frame.roi.distance_to_edge(x, y),
             snr=snr,
+            matched_snr=snr,
         )
         return star, x, y, peak, background
 

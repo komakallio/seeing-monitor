@@ -119,6 +119,7 @@ from seeingmon.services.web.netaddr import (
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from seeingmon.scheduler.config import SearchConfig
     from seeingmon.survey.config import SurveyConfig
 
 ModelT = TypeVar("ModelT", bound="BaseModel")
@@ -892,16 +893,21 @@ def _real_notes(options: DevOptions) -> list[str]:
     return notes
 
 
-def _search_note() -> str:
+def _search_note(search: SearchConfig | None = None) -> str:
     """What the Sun does to the search for Polaris, with the default settings of the search."""
     from seeingmon.scheduler.activity import duration_text
     from seeingmon.scheduler.config import SearchConfig
 
-    search = SearchConfig()
-    return (
+    search = SearchConfig() if search is None else search
+    note = (
         "It searches for Polaris whenever the sky is not too bright for the camera, and it "
         f"records seeing windows once {search.confirm_bursts} search bursts in a row find the "
-        f"star. While the Sun is above {search.max_sun_elevation_deg:g} degrees, one probe burst "
+        "star."
+    )
+    if not search.limited:
+        return f"{note} The height of the Sun does not limit the search."
+    return (
+        f"{note} While the Sun is above {search.max_sun_elevation_deg:g} degrees, one probe burst "
         f"every {duration_text(search.probe_interval_s)} looks instead."
     )
 
