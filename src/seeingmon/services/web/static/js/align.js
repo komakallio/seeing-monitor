@@ -2,7 +2,7 @@
 
 /*
  * The Align page: the live view of the star field with the sky drawn over it, the cards that say
- * what the numbers mean, a focus bar, a histogram of the pixel values, and a warning for
+ * what the numbers mean, the focus value with its curve, a histogram of the pixel values, and a warning for
  * saturation. The page starts and stops the alignment (the commands need the token).
  *
  * The sky overlay has three parts that the person can switch off: the pole and the orbit of
