@@ -46,7 +46,7 @@ def test_the_configuration_layers_load_the_survey_section(tmp_path: Path) -> Non
     section = config.section("survey", SurveyConfig)
     assert section.catalog_path == ""
     assert section.solvers == ("astrometry.net", "astap")
-    assert section.pointing.validity_s == 43_200.0
+    assert section.pointing.validity_s == 0.0  # no age limit
     assert section.fit.match_radius_px == (4.0, 2.0, 1.2)
     assert section.transparency.fallback_hours == 6.0
 
@@ -117,3 +117,21 @@ def test_a_misspelled_key_is_an_error_that_names_it(tmp_path: Path) -> None:
     config = load_config(local_file=local, env={})
     with pytest.raises(ConfigError, match="threshold_sigmaa"):
         config.section("survey", SurveyConfig)
+
+
+@pytest.mark.parametrize("value", ["-1.0", "nan", "inf"])
+def test_a_validity_limit_below_zero_or_not_finite_fails_at_load(
+    tmp_path: Path, value: str
+) -> None:
+    """0 means no age limit, and a bad value must not reach the tracker of every frame."""
+    local = tmp_path / "config.toml"
+    local.write_text(f"[survey.pointing]\nvalidity_s = {value}\n", encoding="utf-8")
+    config = load_config(local_file=local, env={})
+    with pytest.raises(ConfigError, match="validity_s"):
+        config.section("survey", SurveyConfig)
+    default = load_config(local_file=tmp_path / "missing.toml", env={})
+    assert default.section("survey", SurveyConfig).pointing.validity_s == 0.0
+    limited = load_config(
+        local_file=tmp_path / "missing.toml", env={"SEEINGMON_SURVEY__POINTING__VALIDITY_S": "3600"}
+    )
+    assert limited.section("survey", SurveyConfig).pointing.validity_s == 3600.0

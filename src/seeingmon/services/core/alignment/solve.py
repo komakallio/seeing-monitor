@@ -44,7 +44,7 @@ from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import Frame
 from seeingmon.survey.detect import Detections, StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
-from seeingmon.survey.pipeline import FrameAnalysis
+from seeingmon.survey.pipeline import FrameAnalysis, frame_time_invalid
 from seeingmon.survey.pointing import PointingSolution, ReferenceSolution
 from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.wcs_fit import CameraAttitude
@@ -343,15 +343,22 @@ def adopt(
     *,
     min_stars: int,
     max_rms_px: float,
+    time_invalid: bool = False,
 ) -> QuickSolution:
     """Judge the pointing solution of an analysis, update the tracker, and return the solution.
 
-    A solution with fewer matched stars than `min_stars` or a residual above `max_rms_px` pixels
-    leaves the tracker alone, and its note says so.
+    Only a solve that succeeds can replace the solution of the tracker: a frame that was not
+    solved leaves it alone. So does a solution with fewer matched stars than `min_stars` or a
+    residual above `max_rms_px` pixels, and its note says so. A frame that the clock did not time
+    (`time_invalid`) leaves the tracker alone too, because its solution may lie in the future, and
+    the tracker would then refuse every later one. The live view still shows that frame's solution.
     """
     pointing = analysis.pointing
     if pointing is None:
         return analysis.solution
+    if time_invalid:
+        note = "the clock is not synchronized, so the solution does not move the tracker"
+        return replace(analysis.solution, note=note)
     if is_trusted(pointing, min_stars=min_stars, max_rms_px=max_rms_px):
         tracker.update(pointing)
         return analysis.solution
@@ -402,7 +409,11 @@ class QuickSolver:
             clock=self._clock,
         )
         solution = adopt(
-            analysis, self._tracker, min_stars=self._min_stars, max_rms_px=self._max_rms_px
+            analysis,
+            self._tracker,
+            min_stars=self._min_stars,
+            max_rms_px=self._max_rms_px,
+            time_invalid=frame_time_invalid(frame),
         )
         if analysis.pointing is None:
             self.failures += 1

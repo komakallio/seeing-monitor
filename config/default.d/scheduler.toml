@@ -16,8 +16,7 @@ high_speed = false          # The camera's high-speed mode: faster frames, fewer
 roi_arcmin = 4.1            # The profile turns this angle into pixels.
 roi_edge_margin_px = 16.0   # A star nearer than this to the ROI edge ends the window.
 edge_cooldown_s = 5.0       # The shortest stream time between two edge recenters.
-missing_star_frames = 450   # Frames in a row without a star that trigger a survey solve.
-resolve_interval_s = 60.0   # The shortest time between two solves that a missing star triggers.
+missing_star_frames = 450   # Frames in a row without the star that end the period early. No solve.
 
 # The survey step. The readout mode is the profile's survey mode.
 [scheduler.survey]

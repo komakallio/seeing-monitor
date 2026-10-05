@@ -72,7 +72,10 @@ confident_stars = 30
 
 # The tracker and the pointing record.
 [survey.pointing]
-validity_s = 43200.0        # 12 hours.
+# The age in seconds at which a solution stops predicting Polaris. 0 sets no limit, because a rigid
+# mount keeps its Earth-fixed attitude, and only a solve that succeeds replaces a solution. Set a
+# positive value for a mount that is not rigid. Provisional.
+validity_s = 0.0
 few_stars = 12
 moved_arcmin = 5.0
 moved_roll_deg = 0.5

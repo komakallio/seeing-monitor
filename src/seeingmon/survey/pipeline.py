@@ -9,7 +9,8 @@
    solver adapters run in the configured order, each on the star list, and the first solution
    starts the fit. The adapter's solution lives in the catalog frame, so the pipeline moves
    it to the apparent frame with the catalog stars of the field (`attitude_from_solver_solution`),
-   and then fits against the apparent places (`fit_attitude`).
+   and then fits against the apparent places (`fit_attitude`). See "Solver hints" for where the
+   solvers search.
 3. **Match.** With the final attitude, every detection is matched to the catalog, which gives
    the star list, the cloud fraction, and the matched stars for photometry.
 4. **Sky quality.** `seeingmon.survey.quality` measures the stars (photometry and the zero
@@ -36,11 +37,22 @@ The 1 ms frame of each survey step shows Polaris alone by design, so no solver c
 the tracker could try. A long frame (see `SkyConfig.min_exposure_s`) always gets one, so clouds
 that hide the stars show as `unsolved`, and so does any frame with enough stars that fails.
 
+**Solver hints.** With a solution, the solvers search `[survey.solve] hint_radius_deg` (2 degrees)
+around the field center that the solution predicts. A solution has no age limit, so after the
+mount moves more than that, the prediction points the solvers at the wrong place. When every
+solver fails near the prediction, the pipeline therefore runs them again around the pole
+(`pole_hint_radius_deg`, 15 degrees), where the camera looks. The trail model of the old solution
+misshapes every star after such a move, so the retry detects the stars again without it. Without a
+solution, the first search is the one around the pole. The retry needs a solver that ran and found
+nothing (an error that keeps a solver from running, such as a missing program, would come back
+with any hint), and a frame with at least `[survey.fit] confident_stars` stars, so that a thin
+frame under clouds does not pay for a second detection.
+
 **Solve attempts.** Each run of a plate solver leaves a `SolveAttempt` in `FrameAnalysis.attempts`:
-the solver, the number of stars that went to it, its time, and the outcome with the reason for a
-failure. The pipeline does not log them, because it often runs in a worker process that has no log
-setup, where an info line would vanish. `SurveyPipelineAnalyzer` logs one line for each attempt in
-the process of `core`.
+the solver, the hint that it searched (`prediction`, `pole`, or `none`), the number of stars that
+went to it, its time, and the outcome with the reason for a failure. The pipeline does not log
+them, because it often runs in a worker process that has no log setup, where an info line would
+vanish. `SurveyPipelineAnalyzer` logs one line for each attempt in the process of `core`.
 
 **Cloud fraction.** The expected stars are the catalog stars in the field that the profile's
 photometric prior says a clear sky would show at a signal-to-noise ratio of
@@ -132,6 +144,11 @@ NO_SOLUTION = "no_solution"  # the solver ran and found no field
 REJECTED = "rejected"  # the solver found a field that the catalog or the fit could not confirm
 ERROR = "error"  # the solver could not run: a missing program, a crash, or a timeout
 
+# The hints of `SolveAttempt`: where the solver searched.
+HINT_PREDICTION = "prediction"  # around the field center that the latest solution predicts
+HINT_POLE = "pole"  # around the celestial pole
+HINT_NONE = "none"  # the whole sky
+
 
 @dataclass(frozen=True, slots=True)
 class SolveAttempt:
@@ -139,8 +156,10 @@ class SolveAttempt:
 
     `stars` is the number of stars that went to the solver and `elapsed_s` its time. `matched` is
     the number of stars that the fit paired with the catalog, for a solved attempt. `reason` says
-    why any other attempt failed, in the words of the matching note of the analysis. An attempt
-    holds no coordinate. It crosses the boundary of the worker process as a dictionary.
+    why any other attempt failed, in the words of the matching note of the analysis. `hint` says
+    where the solver searched (`HINT_PREDICTION`, `HINT_POLE`, or `HINT_NONE`), and the pipeline
+    always sets it. An attempt holds no coordinate. It crosses the boundary of the worker process
+    as a dictionary.
     """
 
     solver: str
@@ -149,11 +168,14 @@ class SolveAttempt:
     elapsed_s: float
     matched: int = 0
     reason: str = ""
+    hint: str = ""
 
     def describe(self) -> str:
-        """The attempt as one structured text, such as `solver=astap result=solved stars=48 ...`."""
-        text = f"solver={self.solver} result={self.outcome} stars={self.stars}"
-        text += f" time_s={self.elapsed_s:.2f}"
+        """The attempt as one structured text, such as `solver=astap hint=pole result=solved`."""
+        text = f"solver={self.solver}"
+        if self.hint:
+            text += f" hint={self.hint}"
+        text += f" result={self.outcome} stars={self.stars} time_s={self.elapsed_s:.2f}"
         if self.outcome == SOLVED:
             return f"{text} matched={self.matched}"
         return f"{text} reason={json.dumps(' '.join(self.reason.split()))}"
@@ -166,6 +188,7 @@ class SolveAttempt:
             "elapsed_s": self.elapsed_s,
             "matched": self.matched,
             "reason": self.reason,
+            "hint": self.hint,
         }
 
     @classmethod
@@ -177,6 +200,7 @@ class SolveAttempt:
             elapsed_s=float(data["elapsed_s"]),
             matched=int(data.get("matched", 0)),
             reason=str(data.get("reason", "")),
+            hint=str(data.get("hint", "")),
         )
 
 
@@ -416,22 +440,39 @@ class SurveyPipeline:
         saturation = self._profile.saturation(frame.mode, frame.gain)
         native = native_counts(frame)
         hot = self._hot_mask_for(frame)
-        try:
+
+        def detect(model: TrailModel | None) -> Detections:
             raw = detect_stars(
                 native,
                 saturation_dn=saturation.native_dn,
                 options=self._detect_options,
                 e_per_adu=self._profile.e_per_adu(frame.mode, frame.gain),
                 hot_pixels=hot,
-                trail=trail,
+                trail=model,
             )
+            return raw.shifted(frame.roi.x, frame.roi.y)
+
+        try:
+            detections = detect(trail)
         except DetectionError as error:
             return self._failure(frame, reference, f"detection failed: {error}", timings)
-        detections = raw.shifted(frame.roi.x, frame.roi.y)
         lap("detect")
 
         epoch = apparent.epoch_from_utc_ns(frame.t_utc_ns, self._config.dut1_s)
         solved = self._solve(frame, detections, tracker, epoch, mode_shape, index, notes, attempts)
+        if solved is None and self._pole_retry_due(detections, attempts):
+            # The mount may have moved further than the hint around the prediction reaches. The
+            # trail model of the old solution then misshapes every star, so detect them again
+            # without it, as in the first frame after a start.
+            notes.append("no solver found the field near the prediction, so they try the pole")
+            if trail is not None:
+                try:
+                    detections = detect(None)
+                except DetectionError as error:
+                    notes.append(f"the detection without a trail model failed: {error}")
+            solved = self._solve(
+                frame, detections, tracker, epoch, mode_shape, index, notes, attempts, pole=True
+            )
         lap("solve")
         fit = None if solved is None else solved.fit
 
@@ -628,12 +669,18 @@ class SurveyPipeline:
         index: int,
         notes: list[str],
         attempts: list[SolveAttempt],
+        *,
+        pole: bool = False,
     ) -> _Solved | None:
+        """The tracker first, then each solver, until one solves. Returns `None` if none does.
+
+        With `pole` set, the tracker stays out, and the solvers search around the pole.
+        """
         reliable = detections.reliable()
         x, y = detections.x[reliable], detections.y[reliable]
         error = 0.5 * (detections.x_error_px[reliable] + detections.y_error_px[reliable])
         t = frame.t_utc_ns
-        if tracker.valid_at(t) and x.size:
+        if not pole and tracker.valid_at(t) and x.size:
             started = self._clock.monotonic_ns()
             tracked = tracker.track(
                 self._catalog,
@@ -654,10 +701,10 @@ class SurveyPipeline:
         if len(stars) < MIN_SOLVER_STARS:
             notes.append(f"only {len(stars)} stars for a solver")
             return None
-        request = self._solve_request(frame, stars, tracker, epoch)
+        request, hint = self._solve_request(frame, stars, tracker, epoch, pole=pole)
         for solver in self._solvers:
             outcome = self._run_solver(
-                solver, request, frame, detections, x, y, error, epoch, shape, notes, attempts
+                solver, request, hint, frame, detections, x, y, error, epoch, shape, notes, attempts
             )
             if outcome is not None:
                 every = self._config.solve.cross_check_every
@@ -667,6 +714,20 @@ class SurveyPipeline:
                     )
                 return outcome
         return None
+
+    def _pole_retry_due(self, detections: Detections, attempts: list[SolveAttempt]) -> bool:
+        """Whether the solvers search around the pole after they failed near the prediction.
+
+        A solver must have run near the prediction and found nothing: an error that keeps a
+        solver from running, such as a missing program, comes back with any hint. The frame needs
+        `[survey.fit] confident_stars` stars or more. A thinner frame, as under clouds, would
+        rarely confirm a field in a search that wide, and the retry costs a second detection.
+        """
+        return (
+            self._config.solve.pole_hint_radius_deg > 0.0
+            and len(detections.star_list()) >= self._config.fit.confident_stars
+            and any(a.hint == HINT_PREDICTION and a.outcome != ERROR for a in attempts)
+        )
 
     def _acceptable(self, fit: FitResult, n_reliable: int) -> bool:
         """Whether a fit is a solution: enough pairs, a small residual, and not by chance."""
@@ -684,22 +745,32 @@ class SurveyPipeline:
         stars: StarList,
         tracker: PointingTracker,
         epoch: apparent.ObservationEpoch,
-    ) -> SolveRequest:
+        *,
+        pole: bool = False,
+    ) -> tuple[SolveRequest, str]:
+        """The request for the solvers, and its hint (`HINT_PREDICTION`, `HINT_POLE`, `HINT_NONE`).
+
+        The hint surrounds the field center that the tracker predicts, or the pole without a
+        prediction. With `pole` set, it surrounds the pole in any case.
+        """
         cfg = self._config.solve
         readout = self._profile.mode(frame.mode)
         scale = self._profile.plate_scale_arcsec_per_px(readout)
         hint_ra = hint_dec = radius = None
-        predicted = tracker.attitude_at(frame.t_utc_ns)
+        hint = HINT_NONE
+        predicted = None if pole else tracker.attitude_at(frame.t_utc_ns)
         if predicted is not None:
             ra, dec = predicted.center_icrs(epoch)
             hint_ra, hint_dec, radius = ra, dec, cfg.hint_radius_deg
+            hint = HINT_PREDICTION
         elif cfg.pole_hint_radius_deg > 0.0:
             # No pointing is known, but the camera looks at Polaris, so the field is near the
             # pole. A hint makes ASTAP solve in 0.2 s, where a blind search takes seconds and
             # sometimes fails.
             hint_ra, hint_dec, radius = 0.0, 90.0, cfg.pole_hint_radius_deg
+            hint = HINT_POLE
         order = np.argsort(-stars.flux, kind="stable")[: cfg.max_stars]
-        return SolveRequest(
+        request = SolveRequest(
             stars=StarList(x=stars.x[order], y=stars.y[order], flux=stars.flux[order]),
             width_px=readout.width_px,
             height_px=readout.height_px,
@@ -710,6 +781,7 @@ class SurveyPipeline:
             radius_deg=radius,
             timeout_s=cfg.timeout_s,
         )
+        return request, hint
 
     def _attitude_from_result(
         self,
@@ -749,6 +821,7 @@ class SurveyPipeline:
         self,
         solver: PlateSolver,
         request: SolveRequest,
+        hint: str,
         frame: Frame,
         detections: Detections,
         x: FloatArray,
@@ -765,7 +838,9 @@ class SurveyPipeline:
         def failed(outcome: str, reason: str, elapsed_s: float) -> None:
             """Record a failed attempt. The reason is also the note of the analysis."""
             notes.append(reason)
-            attempts.append(SolveAttempt(solver.name, outcome, stars, elapsed_s, reason=reason))
+            attempts.append(
+                SolveAttempt(solver.name, outcome, stars, elapsed_s, reason=reason, hint=hint)
+            )
 
         try:
             result = solver.solve(request)
@@ -797,7 +872,9 @@ class SurveyPipeline:
             failed(REJECTED, f"the fit failed after {solver.name} solved", result.elapsed_s)
             return None
         attempts.append(
-            SolveAttempt(solver.name, SOLVED, stars, result.elapsed_s, matched=fit.n_matched)
+            SolveAttempt(
+                solver.name, SOLVED, stars, result.elapsed_s, matched=fit.n_matched, hint=hint
+            )
         )
         return _Solved(fit, rows, vectors, solver.name, result.elapsed_s)
 

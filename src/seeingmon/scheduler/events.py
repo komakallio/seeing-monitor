@@ -11,6 +11,9 @@ task in place of `<kind>`: `scheduler.sweep_result`, `scheduler.burst_result`,
 kind that you register a handler for. A handler may write events of its own through
 `CommissionContext.emit_event`, and the list names those too (`scheduler.dark_phase` and
 `scheduler.flat_phase`). A task that `CancelTask` removes from the queue gets a result event too.
+
+A kind that describes the sky or the camera rather than the scheduler has its own prefix, such as
+`pointing.moved`, which the scheduler writes when a survey result shows that the camera moved.
 """
 
 from __future__ import annotations
@@ -32,7 +35,8 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.recovery_step": "The scheduler performed a step of the recovery ladder, or failed.",
     "scheduler.degraded": "The camera failed repeatedly or is gone, so the status is `degraded`.",
     "scheduler.recovered": "Good frames in a row cleared a fault and the `degraded` status.",
-    "scheduler.solve_requested": "A survey step runs to solve the pointing again. See `reason`.",
+    "scheduler.solve_requested": "No pointing solution exists, so a survey step runs to solve.",
+    "pointing.moved": "A solve found the camera off its reference. It comes once for each move.",
     "scheduler.roi_recentered": "The star neared the ROI edge, so the window ended early.",
     "scheduler.roi_at_limit": "The star is near the ROI edge, and the ROI cannot move closer.",
     "scheduler.cloud": "The cloud response started or ended. The detail holds `active`.",

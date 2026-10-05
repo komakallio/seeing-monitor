@@ -140,23 +140,30 @@ class TestHealth:
 class TestTheRecordFollowsTheScheduler:
     """A change of state or of the camera brings a `health` record at once, not a minute later."""
 
-    def test_a_failed_read_brings_a_record_that_says_why_within_seconds(self, rig: CoreRig) -> None:
-        rig.run_for(30.0)
-        before = rig.records("health")
-        assert before[-1].components["camera"] == "ok"  # type: ignore[attr-defined]
-        failed_at = rig.clock.utc_ns()
-        rig.camera.fail_reads(*[CameraTimeoutError("no frame") for _ in range(3)])
-        rig.run_for(10.0)
-        records = rig.records("health")
-        assert len(records) > len(before)
-        record = records[-1]
-        assert isinstance(record, HealthRecord)
-        assert record.components["camera"] == "degraded"
-        assert (record.quality or {})["components"] == (
-            "camera: no frame arrived; the camera may be disconnected"
-        )
-        # The next scheduled record comes 60 seconds after the last one, so this one is early.
-        assert (record.t_utc_ns - failed_at) / 1e9 < 20.0
+    def test_a_failed_read_brings_a_record_that_says_why_within_seconds(
+        self, tmp_path: Path
+    ) -> None:
+        # The camera shows the star, so the fast stream reads frames for its whole period of 20 s.
+        rig = build_rig(tmp_path, polaris=True)
+        try:
+            rig.run_for(5.0)
+            before = rig.records("health")
+            assert before[-1].components["camera"] == "ok"  # type: ignore[attr-defined]
+            failed_at = rig.clock.utc_ns()
+            rig.camera.fail_reads(*[CameraTimeoutError("no frame") for _ in range(3)])
+            rig.run_for(10.0)
+            records = rig.records("health")
+            assert len(records) > len(before)
+            record = records[-1]
+            assert isinstance(record, HealthRecord)
+            assert record.components["camera"] == "degraded"
+            assert (record.quality or {})["components"] == (
+                "camera: no frame arrived; the camera may be disconnected"
+            )
+            # The next scheduled record comes 60 seconds after the last one, so this one is early.
+            assert (record.t_utc_ns - failed_at) / 1e9 < 20.0
+        finally:
+            rig.app.stop()
 
     def test_a_change_of_state_brings_a_record_at_once(self, rig: CoreRig) -> None:
         from seeingmon.scheduler import Pause

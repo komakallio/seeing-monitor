@@ -26,6 +26,7 @@ from tests.survey.pointfx import (
 )
 
 NOW = T0 + 10 * MINUTE_NS
+DAY_NS = 24 * HOUR_NS
 
 
 @pytest.fixture
@@ -272,7 +273,7 @@ def seed(
     store: Store,
     *,
     now: int = NOW,
-    max_age_s: float = 12 * 3600.0,
+    max_age_s: float | None = 12 * 3600.0,
     min_matched: int = 8,
     max_rms_px: float = 1.5,
 ) -> pt.PointingSolution:
@@ -344,6 +345,57 @@ def test_a_record_from_the_future_does_not_seed_unless_the_clock_is_within_a_min
 def test_a_seed_from_an_empty_store_says_so(store: Store) -> None:
     with pytest.raises(ref.NoSolutionError, match="the store holds no pointing record"):
         seed(store)
+
+
+def test_without_a_limit_a_seed_that_is_30_days_old_starts_the_tracker(store: Store) -> None:
+    """A rigid mount keeps its Earth-fixed attitude, so an old solution predicts as a new one."""
+    good = made(T0, n_matched=640)
+    write(store, good)
+    now = T0 + 30 * DAY_NS
+    solution = seed(store, now=now, max_age_s=None)
+    assert solution.t_utc_ns == T0
+    rebuilt, original = solution.polaris_pixel(now), good.solution.polaris_pixel(now)
+    assert rebuilt is not None
+    assert original is not None
+    # The rebuild agrees with the fit to 1e-9 (see `ROTATION_TOLERANCE`), far below a pixel.
+    assert rebuilt == pytest.approx(original, abs=1e-6)
+    with pytest.raises(ref.NoSolutionError) as raised:  # a positive limit still refuses it
+        seed(store, now=now)
+    assert str(raised.value) == (
+        "the newest pointing record is 30.0 days old, and the limit is 720 minutes"
+    )
+
+
+def test_the_seed_reads_past_more_unsolved_records_than_one_page_holds(store: Store) -> None:
+    """A month of cloudy nights writes about 18,000 unsolved records after the last good one."""
+    count = ref.SCAN_LIMIT + 10
+    step_ns = 30 * DAY_NS // (count + 1)
+    unsolved = made(T0, solved=False).record
+    store.write(made(T0).record)
+    store.write_many(
+        unsolved.model_copy(update={"t_utc_ns": T0 + (n + 1) * step_ns}) for n in range(count)
+    )
+    now = T0 + 30 * DAY_NS
+    assert seed(store, now=now, max_age_s=None).t_utc_ns == T0
+    assert find(store, now=now, max_age_s=None) == T0
+
+
+def test_a_page_that_cuts_the_records_of_one_time_short_reads_the_rest(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stations that share a store can share a time, and a page can end among them."""
+    monkeypatch.setattr(ref, "SCAN_LIMIT", 3)
+    t1 = T0 + MINUTE_NS
+    write(
+        store,
+        made(T0, station_id="station-a"),  # older, so the search must not stop here
+        made(t1, station_id="station-b"),  # the newest good record, last of its time in a page
+        *(made(t1, solved=False, station_id=f"station-{name}") for name in "cde"),
+        made(T0 + 2 * MINUTE_NS, solved=False, station_id="station-a"),
+    )
+    assert find(store) == t1
+    write(store, *(made(T0 + (3 + n) * MINUTE_NS, solved=False) for n in range(7)))
+    assert find(store) == t1  # three more pages of unsolved records in front of it
 
 
 # --- The text -----------------------------------------------------------------------------------

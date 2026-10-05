@@ -17,14 +17,17 @@ from seeingmon.records.survey import (
     SurveyFrameRecord,
     star_rows,
 )
-from seeingmon.solvers.base import PlateSolver, SolverError, SolveResult
+from seeingmon.solvers.base import PlateSolver, SolveRequest, SolverError, SolveResult
 from seeingmon.survey import pointing as pt
 from seeingmon.survey.catalog import CapCatalog
-from seeingmon.survey.config import SkyConfig, SolveConfig, SurveyConfig
+from seeingmon.survey.config import FitConfig, SkyConfig, SolveConfig, SurveyConfig
 from seeingmon.survey.detect import StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import (
     ERROR,
+    HINT_NONE,
+    HINT_POLE,
+    HINT_PREDICTION,
     NO_SOLUTION,
     REJECTED,
     SOLVED,
@@ -185,10 +188,11 @@ def test_the_pole_hint_can_be_turned_off(
     frame, truth = scene
     solver = truth_solver(truth, catalog)
     config = SurveyConfig(solve=SolveConfig(pole_hint_radius_deg=0.0))
-    pipeline_for(profile, catalog, [solver], config=config).analyze(frame)
+    analysis = pipeline_for(profile, catalog, [solver], config=config).analyze(frame)
     request = solver.requests[0]
     assert request.center_ra_deg is None
     assert request.radius_deg is None
+    assert [attempt.hint for attempt in analysis.attempts] == [HINT_NONE]  # a blind search
 
 
 def test_the_star_list_holds_the_bright_matches_and_the_unmatched_detections(
@@ -302,6 +306,152 @@ def test_the_solver_is_the_fallback_when_the_tracker_loses_the_field(
     # The solver got a center hint from the tracker's prediction.
     assert solver.requests[0].center_ra_deg is not None
     assert solver.requests[0].radius_deg == 2.0
+    assert [attempt.hint for attempt in second.attempts] == [HINT_PREDICTION]
+
+
+class HintedSolver:
+    """A `PlateSolver` that finds its field only when the hint of the request reaches it."""
+
+    def __init__(self, result: SolveResult, name: str = "astap") -> None:
+        assert result.center_ra_deg is not None
+        assert result.center_dec_deg is not None
+        self._result = result
+        self._center = (result.center_ra_deg, result.center_dec_deg)
+        self._name = name
+        self.requests: list[SolveRequest] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def solve(self, request: SolveRequest) -> SolveResult:
+        self.requests.append(request)
+        if (
+            request.center_ra_deg is not None
+            and request.center_dec_deg is not None
+            and request.radius_deg is not None
+        ):
+            ra1, dec1 = np.radians([request.center_ra_deg, request.center_dec_deg])
+            ra2, dec2 = np.radians(self._center)
+            cosine = np.sin(dec1) * np.sin(dec2) + np.cos(dec1) * np.cos(dec2) * np.cos(ra1 - ra2)
+            if np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))) > request.radius_deg:
+                return SolveResult(solved=False, solver=self._name, elapsed_s=0.1)
+        return self._result
+
+
+def moved_scene(
+    profile: Profile, catalog: CapCatalog, truth: synth.SynthTruth
+) -> tuple[Frame, synth.SynthTruth]:
+    """A frame 10 minutes later, after the mount moved 3 degrees through the pole.
+
+    The boresight goes from 0.9 degrees on one side of the pole to 2.1 degrees on the other, so
+    the hint of 2 degrees around the prediction misses the field, and the pole hint covers it.
+    """
+    return synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=synth.make_attitude(2.1, 220.0, 25.0),
+        t_utc_ns=truth.t_utc_ns + 600 * NS,
+        exposure_s=30.0,
+        seed=9,
+    )
+
+
+def test_a_mount_that_moved_beyond_the_hint_solves_again_with_the_pole_hint(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    first = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert first.solution is not None
+    frame2, truth2 = moved_scene(profile, catalog, truth)
+    solver = HintedSolver(synth.truth_solve_result(truth2, catalog))
+    second = pipeline_for(profile, catalog, [solver]).analyze(frame2, previous=first.solution)
+    assert second.solved
+    near, pole = solver.requests
+    assert near.radius_deg == 2.0
+    assert near.center_dec_deg is not None
+    assert near.center_dec_deg < 89.5  # around the prediction, 0.9 degrees from the pole
+    assert (pole.center_ra_deg, pole.center_dec_deg, pole.radius_deg) == (0.0, 90.0, 15.0)
+    # The trail model of the old solution misshaped the stars, so the retry detected them again
+    # without it: a frame with no model gives 264 reliable stars, against none with it.
+    assert pole.stars is not near.stars
+    assert second.detections is not None
+    assert int(second.detections.reliable().sum()) > 200
+    assert [(a.hint, a.outcome) for a in second.attempts] == [
+        (HINT_PREDICTION, NO_SOLUTION),
+        (HINT_POLE, SOLVED),
+    ]
+    assert "hint=pole result=solved" in second.attempts[-1].describe()
+    assert any("so they try the pole" in note for note in second.notes)
+    assert pointing_error_px(second, truth2)[1] < 0.05  # pixels, as for any other solve
+    assert pointing_of(second).solver == "astap"
+
+
+def test_the_pole_retry_needs_a_prediction_a_pole_hint_a_solver_that_ran_and_enough_stars(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, truth = scene
+    first = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert first.solution is not None
+    frame2, truth2 = moved_scene(profile, catalog, truth)
+    result = synth.truth_solve_result(truth2, catalog)
+    # With the pole hint turned off, the solvers search only near the prediction.
+    off = SurveyConfig(solve=SolveConfig(pole_hint_radius_deg=0.0))
+    solver = HintedSolver(result)
+    unsolved = pipeline_for(profile, catalog, [solver], config=off).analyze(
+        frame2, previous=first.solution
+    )
+    assert not unsolved.solved
+    assert len(solver.requests) == 1
+    # A frame with fewer stars than `confident_stars` (here every frame) gets no second search.
+    thin = SurveyConfig(fit=FitConfig(confident_stars=10_000))
+    solver = HintedSolver(result)
+    pipeline_for(profile, catalog, [solver], config=thin).analyze(frame2, previous=first.solution)
+    assert len(solver.requests) == 1
+    # A solver that cannot run fails with any hint, so the pipeline does not try again.
+    broken = FakeSolver(error=SolverError("the index folder holds no index files"))
+    pipeline_for(profile, catalog, [broken]).analyze(frame2, previous=first.solution)
+    assert len(broken.requests) == 1
+    # Without a solution, the first search is the one around the pole, and none follows.
+    blind = FakeSolver()
+    nothing = pipeline_for(profile, catalog, [blind]).analyze(frame2)
+    assert [(r.center_dec_deg, r.radius_deg) for r in blind.requests] == [(90.0, 15.0)]
+    assert [a.hint for a in nothing.attempts] == [HINT_POLE]
+
+
+def test_a_failed_solve_returns_no_solution_and_the_next_frame_tracks_from_the_old_one(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> None:
+    """The pipeline holds no state: only a solve that succeeds gives the caller a new solution."""
+    frame, truth = scene
+    first = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert first.solution is not None
+    cloudy, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        t_utc_ns=truth.t_utc_ns + 180 * NS,
+        exposure_s=30.0,
+        transmission=0.0,
+        seed=10,
+    )
+    failed = pipeline_for(profile, catalog, [FakeSolver()]).analyze(cloudy, previous=first.solution)
+    assert not failed.solved
+    assert failed.solution is None
+    assert pointing_of(failed).flags == ["unsolved"]
+    # A day later the old solution still predicts the field, so the tracker solves the frame.
+    later, truth2 = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        t_utc_ns=truth.t_utc_ns + 86_400 * NS,
+        exposure_s=30.0,
+        seed=11,
+    )
+    tracked = pipeline_for(profile, catalog, [FakeSolver()]).analyze(later, previous=first.solution)
+    assert tracked.solved
+    assert pointing_of(tracked).solver == "tracker"
+    assert pointing_error_px(tracked, truth2)[1] < 0.05  # pixels, as after 3 minutes
 
 
 def test_the_second_solver_runs_when_the_first_fails(
@@ -500,6 +650,10 @@ class TestTheSolveAttempt:
     def test_a_solved_attempt_reads_as_structured_text_with_the_matched_stars(self) -> None:
         attempt = SolveAttempt("astap", SOLVED, stars=48, elapsed_s=0.8123, matched=87)
         assert attempt.describe() == "solver=astap result=solved stars=48 time_s=0.81 matched=87"
+        with_hint = replace(attempt, hint=HINT_POLE)
+        assert with_hint.describe() == (
+            "solver=astap hint=pole result=solved stars=48 time_s=0.81 matched=87"
+        )
 
     def test_a_failed_attempt_gives_its_reason_as_one_quoted_line(self) -> None:
         attempt = SolveAttempt(
@@ -516,7 +670,9 @@ class TestTheSolveAttempt:
         assert "\n" not in attempt.describe()
 
     def test_an_attempt_survives_the_trip_through_the_worker_as_a_dictionary(self) -> None:
-        attempt = SolveAttempt("astap", NO_SOLUTION, 12, 1.5, reason="astap found no solution")
+        attempt = SolveAttempt(
+            "astap", NO_SOLUTION, 12, 1.5, reason="astap found no solution", hint=HINT_PREDICTION
+        )
         assert SolveAttempt.from_dict(attempt.to_dict()) == attempt
         assert set(attempt.to_dict()) == {
             "solver",
@@ -525,6 +681,7 @@ class TestTheSolveAttempt:
             "elapsed_s",
             "matched",
             "reason",
+            "hint",
         }
 
 

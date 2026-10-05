@@ -60,7 +60,7 @@ from seeingmon.services.core.survey_worker import (
     make_worker_pool,
     raise_oom_score,
 )
-from seeingmon.survey.pipeline import PipelineSpec, build_pipeline
+from seeingmon.survey.pipeline import PipelineSpec, build_pipeline, frame_time_invalid
 from seeingmon.survey.pointing import PointingSolution, ReferenceSolution
 from seeingmon.survey.tracker import PointingTracker
 
@@ -267,7 +267,11 @@ class ProcessQuickSolver:
             _log.exception("the quick solve of frame %d failed", frame.seq)
             return self._unsolved(frame, started, f"analysis error: {type(error).__name__}")
         solution = adopt(
-            analysis, self._tracker, min_stars=self._min_stars, max_rms_px=self._max_rms_px
+            analysis,
+            self._tracker,
+            min_stars=self._min_stars,
+            max_rms_px=self._max_rms_px,
+            time_invalid=frame_time_invalid(frame),
         )
         if analysis.pointing is None:
             self.failures += 1

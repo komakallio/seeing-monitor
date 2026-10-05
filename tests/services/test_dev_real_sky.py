@@ -248,7 +248,7 @@ class TestThePlanOfTheRealSky:
         assert survey.pointing.reference_file == str(reference)
         assert survey.pointing.moved_arcmin == 2.5
         assert survey.pointing.few_stars == 12  # the rest of the table keeps its default
-        assert survey.pointing.validity_s == 43_200.0
+        assert survey.pointing.validity_s == 0.0  # no age limit
         assert survey.catalog_path == tables["survey"]["catalog_path"]  # and so does the rest
         variable = "SEEINGMON_SURVEY__POINTING__REFERENCE_FILE"
         assert json.loads(child(plan, "core").env[variable]) == str(reference)

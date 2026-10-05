@@ -29,11 +29,18 @@ The function checks its own result: the model that it builds must put Polaris wh
 to 0.01 pixel. A record that fails the check came from another profile, and the function refuses it.
 
 **Seeding the tracker.** `seed_solution` gives `core` the solution that starts a `PointingTracker`
-after a restart. It takes the newest record that `newest_solution_record` accepts within the
-validity limit of the tracker (a solution older than that predicts nothing), at least the stars and
-at most the residual that the analyzer asks of a solution that updates the tracker, and no record
-from the future, which a clock that stepped back would give. The first solve then starts from where
-Polaris was, and not from a blind search around the pole.
+after a restart. It takes the newest record that `newest_solution_record` accepts, of any age by
+default, because a rigid mount keeps its Earth-fixed attitude. With a validity limit for the
+tracker (`[survey.pointing] validity_s`), the record must lie within it, because an older solution
+predicts nothing. The record needs at least the stars and at most the residual that the analyzer
+asks of a solution that updates the tracker, and it must not come from the future, which a clock
+that stepped back would give. The first solve then starts from where Polaris was, and not from a
+blind search around the pole.
+
+**Reading the store.** The search reads the `pointing` records newest first, `SCAN_LIMIT` at a
+time, until it finds one that fits. Every long survey frame writes a record, solved or not, so a
+month of cloudy nights puts about 18,000 unsolved records in front of the last good one, and the
+search pages through them.
 """
 
 from __future__ import annotations
@@ -53,8 +60,11 @@ from seeingmon.survey.pointing import PointingSolution, ReferenceSolution
 from seeingmon.survey.wcs_fit import CameraAttitude, pixel_center
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from seeingmon.profile import Profile
-    from seeingmon.store.db import StoreReader
+    from seeingmon.sinks.base import StoredRow
+    from seeingmon.store.db import StoreReader, StoreSnapshot
 
 REFERENCE_FILENAME = "pointing-reference.json"
 # The ID of a reference goes into every `pointing` record and from there to the sinks.
@@ -65,8 +75,9 @@ ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 POLARIS_TOLERANCE_PX = 0.01
 ROLL_TOLERANCE_DEG = 0.01
 ROTATION_TOLERANCE = 1e-6
-# The most records that one search reads, newest first: about ten days of a survey cadence.
+# The records that one page of a search reads, newest first: about ten days of a survey cadence.
 SCAN_LIMIT = 10_000
+_TIED_LIMIT = 1_000_000  # records of one time: one for each station that shares the store
 _END_OF_TIME_NS = 2**63 - 1  # the largest integer that SQLite stores
 # A record this far ahead of the clock means that the clock stepped back since the record.
 FUTURE_TOLERANCE_NS = 60 * NS_PER_S
@@ -139,44 +150,44 @@ def newest_solution_record(
     start_ns = (
         0 if max_age_ns is None or max_age_ns >= now_utc_ns else now_utc_ns - round(max_age_ns)
     )
-    with reader.snapshot() as snapshot:
-        rows = snapshot.range("pointing", start_ns, _END_OF_TIME_NS, SCAN_LIMIT, descending=True)
-        latest = None if rows else snapshot.latest("pointing")
     if max_age_s is None:
         window, limit = "the store", ""
     else:
         limit = _minutes(max_age_s / 60.0)
         window = f"the last {limit}"
-    if not rows:
+    read = untimed = thin = unmeasured = 0
+    most = 0
+    with reader.snapshot() as snapshot:
+        for row in _newest_first(snapshot, start_ns):
+            read += 1
+            values = row.values
+            if (
+                values["solver"] == "none"
+                or values["attitude"] is None
+                or values["plate_scale_arcsec_px"] is None
+            ):
+                continue
+            if "time_invalid" in values["flags"]:
+                untimed += 1
+                continue
+            matched = int(values["n_matched"])
+            most = max(most, matched)
+            if matched < min_matched:
+                thin += 1
+                continue
+            rms = values["solve_rms_arcsec"]
+            if rms is None or not math.isfinite(float(rms)):
+                unmeasured += 1
+                continue
+            return PointingRecord.from_row(values)
+        latest = None if read else snapshot.latest("pointing")
+    if not read:
         if latest is None:
             raise NoSolutionError("the store holds no pointing record")
         age = format_age((now_utc_ns - int(latest.values["t_utc_ns"])) / NS_PER_S)
         raise NoSolutionError(
             f"the newest pointing record is {age} old, and the limit is {limit} (see --max-age-min)"
         )
-    untimed = thin = unmeasured = 0
-    most = 0
-    for row in rows:
-        values = row.values
-        if (
-            values["solver"] == "none"
-            or values["attitude"] is None
-            or values["plate_scale_arcsec_px"] is None
-        ):
-            continue
-        if "time_invalid" in values["flags"]:
-            untimed += 1
-            continue
-        matched = int(values["n_matched"])
-        most = max(most, matched)
-        if matched < min_matched:
-            thin += 1
-            continue
-        rms = values["solve_rms_arcsec"]
-        if rms is None or not math.isfinite(float(rms)):
-            unmeasured += 1
-            continue
-        return PointingRecord.from_row(values)
     # Name the check that the best record got furthest through.
     if unmeasured:
         raise NoSolutionError(f"no pointing solution of {window} has a finite residual")
@@ -188,6 +199,25 @@ def newest_solution_record(
     if untimed:
         raise NoSolutionError(f"every pointing solution of {window} has the time_invalid flag")
     raise NoSolutionError(f"no pointing record of {window} has a solution")
+
+
+def _newest_first(snapshot: StoreSnapshot, start_ns: int) -> Iterator[StoredRow]:
+    """The `pointing` records from `start_ns` on, newest first, read `SCAN_LIMIT` at a time.
+
+    A full page can cut the records of its last time short, when stations share the store. The
+    search then reads the rest of that time, and the next page starts before it.
+    """
+    end_ns = _END_OF_TIME_NS
+    while True:
+        rows = snapshot.range("pointing", start_ns, end_ns, SCAN_LIMIT, descending=True)
+        yield from rows
+        if len(rows) < SCAN_LIMIT:
+            return
+        last_ns = int(rows[-1].values["t_utc_ns"])
+        seen = {row.row_id for row in rows}
+        tied = snapshot.range("pointing", last_ns, last_ns + 1, _TIED_LIMIT, descending=True)
+        yield from (row for row in tied if row.row_id not in seen)
+        end_ns = last_ns
 
 
 # --- Rebuilding the solution -------------------------------------------------------------------
@@ -275,7 +305,7 @@ def seed_solution(
     profile: Profile,
     *,
     now_utc_ns: int,
-    max_age_s: float,
+    max_age_s: float | None,
     min_matched: int,
     max_rms_px: float,
     dut1_s: float = 0.0,
@@ -283,8 +313,9 @@ def seed_solution(
     """The newest stored solution that can start a pointing tracker.
 
     The record is the newest that `newest_solution_record` accepts: solved, timed, finite, with at
-    least `min_matched` stars, and not older than `max_age_s` before `now_utc_ns`. Its residual
-    must not exceed `max_rms_px`, and its time must not lie more than a minute ahead of the clock.
+    least `min_matched` stars, and not older than `max_age_s` before `now_utc_ns` (`None` sets no
+    limit, so a solution of any age serves). Its residual must not exceed `max_rms_px`, and its time
+    must not lie more than a minute ahead of the clock.
     Raises `PointingReferenceError` with a one-line reason when no record fits, or when the
     newest one cannot be rebuilt (see `solution_from_record`).
     """

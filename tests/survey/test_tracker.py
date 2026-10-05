@@ -1,4 +1,4 @@
-"""The pointing tracker: Polaris predictions, validity, mode conversion, and predict-match-fit."""
+"""The pointing tracker: Polaris predictions, the age limit, modes, and predict-match-fit."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from seeingmon.survey.wcs_fit import CameraAttitude, FitOptions
 from tests.survey import synth
 
 T0 = synth.NIGHT_UTC_NS
+DAY_NS = 86_400 * NS_PER_S
 PROFILE = synth.reference_profile()
 SHAPE = (2822, 4144)
 
@@ -101,7 +102,7 @@ def test_the_prediction_converts_to_another_readout_mode() -> None:
         tracker.polaris_position(T0, "nonexistent")
 
 
-def test_the_solution_expires_after_the_validity_limit() -> None:
+def test_a_positive_validity_limit_still_expires_the_solution() -> None:
     truth, _ = truth_at(T0)
     tracker = PointingTracker(PROFILE, validity_s=3600.0)
     tracker.update(solution_from_truth(truth))
@@ -109,9 +110,38 @@ def test_the_solution_expires_after_the_validity_limit() -> None:
     assert tracker.polaris_position(T0 + 3601 * NS_PER_S, "bin2") is None
     assert tracker.polaris_position(T0 - 3601 * NS_PER_S, "bin2") is None
     assert tracker.polaris_position(T0 - 3000 * NS_PER_S, "bin2") is not None
+    assert not tracker.valid_at(T0 + 3601 * NS_PER_S)
+    assert tracker.attitude_at(T0 + 3601 * NS_PER_S) is None
     assert tracker.age_s(T0 + 120 * NS_PER_S) == 120.0
-    with pytest.raises(ValueError, match="validity"):
-        PointingTracker(PROFILE, validity_s=0.0)
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="validity"):
+            PointingTracker(PROFILE, validity_s=bad)
+
+
+def test_a_solution_that_is_30_days_old_still_predicts_polaris() -> None:
+    """The default has no age limit: a rigid mount keeps its Earth-fixed attitude."""
+    truth0, catalog = truth_at(T0)
+    tracker = PointingTracker(PROFILE)  # the default, validity_s 0, is no limit
+    assert tracker.update(solution_from_truth(truth0))
+    polaris_row = int(np.argmin(catalog.g_mag))
+    for days in (30, -30):
+        t = T0 + days * DAY_NS
+        truth, _ = truth_at(t, catalog=catalog)
+        (where,) = np.flatnonzero(truth.rows == polaris_row)
+        predicted = tracker.polaris_position(t, "bin2")
+        assert predicted is not None
+        # The catalog moves Polaris with the same constants, so the error stays at the first-order
+        # proper motion over a month: 2e-3 pixel, as for an age of hours.
+        assert predicted == pytest.approx((float(truth.x[where]), float(truth.y[where])), abs=2e-3)
+        assert tracker.valid_at(t)
+        assert tracker.attitude_at(t) is not None
+        assert tracker.trail_model(t, 30.0) is not None
+    assert tracker.age_s(T0 + 30 * DAY_NS) == 30 * 86_400.0
+    zero = PointingTracker(PROFILE, validity_s=0.0)  # 0 written out is the same as the default
+    zero.update(solution_from_truth(truth0))
+    assert zero.polaris_position(T0 + 30 * DAY_NS, "bin2") == tracker.polaris_position(
+        T0 + 30 * DAY_NS, "bin2"
+    )
 
 
 def test_an_older_solution_does_not_replace_a_newer_one() -> None:

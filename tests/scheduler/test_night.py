@@ -8,7 +8,7 @@ script disturbs the night, one thing at a time:
 |---|---|
 | 3.0 | A sweep is queued. It runs at the next cycle boundary. |
 | 4.0 | The operator pauses the scheduler, and resumes it 5 minutes later. |
-| 5.0 | The star disappears for a minute, and the scheduler solves again. |
+| 5.0 | The star disappears for a minute, which ends a fast period early. No solve follows. |
 | 7.0 | Clouds cover 80% of the field for 30 minutes. |
 | 8.0 | The operator starts the alignment helper, and stops it 10 minutes later. |
 | 9.0 | The camera times out for 10 seconds. |
@@ -277,12 +277,30 @@ class TestTheDisturbances:
             w for w in world.windows() if PAUSE_AT + 5 < world.seconds(w.t_utc_ns) < RESUME_AT - 5
         ]
 
-    def test_the_missing_star_triggered_one_solve_off_schedule(self, night: Night) -> None:
+    def test_the_missing_star_ended_a_period_early_and_requested_no_solve(
+        self, night: Night
+    ) -> None:
         world = night.world
-        solves = world.events("scheduler.solve_requested")
-        assert len(solves) == 1
-        assert (solves[0].detail or {})["reason"] == "star_missing"
-        assert HIDE_FROM < world.seconds(solves[0].t_utc_ns) < HIDE_FROM + 40
+        assert world.events("scheduler.solve_requested") == []
+        # The tenth frame without the star, 20 seconds after it went, ends the period early.
+        ends = [
+            world.seconds(w.t_utc_ns) + w.duration_s
+            for w in world.windows()
+            if HIDE_FROM < world.seconds(w.t_utc_ns) + w.duration_s < HIDE_TO
+        ]
+        assert ends == [pytest.approx(HIDE_FROM + 20.0, abs=2.5)]
+        # The survey step of the cycle follows at once, and the cycle keeps its slot.
+        shorts = [
+            world.seconds(c.t_utc_ns)
+            for c in world.configures(mode="bin2", video=False)
+            if c.config.roi is None and c.config.exposure_us == 1000
+        ]
+        (early,) = [t for t in shorts if HIDE_FROM < t < HIDE_TO]
+        assert early == pytest.approx(ends[0], abs=2.5)
+        fast = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
+        before = max(t for t in fast if t < HIDE_FROM)
+        after = min(t for t in fast if t > HIDE_FROM)
+        assert after - before == pytest.approx(180.0, abs=0.05)
 
     def test_the_cloud_shortened_the_windows_and_the_cadence_and_set_the_flag(
         self, night: Night
@@ -383,7 +401,7 @@ class TestTheRecords:
     def test_every_event_kind_is_declared(self, night: Night) -> None:
         kinds = {e.kind for e in night.world.events()}
         assert kinds <= set(EVENT_KINDS)
-        assert len(kinds) >= 11  # the night touched the main ones
+        assert len(kinds) >= 10  # the night touched the main ones
 
     def test_event_keys_are_unique(self, night: Night) -> None:
         keys = [e.record_key for e in night.world.events()]
@@ -401,5 +419,5 @@ class TestTheRecords:
         assert counters.tasks_run == 1
         assert counters.faults == 2
         assert counters.roi_recenters == 1
-        assert counters.solves_requested == 1
+        assert counters.solves_requested == 0  # the night starts with a solution
         assert counters.dropped == 0

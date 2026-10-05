@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import BrokenExecutor, Executor, Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("sep", reason="the survey path needs the survey extra")
 
 from seeingmon.clock import SystemClock, VirtualClock
-from seeingmon.frames import Frame
+from seeingmon.frames import Frame, FrameFlag
 from seeingmon.profile import Profile
 from seeingmon.services.core.alignment.solve import QuickSolver
 from seeingmon.services.core.alignment.worker import (
@@ -193,6 +193,25 @@ class TestTheRoundTrip:
             solver.close()
         assert solution.solved
         assert solution.note == "the fit is too weak to move the tracker"
+        assert tracker.solution is before
+
+    def test_a_frame_without_a_valid_time_leaves_the_tracker_alone_and_says_so(
+        self, scene: Scene
+    ) -> None:
+        pipeline = pipeline_without_solver(scene)
+        tracker = copy_of(seeded_tracker(scene), scene)
+        before = tracker.solution
+        solver = ProcessQuickSolver(
+            tracker, VirtualClock(synth.NIGHT_UTC_NS), executor_factory=thread_factory(pipeline)
+        )
+        try:
+            solution = solver.solve(replace(scene.second, flags=FrameFlag.TIME_INVALID))
+        finally:
+            solver.close()
+        assert solution.solved
+        assert solution.note == (
+            "the clock is not synchronized, so the solution does not move the tracker"
+        )
         assert tracker.solution is before
 
     def test_a_frame_without_stars_is_an_unsolved_result_and_the_worker_stays(

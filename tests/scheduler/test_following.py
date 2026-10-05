@@ -1,5 +1,8 @@
 """Following Polaris: ROI placement, a star that goes missing, a drift to the edge, no solution.
 
+A star that goes missing ends the fast period early, and it starts no solve: the pointing solution
+has no age limit, and a hidden star says nothing about the mount.
+
 The star sits near the middle of the bin1 sensor and drifts 0.087 pixels a second. The pointing
 provider predicts that drift, so the ROI that the scheduler places before each fast period holds
 the star at its center. A jolt moves the true star and leaves the prediction behind.
@@ -58,59 +61,72 @@ def edge_world() -> World:
 
 
 class TestMissingStar:
-    def test_a_missing_star_triggers_a_survey_solve_off_schedule(
+    """A missing star ends the fast period early and starts no solve: the mount did not move."""
+
+    def test_a_missing_star_ends_the_period_early_and_requests_no_solve(
         self, missing_world: World
     ) -> None:
-        (event,) = missing_world.events("scheduler.solve_requested")
-        assert (event.detail or {})["reason"] == "star_missing"
-        # The frames from 1100 on lack the star. The tenth of them arrives at 1118.
-        assert missing_world.seconds(event.t_utc_ns) == pytest.approx(1118.0, abs=2.5)
-        # The survey step starts at once, well before the regular one at 1200.
-        steps = [t for t, e in survey_starts(missing_world) if 1100 < t < 1190 and e == 1000]
-        assert len(steps) == 1
-        assert steps[0] == pytest.approx(missing_world.seconds(event.t_utc_ns), abs=2.5)
+        assert missing_world.events("scheduler.solve_requested") == []
+        counters = missing_world.scheduler.status().counters
+        assert counters.solves_requested == 0
+        assert counters.early_window_ends == 1
 
     def test_the_period_ends_early_and_its_window_is_flushed(self, missing_world: World) -> None:
-        counters = missing_world.scheduler.status().counters
-        assert counters.early_window_ends == 1
-        assert counters.solves_requested == 1
         affected = [
             w for w in missing_world.windows() if 1075 < missing_world.seconds(w.t_utc_ns) < 1130
         ]
         assert affected
-        # No window of that period reaches past the moment that the stream stopped.
+        # The frames from 1100 on lack the star, and the tenth of them arrives at 1118. No window
+        # of that period reaches past the moment that the stream stopped.
         assert max(missing_world.seconds(w.t_utc_ns) + w.duration_s for w in affected) < 1135
 
-    def test_the_fast_stream_restarts_right_after_the_survey_step(
+    def test_the_survey_step_of_the_cycle_follows_and_the_next_period_keeps_its_slot(
         self, missing_world: World
     ) -> None:
-        long_frame = next(
-            t for t, e in survey_starts(missing_world) if e == 30_000_000 and 1100 < t < 1190
-        )
-        following = next(t for t in fast_starts(missing_world) if t > long_frame)
-        assert following == pytest.approx(long_frame + 30.2, abs=1.5)  # no wait for a slot
+        # The survey step that ends every period follows at once, within a frame of 2 seconds.
+        (short,) = [t for t, e in survey_starts(missing_world) if 1100 < t < 1190 and e == 1000]
+        assert short == pytest.approx(1118.0, abs=2.5)
+        # The next fast period waits for its slot at 1260, and not only for the long frame.
+        following = next(t for t in fast_starts(missing_world) if t > 1100)
+        assert following == pytest.approx(1260.0, abs=0.05)
 
-    def test_the_cadence_returns_to_the_regular_grid_afterwards(self, missing_world: World) -> None:
-        after = [t for t in fast_starts(missing_world) if t > 1190]
-        gaps = [later - earlier for earlier, later in itertools.pairwise(after)]
+    def test_the_cadence_stays_on_the_grid_with_one_survey_step_for_each_cycle(
+        self, missing_world: World
+    ) -> None:
+        starts = [t for t in fast_starts(missing_world) if t > 300]
+        gaps = [later - earlier for earlier, later in itertools.pairwise(starts)]
         assert gaps
         assert all(gap == pytest.approx(180.0, abs=0.05) for gap in gaps)
+        # One short and one long exposure for each cycle, and no extra step for the missing star.
+        steps = [(t, e) for t, e in survey_starts(missing_world) if starts[0] < t < 1800]
+        shorts = [t for t, e in steps if e == 1000]
+        longs = [t for t, e in steps if e == 30_000_000]
+        assert len(shorts) == len(longs) == len(starts)
 
     def test_nothing_else_went_wrong(self, missing_world: World) -> None:
         assert missing_world.states_visited() == ["safe", "auto"]
         assert missing_world.scheduler.status().counters.faults == 0
 
-    def test_a_star_that_stays_missing_gets_a_solve_only_once_per_interval(self) -> None:
+    def test_a_star_that_stays_missing_ends_each_period_early_and_never_requests_a_solve(
+        self,
+    ) -> None:
         """Under thick cloud the star never returns, and the scheduler must not spin."""
         world = World(start_utc_ns=NIGHT)
         world.hide_star(1000, 2800)
         world.run_until(3000)
-        solves = world.events("scheduler.solve_requested")
-        # A solve, then 60 seconds before the next one can start, plus the survey step itself.
-        assert 10 <= len(solves) <= 25
-        times = [world.seconds(e.t_utc_ns) for e in solves]
-        gaps = [later - earlier for earlier, later in itertools.pairwise(times)]
-        assert all(gap >= 60.0 for gap in gaps)  # at least the resolve interval apart
+        assert world.events("scheduler.solve_requested") == []
+        counters = world.scheduler.status().counters
+        assert counters.solves_requested == 0
+        # The periods that start at 1080, 1260, and so on to 2700 each end after 10 frames, and so
+        # does the one at 900, which loses the star 20 seconds before its end.
+        assert counters.early_window_ends == 11
+        starts = [t for t in fast_starts(world) if t > 300]
+        gaps = [later - earlier for earlier, later in itertools.pairwise(starts)]
+        assert all(gap == pytest.approx(180.0, abs=0.05) for gap in gaps)
+        # One survey step for each cycle, as on a clear night. The run ends before the step of the
+        # period at 2880.
+        shorts = [t for t, e in survey_starts(world) if e == 1000 and starts[0] < t < 3000]
+        assert len(shorts) == len(starts) - 1
         assert world.scheduler.state.value == "auto"
         world.close()
 
@@ -120,6 +136,35 @@ class TestMissingStar:
         world.run_until(1300)
         assert world.events("scheduler.solve_requested") == []
         assert world.scheduler.status().counters.early_window_ends == 0
+        world.close()
+
+    def test_450_missing_frames_of_a_fast_stream_start_no_solve(self) -> None:
+        """The default threshold, on frames of 100 ms: 45 seconds without the star."""
+        config = SchedulerConfig(
+            fast=FastConfig(
+                exposure_us=100_000,  # the fastest frames that the scenario renders as they are
+                roi_arcmin=1.0,
+                roi_edge_margin_px=4.0,
+                missing_star_frames=450,
+            ),
+            loop=LoopConfig(max_sleep_s=5.0),
+        )
+        world = World(start_utc_ns=NIGHT, config=config)
+        world.hide_star(5, 200)  # the period from 0 to 120 loses the star after 5 seconds
+        world.run_until(310)
+        assert world.events("scheduler.solve_requested") == []
+        counters = world.scheduler.status().counters
+        assert counters.solves_requested == 0
+        assert counters.early_window_ends == 1  # the 200 frames from 180 to 200 are too few
+        first = [w for w in world.windows() if world.seconds(w.t_utc_ns) < 120]
+        assert first
+        # 450 frames of 100 ms after 5 s: the stream stopped at 50 s, to within 2 frames.
+        end = max(world.seconds(w.t_utc_ns) + w.duration_s for w in first)
+        assert end == pytest.approx(50.0, abs=0.2)
+        shorts = [t for t, e in survey_starts(world) if e == 1000 and t < 170]
+        assert shorts == [pytest.approx(50.0, abs=0.5)]  # the step of the cycle, at once
+        starts = fast_starts(world)
+        assert starts[1] == pytest.approx(starts[0] + 180.0, abs=0.05)  # the slot holds
         world.close()
 
 
@@ -196,18 +241,19 @@ class TestEdgeDrift:
     def test_a_star_that_the_roi_cannot_center_does_not_cut_a_window(self) -> None:
         """At the sensor edge the ROI clamps. The scheduler says so once and keeps its window."""
         world = World(start_utc_ns=NIGHT)
-        # The bump moves the star far outside the ROI. The scheduler finds it missing at 1118,
-        # solves, and starts a fast period at about 1149. The jolt puts the star 2 pixels from the
-        # left edge of the sensor at that time, and the drift of 0.087 pixels a second moves it in.
-        world.jolt(1100, 2.0 - 4144.0 - 0.087 * 1149)
+        # The bump moves the star far outside the ROI. The scheduler finds it missing at 1118 and
+        # ends the period. The survey step that follows solves, and the next period starts on its
+        # slot at 1260. The jolt puts the star 2 pixels from the left edge of the sensor at that
+        # time, and the drift of 0.087 pixels a second moves it in.
+        world.jolt(1100, 2.0 - 4144.0 - 0.087 * 1260)
         world.run_until(1700)
         assert world.scheduler.state.value == "auto"
-        assert world.events("scheduler.solve_requested")
+        assert world.events("scheduler.solve_requested") == []  # a missing star requests none
         (warning,) = world.events("scheduler.roi_at_limit")
-        assert 1140 < world.seconds(warning.t_utc_ns) < 1160
+        assert 1255 < world.seconds(warning.t_utc_ns) < 1270
         assert (warning.detail or {})["roi"]["x"] == 0  # the ROI sits against the sensor edge
         assert world.scheduler.status().counters.roi_recenters == 0
-        period = [w for w in world.windows() if 1150 < world.seconds(w.t_utc_ns) < 1260]
+        period = [w for w in world.windows() if 1260 <= world.seconds(w.t_utc_ns) < 1380]
         assert period
         assert all("partial" not in w.flags for w in period)
         world.close()

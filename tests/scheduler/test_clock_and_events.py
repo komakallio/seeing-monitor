@@ -152,7 +152,9 @@ class TestTheEventList:
         for source in package.glob("*.py"):
             if source.name == "events.py":
                 continue
-            kinds |= set(re.findall(r'"(scheduler\.[a-z_]+)"', source.read_text(encoding="utf-8")))
+            # The scheduler's own kinds, and the kinds of the sky and the camera that it writes.
+            text = source.read_text(encoding="utf-8")
+            kinds |= set(re.findall(r'"((?:scheduler|pointing)\.[a-z_]+)"', text))
         return kinds
 
     def test_every_kind_in_the_source_is_in_the_list(self) -> None:

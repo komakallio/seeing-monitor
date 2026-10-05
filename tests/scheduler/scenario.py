@@ -183,7 +183,8 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
     field or the script forbids it. It always gets a pointing record, unsolved when it does not
     solve. A short exposure cannot tell the cloud fraction, and it does not solve. It gets no
     pointing record, as the 1 ms frame of a real survey step gets none. A solved result gives the
-    pointing provider the true position.
+    pointing provider the true position, and its pointing record carries the flags that the script
+    sets for its time (`World.pointing_flags`).
     """
 
     def __init__(self, world: World, polls_until_ready: int = 0) -> None:
@@ -221,7 +222,11 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
                     n_matched=20 if output.solved else 0,
                     readout_mode="bin2",
                     solver="fake" if output.solved else "none",
-                    flags=[] if output.solved else ["unsolved"],
+                    flags=(
+                        self._world.pointing_flags_at(output.t_utc_ns)
+                        if output.solved
+                        else ["unsolved"]
+                    ),
                 )
                 output = replace(output, records=(*output.records, quality, pointing))
             outputs.append(output)
@@ -269,6 +274,7 @@ class World:
         self._clouds: list[tuple[int, int, float]] = []
         self._hidden: list[tuple[int, int, float]] = []
         self._unsolvable: list[tuple[int, int, float]] = []
+        self._pointing_flags: list[tuple[int, int, tuple[str, ...]]] = []
         self._jolts: list[tuple[int, float, float]] = []
         self._actions: list[tuple[int, int, Callable[[World], None]]] = []
         self._action_count = 0
@@ -321,6 +327,10 @@ class World:
     def no_solution(self, start: float, end: float) -> None:
         """The survey analysis cannot solve between two times."""
         self._unsolvable.append((self.t(start), self.t(end), 1.0))
+
+    def pointing_flags(self, start: float, end: float, *flags: str) -> None:
+        """The solved pointing records of the frames between two times carry these flags."""
+        self._pointing_flags.append((self.t(start), self.t(end), flags))
 
     def jolt(self, at: float, dx_px: float, dy_px: float = 0.0) -> None:
         """Shift the true star position, in bin1 pixels, as a bumped mount would."""
@@ -375,6 +385,17 @@ class World:
 
     def can_solve(self, t_utc_ns: int) -> bool:
         return _interval_value(self._unsolvable, t_utc_ns) == 0.0
+
+    def pointing_flags_at(self, t_utc_ns: int) -> list[str]:
+        """The flags that the script gives a solved pointing record of this time."""
+        return sorted(
+            {
+                flag
+                for start, end, flags in self._pointing_flags
+                if start <= t_utc_ns < end
+                for flag in flags
+            }
+        )
 
     def star_position(self, t_utc_ns: int, mode: str = "bin1") -> tuple[float, float]:
         """Where the star truly is, in sensor pixels of `mode`."""

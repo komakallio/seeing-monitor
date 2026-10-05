@@ -100,7 +100,7 @@ class Counters:
     windows: int = 0  # seeing windows written
     early_window_ends: int = 0  # periods that ended early, at an edge or for a missing star
     roi_recenters: int = 0
-    solves_requested: int = 0
+    solves_requested: int = 0  # survey steps forced because no pointing solution existed
     survey_steps: int = 0
     survey_frames: int = 0
     survey_results: int = 0

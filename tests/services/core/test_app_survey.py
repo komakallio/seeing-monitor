@@ -24,6 +24,8 @@ from tests.survey.pointfx import HOUR_NS, MINUTE_NS, made, mount
 
 from .rig import CoreRig, build_rig, events_of, read_all
 
+DAY_NS = 24 * HOUR_NS
+
 FULL_MOON_EVENING = iso_to_utc_ns("2026-01-02T20:00:00Z")  # a waxing gibbous Moon is up
 NEW_MOON_EVENING = iso_to_utc_ns("2026-01-18T20:00:00Z")  # the Moon is new, and near the Sun
 NIGHT_START = iso_to_utc_ns("2026-01-10T20:00:00Z")
@@ -385,11 +387,53 @@ class TestTheStartWithAStoredPointing:
             "(10 min old, solved by tracker with 853 matched stars)"
         ]
 
-    def test_a_solution_that_the_tracker_could_no_longer_use_does_not_seed_it(
+    def test_a_solution_that_is_30_days_old_seeds_the_tracker_without_a_limit(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """The default `validity_s` 0 sets no age limit: a rigid mount keeps its attitude."""
+        old = made(self.START - 30 * DAY_NS, n_matched=512)
         with caplog.at_level("INFO", logger=self.LOGGER):
-            rig = self.restart(tmp_path, [made(self.START - 13 * HOUR_NS).record], caplog=caplog)
+            rig = self.restart(tmp_path, [old.record], caplog=caplog)
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        solution = rig.app.tracker.solution
+        assert solution is not None
+        assert solution.t_utc_ns == old.solution.t_utc_ns
+        predicted = rig.app.tracker.polaris_position(self.START, "bin2")
+        expected = old.solution.polaris_pixel(self.START)
+        assert predicted is not None
+        assert expected is not None
+        assert predicted == pytest.approx(expected, abs=1e-6)  # the rebuild agrees to 1e-9
+        messages = [r.getMessage() for r in caplog.records if r.name == self.LOGGER]
+        assert messages == [
+            "the pointing tracker starts with the stored solution of 2025-12-02T22:00:00Z "
+            "(30.0 days old, solved by astrometry.net with 512 matched stars)"
+        ]
+
+    def test_a_month_of_unsolved_records_does_not_hide_the_last_good_solution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cloudy nights write unsolved records, more than one page of the search reads."""
+        from seeingmon.survey import reference
+
+        monkeypatch.setattr(reference, "SCAN_LIMIT", 10)  # the search reads three pages
+        good = made(self.START - 30 * DAY_NS)
+        cloudy = [made(self.START - n * DAY_NS, solved=False).record for n in range(29, 0, -1)]
+        rig = self.restart(tmp_path, [good.record, *cloudy])
+        rig.app.stop()
+        assert rig.app.tracker is not None
+        solution = rig.app.tracker.solution
+        assert solution is not None
+        assert solution.t_utc_ns == good.solution.t_utc_ns
+
+    def test_with_a_positive_limit_an_older_solution_does_not_seed_the_tracker(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        limit = "[survey.pointing]\nvalidity_s = 43200.0\n"  # 12 h, for a mount that is not rigid
+        with caplog.at_level("INFO", logger=self.LOGGER):
+            rig = self.restart(
+                tmp_path, [made(self.START - 13 * HOUR_NS).record], settings=limit, caplog=caplog
+            )
         rig.app.stop()
         assert rig.app.tracker is not None
         assert rig.app.tracker.solution is None

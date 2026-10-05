@@ -550,9 +550,11 @@ class CoreApp:
     def _seed_from_store(self, tracker: Any) -> None:
         """Start the tracker with the newest usable solution of the store, after a restart.
 
-        A tracker that a seed file started keeps its solution. A solution that is too old, too
-        thin, or from another profile, and a clock that does not know the time, leave the tracker
-        empty, and the first survey frame goes to the plate solvers. Nothing here stops `core`.
+        The solution may be of any age, unless `[survey.pointing] validity_s` sets a limit. A
+        tracker that a seed file started keeps its solution. A solution that is too thin, older
+        than a limit, or from another profile, and a clock that does not know the time, leave the
+        tracker empty, and the first survey frame goes to the plate solvers. Nothing here stops
+        `core`.
         """
         if not self.settings.seed_from_store or tracker.solution is not None:
             return
@@ -574,7 +576,7 @@ class CoreApp:
                 self.storage.store,
                 self.profile,
                 now_utc_ns=now_ns,
-                max_age_s=pointing.validity_s,
+                max_age_s=pointing.validity_s or None,  # 0 sets no age limit
                 min_matched=pointing.tracker_min_stars,
                 max_rms_px=pointing.tracker_max_rms_px,
                 dut1_s=self.survey_config.dut1_s,

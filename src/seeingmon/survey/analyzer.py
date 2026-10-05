@@ -26,9 +26,13 @@ boundary holds here too.
 
 **State.** The analyzer keeps the `PointingTracker`. `poll` gives each solved result to the
 tracker, so `tracker.polaris_position` (a `PointingProvider`) always reflects the latest
-accepted solution. A result with too few stars or a large residual does not update the tracker.
-Each `submit` hands the worker the solution at that moment, so a frame that follows quickly
-uses the previous solution even if the earlier result has not come back.
+accepted solution. Only a solve that succeeds replaces the solution: an unsolved frame and a
+failed job leave it alone. A result with too few stars or a large residual does not update the
+tracker, and neither does the result of a frame that the clock did not time (`time_invalid`). The
+tracker refuses a solution older than the one it holds, and the solution has no age limit, so one
+solution from a clock that ran ahead would block every later one. Each `submit` hands the worker
+the solution at that moment, so a frame that follows quickly uses the previous solution even if
+the earlier result has not come back.
 
 **Sky quality.** Each result carries a `sky_quality` record. The transparency needs a reference
 zero point from the clearest conditions of the recent past, and that history lives here, not in
@@ -375,7 +379,14 @@ class SurveyPipelineAnalyzer:
             return self._failure_output(job, f"analysis error: {type(error).__name__}")
         self._log_frame(info, records, solution, notes, attempts, timings)
         if solution is not None and self._trusted(solution):
-            self._tracker.update(solution)
+            if info.time_invalid:
+                log.info(
+                    "survey frame %s: the clock was not synchronized, so the tracker keeps its "
+                    "solution",
+                    utc_ns_to_iso(info.t_utc_ns, digits=0),
+                )
+            else:
+                self._tracker.update(solution)
         records = records + self._remember(records, info.t_utc_ns, epoch_stars)
         return SurveyOutput(
             t_utc_ns=info.t_utc_ns,

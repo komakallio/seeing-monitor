@@ -6,9 +6,11 @@ answers two questions without a solver:
 - **Where is Polaris?** `polaris_position(t, mode)` projects the apparent place of Polaris at
   time `t` through the attitude that the latest solution predicts for `t`. The Earth turns the
   field about the pole, and the apparent place follows precession, nutation, and aberration,
-  so the position stays right between solves. The answer is `None` when there is no solution
-  or the solution is older than the validity limit, which makes the scheduler take a survey
-  frame to solve again.
+  so the position stays right between solves. The answer is `None` when there is no solution,
+  which makes the scheduler take a survey frame to solve. By default a solution has no age
+  limit: a rigid mount keeps its Earth-fixed attitude, so a solution from last month predicts as
+  well as one from a minute ago. A positive `validity_s` sets a limit, for a mount that is not
+  rigid, and an older solution then answers `None` too.
 - **Which stars are where?** `track` predicts the pixel position of every catalog star in the
   field from the latest solution, matches them to the detections of a new frame, and fits the
   attitude again. It takes a few tens of milliseconds, so the alignment helper uses it between
@@ -23,6 +25,7 @@ solution from another.
 
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass
 
@@ -45,7 +48,7 @@ from seeingmon.survey.trail import TrailModel
 from seeingmon.survey.wcs_fit import CameraAttitude, FitOptions, FitResult, fit_attitude
 
 NS_PER_S = 1_000_000_000
-DEFAULT_VALIDITY_S = 12 * 3600.0
+DEFAULT_VALIDITY_S = 0.0  # no age limit
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -73,10 +76,10 @@ class PointingTracker:
         validity_s: float = DEFAULT_VALIDITY_S,
         reference: ReferenceSolution | None = None,
     ) -> None:
-        if validity_s <= 0:
-            raise ValueError("validity_s must be positive")
+        if not math.isfinite(validity_s) or validity_s < 0:
+            raise ValueError("validity_s must be 0 (no limit) or a positive number of seconds")
         self._profile = profile
-        self._validity_ns = round(validity_s * NS_PER_S)
+        self._validity_ns = None if validity_s == 0 else round(validity_s * NS_PER_S)
         self._lock = threading.Lock()
         self._solution: PointingSolution | None = None
         self._reference = reference
@@ -112,7 +115,11 @@ class PointingTracker:
             return True
 
     def clear(self) -> None:
-        """Forget the solution, for example after a camera fault that may have moved it."""
+        """Forget the solution.
+
+        Nothing in the running system calls it: only a solve that succeeds replaces a solution,
+        and a failed solve leaves it alone. Tests and tools use it to start over.
+        """
         with self._lock:
             self._solution = None
 
@@ -122,9 +129,15 @@ class PointingTracker:
         return None if solution is None else (t_utc_ns - solution.t_utc_ns) / NS_PER_S
 
     def valid_at(self, t_utc_ns: int) -> bool:
-        """Whether the latest solution is recent enough to predict the attitude at a time."""
+        """Whether the latest solution may predict the attitude at a time.
+
+        Without an age limit (`validity_s` 0), any solution may. With a limit, the solution must
+        lie within it of the time, before or after.
+        """
         solution = self.solution
-        return solution is not None and abs(t_utc_ns - solution.t_utc_ns) <= self._validity_ns
+        if solution is None:
+            return False
+        return self._validity_ns is None or abs(t_utc_ns - solution.t_utc_ns) <= self._validity_ns
 
     # --- Predictions ----------------------------------------------------------------------
 

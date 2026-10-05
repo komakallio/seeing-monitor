@@ -17,7 +17,7 @@ import numpy as np
 from seeingmon.clock import NS_PER_S, Clock, ClockStatus, VirtualClock, iso_to_utc_ns
 from seeingmon.config import Config, load_config
 from seeingmon.drivers.base import CameraDriver
-from seeingmon.frames import Frame
+from seeingmon.frames import Frame, FrameData, Roi, StreamConfig
 from seeingmon.hardware.events import HardwareEvent
 from seeingmon.profile import Profile
 from seeingmon.records import Record
@@ -41,6 +41,19 @@ from tests.services.addresses import unique_address
 # A clear autumn evening at a synthetic site (55 degrees north on the prime meridian).
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
 SMALL_BIN2 = (640, 480)
+# Where the pointing provider of the rig puts Polaris, in the pixels of each readout mode.
+POLARIS_PX = {"bin1": (4144.0, 2822.0), "bin2": (320.0, 240.0)}
+
+
+def polaris_frame(config: StreamConfig, roi: Roi, seq: int) -> FrameData:
+    """A flat frame with Polaris as one bright pixel, where the pointing of the rig puts it."""
+    dtype = config.pixel_format.dtype
+    small = np.dtype(dtype).itemsize == 1
+    data = np.full((roi.height, roi.width), 25 if small else 1600, dtype=dtype)
+    x, y = POLARIS_PX.get(config.mode, (-1.0, -1.0))
+    if roi.contains(x, y):
+        data[int(y) - roi.y, int(x) - roi.x] = 250 if small else 40_000
+    return data
 
 
 def local_config_text(
@@ -192,11 +205,15 @@ def build_rig(
     clock: Clock | None = None,
     profile: Path | None = None,
     driver_factory: Callable[[Clock, Profile], CameraDriver] | None = None,
+    polaris: bool = False,
 ) -> CoreRig:
     """Build a `CoreApp` on fakes, a virtual clock, and a real store in `tmp_path`.
 
     `profile` names a profile file instead of the default one. `driver_factory` builds the camera
-    from the clock of the app and the profile, for a test that needs a simulated camera.
+    from the clock of the app and the profile, for a test that needs a simulated camera. The
+    frames of the fake camera are flat, so the fast stream misses the star and ends each period
+    after `missing_star_frames` frames. With `polaris` set, they show the star where the pointing
+    provider puts it, and each fast period runs to its end, as on a clear night.
     """
     virtual = VirtualClock(start_utc_ns)
     use_clock: Clock = clock or virtual
@@ -209,12 +226,16 @@ def build_rig(
             "core_address": unique_address("core"),
         }
     )
-    camera = FakeCameraDriver(use_clock, full_frames={"bin1": (8288, 5644), "bin2": SMALL_BIN2})
+    camera = FakeCameraDriver(
+        use_clock,
+        full_frames={"bin1": (8288, 5644), "bin2": SMALL_BIN2},
+        frame_factory=polaris_frame if polaris else None,
+    )
     fast = FakeFastAnalyzer(station_id="test", profile_id=config.profile.id, window_s=10.0)
     survey = FakeSurveyAnalyzer(station_id="test", profile_id=config.profile.id)
     pointing = FakePointingProvider()
-    pointing.set_solution("bin1", 4144.0, 2822.0)
-    pointing.set_solution("bin2", 320.0, 240.0)
+    for mode, (x, y) in POLARIS_PX.items():
+        pointing.set_solution(mode, x, y)
     remote = FakeRemote()
     core_parts = CoreParts(
         driver=camera,
@@ -269,6 +290,7 @@ def escalation_names(app: CoreApp) -> list[str]:
 
 __all__ = [
     "NIGHT",
+    "POLARIS_PX",
     "SMALL_BIN2",
     "CoreRig",
     "EscalationLevel",

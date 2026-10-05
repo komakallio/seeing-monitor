@@ -29,6 +29,8 @@ from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.dark import DarkLibrary
 from seeingmon.survey.geometry import ARCSEC_PER_RAD, exp_so3
 from seeingmon.survey.pipeline import (
+    HINT_POLE,
+    HINT_PREDICTION,
     NO_SOLUTION,
     SOLVED,
     FrameAnalysis,
@@ -144,6 +146,12 @@ def collect(analyzer: SurveyPipelineAnalyzer, count: int, *, timeout_s: float = 
 def held(analyzer: SurveyPipelineAnalyzer) -> pt.PointingSolution | None:
     """The solution that the tracker holds now (a function, so mypy does not narrow it)."""
     return analyzer.tracker.solution
+
+
+def held_time(analyzer: SurveyPipelineAnalyzer) -> int | None:
+    """The time of the solution that the tracker holds, which a copy keeps across the worker."""
+    solution = analyzer.tracker.solution
+    return None if solution is None else solution.t_utc_ns
 
 
 def solution_with(
@@ -316,6 +324,53 @@ def test_a_failed_job_gives_an_unsolved_output_and_the_analyzer_goes_on(
     assert analyzer.tracker.solution is not None  # the second frame still updated it
 
 
+def test_a_failed_solve_after_a_good_one_leaves_the_good_solution_in_use(
+    profile: Profile, catalog: CapCatalog
+) -> None:
+    """Only a solve that succeeds replaces the solution: no failure clears it or ages it out."""
+    analyzer, pipeline = scripted(profile, catalog, executor=InlineExecutor())
+    good = solution_with(300, 0.1, t_utc_ns=10 * NS)
+    pipeline.solution_for[0] = good
+    pipeline.fail_at = {2}  # frame 1 is unsolved, and the job of frame 2 raises
+    for i in range(3):
+        analyzer.submit(small_frame((i + 1) * 10 * NS))
+    outputs = analyzer.poll()
+    assert [output.solved for output in outputs] == [True, False, False]
+    assert held_time(analyzer) == good.t_utc_ns
+    # The solution has no age limit, so it still places Polaris a month later.
+    month = 10 * NS + 30 * 86_400 * NS
+    assert analyzer.tracker.polaris_position(month, "bin2") is not None
+    assert pipeline.calls[-1] == (30 * NS, 2)
+
+
+def test_the_solution_of_a_frame_without_a_valid_time_does_not_replace_the_solution(
+    profile: Profile, catalog: CapCatalog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A clock that ran ahead would stamp a future solution, which would block every later one."""
+    from seeingmon.frames import FrameFlag, TimeQuality
+
+    analyzer, pipeline = scripted(profile, catalog, executor=InlineExecutor())
+    good = solution_with(300, 0.1, t_utc_ns=10 * NS)
+    pipeline.solution_for[0] = good
+    pipeline.solution_for[1] = solution_with(300, 0.1, t_utc_ns=3600 * NS)  # an hour ahead
+    pipeline.solution_for[2] = solution_with(300, 0.1, t_utc_ns=3700 * NS)
+    analyzer.submit(small_frame(10 * NS))
+    analyzer.submit(replace(small_frame(3600 * NS), t_quality=TimeQuality.INVALID))
+    with caplog.at_level("INFO", logger="seeingmon.survey"):
+        outputs = analyzer.poll()
+    assert [output.solved for output in outputs] == [True, True]  # the frame still reports it
+    assert held_time(analyzer) == good.t_utc_ns
+    assert any("the clock was not synchronized" in m for m in survey_log(caplog))
+    analyzer.submit(replace(small_frame(3700 * NS), flags=FrameFlag.TIME_INVALID))
+    analyzer.poll()
+    assert held_time(analyzer) == good.t_utc_ns  # the flag counts as well as the time quality
+    later = solution_with(300, 0.1, t_utc_ns=20 * NS)
+    pipeline.solution_for[3] = later
+    analyzer.submit(small_frame(20 * NS))
+    analyzer.poll()
+    assert held_time(analyzer) == later.t_utc_ns  # a timed solve after the clock came back
+
+
 def survey_log(caplog: pytest.LogCaptureFixture) -> list[str]:
     """The messages of the survey logger, without the time that the logging module adds."""
     return [r.getMessage() for r in caplog.records if r.name == "seeingmon.survey"]
@@ -347,6 +402,27 @@ def test_the_log_follows_each_solver_run_and_the_outcome_of_a_frame(
         'reason="astrometry.net found no solution"',
         f"{stamp}: solver=astap result=solved stars=48 time_s=0.81 matched=87",
         f"{stamp}: 1 s bin2: 0 stars detected, solved by astap (87 matched), analysis took 2.4 s",
+    ]
+
+
+def test_the_log_names_the_hint_that_solved_a_frame_after_the_mount_moved(
+    profile: Profile, catalog: CapCatalog, caplog: pytest.LogCaptureFixture
+) -> None:
+    analyzer, pipeline = scripted(profile, catalog, executor=InlineExecutor())
+    pipeline.solution_for[0] = replace(solution_with(87, 0.1, t_utc_ns=10 * NS), solver="astap")
+    reason = "astap found no solution"
+    pipeline.attempts_for[0] = (
+        SolveAttempt("astap", NO_SOLUTION, 48, 0.4, reason=reason, hint=HINT_PREDICTION),
+        SolveAttempt("astap", SOLVED, 48, 0.81, matched=87, hint=HINT_POLE),
+    )
+    analyzer.submit(small_frame(10 * NS))
+    with caplog.at_level("INFO", logger="seeingmon.survey"):
+        analyzer.poll()
+    stamp = "survey frame 1970-01-01T00:00:10Z"
+    assert survey_log(caplog)[:2] == [
+        f"{stamp}: solver=astap hint=prediction result=no_solution stars=48 time_s=0.40 "
+        f'reason="{reason}"',
+        f"{stamp}: solver=astap hint=pole result=solved stars=48 time_s=0.81 matched=87",
     ]
 
 

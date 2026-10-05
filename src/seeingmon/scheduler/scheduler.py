@@ -373,7 +373,7 @@ class Scheduler:
         self._last_temperature_c: float | None = None
         self._last_context: FastContext | None = None
         self._context_next_mono = now_mono
-        self._last_survey_mono: int | None = None
+        self._pointing_moved = False  # the newest solve that could tell set the `moved` flag
         self._next_poll_mono = now_mono
         self._survey_pending = 0  # a copy for `status`, which runs on other threads
         self._deadline_mono: int | None = None
@@ -1908,7 +1908,7 @@ class Scheduler:
         else:
             run.missing_frames += 1
             if run.missing_frames >= fast.missing_star_frames:
-                self._star_lost(run, now)
+                self._star_lost()
                 return StepKind.FRAME
         if now - run.started_mono >= run.window_ns:
             self._end_fast_period("window_end", forced=False)
@@ -1968,23 +1968,16 @@ class Scheduler:
         )
         return StepKind.FRAME
 
-    def _star_lost(self, run: _FastRun, now: int) -> None:
-        """The star was missing for the configured number of frames: solve again if allowed."""
-        fast = self._config.fast
-        run.missing_frames = 0
-        last = self._last_survey_mono
-        if last is not None and now - last < round(fast.resolve_interval_s * NS_PER_S):
-            return  # a solve ran a moment ago, so keep measuring and look again later
-        self._counters.solves_requested += 1
+    def _star_lost(self) -> None:
+        """The star was missing for the configured number of frames: end the fast period early.
+
+        A missing star starts no solve. Clouds and a bright sky hide Polaris often, and a hidden
+        star says nothing about the mount, whose solution has no age limit. The survey step of
+        the cycle follows at once, as at the end of any period, and the next fast period waits
+        for its slot, so the cadence holds and the cycle takes no extra survey step.
+        """
         self._counters.early_window_ends += 1
-        self._emit(
-            "warning",
-            "scheduler.solve_requested",
-            f"The star was missing for {fast.missing_star_frames} frames, so the scheduler "
-            "runs a survey step to solve again.",
-            {"reason": "star_missing", "frames": fast.missing_star_frames},
-        )
-        self._end_fast_period("star_missing", forced=True)
+        self._end_fast_period("star_missing", forced=False)
 
     def _end_fast_period(self, reason: str, *, forced: bool) -> None:
         self._end_stream(reason)
@@ -2058,7 +2051,6 @@ class Scheduler:
         now = self._mono()
         if counted:
             self._counters.survey_steps += 1
-            self._last_survey_mono = now
         cycle.anchored = not cycle.survey_forced
         cycle.next_slot_mono = now
         position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
@@ -2104,6 +2096,8 @@ class Scheduler:
         flags = self._survey_flags(output)
         for record in output.records:
             self._records.write(_with_flags(record, flags))
+            if isinstance(record, PointingRecord):
+                self._note_pointing(record, flags)
         if self._cloud.update(output.cloud_fraction):
             started = self._cloud.active
             self._emit(
@@ -2115,6 +2109,36 @@ class Scheduler:
                 {"active": started, "cloud_fraction": self._cloud.fraction},
             )
             self._refresh_context(force=True)
+
+    def _note_pointing(self, record: PointingRecord, flags: frozenset[str]) -> None:
+        """Write `pointing.moved` when a solve finds the camera moved off its reference.
+
+        The event comes once, when a solve sets the `moved` flag after one that did not, because
+        every solve after a move keeps the flag until you save a new reference. A record that
+        cannot tell leaves the state as it is: an unsolved frame, a fit with few stars, and a frame
+        without a valid time, whose Earth-fixed attitude turns with the error of the clock. The
+        state starts as not moved, so a camera that is still off its reference after a restart
+        gets the event again.
+        """
+        codes = set(record.flags) | flags
+        if codes & {"unsolved", "few_stars", "time_invalid"}:
+            return
+        moved = "moved" in codes
+        if moved and not self._pointing_moved:
+            self._emit(
+                "warning",
+                "pointing.moved",
+                "A solve found the camera moved off its reference, so check the mount, or save "
+                "a new reference.",
+                {
+                    "offset_arcmin": record.offset_arcmin,
+                    "reference_id": record.reference_id,
+                    "solver": record.solver,
+                    "n_matched": record.n_matched,
+                    "frame_t_utc_ns": record.t_utc_ns,
+                },
+            )
+        self._pointing_moved = moved
 
     def _survey_flags(self, output: SurveyOutput) -> frozenset[str]:
         flags: set[str] = set()

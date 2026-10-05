@@ -151,7 +151,7 @@ max_rpc_connections = 8
 seed_solution_file = ""
 
 # With no seed file, core starts the pointing tracker with the newest solved pointing record of the
-# store that is recent enough to use ([survey.pointing] validity_s), so that a restart skips the
+# store, of any age unless [survey.pointing] validity_s sets a limit, so that a restart skips the
 # blind first solve. false starts every run with no pointing.
 seed_from_store = true
 

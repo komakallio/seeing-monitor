@@ -8,6 +8,8 @@ provisional until commissioning shows what a real sky needs (phase 3).
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from seeingmon.config import SectionModel
 
 
@@ -47,7 +49,10 @@ class FitConfig(SectionModel):
 class PointingConfig(SectionModel):
     """What the tracker and the pointing record do with a solution."""
 
-    validity_s: float = 43_200.0  # a solution this old no longer predicts Polaris
+    # The age at which a solution stops predicting Polaris. 0 sets no limit: a rigid mount keeps
+    # its Earth-fixed attitude, so an old solution predicts as well as a new one. A positive value
+    # suits a mount that is not rigid.
+    validity_s: float = Field(0.0, ge=0, allow_inf_nan=False)
     few_stars: int = 12  # fewer matched stars flag `few_stars`
     moved_arcmin: float = 5.0  # a boresight offset from the reference above this flags `moved`
     moved_roll_deg: float = 0.5  # so does a roll change above this

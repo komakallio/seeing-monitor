@@ -68,10 +68,10 @@ class FastConfig(SectionModel):
     """The shortest stream time between two edge recenters. It stops a loop at the sensor edge."""
 
     missing_star_frames: PositiveInt = 450
-    """The number of frames in a row without a star that triggers a survey solve."""
+    """The number of frames in a row without a star that ends the fast period early.
 
-    resolve_interval_s: NonNegative = 60.0
-    """The shortest time between two solves that a missing star triggers."""
+    The survey step of the cycle follows, and no solve is requested, because a hidden star says
+    nothing about the mount. The same count ends the rapid focus mode."""
 
     @model_validator(mode="after")
     def _window_holds_an_analysis_window(self) -> Self:
