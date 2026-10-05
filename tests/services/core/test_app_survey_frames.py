@@ -272,6 +272,10 @@ class TestASteppedRun:
 
 class TestTheWriterThread:
     def test_the_thread_writes_while_core_runs_and_ends_with_it(self, tmp_path: Path) -> None:
+        # The first FITS write imports astropy, which takes seconds on a busy machine. Import it
+        # before the scaled clock starts, so that the frames do not pass the RAM ring while the
+        # writer waits for the import.
+        framefile.rice_available()
         clock = ScaledClock(
             start_utc_ns=NIGHT, origin_real_ns=__import__("time").time_ns(), speed=40.0
         )
