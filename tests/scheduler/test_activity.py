@@ -27,6 +27,7 @@ from seeingmon.scheduler import (
     Pause,
     QueueBurst,
     QueueDark,
+    QueueFlat,
     QueueSweep,
     Resume,
     SchedulerConfig,
@@ -97,8 +98,24 @@ class TestTheWords:
     def test_a_dark_session_names_its_phase(self) -> None:
         assert words.task_label("dark", "cover") == "Dark session: waiting for the cover"
         assert words.task_label("dark", None) == "Dark session"
+        assert words.task_label("dark", "capture") == "Dark session"  # a phase of another kind
         assert words.task_label("burst") == "Burst: recording raw frames"
         assert words.task_label(None) == words.TASK_STARTING_LABEL
+
+    def test_a_flat_session_names_its_phase(self) -> None:
+        assert words.task_label("flat", None) == "Flat session"
+        assert [
+            words.task_label("flat", phase) for phase in ("setup", "exposure", "capture", "build")
+        ] == [
+            "Flat session: setting up the camera",
+            "Flat session: finding the exposure",
+            "Flat session: taking frames",
+            "Flat session: combining the frames",
+        ]
+        assert words.task_label("flat", "cover") == "Flat session"  # a phase of another kind
+        assert words.state_reason_text("a flat session starts at once") == (
+            "a flat session starts at once"
+        )
 
     def test_a_task_detail_joins_the_message_and_the_queue(self) -> None:
         assert (
@@ -604,27 +621,35 @@ class RecordingHandler:
     """
 
     def __init__(
-        self, world: World, phases: tuple[tuple[str, str], ...] = (), *, run_s: float = 20.0
+        self,
+        world: World,
+        phases: tuple[tuple[Any, ...], ...] = (),
+        *,
+        run_s: float = 20.0,
+        event: str = "scheduler.dark_phase",
     ) -> None:
         self._world = world
-        self._phases = phases
+        self._phases = phases  # (phase, message), and optionally the rest of the detail
         self._run_s = run_s
+        self._event = event
         self.seen: list[ActivityStatus] = []
+        self.times: list[int] = []  # the UTC time of each look
 
     def _look(self) -> None:
         activity = self._world.scheduler.status().activity
         assert activity is not None
         self.seen.append(activity)
+        self.times.append(self._world.clock.utc_ns())
 
     def run(self, task: CommissionTask, context: CommissionContext) -> CommissionResult:
         started = self._world.clock.utc_ns()
         self._look()
-        for phase, message in self._phases:
+        for phase, message, *more in self._phases:
             context.emit_event(
                 "info",
-                "scheduler.dark_phase",
+                self._event,
                 message,
-                {"task_id": task.task_id, "phase": phase, "steps": 3},
+                {"task_id": task.task_id, "phase": phase, "steps": 3, **(more[0] if more else {})},
             )
             self._look()
             context.clock.sleep(5.0)
@@ -686,6 +711,64 @@ class TestACommissioningTask:
         assert after is not None
         assert (after.state, after.phase) == ("paused", "paused")
         assert after.reason == "the dark session is done, and the camera may still be covered"
+        world.close()
+
+    def test_a_flat_session_names_each_phase_and_announces_the_end_of_its_frames(self) -> None:
+        world = World(start_utc_ns=NIGHT)
+        handler = RecordingHandler(
+            world,
+            (
+                ("setup", "Setting up the camera and the library."),
+                ("exposure", "Finding the exposure that reaches 50 % of full scale."),
+                ("capture", "Taking 32 frames of 39 ms.", {"expected_s": 40.0}),
+                ("build", "Combining the frames into a flat."),
+            ),
+            event="scheduler.flat_phase",
+        )
+        world.scheduler.register_handler("flat", handler)
+        world.at(200, send(QueueFlat()))
+        world.run_until(600)
+        assert [a.label for a in handler.seen] == [
+            "Flat session",
+            "Flat session: setting up the camera",
+            "Flat session: finding the exposure",
+            "Flat session: taking frames",
+            "Flat session: combining the frames",
+        ]
+        capture = handler.seen[3]
+        assert capture.detail == "Taking 32 frames of 39 ms"
+        assert capture.reason == "a flat session starts at once"
+        assert capture.next_label == words.AFTER_TASK_PAUSED  # `pause_after` is the default
+        assert capture.next_utc_ns is None  # the next phase is of the same session
+        assert capture.ends_utc_ns is not None
+        assert (capture.ends_utc_ns - handler.times[3]) / NS_PER_S == pytest.approx(40.0)
+        # The other phases do not know their length, and the first look is before any phase.
+        assert [a.ends_utc_ns for a in handler.seen if a is not capture] == [None] * 4
+        assert len({a.since_utc_ns for a in handler.seen}) == 1  # the session began once
+        after = world.scheduler.status().activity
+        assert after is not None
+        assert (after.state, after.phase) == ("paused", "paused")
+        assert (
+            after.reason
+            == "the flat session is done, and the light source may still cover the camera"
+        )
+        world.close()
+
+    @pytest.mark.parametrize("expected", [0, -5.0, float("nan"), float("inf"), "40", True, None])
+    def test_a_phase_with_a_length_that_makes_no_sense_announces_no_end(
+        self, expected: Any
+    ) -> None:
+        world = World(start_utc_ns=NIGHT)
+        handler = RecordingHandler(
+            world,
+            (("capture", "Taking 32 frames.", {"expected_s": expected}),),
+            event="scheduler.flat_phase",
+        )
+        world.scheduler.register_handler("flat", handler)
+        world.at(200, send(QueueFlat()))
+        world.run_until(600)
+        assert handler.seen[1].label == "Flat session: taking frames"
+        assert handler.seen[1].ends_utc_ns is None
         world.close()
 
     def test_the_tasks_that_wait_behind_the_running_one_are_counted(self) -> None:

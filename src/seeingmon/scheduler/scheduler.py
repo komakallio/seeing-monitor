@@ -95,7 +95,7 @@ from seeingmon.scheduler.config import (
     seconds_to_us,
 )
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
-from seeingmon.scheduler.events import DARK_PHASE_EVENT
+from seeingmon.scheduler.events import DARK_PHASE_EVENT, FLAT_PHASE_EVENT
 from seeingmon.scheduler.faults import FaultCause, FaultPlan, FaultTracker, classify, reason_text
 from seeingmon.scheduler.gates import (
     REASON_BRIGHT_SKY,
@@ -297,7 +297,9 @@ class Scheduler:
         self._next_task_id = 1
         self._running_task: CommissionTask | None = None  # popped from the queue, and not done
         self._task_started_mono = now_mono  # when `_running_task` began, for the activity
-        self._task_phase: tuple[str, str] | None = None  # the phase and message that it reported
+        # What the task reported last: the phase, the message, and when the phase ends (monotonic
+        # nanoseconds), or `None` when the task did not say.
+        self._task_phase: tuple[str, str, int | None] | None = None
         self._cancelled: set[int] = set()  # the running tasks that `CancelTask` asked to stop
         self._pause_after: str | None = None  # why a commission episode ends in `paused`
         self._next_watch_mono = now_mono
@@ -604,12 +606,16 @@ class Scheduler:
             if isinstance(command, QueueBurst)
             else None
         )
+        # A task that knows how long its phase takes says so (the frames of a flat session), and
+        # the phase ends then. The activity that follows is the next phase of the same task, so
+        # `next_utc_ns` stays what it was.
+        phase_ends = None if reported is None or reported[2] is None else at(reported[2])
         return ActivityStatus(
             state=State.COMMISSION.value,
             phase=ActivityPhase.COMMISSION.value,
             label=words.task_label(task.kind, None if reported is None else reported[0]),
             since_utc_ns=at(started),
-            ends_utc_ns=ends,
+            ends_utc_ns=ends if ends is not None else phase_ends,
             next_label=after,
             next_utc_ns=ends,
             detail=words.task_detail(waiting, None if reported is None else reported[1]),
@@ -2125,11 +2131,23 @@ class Scheduler:
         """Keep the phase that a task reports, so that the activity can name it.
 
         A dark session writes `scheduler.dark_phase` when each phase starts (`bias`, `cover`,
-        `dark`, and `build`), and the activity shows that phase until the next one.
+        `dark`, and `build`), and a flat session writes `scheduler.flat_phase` (`setup`,
+        `exposure`, `capture`, and `build`). The activity shows that phase until the next one. A
+        phase that knows its length puts `expected_s` into the detail, the seconds from the event
+        to the end of the phase, and the activity then announces that end.
         """
         phase = None if detail is None else detail.get("phase")
-        if kind == DARK_PHASE_EVENT and isinstance(phase, str):
-            self._task_phase = (phase, message)
+        if kind in (DARK_PHASE_EVENT, FLAT_PHASE_EVENT) and isinstance(phase, str):
+            expected = None if detail is None else detail.get("expected_s")
+            ends = None
+            if (
+                isinstance(expected, int | float)
+                and not isinstance(expected, bool)
+                and math.isfinite(expected)
+                and expected > 0
+            ):
+                ends = self._mono() + round(expected * NS_PER_S)
+            self._task_phase = (phase, message, ends)
 
     def _should_stop(self) -> bool:
         """Whether a running task must end: the state left `commission`, or the loop shuts down."""

@@ -250,8 +250,11 @@ class TestTheState:
 
         context.on_read = watch
         result = rig.run(SMALL, context)
-        first = seen[0]  # before the first frame of the search
-        assert (first.state, first.phase) == ("running", "setup")
+        first = seen[0]  # the search has begun, and its first frame has not come yet
+        assert (first.state, first.phase, first.step) == ("running", "exposure", 0)
+        assert first.message == "Finding the exposure that reaches 50 % of full scale."
+        assert first.exposure_s == pytest.approx(0.02)
+        assert first.level_fraction is None
         assert first.task_id == 1
         search = seen[1]  # after the first try: the level is known
         assert (search.phase, search.step, search.steps) == ("exposure", 1, 8)
@@ -509,6 +512,15 @@ class TestTheEvents:
         assert first[0] == "info"
         assert first[2] == "Setting up the camera and the library."
         assert first[3] == {"task_id": 1, "phase": "setup", "steps": 1}
+
+    def test_only_the_frames_tell_how_long_their_phase_takes(self, rig: Rig) -> None:
+        context = rig.context()
+        rig.run(SMALL, context)
+        details = {detail["phase"]: detail for _, _, _, detail in context.events if detail}
+        assert [phase for phase, detail in details.items() if "expected_s" in detail] == ["capture"]
+        # The scripted camera takes the exposure alone, so the frames take their number times it.
+        assert details["capture"]["expected_s"] == pytest.approx(FRAMES * 0.039, abs=0.05)
+        assert details["exposure"]["steps"] == 8  # the search may take eight tries
 
     def test_the_names_of_the_files_are_not_in_the_results_as_paths(self, rig: Rig) -> None:
         result = rig.run(SMALL)

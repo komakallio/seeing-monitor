@@ -146,12 +146,14 @@ AFTER_TASK_AUTO = "Back to the normal cycle"
 AFTER_TASK_SAFE = "Back to the brightness watch"
 AFTER_TASK_PAUSED = "Paused: nothing records until you resume"
 
-# The label of a commissioning task, by kind. A dark session names its phase (see `DARK_PHASES`).
+# The label of a commissioning task, by kind. A dark session and a flat session name their phase
+# (see `DARK_PHASES` and `FLAT_PHASES`).
 TASK_LABELS = {
     "burst": "Burst: recording raw frames",
     "sweep": "Sweep: testing exposure, gain, and ROI",
     "replay": "Replay: running a recording through the analysis",
     "dark": "Dark session",
+    "flat": "Flat session",
 }
 TASK_STARTING_LABEL = "Commissioning: starting the next task"
 DARK_PHASES = {
@@ -160,14 +162,22 @@ DARK_PHASES = {
     "dark": "Dark session: taking dark frames",
     "build": "Dark session: building the master dark",
 }
+FLAT_PHASES = {
+    "setup": "Flat session: setting up the camera",
+    "exposure": "Flat session: finding the exposure",
+    "capture": "Flat session: taking frames",
+    "build": "Flat session: combining the frames",
+}
+_TASK_PHASES = {"dark": DARK_PHASES, "flat": FLAT_PHASES}
 
 
 def task_label(kind: str | None, phase: str | None = None) -> str:
-    """The label of a commissioning task, from its kind and, for a dark session, its phase."""
+    """The label of a commissioning task, from its kind and, for a session, its phase."""
     if kind is None:
         return TASK_STARTING_LABEL
-    if kind == "dark" and phase in DARK_PHASES:
-        return DARK_PHASES[phase]
+    phases = _TASK_PHASES.get(kind)
+    if phases is not None and phase in phases:
+        return phases[phase]
     return TASK_LABELS.get(kind, f"Commissioning: the {kind} task runs")
 
 
@@ -247,6 +257,7 @@ _STATE_REASONS = {
     "resume command": "you resumed the scheduler, so it checks the sky first",
     "a task is queued": "a commissioning task is queued",
     "a dark session starts at once": "a dark session starts at once",
+    "a flat session starts at once": "a flat session starts at once",
     "commissioning is done": "the commissioning tasks are done",
     "state_change": "the state changed",
 }

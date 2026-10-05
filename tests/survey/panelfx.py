@@ -31,7 +31,8 @@ class PanelCamera:
     `light(index, exposure_s)` replaces the rate: it gives the level in counts above the bias for
     the `index`-th frame that the camera takes (counted from 0 over the whole life of the camera).
     `fail_at` makes that frame raise `CameraTimeoutError`. `after_take` runs after each frame, with
-    the number of frames taken so far.
+    the number of frames taken so far. `read_s` is the time that a frame takes beyond its exposure
+    (the read and the transfer), which the virtual clock advances by.
     """
 
     def __init__(
@@ -47,8 +48,10 @@ class PanelCamera:
         seed: int = 1,
         mode: str = "bin2",
         adc_bits: int = 14,
+        read_s: float = 0.0,
     ) -> None:
         self.clock = clock
+        self.read_s = read_s
         self.truth = truth
         self.rate = rate_dn_per_s
         self.light = light
@@ -77,7 +80,7 @@ class PanelCamera:
         if self.fail_at is not None and index == self.fail_at:
             raise CameraTimeoutError("no frame came")
         self.exposures_s.append(exposure_s)
-        self.clock.sleep(exposure_s)
+        self.clock.sleep(exposure_s + self.read_s)
         level = self.light(index, exposure_s) if self.light is not None else self.rate * exposure_s
         rng = np.random.default_rng([self.seed, index])
         pixels = fx.panel_frame(

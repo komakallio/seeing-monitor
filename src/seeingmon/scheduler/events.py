@@ -17,9 +17,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-# The event that a dark session writes when it moves to another phase. The scheduler reads its
-# `phase` to name the activity (see `Scheduler._note_task_event`).
+# The events that a dark session and a flat session write when they move to another phase. The
+# scheduler reads their `phase` to name the activity, and `expected_s` (the seconds that the phase
+# takes, when the session knows) to announce its end (see `Scheduler._note_task_event`).
 DARK_PHASE_EVENT = "scheduler.dark_phase"
+FLAT_PHASE_EVENT = "scheduler.flat_phase"
 
 EVENT_KINDS: Mapping[str, str] = {
     "scheduler.start": "The scheduler started in `safe`. The detail says whether a site is set.",

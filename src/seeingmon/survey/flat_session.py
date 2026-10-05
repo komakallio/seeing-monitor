@@ -190,7 +190,9 @@ class FlatProgress:
     In `setup`, `build`, and `done` the session has one step. `exposure_s` is the exposure in use,
     and `level_fraction` is the latest level above the bias, as a fraction of the full scale.
     `saturated_fraction` is the share of saturated pixels of the latest frame. `warnings` hold
-    every note of the session so far.
+    every note of the session so far. `expected_s` is the time that the phase takes from this
+    report on, when the session can tell: at the start of `capture`, it is the number of frames
+    times the time that one frame took in the search for the exposure.
     """
 
     phase: FlatPhase
@@ -201,6 +203,7 @@ class FlatProgress:
     level_fraction: float | None = None
     saturated_fraction: float | None = None
     warnings: tuple[str, ...] = ()
+    expected_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +391,9 @@ class _Session:
         self._progress = progress
         self._should_stop = should_stop
         self.watch = _Watch()
+        # The time that a frame takes beyond its exposure (the read and the transfer), as the
+        # latest frame showed it. The estimate of the end of the frames uses it.
+        self.read_s = 0.0
 
     def report(
         self,
@@ -398,6 +404,7 @@ class _Session:
         *,
         exposure_s: float | None = None,
         level: FrameLevel | None = None,
+        expected_s: float | None = None,
     ) -> None:
         self.say(message)
         if self._progress is not None:
@@ -411,6 +418,7 @@ class _Session:
                     level_fraction=None if level is None else level.fraction,
                     saturated_fraction=None if level is None else level.saturated_fraction,
                     warnings=self.watch.texts(),
+                    expected_s=expected_s,
                 )
             )
 
@@ -432,7 +440,11 @@ class _Session:
 
     def take(self, exposure_us: int) -> Frame:
         self.stop_requested()
-        return self.camera.take(exposure_us / 1e6)
+        started = self.clock.monotonic_ns()
+        frame = self.camera.take(exposure_us / 1e6)
+        took_s = (self.clock.monotonic_ns() - started) / 1e9
+        self.read_s = max(0.0, took_s - exposure_us / 1e6)
+        return frame
 
     def measure(self, frame: Frame) -> FrameLevel:
         setup = self.setup
@@ -449,6 +461,13 @@ class _Session:
         low, high = setup.min_exposure_us, setup.max_exposure_us
         next_us = min(max(round(start_s * 1e6), low), high)
         target = options.target_fraction
+        self.report(
+            "exposure",
+            0,
+            options.max_iterations,
+            f"Finding the exposure that reaches {_percent(target)} of full scale.",
+            exposure_s=next_us / 1e6,
+        )
         measured_us, level, tries = next_us, None, 0
         for tries in range(1, options.max_iterations + 1):
             measured_us = next_us
@@ -850,6 +869,7 @@ def _take_set(
         f"Taking {options.frames} frames of {format_exposure(exposure_s)}.",
         exposure_s=exposure_s,
         level=choice.level,
+        expected_s=options.frames * (exposure_s + session.read_s),
     )
     try:
         ser_path.parent.mkdir(parents=True, exist_ok=True)

@@ -148,6 +148,11 @@ def rig(tmp_path: Path) -> Rig:
     return make_rig(tmp_path)
 
 
+def tried(progress: fs.FlatProgress) -> bool:
+    """Whether a report is the result of a try of the search (step 0 is the start of the search)."""
+    return progress.phase == "exposure" and progress.step > 0
+
+
 # --- The search ---------------------------------------------------------------------------------
 
 
@@ -180,14 +185,14 @@ class TestTheSearch:
     def test_a_saturated_try_does_not_fool_the_search(self, tmp_path: Path) -> None:
         made = make_rig(tmp_path, rate_dn_per_s=5_000_000.0)
         made.run()
-        tries = [p.exposure_s for p in made.progress if p.exposure_s and p.phase == "exposure"]
+        tries = [p.exposure_s for p in made.progress if p.exposure_s and tried(p)]
         assert tries[0] == pytest.approx(0.02)
         assert all(a > b for a, b in itertools.pairwise(tries))  # shorter every time
         assert len(tries) <= 4  # the clipped frame cuts the exposure by 8 and the next one lands
 
     def test_the_search_reports_every_try_in_words(self, rig: Rig) -> None:
         rig.run()
-        tries = [p for p in rig.progress if p.phase == "exposure"]
+        tries = [p for p in rig.progress if tried(p)]
         assert [p.step for p in tries] == [1, 2]
         assert tries[0].steps == 8
         assert re.fullmatch(
@@ -196,6 +201,31 @@ class TestTheSearch:
         assert tries[0].exposure_s == pytest.approx(0.02)
         assert tries[0].level_fraction == pytest.approx(0.25, abs=0.02)
         assert tries[1].level_fraction == pytest.approx(0.5, abs=0.03)
+
+    def test_the_search_reports_its_start_before_its_first_try(self, rig: Rig) -> None:
+        rig.run()
+        (start,) = [p for p in rig.progress if p.phase == "exposure" and p.step == 0]
+        assert start.steps == 8
+        assert start.message == "Finding the exposure that reaches 50 % of full scale."
+        assert start.exposure_s == pytest.approx(0.02)
+        assert start.level_fraction is None
+        assert rig.progress.index(start) == [p.phase for p in rig.progress].index("exposure")
+        assert rig.progress[rig.progress.index(start) - 1].phase == "setup"
+
+    def test_the_frames_announce_how_long_they_take(self, tmp_path: Path) -> None:
+        # The search tells how long a frame takes beyond its exposure, and the set takes that
+        # time for each of its frames.
+        made = make_rig(tmp_path, read_s=0.8)
+        made.run()
+        (begin,) = [p for p in made.progress if p.phase == "capture" and p.step == 0]
+        assert begin.expected_s == pytest.approx(FRAMES * (0.039 + 0.8), rel=0.05)
+        others = [p for p in made.progress if p is not begin]
+        assert all(p.expected_s is None for p in others)
+
+    def test_a_camera_without_a_read_time_takes_the_exposures_alone(self, rig: Rig) -> None:
+        rig.run()
+        (begin,) = [p for p in rig.progress if p.phase == "capture" and p.step == 0]
+        assert begin.expected_s == pytest.approx(FRAMES * 0.039, rel=0.05)
 
     def test_the_tries_use_snapshots_of_the_survey_mode_and_gain(self, rig: Rig) -> None:
         rig.run()
@@ -244,7 +274,7 @@ class TestTheSearch:
         result = made.run()
         assert result.level_fraction == pytest.approx(0.4, abs=0.02)
         assert any("not the target of 50 %" in note for note in result.warnings)
-        assert len([p for p in made.progress if p.phase == "exposure"]) == 8
+        assert len([p for p in made.progress if tried(p)]) == 8
 
     def test_a_light_that_jumps_about_is_too_unsteady(self, tmp_path: Path) -> None:
         def jumping(index: int, exposure_s: float) -> float:
@@ -643,7 +673,7 @@ class TestTheSecondSet:
         self.turn_the_source(rig)
         rig.run(set_number=2)
         assert rig.camera.exposures_s[before] == pytest.approx(first.exposure_s)
-        tries = [p for p in rig.progress if p.phase == "exposure"]
+        tries = [p for p in rig.progress if tried(p)]
         assert len(tries) == 2 + 1  # the first set took two tries, and the second one try
 
     def test_the_report_keeps_the_notes_of_both_sets(self, tmp_path: Path) -> None:

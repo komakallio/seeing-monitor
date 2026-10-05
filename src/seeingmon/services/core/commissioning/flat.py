@@ -45,6 +45,7 @@ from seeingmon.drivers.base import CameraConfigError, CameraError
 from seeingmon.profile import Profile, ProfileError
 from seeingmon.scheduler.commands import QueueFlat
 from seeingmon.scheduler.commission import CommissionContext, CommissionResult, CommissionTask
+from seeingmon.scheduler.events import FLAT_PHASE_EVENT
 from seeingmon.services.core.commissioning.dark import ContextCamera
 from seeingmon.services.web.contract import (
     MAX_FLAT_JPEG_BYTES,
@@ -87,7 +88,7 @@ from seeingmon.survey.flat_session import (
 
 _log = logging.getLogger(__name__)
 
-PHASE_EVENT = "scheduler.flat_phase"
+PHASE_EVENT = FLAT_PHASE_EVENT
 TaskState = Literal["idle", "queued", "running", "ok", "failed", "aborted"]
 WAITING_MESSAGE = "The flat session waits for the scheduler to start it."
 # A task starts in `safe` or `auto` only, so a session that you queue in another state waits.
@@ -239,12 +240,14 @@ class _PhaseReporter:
         if progress.phase == self._phase or progress.phase == "done":
             return
         self._phase = progress.phase
-        self._context.emit_event(
-            "info",
-            PHASE_EVENT,
-            progress.message,
-            {"task_id": self._task_id, "phase": progress.phase, "steps": progress.steps},
-        )
+        detail: dict[str, Any] = {
+            "task_id": self._task_id,
+            "phase": progress.phase,
+            "steps": progress.steps,
+        }
+        if progress.expected_s is not None:
+            detail["expected_s"] = round(progress.expected_s, 1)  # the scheduler announces the end
+        self._context.emit_event("info", PHASE_EVENT, progress.message, detail)
 
 
 # --- The handler --------------------------------------------------------------------------------
