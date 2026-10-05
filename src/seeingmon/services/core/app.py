@@ -98,6 +98,8 @@ from seeingmon.services.core.alignment.calibration import (
     PreviewCalibrator,
 )
 from seeingmon.services.core.alignment.helper import AlignmentHelper, Solver
+from seeingmon.services.core.alignment.rapid import RapidFocusHelper
+from seeingmon.services.core.alignment.rapid import build_view as rapid_focus_view
 from seeingmon.services.core.alignment.solve import QuickSolver
 from seeingmon.services.core.alignment.worker import ProcessQuickSolver
 from seeingmon.services.core.commissioning.burst import BurstHandler
@@ -137,6 +139,7 @@ from seeingmon.services.web.contract import (
     POLARIS_CHANNEL,
     RPC_CHANNEL,
     LiveSeeingView,
+    RapidFocusView,
 )
 from seeingmon.sinks.base import Sink
 from seeingmon.store.db import DuplicateRecordError
@@ -331,6 +334,7 @@ class CoreApp:
                 heater=self.heater,
             ),
             alignment_sink=self.alignment.sink,
+            focus_sink=self.rapid,
             result_sink=self._on_result,
         )
         self._register_handlers()
@@ -371,6 +375,13 @@ class CoreApp:
             clock=self.clock,
             renderer=PolarisRenderer(settings, scale_for=scale_for, aperture_for=aperture_for),
             live=self.live_seeing,
+            rapid=self.rapid_focus,
+        )
+        self.rapid = RapidFocusHelper(
+            profile=self.profile,
+            clock=self.clock,
+            polaris=self.polaris,
+            kernel_setup=getattr(self.fast, "kernel_setup", None),
         )
         self.live_fast = LiveFastAnalyzer(self.fast, self.polaris)
         self._live_cache: tuple[Any, LiveSeeingView | None] = (None, None)
@@ -386,6 +397,15 @@ class CoreApp:
             view = live_view(current)
             self._live_cache = (current, view)
         return view
+
+    def rapid_focus(self) -> RapidFocusView | None:
+        """What the rapid focus mode measures now, as the contract describes it.
+
+        The video of Polaris calls it for every frame that the mode offers. It is `None` before the
+        first session.
+        """
+        snapshot = self.rapid.snapshot()
+        return rapid_focus_view(snapshot) if snapshot.active else None
 
     def _build_survey(self) -> None:
         parts, config = self.parts, self.config
@@ -633,6 +653,7 @@ class CoreApp:
             touch=lambda: self.scheduler.touch_alignment(),
             site=load_site(self.config),
             calibrator=self.preview_calibrator,
+            rapid=self.rapid,
         )
 
     def _make_quick_solver(self) -> Solver | None:

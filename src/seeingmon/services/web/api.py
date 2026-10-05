@@ -28,7 +28,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 import seeingmon
 from seeingmon.clock import NS_PER_S
-from seeingmon.scheduler.commands import CancelTask, Command, RejectReason, StopAlignment
+from seeingmon.scheduler.commands import (
+    CancelTask,
+    Command,
+    CommandResult,
+    RejectReason,
+    StopAlignment,
+    StopRapidFocus,
+)
 from seeingmon.services.web.context import WebContext
 from seeingmon.services.web.contract import (
     ActivityView,
@@ -52,7 +59,13 @@ from seeingmon.services.web.data import (
 from seeingmon.services.web.errors import ApiError
 from seeingmon.services.web.health import HealthReport
 from seeingmon.services.web.images import ImageInfo, ImageKey, parse_image_id
-from seeingmon.services.web.live import FrameHub, HistoryCursor, Subscription
+from seeingmon.services.web.live import (
+    RAPID_LISTS,
+    RAPID_PATH,
+    FrameHub,
+    HistoryCursor,
+    Subscription,
+)
 from seeingmon.services.web.models import (
     FLAT_VERSION_PATTERN,
     ActivityResponse,
@@ -81,6 +94,7 @@ from seeingmon.services.web.models import (
     LiveSeeingResponse,
     ModeRequest,
     Order,
+    RapidFocusStartRequest,
     RecordTime,
     ReplayRequest,
     SchedulerStatusResponse,
@@ -374,8 +388,11 @@ def image_item(info: ImageInfo) -> ImageItem:
 
 def command_reply(ctx: WebContext, command: Command) -> JSONResponse:
     """Send a command to the scheduler, and turn its answer into the response of the API."""
-    name = type(command).__name__
-    result = ctx.core.submit(command)
+    return result_reply(type(command).__name__, ctx.core.submit(command))
+
+
+def result_reply(name: str, result: CommandResult) -> JSONResponse:
+    """Turn the answer of the scheduler to the command `name` into the response of the API."""
     _log.info("command %s was %s", name, "accepted" if result.accepted else "rejected")
     message = scrub_text(result.message)
     if result.accepted:
@@ -826,6 +843,58 @@ def post_alignment_focus_reset(ctx: Ctx) -> JSONResponse:
     )
 
 
+@router.post(
+    "/alignment/rapid-focus/start",
+    operation_id="post_alignment_rapid_focus_start",
+    summary="Start the rapid focus mode on Polaris",
+    tags=["alignment"],
+    response_model=CommandResponse,
+    responses=command_responses,
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_alignment_rapid_focus_start(
+    ctx: Ctx, body: RapidFocusStartRequest | None = None
+) -> JSONResponse:
+    """Switch the alignment to the rapid focus mode, or keep that mode alive when it runs.
+
+    The camera then streams a small window of the fast readout mode around Polaris, and `core`
+    measures the width of the star in arcseconds on every frame. The readings come with the
+    video of Polaris, in `rapid_focus` of its state. The mode is offered only while the
+    alignment runs, the stars are coarsely focused, and `core` has located Polaris:
+    `GET /alignment/state` says so in `rapid_focus.available`, and `rapid_focus.reason` says
+    in words what is missing. The request carries no position, because `core` takes it from
+    the solution of the alignment frames. A start while the mode runs restarts its idle timer,
+    and a new exposure or gain changes the stream. The scheduler ends the mode on its own
+    after a time without use, or when the star leaves the window, and the alignment then shows
+    the whole frame again. A refusal is `409` with the reason `not_aligning`, `not_available`
+    (the message says what is missing), `camera_fault`, or `degraded`.
+    """
+    request = body or RapidFocusStartRequest()
+    return result_reply(
+        "StartRapidFocus", ctx.core.rapid_focus_start(request.exposure_us, request.gain)
+    )
+
+
+@router.post(
+    "/alignment/rapid-focus/stop",
+    operation_id="post_alignment_rapid_focus_stop",
+    summary="Stop the rapid focus mode",
+    tags=["alignment"],
+    response_model=CommandResponse,
+    responses=command_responses,
+    dependencies=WRITE,
+    openapi_extra={"security": SECURITY},
+)
+def post_alignment_rapid_focus_stop(ctx: Ctx) -> JSONResponse:
+    """End the rapid focus mode. The alignment shows the whole frame again, and it keeps running.
+
+    A stop while the mode does not run is accepted and changes nothing. The answer is `409`
+    with the reason `not_aligning` when no alignment runs.
+    """
+    return command_reply(ctx, StopRapidFocus())
+
+
 # --- Dark ---
 
 
@@ -1203,6 +1272,8 @@ async def get_polaris_frame(
     one request gets both. Each call keeps the stream to `core` open for a few seconds. Call it as
     often as `ui.polaris_max_fps` says while the page shows the video. A value of `after` above
     the newest number means that the server restarted, and the call returns the newest frame.
+    While the rapid focus mode runs, the header leaves out `rapid_focus.readings`, which are too
+    large for a header: poll `GET /alignment/state` for them.
     """
     hub = ctx.polaris_hub
     hub.touch()
@@ -1210,6 +1281,9 @@ async def get_polaris_frame(
     if latest is None or latest.seq == after:
         return Response(status_code=204)
     state, image = _polaris_parts(latest.frame)
+    rapid = state.get("rapid_focus")
+    if isinstance(rapid, dict):
+        rapid["readings"] = None
     return Response(
         image,
         media_type="image/png",
@@ -1226,7 +1300,9 @@ async def polaris_stream(websocket: WebSocket) -> None:
     # The video pushes the newest frame, with the protocol of `/alignment/stream`: a text message
     # `{"type": "state", "state": {...}}` and then a binary message with the PNG image. The text
     # message `{"type": "idle"}` says that no frame arrived for `stall_s` seconds, and
-    # `{"type": "error", "code": ...}` says that the stream to core broke. With
+    # `{"type": "error", "code": ...}` says that the stream to core broke. The readings of
+    # the rapid focus mode in the state hold all of them in the first message of a viewer
+    # (`reset` true) and the new ones in the next messages (`reset` false). With
     # `require_token_for_reads`, the client sends `{"type": "auth", "token": "..."}` first.
     ctx = websocket.app.state.ctx
     await _serve_stream(
@@ -1363,8 +1439,18 @@ def _polaris_parts(frame: PolarisFrame) -> tuple[dict[str, Any], bytes]:
 
 
 def _polaris_describer() -> Describe[PolarisFrame]:
-    """The `describe` function of one viewer of the video of Polaris, which keeps nothing."""
-    return _polaris_parts
+    """The `describe` function of one viewer of the video of Polaris.
+
+    It keeps what the viewer has received of the readings of the rapid focus mode.
+    """
+    cursor = HistoryCursor(RAPID_PATH, RAPID_LISTS)
+
+    def describe(frame: PolarisFrame) -> tuple[dict[str, Any], bytes]:
+        state, image = _polaris_parts(frame)
+        cursor.delta(state)
+        return state, image
+
+    return describe
 
 
 async def _serve_stream(

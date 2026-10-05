@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from seeingmon.scheduler.commands import StartRapidFocus, StopRapidFocus
 from seeingmon.services.ipc.codec import CodecError
 from seeingmon.services.web.contract import (
     MAX_RAPID_READINGS,
@@ -17,6 +19,10 @@ from seeingmon.services.web.contract import (
     RapidFocusView,
     RapidReadingsView,
     decode_alignment_state,
+    decode_command,
+    decode_rapid_focus_params,
+    encode_command,
+    encode_rapid_focus_params,
     pack_polaris_frame,
     unpack_polaris_frame,
 )
@@ -145,3 +151,64 @@ def test_the_whole_history_in_a_polaris_state_stays_well_inside_the_limit() -> N
 def test_a_state_without_the_mode_stays_as_small_as_before() -> None:
     assert PolarisState.model_validate_json(polaris_state().model_dump_json()).rapid_focus is None
     assert len(polaris_state().model_dump_json()) < 1500
+
+
+# --- The commands and the parameters of the start ---------------------------------------------
+
+
+def test_the_start_command_is_a_flat_object_with_the_center_and_the_settings() -> None:
+    wire = encode_command(StartRapidFocus(1036.0, 705.5, exposure_us=1500, gain=40))
+    assert wire == {
+        "type": "start_rapid_focus",
+        "center_x_px": 1036.0,
+        "center_y_px": 705.5,
+        "exposure_us": 1500,
+        "gain": 40,
+    }
+    assert encode_command(StopRapidFocus()) == {"type": "stop_rapid_focus"}
+
+
+def test_a_start_without_settings_leaves_them_to_the_scheduler() -> None:
+    command = decode_command({"type": "start_rapid_focus", "center_x_px": 10, "center_y_px": 20})
+    assert command == StartRapidFocus(10.0, 20.0)
+    assert isinstance(command, StartRapidFocus)
+    assert (command.exposure_us, command.gain) == (None, None)
+    assert encode_command(command)["exposure_us"] is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"type": "start_rapid_focus"},
+        {"type": "start_rapid_focus", "center_x_px": 1.0},
+        {"type": "start_rapid_focus", "center_y_px": 1.0},
+        {"type": "start_rapid_focus", "center_x_px": "10", "center_y_px": 1.0},
+        {"type": "start_rapid_focus", "center_x_px": True, "center_y_px": 1.0},
+        {"type": "start_rapid_focus", "center_x_px": math.nan, "center_y_px": 1.0},
+        {"type": "start_rapid_focus", "center_x_px": 1.0, "center_y_px": math.inf},
+        {"type": "start_rapid_focus", "center_x_px": 1.0, "center_y_px": 1.0, "exposure_us": 1.5},
+        {"type": "start_rapid_focus", "center_x_px": 1.0, "center_y_px": 1.0, "gain": True},
+        {"type": "start_rapid_focus", "center_x_px": 1.0, "center_y_px": 1.0, "extra": 1},
+        {"type": "stop_rapid_focus", "extra": 1},
+    ],
+)
+def test_a_malformed_rapid_focus_command_is_refused(value: Any) -> None:
+    with pytest.raises(CodecError):
+        decode_command(value)
+
+
+def test_the_parameters_of_the_start_method_survive_the_round_trip() -> None:
+    assert encode_rapid_focus_params(None, None) == {"exposure_us": None, "gain": None}
+    for exposure_us, gain in [(None, None), (1500, None), (None, 30), (1500, 30)]:
+        wire = json.loads(json.dumps(encode_rapid_focus_params(exposure_us, gain)))
+        assert decode_rapid_focus_params(wire) == (exposure_us, gain)
+    assert decode_rapid_focus_params({}) == (None, None)  # a client that sends no parameter
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, [], "fast", {"exposure_us": 1.5}, {"gain": "high"}, {"gain": True}, {"position": 1}],
+)
+def test_malformed_parameters_of_the_start_method_are_refused(value: Any) -> None:
+    with pytest.raises(CodecError):
+        decode_rapid_focus_params(value)

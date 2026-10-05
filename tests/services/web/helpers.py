@@ -31,6 +31,7 @@ from seeingmon.services.web.contract import (
     METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
+    METHOD_RAPID_FOCUS_START,
     METHOD_STATUS,
     METHOD_SUBMIT,
     POLARIS_CHANNEL,
@@ -51,6 +52,7 @@ from seeingmon.services.web.contract import (
     SolvedView,
     TargetView,
     decode_command,
+    decode_rapid_focus_params,
     encode_flat_image,
     encode_result,
     pack_frame,
@@ -213,6 +215,7 @@ class ReferenceCore:
             METHOD_FLAT_ACTIVATE: self._flat_activate,
             METHOD_FLAT_DELETE: self._flat_delete,
             METHOD_FLAT_IMAGE: self._flat_image,
+            METHOD_RAPID_FOCUS_START: self._rapid_focus_start,
         }
         self.raw_payloads: list[bytes] = []  # sent before the frames, to test a bad message
         self.raw_polaris_payloads: list[bytes] = []
@@ -236,6 +239,10 @@ class ReferenceCore:
     def _submit(self, params: Mapping[str, Any]) -> Any:
         command = decode_command(as_mapping(params, "params").get("command"))
         return encode_result(self.backend.submit(command))
+
+    def _rapid_focus_start(self, params: Mapping[str, Any]) -> Any:
+        exposure_us, gain = decode_rapid_focus_params(params)
+        return encode_result(self.backend.rapid_focus_start(exposure_us, gain))
 
     def _alignment_state(self, params: Mapping[str, Any]) -> Any:
         return self.backend.alignment_state().model_dump(mode="json")

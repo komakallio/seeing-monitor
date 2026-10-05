@@ -70,7 +70,7 @@
             "title": "Next Utc"
           },
           "phase": {
-            "description": "What the scheduler does within the state. `auto` has `fast` (the fast stream), `survey_short` and `survey_long` (the two exposures of the survey step), `solve_wait` (it waits for a pointing solution), and `idle` (the camera rests until the next slot of the cycle). The other states have `watch` (the brightness watch of `safe`), `align`, `commission`, and `paused`. `camera_fault` replaces the phase while the scheduler waits to try a recovery step of the camera.",
+            "description": "What the scheduler does within the state. `auto` has `fast` (the fast stream), `survey_short` and `survey_long` (the two exposures of the survey step), `solve_wait` (it waits for a pointing solution), and `idle` (the camera rests until the next slot of the cycle). The other states have `watch` (the brightness watch of `safe`), `align`, `rapid_focus` (the rapid focus mode inside the alignment), `commission`, and `paused`. `camera_fault` replaces the phase while the scheduler waits to try a recovery step of the camera.",
             "title": "Phase",
             "type": "string"
           },
@@ -4492,6 +4492,42 @@
         "title": "Quality",
         "type": "object"
       },
+      "RapidFocusStartRequest": {
+        "additionalProperties": false,
+        "description": "Start the rapid focus mode on Polaris, or keep it alive.\n\nLeave a field out to keep the setting that runs, or to take the setting of the fast stream\nwhen the mode does not run yet. The request carries no position: `core` takes the pixel of\nPolaris from the solution of the alignment frames. The scheduler checks the exposure and\nthe gain against the limits of the camera.",
+        "properties": {
+          "exposure_us": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exposure of a frame in microseconds. Without it, the mode keeps the exposure that runs, or takes the exposure of the fast stream.",
+            "title": "Exposure Us"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The gain. Without it, the mode keeps the gain that runs, or takes the gain of the fast stream.",
+            "title": "Gain"
+          }
+        },
+        "title": "RapidFocusStartRequest",
+        "type": "object"
+      },
       "RapidFocusView": {
         "description": "The rapid focus mode: whether it is offered, and, while it runs, what it measures.\n\nIn the rapid focus mode the camera streams the fast readout mode on a small ROI around Polaris\n(128 by 128 pixels in bin1, 1.91 arcseconds per pixel) at the camera rate, and `core` reports\nthe width of the star in arcseconds 20 times a second, with the live video of the star on the\n`polaris` channel. Only one star counts: Polaris.\n\n**Offered.** `available` is `true` while the alignment runs, the coarse focus is good enough\n(the stars of the normal view are at most `max_fwhm_arcsec` wide), and `core` knows where\nPolaris is (`located_by` says how). Otherwise `reason` says in words what is missing. While the\nmode runs, `available` stays `true`, because a start request then restarts its idle timer.\n`POST /alignment/rapid-focus/start` takes no position: `core` places the ROI by itself.\n\n**Running.** `active` is `true` from the start to the end of the mode. `since_utc` is the\nstart, and `mode`, `exposure_us`, `gain`, `roi`, and `scale_arcsec_px` describe the stream. The\nvalue of the newest reading is `fwhm_arcsec`, and `best_fwhm_arcsec` is the lowest smoothed\nvalue of the session (the lowest median of ten to twenty consecutive readings that are not\nspikes and not saturated). `n_stars` is 1 while the star shows in the frames, and 0 while it\ndoes not. `readings` holds the history. A mode that ended on its own says why in\n`ended_reason` until the next session starts.",
         "properties": {
@@ -7490,6 +7526,237 @@
         ]
       }
     },
+    "/api/v1/alignment/rapid-focus/start": {
+      "post": {
+        "description": "Switch the alignment to the rapid focus mode, or keep that mode alive when it runs.\n\nThe camera then streams a small window of the fast readout mode around Polaris, and `core`\nmeasures the width of the star in arcseconds on every frame. The readings come with the\nvideo of Polaris, in `rapid_focus` of its state. The mode is offered only while the\nalignment runs, the stars are coarsely focused, and `core` has located Polaris:\n`GET /alignment/state` says so in `rapid_focus.available`, and `rapid_focus.reason` says\nin words what is missing. The request carries no position, because `core` takes it from\nthe solution of the alignment frames. A start while the mode runs restarts its idle timer,\nand a new exposure or gain changes the stream. The scheduler ends the mode on its own\nafter a time without use, or when the star leaves the window, and the alignment then shows\nthe whole frame again. A refusal is `409` with the reason `not_aligning`, `not_available`\n(the message says what is missing), `camera_fault`, or `degraded`.",
+        "operationId": "post_alignment_rapid_focus_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RapidFocusStartRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Start the rapid focus mode on Polaris",
+        "tags": [
+          "alignment"
+        ]
+      }
+    },
+    "/api/v1/alignment/rapid-focus/stop": {
+      "post": {
+        "description": "End the rapid focus mode. The alignment shows the whole frame again, and it keeps running.\n\nA stop while the mode does not run is accepted and changes nothing. The answer is `409`\nwith the reason `not_aligning` when no alignment runs.",
+        "operationId": "post_alignment_rapid_focus_stop",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler accepted the command."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The token is missing or wrong."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The server has no token configured, so it refuses every command."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "The scheduler cannot do this in its current state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body is too large."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A parameter or the body is not valid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The client sent too many requests."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The core process answered something that the web process cannot use."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store or the core process is not available."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stop the rapid focus mode",
+        "tags": [
+          "alignment"
+        ]
+      }
+    },
     "/api/v1/alignment/start": {
       "post": {
         "description": "Start the alignment stream, or keep it alive when it already runs.\n\nThe command preempts every other mode. Send it again to restart the idle timer.",
@@ -9867,7 +10134,7 @@
     },
     "/api/v1/polaris/frame": {
       "get": {
-        "description": "Return the newest frame of the video of Polaris, for a client that cannot use the WebSocket.\n\nThe image is a lossless 8-bit grayscale PNG with the size of the ROI, so a page can magnify it\nwithout interpolation. The state of the same frame travels in the header `X-Frame-State`, so\none request gets both. Each call keeps the stream to `core` open for a few seconds. Call it as\noften as `ui.polaris_max_fps` says while the page shows the video. A value of `after` above\nthe newest number means that the server restarted, and the call returns the newest frame.",
+        "description": "Return the newest frame of the video of Polaris, for a client that cannot use the WebSocket.\n\nThe image is a lossless 8-bit grayscale PNG with the size of the ROI, so a page can magnify it\nwithout interpolation. The state of the same frame travels in the header `X-Frame-State`, so\none request gets both. Each call keeps the stream to `core` open for a few seconds. Call it as\noften as `ui.polaris_max_fps` says while the page shows the video. A value of `after` above\nthe newest number means that the server restarted, and the call returns the newest frame.\nWhile the rapid focus mode runs, the header leaves out `rapid_focus.readings`, which are too\nlarge for a header: poll `GET /alignment/state` for them.",
         "operationId": "get_polaris_frame",
         "parameters": [
           {

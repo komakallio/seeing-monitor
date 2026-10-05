@@ -5,18 +5,19 @@ which `web` owns and `core` implements):
 
 - **`rpc`**, an `RpcService` with the methods `ping`, `status`, `submit`, `alignment_state`,
   `alignment_reset_focus`, `dark_library`, `live_seeing`, `flat_library`, `flat_activate`,
-  `flat_delete`, and `flat_image`. Every method answers at once, so all of them run inline on the
-  connection thread and no worker is needed. `alignment_reset_focus` restarts the best focus value
-  of the helper and answers `{"reset": true}`. `dark_library` answers with the `DarkLibraryView` as
-  JSON: the sets of the dark library, whether it is due, the model, the sensor temperature, and the
-  progress of the latest dark session. `live_seeing` answers with the `LiveSeeingView`, the rolling
-  seeing value of the fast stream, or with `null` while `core` has none. `flat_library` answers
-  with the `FlatLibraryView`: the flats with the numbers of their reports, the flat in use, the
-  flat that waits for a decision, and the progress of the latest flat session. `flat_activate` and
-  `flat_delete` change the library, and `flat_image` answers with the preview of a flat. `core`
-  adds one method that the contract does not name: `results` answers with the latest commissioning
-  results (the `detail` of each result), so that `seeingmon burst --wait` can show the outcome of
-  its task. A client that does not know the method never calls it.
+  `flat_delete`, `flat_image`, and `rapid_focus_start`. Every method answers at once, so all of
+  them run inline on the connection thread and no worker is needed. `alignment_reset_focus`
+  restarts the best focus value of the helper and answers `{"reset": true}`. `dark_library`
+  answers with the `DarkLibraryView` as JSON: the sets of the dark library, whether it is due,
+  the model, the sensor temperature, and the progress of the latest dark session. `live_seeing`
+  answers with the `LiveSeeingView`, the rolling seeing value of the fast stream, or with `null`
+  while `core` has none. `flat_library` answers with the `FlatLibraryView`: the flats with the
+  numbers of their reports, the flat in use, the flat that waits for a decision, and the progress
+  of the latest flat session. `flat_activate` and `flat_delete` change the library, and
+  `flat_image` answers with the preview of a flat. `core` adds one method that the contract does
+  not name: `results` answers with the latest commissioning results (the `detail` of each
+  result), so that `seeingmon burst --wait` can show the outcome of its task. A client that does
+  not know the method never calls it.
 - **`alignment`**, a `StreamService`. The helper takes each client as a `StreamSender` and pushes
   the frames of the live view (see `seeingmon.services.core.alignment.helper`).
 - **`polaris`**, a `StreamService`. `PolarisStream` takes each client as a `StreamSender` and pushes
@@ -32,6 +33,12 @@ set needs the first set of a session. A command that fails the check is a normal
 it sees. The owner of the RPC can ask to hear about each command that the scheduler accepted
 (`on_accepted`), which is how `core` learns that a dark or flat task is queued, or that a flat task
 was cancelled.
+
+**Rapid focus.** `rapid_focus_start` asks the alignment helper for the command that starts the
+mode (`rapid_start_command`), which holds the judgement of what the alignment state offers and
+the center of the ROI, and it submits that command like `submit` does. A mode that the helper does
+not offer is a normal answer with `accepted` false: the reason is `not_aligning` outside the
+alignment and `not_available` otherwise, and the message says in words what is missing.
 
 **Roles.** A client names itself in the hello parameters (`role` is `web` or `cli`). The health
 record counts the `web` component as `ok` while a client with that role is connected.
@@ -49,6 +56,7 @@ from seeingmon.scheduler.commands import (
     QueueFlat,
     QueueReplay,
     RejectReason,
+    StartRapidFocus,
 )
 from seeingmon.scheduler.commission import CommissionResult
 from seeingmon.scheduler.status import SchedulerStatus
@@ -66,6 +74,7 @@ from seeingmon.services.web.contract import (
     METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
+    METHOD_RAPID_FOCUS_START,
     METHOD_STATUS,
     METHOD_SUBMIT,
     AlignmentState,
@@ -74,6 +83,7 @@ from seeingmon.services.web.contract import (
     FlatLibraryView,
     LiveSeeingView,
     decode_command,
+    decode_rapid_focus_params,
     encode_flat_image,
     encode_result,
     encode_status,
@@ -104,6 +114,10 @@ class AlignmentPort(Protocol):
     def state(self) -> AlignmentState: ...
 
     def reset_focus(self) -> None: ...
+
+    def rapid_start_command(
+        self, exposure_us: int | None = None, gain: int | None = None
+    ) -> tuple[StartRapidFocus | None, str]: ...
 
     def attach(self, sender: StreamSender, params: Mapping[str, Any] | None = None) -> None: ...
 
@@ -169,6 +183,7 @@ class CoreRpc:
             METHOD_ALIGNMENT_STATE: self._alignment_state,
             METHOD_ALIGNMENT_RESET_FOCUS: self._alignment_reset_focus,
             METHOD_RESULTS: self._results,
+            METHOD_RAPID_FOCUS_START: self._rapid_focus_start,
         }
         if self._dark_library is not None:
             methods[METHOD_DARK_LIBRARY] = self._answer_dark_library
@@ -238,22 +253,36 @@ class CoreRpc:
 
     def _submit(self, params: Mapping[str, Any]) -> Any:
         command = decode_command(as_mapping(params, "params").get("command"))
+        return self._hand_over(command)
+
+    def _rapid_focus_start(self, params: Mapping[str, Any]) -> Any:
+        exposure_us, gain = decode_rapid_focus_params(params)
+        command, problem = self._alignment.rapid_start_command(exposure_us, gain)
+        if command is None:
+            aligning = self._scheduler.status().state == "align"
+            reason = RejectReason.NOT_AVAILABLE if aligning else RejectReason.NOT_ALIGNING
+            return self._refuse("StartRapidFocus", problem, reason)
+        return self._hand_over(command)
+
+    def _refuse(self, name: str, problem: str, reason: RejectReason) -> Any:
+        """The answer to a command that `core` refuses before the scheduler sees it."""
+        self.refused += 1
+        state = self._scheduler.status().state
+        if self._writer is not None:
+            self._writer.emit(
+                "warning",
+                "core.command_refused",
+                f"Refused {name}: {problem}",
+                {"command": name},
+            )
+        return encode_result(
+            CommandResult(accepted=False, message=problem, state=state, reason=reason)
+        )
+
+    def _hand_over(self, command: Command) -> Any:
         problem = self._problem_with(command)
         if problem is not None:
-            self.refused += 1
-            state = self._scheduler.status().state
-            if self._writer is not None:
-                self._writer.emit(
-                    "warning",
-                    "core.command_refused",
-                    f"Refused {type(command).__name__}: {problem}",
-                    {"command": type(command).__name__},
-                )
-            return encode_result(
-                CommandResult(
-                    accepted=False, message=problem, state=state, reason=RejectReason.INVALID
-                )
-            )
+            return self._refuse(type(command).__name__, problem, RejectReason.INVALID)
         self.submitted += 1
         result = self._scheduler.submit(command)
         if result.accepted and self._on_accepted is not None:

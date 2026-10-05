@@ -46,6 +46,8 @@ COMMANDS: list[tuple[str, dict[str, Any]]] = [
     ("/mode", {"mode": "paused"}),
     ("/alignment/start", {}),
     ("/alignment/stop", {}),
+    ("/alignment/rapid-focus/start", {}),
+    ("/alignment/rapid-focus/stop", {}),
 ]
 
 
@@ -389,6 +391,8 @@ def test_a_rejection_is_a_409_with_the_reason(client: TestClient, core: FakeCore
         (RejectReason.NOT_PAUSED, 409),
         (RejectReason.NOT_ALIGNING, 409),
         (RejectReason.DEGRADED, 409),
+        (RejectReason.CAMERA_FAULT, 409),
+        (RejectReason.NOT_AVAILABLE, 409),
         (RejectReason.NO_HANDLER, 409),
         (RejectReason.QUEUE_FULL, 409),
         (RejectReason.BUSY, 409),

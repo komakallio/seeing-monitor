@@ -25,7 +25,9 @@ from seeingmon.scheduler.commands import (
     RejectReason,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.scheduler.status import (
     ActivityStatus,
@@ -78,6 +80,9 @@ COMMANDS: list[Command] = [
     StartAlignment(),
     StartAlignment(exposure_s=0.25, gain=90),
     StopAlignment(),
+    StartRapidFocus(1036.0, 705.5),
+    StartRapidFocus(10.5, 20.25, exposure_us=1500, gain=40),
+    StopRapidFocus(),
     Pause(),
     Resume(),
     QueueBurst(),
@@ -148,6 +153,8 @@ def test_the_names_of_the_commands_are_the_documented_ones() -> None:
     assert names == {
         "start_alignment",
         "stop_alignment",
+        "start_rapid_focus",
+        "stop_rapid_focus",
         "pause",
         "resume",
         "queue_burst",
@@ -539,6 +546,7 @@ def test_the_methods_are_the_documented_ones() -> None:
         "flat_activate",
         "flat_delete",
         "flat_image",
+        "rapid_focus_start",
     )
 
 

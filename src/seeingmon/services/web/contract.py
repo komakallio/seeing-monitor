@@ -32,6 +32,15 @@ value. A call that fails raises an exception that the connection layer sends bac
   `FlatActionView`: `ok`, or a `reason` (`unknown`, `active`, `invalid`, or `busy`) and a sentence.
 - `flat_image` takes `{"version": ...}` and answers `{"found": bool, "jpeg": "<base64>"}`, the
   preview of a flat as a JPEG of at most `MAX_FLAT_JPEG_BYTES`.
+- `rapid_focus_start` takes `{"exposure_us": <int or null>, "gain": <int or null>}` (both
+  optional) and answers with the `CommandResult` as JSON, as `submit` does. `core` judges whether
+  the rapid focus mode is offered (`AlignmentState.rapid_focus`), takes the center of the ROI from
+  the place where it found Polaris, and submits `StartRapidFocus` to the scheduler. A start that
+  `core` does not offer is a normal answer with `"accepted": false`, the reason `not_available`,
+  and the missing condition in words in `message`. While the mode runs, the call keeps it alive
+  (it restarts the idle timer), and a new exposure or gain changes the stream. A setting that is
+  `null` keeps the value that runs, or takes the value of the fast stream when the mode does not
+  run yet. Stop the mode with `submit` and the command `stop_rapid_focus`.
 
 `submit` hands the command to `Scheduler.submit` and answers at once. A rejected command is a
 normal answer with `"accepted": false`, and not an error. A command that `decode_command` refuses
@@ -45,7 +54,10 @@ length of the JSON state (4 bytes, little endian), the JSON state, and then the 
 the message. The state describes the same frame as the JPEG. `core` skips frames when the window is
 full, so a slow consumer never makes `core` buffer. While the stream is open, `core` treats the
 person as present and calls `Scheduler.touch_alignment` now and then, so the idle timer does not end
-`align`. Outside alignment, the stream stays open and sends nothing.
+`align`. Outside alignment, the stream stays open and sends nothing. While the rapid focus mode
+runs, the stream sends nothing either, because the camera streams the fast readout mode and no
+alignment frame arrives. The `polaris` channel carries the video and the readings then, and the
+first alignment frame after the mode ends says so in `rapid_focus`.
 
 **Channel `polaris`** (a `StreamService`). `web` opens one stream at a time, and only while a person
 watches the live video of Polaris. While the fast stream runs, `core` sends one data message for
@@ -58,13 +70,18 @@ skips frames when the window is full, so a slow consumer never makes `core` buff
 stream is open `core` copies and encodes nothing. `core` sends `"seq": 0` in the state, because the
 hub of `web` numbers the frames that it receives and stamps the number. Only the frames that the
 fast analyzer receives go out, so the frames of the survey, the alignment, and the bursts never
-reach this channel.
+reach this channel. The rapid focus mode of the alignment is the one exception: its frames are
+fast-mode frames of a small ROI around Polaris, and they go out with `rapid_focus` in the state,
+which holds the readings of the width of the star (`RapidFocusView`).
 
 **Commands.** `encode_command` writes a command as `{"type": <name>, ...fields}`. The names are
 `start_alignment`, `stop_alignment`, `pause`, `resume`, `queue_burst`, `queue_sweep`,
-`queue_replay`, `queue_dark`, `queue_flat`, and `cancel_task`. A field that the command lacks takes
-the default of the dataclass. `queue_replay` names its source (`source`) as a recording name
-without a directory part, and `core` resolves it under the configured recordings folder.
+`queue_replay`, `queue_dark`, `queue_flat`, `cancel_task`, `start_rapid_focus`, and
+`stop_rapid_focus`. A field that the command lacks takes the default of the dataclass.
+`queue_replay` names its source (`source`) as a recording name without a directory part, and
+`core` resolves it under the configured recordings folder. `start_rapid_focus` names the center
+of the ROI (`center_x_px`, `center_y_px`) in pixels of the fast readout mode. The web API never
+sends it, because `rapid_focus_start` lets `core` choose the center.
 """
 
 from __future__ import annotations
@@ -91,7 +108,9 @@ from seeingmon.scheduler.commands import (
     RejectReason,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.scheduler.status import SchedulerStatus
 from seeingmon.services.ipc.codec import (
@@ -122,6 +141,7 @@ METHOD_FLAT_LIBRARY = "flat_library"
 METHOD_FLAT_ACTIVATE = "flat_activate"
 METHOD_FLAT_DELETE = "flat_delete"
 METHOD_FLAT_IMAGE = "flat_image"
+METHOD_RAPID_FOCUS_START = "rapid_focus_start"
 METHODS = (
     METHOD_PING,
     METHOD_STATUS,
@@ -134,6 +154,7 @@ METHODS = (
     METHOD_FLAT_ACTIVATE,
     METHOD_FLAT_DELETE,
     METHOD_FLAT_IMAGE,
+    METHOD_RAPID_FOCUS_START,
 )
 
 FRAME_MAGIC = b"SMAF"
@@ -186,6 +207,16 @@ def encode_command(command: Command) -> dict[str, Any]:
         return {"type": "start_alignment", "exposure_s": command.exposure_s, "gain": command.gain}
     if isinstance(command, StopAlignment):
         return {"type": "stop_alignment"}
+    if isinstance(command, StartRapidFocus):
+        return {
+            "type": "start_rapid_focus",
+            "center_x_px": command.center_x_px,
+            "center_y_px": command.center_y_px,
+            "exposure_us": command.exposure_us,
+            "gain": command.gain,
+        }
+    if isinstance(command, StopRapidFocus):
+        return {"type": "stop_rapid_focus"}
     if isinstance(command, Pause):
         return {"type": "pause"}
     if isinstance(command, Resume):
@@ -259,6 +290,17 @@ def decode_command(value: Any) -> Command:
     if kind in ("stop_alignment", "pause", "resume"):
         _expect_keys(body, what, ())
         return {"stop_alignment": StopAlignment, "pause": Pause, "resume": Resume}[kind]()
+    if kind == "start_rapid_focus":
+        _expect_keys(body, what, ("center_x_px", "center_y_px"), ("exposure_us", "gain"))
+        return StartRapidFocus(
+            center_x_px=get_float(body, "center_x_px", what),
+            center_y_px=get_float(body, "center_y_px", what),
+            exposure_us=get_opt_int(body, "exposure_us", what),
+            gain=get_opt_int(body, "gain", what),
+        )
+    if kind == "stop_rapid_focus":
+        _expect_keys(body, what, ())
+        return StopRapidFocus()
     if kind == "queue_burst":
         _expect_keys(body, what, (), ("duration_s", "stream", "label", "priority"))
         stream = body.get("stream")
@@ -355,6 +397,18 @@ def decode_command(value: Any) -> Command:
     raise CodecError("command.type is not a command that core accepts")
 
 
+def encode_rapid_focus_params(exposure_us: int | None, gain: int | None) -> dict[str, Any]:
+    """The parameters of the `rapid_focus_start` method. `None` leaves the setting to `core`."""
+    return {"exposure_us": exposure_us, "gain": gain}
+
+
+def decode_rapid_focus_params(value: Any) -> tuple[int | None, int | None]:
+    """The inverse of `encode_rapid_focus_params`: `(exposure_us, gain)`. Raises `CodecError`."""
+    data = as_mapping(value, "params")
+    _expect_keys(data, "params", (), ("exposure_us", "gain"))
+    return get_opt_int(data, "exposure_us", "params"), get_opt_int(data, "gain", "params")
+
+
 def encode_result(result: CommandResult) -> dict[str, Any]:
     """A `CommandResult` as the JSON object that `submit` answers with."""
     return {
@@ -439,9 +493,9 @@ class ActivityView(_View):
     """What the scheduler does now, for how long, and what comes next (`ActivityStatus`).
 
     `phase` is one of `fast`, `survey_short`, `survey_long`, `solve_wait`, `idle`, `watch`,
-    `align`, `commission`, `paused`, and `camera_fault`. Times are nanoseconds since the Unix
-    epoch, in UTC. The text fields are plain words, and a value that the scheduler does not know
-    is `None`.
+    `align`, `rapid_focus`, `commission`, `paused`, and `camera_fault`. Times are nanoseconds
+    since the Unix epoch, in UTC. The text fields are plain words, and a value that the
+    scheduler does not know is `None`.
     """
 
     state: str

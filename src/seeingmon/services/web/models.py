@@ -323,6 +323,27 @@ class AlignmentStartRequest(_Request):
         return StartAlignment(exposure_s=self.exposure_s, gain=self.gain)
 
 
+class RapidFocusStartRequest(_Request):
+    """Start the rapid focus mode on Polaris, or keep it alive.
+
+    Leave a field out to keep the setting that runs, or to take the setting of the fast stream
+    when the mode does not run yet. The request carries no position: `core` takes the pixel of
+    Polaris from the solution of the alignment frames. The scheduler checks the exposure and
+    the gain against the limits of the camera.
+    """
+
+    exposure_us: _ExposureUs | None = Field(
+        None,
+        description="The exposure of a frame in microseconds. Without it, the mode keeps the "
+        "exposure that runs, or takes the exposure of the fast stream.",
+    )
+    gain: _Gain | None = Field(
+        None,
+        description="The gain. Without it, the mode keeps the gain that runs, or takes the "
+        "gain of the fast stream.",
+    )
+
+
 class CommandResponse(_Response):
     """The scheduler's answer to a command. A rejection has `accepted` false and a `reason`."""
 
@@ -704,7 +725,8 @@ class ActivityResponse(_Response):
             "`survey_short` and `survey_long` (the two exposures of the survey step), "
             "`solve_wait` (it waits for a pointing solution), and `idle` (the camera rests "
             "until the next slot of the cycle). The other states have `watch` (the brightness "
-            "watch of `safe`), `align`, `commission`, and `paused`. `camera_fault` replaces the "
+            "watch of `safe`), `align`, `rapid_focus` (the rapid focus mode inside the "
+            "alignment), `commission`, and `paused`. `camera_fault` replaces the "
             "phase while the scheduler waits to try a recovery step of the camera."
         )
     )

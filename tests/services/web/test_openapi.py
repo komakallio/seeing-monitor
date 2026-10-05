@@ -123,7 +123,7 @@ def test_every_operation_has_an_id_a_summary_a_description_and_a_tag(
 
 def test_every_post_names_the_token_and_the_documented_failures(document: dict[str, Any]) -> None:
     posts = [(path, op) for method, path, op in operations(document) if method == "post"]
-    assert len(posts) == 11
+    assert len(posts) == 13
     for path, operation in posts:
         assert operation["security"] == [{"bearerAuth": []}], path
         # The reset of the best focus value takes no body and is no scheduler command.
@@ -197,6 +197,8 @@ def test_the_documented_endpoints_are_the_ones_of_the_architecture(
         "/alignment/stop",
         "/alignment/state",
         "/alignment/focus/reset",
+        "/alignment/rapid-focus/start",
+        "/alignment/rapid-focus/stop",
         "/seeing/live",
         "/polaris/frame",
         "/dark",

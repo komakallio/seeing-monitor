@@ -25,6 +25,11 @@ state before the server sends it: the first message of a viewer holds the whole 
 that skips a frame still gets every point, because the cursor follows what the viewer received and
 not what the hub saw.
 
+The readings of the rapid focus mode follow the same rule. `core` sends all of them (the last
+600) in the state of every frame of the video of Polaris while the mode runs, and the cursor of
+each Polaris WebSocket client cuts them down to the readings that this client lacks. The poll
+route of the video leaves them out of its header.
+
 **Event loop.** A hub belongs to one event loop. It creates its tasks in the loop that runs the
 first call, and it starts again if a later call comes from another loop.
 """
@@ -56,26 +61,47 @@ Sleep = Callable[[float], Awaitable[None]]
 F = TypeVar("F")
 
 
-# The lists of `FocusHistoryView` that hold one entry for each point.
+# The lists of `FocusHistoryView` that hold one entry for each point, and where it sits in a state.
 HISTORY_LISTS = ("index", "seq", "t_utc_ms", "fwhm_px", "fwhm_arcsec", "n_stars", "spike")
+HISTORY_PATH = ("focus", "history")
+# The same for the readings of the rapid focus mode (`RapidReadingsView`).
+RAPID_LISTS = (
+    "index",
+    "t_utc_ms",
+    "fwhm_arcsec",
+    "peak_fraction",
+    "n_frames",
+    "spike",
+    "saturated",
+)
+RAPID_PATH = ("rapid_focus", "readings")
 
 
 class HistoryCursor:
-    """What one viewer has received of the focus history. See the module text."""
+    """What one viewer has received of a history. See the module text.
 
-    def __init__(self) -> None:
+    The history is the focus history or the readings of the rapid focus mode. `path` says
+    where it sits in a state, and `lists` names its lists that hold one entry for each point.
+    """
+
+    def __init__(
+        self, path: tuple[str, ...] = HISTORY_PATH, lists: tuple[str, ...] = HISTORY_LISTS
+    ) -> None:
+        self._path = path
+        self._lists = lists
         self._session: int | None = None
         self._last = 0
 
     def delta(self, state: dict[str, Any]) -> None:
-        """Cut the focus history of a state (as JSON) down to the points that this viewer lacks.
+        """Cut the history of a state (as JSON) down to the points that this viewer lacks.
 
         The history stays whole, with `reset` true, for a viewer that has seen nothing, for a new
-        session, and for a history that runs backward (`core` restarted). A state without a focus
+        session, and for a history that runs backward (`core` restarted). A state without the
         history stays as it is.
         """
-        focus = state.get("focus")
-        history = focus.get("history") if isinstance(focus, dict) else None
+        history: Any = state
+        for key in self._path:
+            history = history.get(key) if isinstance(history, dict) else None
         if not isinstance(history, dict):
             return
         index: list[int] = history.get("index") or []
@@ -90,7 +116,7 @@ class HistoryCursor:
             self._last = index[-1] if index else 0
             return
         keep = [position for position, number in enumerate(index) if number > self._last]
-        for name in HISTORY_LISTS:
+        for name in self._lists:
             history[name] = [history[name][position] for position in keep]
         history["reset"] = False
         if keep:

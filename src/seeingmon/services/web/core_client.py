@@ -1,10 +1,11 @@
 """The seam between the web process and `core`: the `CoreClient` protocol and its two clients.
 
 The API needs these things from `core`: the status of the scheduler, a way to submit a scheduler
-command, the state of the alignment helper, the dark library with the progress of the dark task,
-the flat library with the progress of the flat task (and a way to use a flat, to delete one, and to
-read its preview), the rolling seeing value, and the frames of the two live views (the alignment
-helper and the video of Polaris). `CoreClient` names them.
+command, the start of the rapid focus mode (`core` knows where Polaris is), the state of the
+alignment helper, the dark library with the progress of the dark task, the flat library with the
+progress of the flat task (and a way to use a flat, to delete one, and to read its preview), the
+rolling seeing value, and the frames of the two live views (the alignment helper and the video
+of Polaris). `CoreClient` names them.
 
 - `RpcCoreClient` is the production client. It connects to `core` over the local connection layer
   and speaks the methods that `seeingmon.services.web.contract` documents. It connects when the
@@ -16,9 +17,9 @@ helper and the video of Polaris). `CoreClient` names them.
 - `FakeCoreClient` answers in memory, for tests and for the demo. It follows the rules of the real
   scheduler for the commands, and it streams the frames of a source that you give it.
 
-The calls `status`, `submit`, `alignment_state`, `dark_library`, `live_seeing`, and the four flat
-calls block, so call them from a thread (FastAPI runs a plain `def` endpoint in its thread pool).
-`alignment_frames` and `polaris_frames` are async iterators.
+The calls `status`, `submit`, `rapid_focus_start`, `alignment_state`, `dark_library`,
+`live_seeing`, and the four flat calls block, so call them from a thread (FastAPI runs a plain
+`def` endpoint in its thread pool). `alignment_frames` and `polaris_frames` are async iterators.
 
 **Errors.** A call raises `CoreUnavailableError` when `core` cannot be reached or does not answer in
 time, and `CoreProtocolError` when `core` answers something that this client cannot use. Neither
@@ -48,7 +49,9 @@ from seeingmon.scheduler.commands import (
     RejectReason,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.ipc.codec import CodecError
@@ -77,6 +80,7 @@ from seeingmon.services.web.contract import (
     METHOD_FLAT_LIBRARY,
     METHOD_LIVE_SEEING,
     METHOD_PING,
+    METHOD_RAPID_FOCUS_START,
     METHOD_STATUS,
     METHOD_SUBMIT,
     POLARIS_CHANNEL,
@@ -102,6 +106,7 @@ from seeingmon.services.web.contract import (
     decode_result,
     decode_status,
     encode_command,
+    encode_rapid_focus_params,
     unpack_frame,
     unpack_polaris_frame,
 )
@@ -141,6 +146,16 @@ class CoreClient(Protocol):
 
     def submit(self, command: Command) -> CommandResult:
         """Hand a command to the scheduler. A rejection is a result, not an error."""
+        ...
+
+    def rapid_focus_start(
+        self, exposure_us: int | None = None, gain: int | None = None
+    ) -> CommandResult:
+        """Start the rapid focus mode, or keep it alive, with the center that `core` chooses.
+
+        A mode that `core` does not offer is a rejected result (`not_aligning` or
+        `not_available`), not an error.
+        """
         ...
 
     def alignment_state(self) -> AlignmentState:
@@ -356,6 +371,21 @@ class RpcCoreClient:
             _log.warning("core sent an unreadable command result: %s", error)
             raise CoreProtocolError("core sent an unreadable command result") from None
 
+    def rapid_focus_start(
+        self, exposure_us: int | None = None, gain: int | None = None
+    ) -> CommandResult:
+        """Start the rapid focus mode with the `rapid_focus_start` method."""
+        answer = self._call(
+            METHOD_RAPID_FOCUS_START,
+            encode_rapid_focus_params(exposure_us, gain),
+            self._submit_timeout_s,
+        )
+        try:
+            return decode_result(answer)
+        except CodecError as error:
+            _log.warning("core sent an unreadable command result: %s", error)
+            raise CoreProtocolError("core sent an unreadable command result") from None
+
     def alignment_state(self) -> AlignmentState:
         """The state of the alignment helper, from the `alignment_state` method."""
         answer = self._call(METHOD_ALIGNMENT_STATE, None, self._rpc_timeout_s)
@@ -507,6 +537,12 @@ class FakeCoreClient:
 
     `focus_resets` counts the calls of `alignment_reset_focus`.
 
+    The rapid focus mode follows the rules of the scheduler: a start and a stop need an alignment,
+    and `rapid_running` says whether the mode runs. `rapid_focus_start` also needs the offer of
+    `core`, which you set with `rapid_offer` (`None` offers the mode, and a text is the reason that
+    it is not offered) and `rapid_center` (the pixel of Polaris in pixels of the fast mode). The
+    calls land in `rapid_starts` as `(exposure_us, gain)`.
+
     The dark library lives in `dark`, a `DarkSimulator`: set its `sets`, `model`, and
     `sensor_temperature_c`, and pass `dark_script` to set how long each part of a dark task lasts.
     `QueueDark` starts a scripted task that follows the clock (see `fake_dark`). The flat library
@@ -556,6 +592,10 @@ class FakeCoreClient:
         self.submitted: list[Command] = []
         self.status_calls = 0
         self.focus_resets = 0
+        self.rapid_offer: str | None = None
+        self.rapid_center = (1036.0, 705.5)
+        self.rapid_running = False
+        self.rapid_starts: list[tuple[int | None, int | None]] = []
         self.streams_opened = 0
         self.streams_closed = 0
         self.polaris_streams_opened = 0
@@ -579,6 +619,8 @@ class FakeCoreClient:
             raise self.fail_with
 
     def _transition(self, state: str, reason: str = "a fake transition") -> None:
+        if state != "align":
+            self.rapid_running = False
         self._state = state
         self._reason = reason
         self._since_ns = self._clock.utc_ns()
@@ -662,6 +704,26 @@ class FakeCoreClient:
                 return self._reject(RejectReason.NOT_ALIGNING, "no alignment runs")
             self._transition("safe")
             return self._result(True, "alignment stopped")
+        if isinstance(command, StartRapidFocus):
+            if self._state != "align":
+                return self._reject(RejectReason.NOT_ALIGNING, "no alignment runs")
+            if self.degraded:
+                return self._reject(RejectReason.DEGRADED, "the camera has failed repeatedly")
+            again, self.rapid_running = self.rapid_running, True
+            return self._result(
+                True,
+                "rapid focus already runs, so the idle timer restarted"
+                if again
+                else "rapid focus started",
+            )
+        if isinstance(command, StopRapidFocus):
+            if self._state != "align":
+                return self._reject(RejectReason.NOT_ALIGNING, "no alignment runs")
+            was, self.rapid_running = self.rapid_running, False
+            return self._result(
+                True,
+                "rapid focus stopped" if was else "rapid focus does not run, so nothing stops",
+            )
         if isinstance(command, Pause):
             if self._state == "paused":
                 return self._reject(RejectReason.ALREADY_PAUSED, "the scheduler is already paused")
@@ -750,6 +812,21 @@ class FakeCoreClient:
         self._check()
         with self._lock:
             return self.flat.image(version)
+
+    def rapid_focus_start(
+        self, exposure_us: int | None = None, gain: int | None = None
+    ) -> CommandResult:
+        self._check()
+        with self._lock:
+            self.rapid_starts.append((exposure_us, gain))
+            self._settle_dark()
+            if self._state != "align":
+                return self._reject(RejectReason.NOT_ALIGNING, "no alignment runs")
+            if self.rapid_offer is not None and not self.rapid_running:
+                return self._reject(RejectReason.NOT_AVAILABLE, self.rapid_offer)
+            command = StartRapidFocus(*self.rapid_center, exposure_us, gain)
+            self.submitted.append(command)
+            return self._apply(command)
 
     def alignment_state(self) -> AlignmentState:
         self._check()

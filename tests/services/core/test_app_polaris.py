@@ -191,9 +191,9 @@ class TestVideoThroughTheScheduler:
         offered: list[Frame] = []
         keep = rig.app.polaris._keep
 
-        def spy(frame: Frame, update: Any) -> None:
+        def spy(frame: Frame, update: Any, rapid: bool) -> None:
             offered.append(frame)
-            keep(frame, update)
+            keep(frame, update, rapid)
 
         rig.app.polaris._keep = spy  # type: ignore[method-assign]
         frames = watch_polaris(rig, client, 3)  # fast periods and survey steps run meanwhile
