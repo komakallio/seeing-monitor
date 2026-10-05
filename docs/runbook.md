@@ -1150,7 +1150,7 @@ The time at the start of a line is the local time of this machine. A `survey fra
 2026-10-03 21:45:03,154 INFO seeingmon.services.core.app: no pointing solution yet: the survey frames go to the plate solvers astap, in this order, until one solves
 2026-10-03 21:46:11,402 INFO seeingmon.survey: survey frame 2026-10-03T18:45:48Z: only 3 stars for a solver
 2026-10-03 21:46:11,403 INFO seeingmon.survey: survey frame 2026-10-03T18:45:48Z: 0.001 s bin2: 3 stars detected, not solved, analysis took 0.9 s
-2026-10-03 21:46:52,118 INFO seeingmon.survey: survey frame 2026-10-03T18:45:50Z: solver=astap result=solved stars=312 time_s=0.79 matched=214
+2026-10-03 21:46:52,118 INFO seeingmon.survey: survey frame 2026-10-03T18:45:50Z: solver=astap hint=pole result=solved stars=312 time_s=0.79 matched=214
 2026-10-03 21:46:52,119 INFO seeingmon.survey: survey frame 2026-10-03T18:45:50Z: 30 s bin2: 412 stars detected, solved by astap (214 matched), analysis took 4.1 s
 ```
 
@@ -1159,6 +1159,7 @@ Each survey frame gets one line with its outcome, and each run of a solver gets 
 | Field | Meaning |
 |---|---|
 | `solver=` | The solver that ran: `astrometry.net` or `astap`. |
+| `hint=` | Where the solver searched. `prediction`: 2 degrees around the field center that the last solution predicts (`[survey.solve] hint_radius_deg`). `pole`: 15 degrees around the pole (`pole_hint_radius_deg`), when no solution exists yet, or in the retry after every solver found nothing near the prediction on a frame with at least 30 stars (`[survey.fit] confident_stars`), as after a move of the mount. The retry follows the failed `hint=prediction` lines of the same frame. `none`: the whole sky, when `pole_hint_radius_deg` is 0 and no solution exists. |
 | `result=` | `solved`: the solver found a field, and the fit confirmed it. `no_solution`: the solver ran and found no field. `rejected`: the solver found a field that the catalog or the fit could not confirm. `error`: the program could not run. |
 | `stars=` | The number of stars that went to the solver: the brightest detections without the hot pixels, at most 600 (`[survey.solve] max_stars`). |
 | `time_s=` | The time of the solver run, in seconds. |
