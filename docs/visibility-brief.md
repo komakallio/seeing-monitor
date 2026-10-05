@@ -49,7 +49,7 @@ A read of the code before step 1 found five gaps in the design. The owner approv
 3. **The brightness frame stays when the survey skips.** In `auto`, only the 1 ms frame of the survey step updates the background. When the survey skips its long exposure in daylight, it still takes the 1 ms frame, so the gate keeps working (step 6).
 4. **`polaris.hidden` at every end of measure.** The scheduler writes `polaris.hidden` whenever measure ends, also when it ends because the state changes, such as a move to `safe` (step 3).
 5. **The open details.**
-   - The SNR of a burst is the SNR of the sum of its frames.
+   - The SNR of a burst is the median of the SNR of the star in its frames. Measure needs a centroid in every frame, so the SNR of the summed frames would switch to measure where the centroids are noise. (The proposal that the owner approved said the sum, and the lead corrected it the same day.)
    - A check burst above the limit needs `search.confirm_bursts` detections in a row, as a search does.
    - The warning that the limit is too low is the event `polaris.search_limit_low`.
    - TOML has no null, so the default file cannot write `None` for `search.max_sun_elevation_deg`. A value of 90 or more means no limit.
