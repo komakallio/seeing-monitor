@@ -7,11 +7,23 @@ import itertools
 import pytest
 
 from seeingmon.clock import NS_PER_S, VirtualClock
-from seeingmon.scheduler.commands import Pause, QueueDark, Resume, StartAlignment, StopAlignment
+from seeingmon.scheduler.commands import (
+    Pause,
+    QueueDark,
+    QueueFlat,
+    Resume,
+    StartAlignment,
+    StopAlignment,
+)
 from seeingmon.scheduler.status import ActivityPhase
 from seeingmon.services.web import demo_activity
 from seeingmon.services.web.contract import ActivityView
-from seeingmon.services.web.demo import DEMO_DARK_SCRIPT, DEMO_NOW_NS, DemoCore
+from seeingmon.services.web.demo import (
+    DEMO_DARK_SCRIPT,
+    DEMO_FLAT_SCRIPT,
+    DEMO_NOW_NS,
+    DemoCore,
+)
 
 AUTO_PHASES = {"fast", "survey_short", "survey_long", "solve_wait", "idle", "camera_fault"}
 
@@ -264,6 +276,51 @@ class TestTheOtherStates:
         done = activity(core)
         assert (done.state, done.phase) == ("paused", "paused")
         assert done.reason == "the dark session ended, and the camera may still be covered"
+
+    def test_a_flat_session_names_its_phase_and_announces_the_end_of_its_frames(
+        self, core: DemoCore, clock: VirtualClock
+    ) -> None:
+        core.submit(QueueFlat())
+        script = DEMO_FLAT_SCRIPT
+        begin = script.queued_s
+        offsets = {
+            "setup": begin + script.setup_s * 0.5,
+            "start": begin + script.setup_s + 0.2,
+            "try": begin + script.setup_s + script.exposure_s * 0.5,
+            "capture": begin + script.setup_s + script.exposure_s + 2.0,
+            "build": begin + script.setup_s + script.exposure_s + script.capture_s + 1.0,
+        }
+        seen: dict[str, ActivityView] = {}
+        for name, offset in offsets.items():
+            clock.advance(offset - clock.monotonic_ns() / NS_PER_S)
+            seen[name] = activity(core)
+            if name == "capture":
+                now_ns = core.status().scheduler.t_utc_ns
+        assert [view.label for view in seen.values()] == [
+            "Flat session: setting up the camera",
+            "Flat session: finding the exposure",
+            "Flat session: finding the exposure",
+            "Flat session: taking frames",
+            "Flat session: combining the frames",
+        ]
+        assert all((v.state, v.phase) == ("commission", "commission") for v in seen.values())
+        assert seen["start"].detail == "Finding the exposure that reaches 50 % of full scale"
+        assert seen["capture"].detail is not None
+        assert seen["capture"].detail.startswith("Frame ")
+        # Only the frames know how long they take, and the demo announces their end like core does.
+        capture = seen["capture"]
+        assert capture.ends_utc_ns is not None
+        assert (capture.ends_utc_ns - now_ns) / NS_PER_S == pytest.approx(script.capture_s - 2.0)
+        assert [v.ends_utc_ns for k, v in seen.items() if k != "capture"] == [None] * 4
+        assert capture.reason == "a flat session runs"
+        assert capture.next_label == "Paused: nothing records until you resume"
+        clock.advance(script.build_s)
+        done = activity(core)
+        assert (done.state, done.phase) == ("paused", "paused")
+        assert (
+            done.reason
+            == "the flat session is done, and the light source may still cover the camera"
+        )
 
     def test_a_status_always_has_an_activity_that_agrees_with_the_state(
         self, core: DemoCore, clock: VirtualClock

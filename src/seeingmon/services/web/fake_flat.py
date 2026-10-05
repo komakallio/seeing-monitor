@@ -698,6 +698,19 @@ class FlatSimulator:
         elapsed = (self._clock.monotonic_ns() - run.submitted_ns) / NS_PER_S
         return elapsed - self.script.queued_s
 
+    def capture_remaining_s(self) -> float | None:
+        """The seconds until the end of the frames while the task takes them, or `None`.
+
+        The real scheduler announces this moment as the end of the activity (the session tells the
+        length of its frames when it starts them), and the demo does the same.
+        """
+        run = self._run
+        if run is None or run.outcome is not None or not run.started:
+            return None
+        seconds = self._seconds_running(run)
+        _, exposure, capture, _ = self._bounds()
+        return capture - seconds if exposure <= seconds < capture else None
+
     def _bounds(self) -> tuple[float, float, float, float]:
         """The ends of the phases `setup`, `exposure`, `capture`, and `build`, in seconds."""
         script = self.script
@@ -781,10 +794,27 @@ class FlatSimulator:
         )
 
     def _searching(self, run: _Run, seconds: float) -> FlatTaskView:
-        """The search for the exposure: a first try that misses, and then tries that close in."""
+        """The search for the exposure: its start, a first try that misses, and tries that close in.
+
+        As in the real session, the phase begins with a report at step 0, before the first try has
+        ended, and the tries follow in equal parts of the rest.
+        """
         rate = self._rate
         tries = 3 if self.script.outcome in ("dim", "bright") else 2
-        step = _step(seconds, self.script.exposure_s, tries)
+        step = _step(seconds, self.script.exposure_s, tries + 1) - 1
+        if step == 0:
+            return self._view_of(
+                run,
+                state="running",
+                phase="exposure",
+                step=0,
+                steps=8,
+                message=(
+                    f"Finding the exposure that reaches {run.target_fraction * 100:.0f} % of full "
+                    "scale."
+                ),
+                exposure_s=START_EXPOSURE_S,
+            )
         if self.script.outcome == "dim":
             exposures = [START_EXPOSURE_S, 0.4, MAX_EXPOSURE_S]
         elif self.script.outcome == "bright":

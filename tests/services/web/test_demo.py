@@ -936,16 +936,20 @@ def test_a_demo_flat_session_follows_its_timeline_and_adds_a_pending_flat(
     clock.advance(script.queued_s)
     task = core.flat_library().task
     assert (task.state, task.phase, task.steps) == ("running", "setup", 1)
-    clock.advance(script.setup_s + 0.1)  # the search for the exposure
+    clock.advance(script.setup_s + 0.1)  # the search for the exposure has begun
     task = core.flat_library().task
-    assert (task.phase, task.step, task.steps) == ("exposure", 1, 8)
+    assert (task.phase, task.step, task.steps) == ("exposure", 0, 8)
+    assert task.level_fraction is None
+    clock.advance(script.exposure_s * 0.4)
+    task = core.flat_library().task
+    assert (task.phase, task.step) == ("exposure", 1)
     assert task.exposure_s is not None
     assert task.level_fraction is not None
     assert task.level_fraction < 0.3  # the first try is too dark
-    clock.advance(script.exposure_s * 0.6)
+    clock.advance(script.exposure_s * 0.3)
     task = core.flat_library().task
     assert task.level_fraction == pytest.approx(0.5, abs=0.02)  # the second try lands
-    clock.advance(script.exposure_s * 0.4 + 0.1)  # the frames
+    clock.advance(script.exposure_s * 0.3 + 0.1)  # the frames
     task = core.flat_library().task
     assert (task.phase, task.steps) == ("capture", 32)
     assert task.warnings == []

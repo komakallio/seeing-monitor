@@ -246,6 +246,27 @@ def test_a_dark_task_and_a_flat_task_are_counted_as_two_queued_tasks(
 # --- The task --------------------------------------------------------------------------------
 
 
+def test_the_frames_tell_how_long_they_have_left_and_no_other_phase_does(
+    core: FakeCoreClient, clock: VirtualClock
+) -> None:
+    def remaining() -> float | None:
+        core.flat_library()  # the task follows the clock when someone asks
+        return core.flat.capture_remaining_s()
+
+    assert remaining() is None  # no task
+    core.submit(QueueFlat(frames=16))
+    clock.advance(5.5)  # the task has begun, 0.5 s into its setup
+    assert remaining() is None
+    clock.advance(3.0)  # 0.5 s into the frames, which end 11 s after the start of the task
+    assert remaining() == pytest.approx(7.5, abs=0.01)
+    clock.advance(3.0)
+    assert remaining() == pytest.approx(4.5, abs=0.01)
+    clock.advance(5.0)  # the frames are done, and the combination runs
+    assert remaining() is None
+    clock.advance(5.0)
+    assert remaining() is None  # the task ended
+
+
 def test_the_task_runs_through_its_phases_and_adds_a_pending_flat(
     core: FakeCoreClient, clock: VirtualClock
 ) -> None:
@@ -257,18 +278,24 @@ def test_the_task_runs_through_its_phases_and_adds_a_pending_flat(
     assert task.message == "Setting up the camera and the library."
     clock.advance(0.6)
     assert core.flat_library().task.step == 1  # the camera is ready
-    clock.advance(0.5)  # the search starts: a first try that misses the target
+    clock.advance(0.5)  # the search has begun, and no try has ended
+    task = core.flat_library().task
+    assert (task.phase, task.step, task.steps) == ("exposure", 0, 8)
+    assert task.message == "Finding the exposure that reaches 50 % of full scale."
+    assert task.exposure_s == pytest.approx(0.02)
+    assert task.level_fraction is None
+    clock.advance(0.7)  # a first try that misses the target
     task = core.flat_library().task
     assert (task.phase, task.step, task.steps) == ("exposure", 1, 8)
     assert task.exposure_s == pytest.approx(0.02)
     assert task.level_fraction == pytest.approx(0.256)
     assert task.message.startswith("Try 1 of 8: 20 ms gives 26 % of full scale")
-    clock.advance(1.0)  # the second try lands on the target
+    clock.advance(0.7)  # the second try lands on the target
     task = core.flat_library().task
     assert (task.phase, task.step) == ("exposure", 2)
     assert task.level_fraction == pytest.approx(0.5, abs=0.01)
     assert task.exposure_s == pytest.approx(0.5 / 12.8)
-    clock.advance(1.0)  # the frames start
+    clock.advance(0.6)  # the frames start
     task = core.flat_library().task
     assert (task.phase, task.step, task.steps) == ("capture", 1, 16)
     assert task.exposure_s == pytest.approx(0.5 / 12.8)

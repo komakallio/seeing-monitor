@@ -14,7 +14,7 @@ The fake `core` of the demo has no camera, so it plays what the real scheduler r
 A real cycle takes 3 minutes. The demo's takes 45 seconds, so that you see every phase within a
 few minutes, and the playlist takes about 3 minutes. The other states show their own activity: the
 brightness watch of `safe` (the gate opens after `GATE_OPEN_S`), the live view of `align`, the
-phases of the dark session of `commission`, and `paused`. The words come from
+phases of the dark session and the flat session of `commission`, and `paused`. The words come from
 `seeingmon.scheduler.activity`, the same module that the real scheduler uses.
 
 Every time of the activity is relative to the clock of the fake `core`: `since_utc_ns` is now minus
@@ -32,7 +32,7 @@ from seeingmon.drivers.base import CameraTimeoutError
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.faults import FaultCause, reason_text
 from seeingmon.scheduler.status import ActivityPhase
-from seeingmon.services.web.contract import ActivityView, DarkTaskView, FaultView
+from seeingmon.services.web.contract import ActivityView, DarkTaskView, FaultView, FlatTaskView
 
 # The cycle of the demo. The names of the real settings are in the comments.
 FAST_WINDOW_S = 5.0  # [scheduler.fast] analysis_window_s
@@ -260,14 +260,25 @@ def align_activity(elapsed_s: float, now_utc_ns: int, reason: str | None) -> Act
 
 
 def commission_activity(
-    elapsed_s: float, now_utc_ns: int, reason: str | None, task: DarkTaskView
+    elapsed_s: float,
+    now_utc_ns: int,
+    reason: str | None,
+    task: DarkTaskView | FlatTaskView,
+    *,
+    kind: str = "dark",
+    ends_in_s: float | None = None,
 ) -> ActivityView:
-    """A dark session in `commission`, with the phase that the dark simulator reports."""
+    """A dark or flat session in `commission`, with the phase that its simulator reports.
+
+    `ends_in_s` is the time left of the phase, when the session knows it: the frames of a flat
+    session.
+    """
     return ActivityView(
         state="commission",
         phase=ActivityPhase.COMMISSION.value,
-        label=words.task_label("dark", task.phase),
+        label=words.task_label(kind, task.phase),
         since_utc_ns=_later(now_utc_ns, -elapsed_s),
+        ends_utc_ns=None if ends_in_s is None else _later(now_utc_ns, ends_in_s),
         next_label=words.AFTER_TASK_PAUSED if task.pause_after else words.AFTER_TASK_SAFE,
         detail=words.task_detail(0, task.message),
         reason=reason,

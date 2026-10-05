@@ -1213,6 +1213,16 @@ class DemoCore(FakeCoreClient):
         if self._state == "align":
             return demo_activity.align_activity(elapsed, now_ns, reason)
         if self._state == "commission":
+            flat = self.flat.task()
+            if flat.state == "running":
+                return demo_activity.commission_activity(
+                    elapsed,
+                    now_ns,
+                    reason,
+                    flat,
+                    kind="flat",
+                    ends_in_s=self.flat.capture_remaining_s(),
+                )
             return demo_activity.commission_activity(elapsed, now_ns, reason, self.dark.task())
         return demo_activity.paused_activity(elapsed, now_ns, reason)
 
