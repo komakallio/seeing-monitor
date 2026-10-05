@@ -382,6 +382,13 @@ sudo reboot
 
 An exit of `acquire` with code 70 means that a call into the SDK hung and the watchdog ended the process. Code 71 means that one of its threads died. Code 75 is a restart that `core` asked for. All three end with a new process.
 
+### A unit that stops at its start limit
+
+systemd restarts a service that fails. After five starts within ten minutes, it stops the unit (`start-limit-hit`), and `seeingmon-failed@.service` writes one critical line to the journal (`journalctl -p crit`). What follows depends on the unit:
+
+- **`acquire`: the Pi reboots.** A camera that keeps dropping off the USB bus makes `acquire` fail again and again, and a reboot can bring such a camera back. When `acquire` stops at its limit, `core` loses the camera, and the ladder goes on without `acquire`: the steps that need it fail, and step 5 reboots the Pi about 14 minutes after the loss, at most once in six hours (`[scheduler.ladder] destructive_interval_s`). A camera that stays dead therefore costs one reboot in six hours, and no more. The reboot needs the two settings of step 5: `reboot_command` and the installer option `--supervisor-actions`. Without them, `acquire` stays stopped until you run `sudo systemctl reset-failed seeingmon-acquire` and `sudo systemctl start seeingmon-acquire`. That `systemctl reboot` works for the service user is untested on a Pi (see the table at the start of this runbook).
+- **`core` and `web`: the unit stays stopped.** A failure of either is a fault of the software or of the configuration, and a reboot does not fix it. The station stays down until you read the log, fix the cause, and run `reset-failed` and `start`.
+
 ### What you see when the camera disappears
 
 The camera disappears when a USB cable comes loose, when the camera loses its power, or when the machine goes to sleep. The table counts from the first read that fails, with the default settings. A fast frame takes about 12 ms and a read waits about half a second, so the first failure comes within a second of the last frame.
@@ -1194,7 +1201,7 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | A unit fails with `status=243/CREDENTIALS`. | A credential file is missing. | `ls -l <config-dir>/credentials`, and run the installer again. |
 | A unit fails with `status=203/EXEC`. | `current` is missing, or the release is broken. | `ls -l <prefix>/current`, then run the rollback or install again. |
 | The log shows "Operation not permitted" for a system call, or a process ends with a bad system call. | The system call filter blocks a call that a library needs. | Allow it in a drop-in: `sudo systemctl edit seeingmon-core.service`, then add `SystemCallFilter=<call>`. Tell the maintainer. |
-| A unit shows `start-limit-hit`. | It failed five times in ten minutes. | Read `journalctl -u <unit>`, fix the cause, then `systemctl reset-failed` and `systemctl start`. |
+| A unit shows `start-limit-hit`. | It failed five times in ten minutes. | Read `journalctl -u <unit>`, fix the cause, then `systemctl reset-failed` and `systemctl start`. When the unit is `acquire`, `core` reboots the Pi on its own (see [A unit that stops at its start limit](#a-unit-that-stops-at-its-start-limit)). |
 | `acquire` restarts again and again. | Exit code 70: the SDK hung. Code 71: a thread died. | Read the log. Check the USB cable, the port, and the power. Run `lsusb -d 03c3:`. |
 | `core` fails to start, and the log says that `catalog_path` is not set. | `[survey] catalog_path` is empty in the local configuration. | Build the catalog and set the path (see [Prepare your files](#prepare-your-files)), then run the installer again. |
 | No camera appears. | The udev rule did not apply, or the SDK path is wrong. | `lsusb -d 03c3:`. `ls -l /dev/bus/usb/*/*` must show the service group. `cat <config-dir>/sdk.env` must name an existing library. |
