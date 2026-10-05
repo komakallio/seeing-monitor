@@ -41,6 +41,10 @@
     bitmapOk: typeof createImageBitmap === "function",
   };
   const align = { active: false, known: false };
+  // The rapid focus mode: whether it runs, the points of its curve, and its pieces on the page.
+  const rapid = { active: false, offer: null, held: { session: null, points: [] }, exposureUs: null };
+  let rapidLive = null;
+  let rapidCurve = null;
   let live = null;
   let hiddenTimer = null;
 
@@ -83,7 +87,9 @@
     const cover = $("cover");
     const name = live ? live.name : "idle";
     let text = "";
-    if (!(live && live.fresh())) {
+    if (rapid.active) {
+      text = "Rapid focus is running. The camera streams the star and not the field. Stop rapid focus to return to this view.";
+    } else if (!(live && live.fresh())) {
       if (name === "live" || name === "waiting" || name === "polling") {
         text = align.known && !align.active ? "Alignment is not running. Start it to see the live view." : "Waiting for the next frame.";
       } else {
@@ -619,6 +625,7 @@
     }
     setFacts("solution-facts", rows);
     renderFocus(state.focus);
+    renderRapid(state.rapid_focus || null);
     renderSaturation(state.saturation);
     drawHistogram(state);
     $("frame-info").textContent = frame ? "Frame " + frame.seq + " at " + fmt.clock(state.t_utc) + " UTC" : "";
@@ -677,8 +684,8 @@
     note.textContent = (focusVerdict(focus, arcsec, best) + " A narrower star is better." + few).trim();
   }
 
-  async function resetFocusBest() {
-    const note = $("focus-reset-note");
+  async function resetFocusBest(noteId) {
+    const note = $(noteId || "focus-reset-note");
     if (!Token.has()) {
       note.textContent = "Enter the token first: the commands need it.";
       window.Seeing.openTokenPanel();
@@ -791,7 +798,7 @@
       url: socketUrl,
       tokenRequired: () => Boolean(Status.current && Status.current.ui.token_required_for_reads),
       token: () => Token.get(),
-      isActive: () => align.active,
+      isActive: () => align.active && !rapid.active,
       staleMs,
       pollIntervalMs: pollInterval,
       pollFrame,
@@ -800,6 +807,95 @@
       },
       onLink,
     });
+  }
+
+  // --- Rapid focus ------------------------------------------------------------------------------
+
+  const RAPID_START = "alignment/rapid-focus/start";
+  const RAPID_STOP = "alignment/rapid-focus/stop";
+
+  function sentence(text) {
+    const clean = String(text || "").trim();
+    return clean ? clean.charAt(0).toUpperCase() + clean.slice(1) + (/[.!?]$/.test(clean) ? "" : ".") : "";
+  }
+
+  /** The panel in its four states: no alignment, not offered, offered, and running. */
+  function renderRapid(offer) {
+    const wasActive = rapid.active;
+    rapid.offer = offer;
+    rapid.active = Boolean(offer && offer.active);
+    const start = $("rapid-start");
+    const note = $("rapid-note");
+    $("rapid-live").hidden = !rapid.active;
+    start.hidden = rapid.active;
+    $("rapid-stop").hidden = !rapid.active;
+    const enabled = commandsEnabled();
+    $("rapid-stop").disabled = !enabled;
+    if (rapid.active) {
+      note.textContent = "Rapid focus runs the camera on a 4′ field around Polaris, with up to 20 readings a second. The alignment view waits until you stop it. The mode ends by itself after 2 minutes without a viewer.";
+    } else if (!align.active) {
+      start.disabled = true;
+      note.textContent = "Start the alignment first. Rapid focus runs inside it.";
+    } else if (!offer) {
+      start.disabled = true;
+      note.textContent = "Waiting for the first measurements of the alignment.";
+    } else if (offer.available) {
+      start.disabled = !enabled;
+      const how = offer.located_by ? " Polaris is located by the " + offer.located_by + "." : "";
+      const coarse = offer.coarse_fwhm_arcsec === null || offer.coarse_fwhm_arcsec === undefined ? "" : " The coarse focus is " + fmt.num(offer.coarse_fwhm_arcsec, 1) + "″, and the mode asks for " + fmt.num(offer.max_fwhm_arcsec, 0) + "″ or less.";
+      note.textContent = "Rapid focus is available." + how + coarse + (offer.ended_reason ? " The last run ended: " + offer.ended_reason + "." : "");
+    } else {
+      start.disabled = true;
+      note.textContent = sentence(offer.reason) + (offer.ended_reason ? " The last run ended: " + offer.ended_reason + "." : "");
+    }
+    if (rapid.active && !wasActive) {
+      rapid.held = { session: null, points: [] };
+      rapidLive.start();
+      updateCover();
+    } else if (!rapid.active && wasActive) {
+      rapidLive.stop();
+      updateCover();
+    }
+  }
+
+  /** One frame of the Polaris stream, with the readings that came with it. */
+  function renderRapidFrame(frameState) {
+    const r = frameState.rapid_focus;
+    if (!r) {
+      return;
+    }
+    rapid.held = FocusCurve.mergeRapid(rapid.held, r.readings);
+    if (r.exposure_us) {
+      rapid.exposureUs = r.exposure_us;
+    }
+    const best = r.best_fwhm_arcsec === undefined ? null : r.best_fwhm_arcsec;
+    rapidCurve.update(rapid.held.points, best);
+    $("rapid-from").textContent = rapid.held.points.length > 1 ? "\u2212" + Math.round(rapidCurve.spanS()) + " s" : "";
+    const value = $("rapid-value");
+    const known = r.fwhm_arcsec !== null && r.fwhm_arcsec !== undefined;
+    value.textContent = known ? fmt.num(r.fwhm_arcsec, 1) + "\u2033" : fmt.dash;
+    value.classList.toggle("spike", Boolean(r.spike) || Boolean(r.saturated));
+    const stars = r.n_stars === null || r.n_stars === undefined ? null : r.n_stars;
+    const frames = rapid.held.points.length ? rapid.held.points[rapid.held.points.length - 1].n : null;
+    $("rapid-sub").replaceChildren(
+      h("strong", { text: (stars === null ? "?" : stars) + (stars === 1 ? " star" : " stars") }),
+      (frames ? ", " + frames + " frames a reading" : "") + (best ? ", best " + fmt.num(best, 1) + "\u2033" : "") + (rapid.exposureUs ? ", " + fmt.num(rapid.exposureUs / 1000, 1) + " ms exposure" : "")
+    );
+    let verdict = "";
+    if (r.saturated) {
+      verdict = "The star saturates, so its width reads wrong. Press Shorter exposure.";
+    } else if (!known) {
+      verdict = "No reading in the newest frames: the star is not in the field.";
+    } else {
+      verdict = focusVerdict({ spike: r.spike, fwhm_arcsec: r.fwhm_arcsec, fwhm_px: null }, true, best) + " A narrower star is better.";
+    }
+    $("rapid-verdict").textContent = verdict.trim();
+  }
+
+  async function rapidExposure(factor) {
+    const now = rapid.exposureUs || 2000;
+    const next = Math.min(20000, Math.max(100, Math.round(now * factor)));
+    await command(RAPID_START, "Changing the exposure.", { exposure_us: next }, "rapid-command-note");
   }
 
   // --- State and commands -----------------------------------------------------------------------
@@ -815,6 +911,7 @@
       align.active = state.active;
       align.known = true;
       showError(null);
+      renderRapid(state.rapid_focus || null);
       const pill = $("run-state");
       pill.textContent = state.active ? "Alignment: running" : "Alignment: not running";
       pill.dataset.level = state.active ? "good" : "warn";
@@ -836,8 +933,8 @@
     }
   }
 
-  async function command(path, busyText) {
-    const note = $("command-note");
+  async function command(path, busyText, body, noteId) {
+    const note = $(noteId || "command-note");
     if (!Token.has()) {
       note.textContent = "Enter the token first: the commands need it.";
       window.Seeing.openTokenPanel();
@@ -845,7 +942,7 @@
     }
     note.textContent = busyText;
     try {
-      const answer = await api.post(path, {});
+      const answer = await api.post(path, body || {});
       note.textContent = answer.message + (answer.accepted ? "" : " (not accepted)");
       await refreshState();
     } catch (error) {
@@ -872,10 +969,20 @@
     $("focus-reset").addEventListener("click", () => {
       resetFocusBest();
     });
+    $("rapid-start").addEventListener("click", () => command(RAPID_START, "Starting rapid focus.", {}, "rapid-command-note"));
+    $("rapid-stop").addEventListener("click", () => command(RAPID_STOP, "Stopping rapid focus.", {}, "rapid-command-note"));
+    $("rapid-shorter").addEventListener("click", () => rapidExposure(0.5));
+    $("rapid-longer").addEventListener("click", () => rapidExposure(2));
+    $("rapid-reset").addEventListener("click", () => {
+      resetFocusBest("rapid-command-note");
+    });
     window.addEventListener("seeing:status", () => {
       const enabled = commandsEnabled();
       $("start").disabled = !enabled;
       $("focus-reset").disabled = !enabled;
+      $("rapid-reset").disabled = !enabled;
+      $("rapid-shorter").disabled = !enabled;
+      $("rapid-longer").disabled = !enabled;
       $("start").title = enabled ? "" : "The server has no token hash, so it refuses every command.";
       if (!enabled) {
         $("command-note").textContent = "The server has no API token configured, so it refuses every command.";
@@ -896,6 +1003,9 @@
     });
     setInterval(() => {
       live.tick();
+      if (rapid.active) {
+        rapidLive.tick();
+      }
       updateCover();
     }, 1000);
   }
@@ -904,6 +1014,19 @@
     window.Seeing.boot("align");
     live = createLink();
     focusCurve = FocusCurve.create($("focus-curve"));
+    rapidCurve = FocusCurve.create($("rapid-curve"));
+    rapidLive = window.PolarisLive.create({
+      canvas: $("rapid-canvas"),
+      cover: $("rapid-cover"),
+      tag: $("rapid-tag"),
+      note: $("rapid-video-note"),
+      when: $("rapid-when"),
+      zoomBox: $("rapid-zoom"),
+      fastRunning: () => rapid.active,
+      reason: () => "The rapid focus stream is not running",
+      expect: () => (rapid.active ? 3 : 0),
+      onState: renderRapidFrame,
+    });
     setupCanvases();
     buildControls();
     drawHistogram(null);
@@ -912,7 +1035,7 @@
     } catch (error) {
       showError(error);
     }
-    poller(refreshState, () => (align.active ? 3000 : 2000)).start();
+    poller(refreshState, () => (rapid.active ? 1500 : align.active ? 3000 : 2000)).start();
     live.start();
   });
 })();

@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/app.css">
 <script src="js/common.js" defer></script>
 <script src="js/live.js" defer></script>
+<script src="js/polaris.js" defer></script>
 <script src="js/skygrid.js" defer></script>
 <script src="js/aligntext.js" defer></script>
 <script src="js/focus.js" defer></script>
@@ -78,6 +79,36 @@
             <span class="hint" id="copy-note" aria-live="polite"></span>
           </div>
         </details>
+      </section>
+      <section class="panel" aria-labelledby="h-rapid" id="rapid-panel">
+        <div class="card-head"><h2 id="h-rapid">Rapid focus on Polaris</h2><span class="when" id="rapid-when"></span></div>
+        <p class="note" id="rapid-note">Start the alignment first. Rapid focus runs inside it.</p>
+        <div class="row">
+          <button type="button" class="primary" id="rapid-start" disabled>Start rapid focus</button>
+          <button type="button" id="rapid-stop" hidden>Stop rapid focus</button>
+          <span class="hint" id="rapid-command-note" aria-live="polite"></span>
+        </div>
+        <div id="rapid-live" hidden>
+          <div class="live polaris-live">
+            <canvas id="rapid-canvas" width="384" height="384" role="img" aria-label="Live image of Polaris from the rapid focus stream"></canvas>
+            <span class="tag" id="rapid-tag" data-level="warn">NOT LIVE</span>
+            <div class="cover" id="rapid-cover">Connecting</div>
+          </div>
+          <div class="segmented polaris-zoom" id="rapid-zoom" role="group" aria-label="Zoom of the live image"></div>
+          <div class="focus-read">
+            <span class="focus-value" id="rapid-value">—</span>
+            <span class="focus-sub" id="rapid-sub"></span>
+          </div>
+          <canvas id="rapid-curve" role="img" aria-label="Width of the star in the last 30 seconds, with the best value"></canvas>
+          <div class="scale"><span id="rapid-from"></span><span>now</span></div>
+          <p class="note" id="rapid-verdict"></p>
+          <p class="note" id="rapid-video-note"></p>
+          <div class="row">
+            <button type="button" id="rapid-shorter">Shorter exposure</button>
+            <button type="button" id="rapid-longer">Longer exposure</button>
+            <button type="button" id="rapid-reset">Restart the best value</button>
+          </div>
+        </div>
       </section>
       <section class="panel" aria-labelledby="h-focus">
         <h2 id="h-focus">Focus</h2>

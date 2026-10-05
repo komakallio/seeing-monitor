@@ -54,7 +54,7 @@
    * the newest frame.
    */
   function create(options) {
-    const { canvas, cover, tag, note, when, zoomBox, fastRunning, reason, expect } = options;
+    const { canvas, cover, tag, note, when, zoomBox, fastRunning, reason, expect, onState } = options;
     const ctx = canvas.getContext("2d");
     const bitmapOk = typeof createImageBitmap === "function";
     let picture = null;
@@ -64,6 +64,8 @@
     let rate = 0; // frames a second, smoothed
     let lastArrival = 0;
     let link = null;
+    let wanted = true; // false while the page has stopped the link on purpose
+    let ready = false;
     let zoom = Number(recall("polaris-zoom", "2"));
     if (!ZOOMS.includes(zoom)) {
       zoom = 2;
@@ -161,6 +163,9 @@
       }
       follow(frameState);
       paint();
+      if (onState && frameState) {
+        onState(frameState);
+      }
     }
 
     function ageS() {
@@ -256,7 +261,7 @@
       }
       if (document.hidden) {
         link.stop();
-      } else if (link.stopped) {
+      } else if (wanted && link.stopped) {
         link.start();
       }
     }
@@ -284,21 +289,38 @@
       }
     }
 
+    function init() {
+      if (ready) {
+        return;
+      }
+      ready = true;
+      buildZoom();
+      link = createLink();
+      document.addEventListener("visibilitychange", visibility);
+      if (typeof ResizeObserver === "function") {
+        new ResizeObserver(() => paint()).observe(canvas.parentElement);
+      }
+    }
+
     return {
+      /** Open the link. A page that shows the video only at times calls `stop` and `start` again. */
       start() {
-        buildZoom();
-        link = createLink();
-        document.addEventListener("visibilitychange", visibility);
-        if (typeof ResizeObserver === "function") {
-          new ResizeObserver(() => paint()).observe(canvas.parentElement);
-        }
+        init();
+        wanted = true;
         if (!document.hidden) {
           link.start();
         }
         render();
       },
+      /** Close the link, so that no frame travels while the video is out of sight. */
+      stop() {
+        wanted = false;
+        if (link) {
+          link.stop();
+        }
+      },
       restart() {
-        if (link && !document.hidden) {
+        if (link && wanted && !document.hidden) {
           link.restart();
         }
       },

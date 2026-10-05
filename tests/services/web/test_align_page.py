@@ -45,6 +45,7 @@ def test_the_page_loads_the_geometry_and_the_words_before_its_own_script() -> No
     assert sources == [
         "js/common.js",
         "js/live.js",
+        "js/polaris.js",
         "js/skygrid.js",
         "js/aligntext.js",
         "js/focus.js",

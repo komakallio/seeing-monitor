@@ -52,6 +52,39 @@
     return { session: history.session, points: base.concat(added).slice(-MAX_POINTS) };
   }
 
+  const MAX_RAPID_POINTS = 600; // the readings that core keeps: 30 s at 20 a second
+
+  /**
+   * Add the readings of the rapid focus mode (`rapid_focus.readings`, parallel lists like the focus
+   * history) to `held` and return the new `{ session, points }`. A point is
+   * `{ index, t, px, arcsec, n, spike, saturated }` with `t` in milliseconds since the epoch, `px`
+   * null (the mode measures in arcseconds), `n` the frames behind the reading, and `spike` true for
+   * a spike and for a reading of a saturated star, which the curve leaves out of its scale alike.
+   */
+  function mergeRapid(held, readings) {
+    if (!readings || !Array.isArray(readings.index)) {
+      return held;
+    }
+    const fresh = readings.reset || readings.session !== held.session;
+    const base = fresh ? [] : held.points;
+    const last = base.length ? base[base.length - 1].index : 0;
+    const added = [];
+    for (let i = 0; i < readings.index.length; i += 1) {
+      if (readings.index[i] > last) {
+        added.push({
+          index: readings.index[i],
+          t: readings.t_utc_ms[i],
+          px: null,
+          arcsec: readings.fwhm_arcsec[i],
+          n: readings.n_frames[i],
+          spike: Boolean(readings.spike[i]) || Boolean(readings.saturated[i]),
+          saturated: Boolean(readings.saturated[i]),
+        });
+      }
+    }
+    return { session: readings.session, points: base.concat(added).slice(-MAX_RAPID_POINTS) };
+  }
+
   /**
    * The value axis for the values that are not spikes, as `{ min, max }`, or `null` without
    * values. It runs from a little under the smallest value to a little over the 90th percentile,
@@ -213,5 +246,5 @@
     };
   }
 
-  window.Seeing.FocusCurve = { create, merge, valueRange, valueTicks };
+  window.Seeing.FocusCurve = { create, merge, mergeRapid, valueRange, valueTicks };
 })();
