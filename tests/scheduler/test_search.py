@@ -16,10 +16,9 @@ the pole, scaled to a daylight value:
 
 - 0.21 (the simulator's daylight) keeps Polaris visible all day.
 - 0.85 (a hazy day) hides it: measure loses it at +9.6 degrees, and the search finds it again
-  below +3.4 degrees. The brightness frame does not saturate (0.9), so the scheduler stays in
-  `auto` all day. It sits above the resume level of the clip (0.6), though, so a scheduler that
-  starts in `safe` in that sky would wait there. A start in the afternoon therefore uses
-  `HAZY_CONFIG`, whose resume level lies just below the clip.
+  below +3.4 degrees. The fast stream at 32 us would see 3% of saturation, far below the limit
+  of the gate, so the scheduler stays in `auto` all day, and a start in `safe` enters `auto` at
+  the first brightness frame.
 
 On June 21 at the synthetic site, the Sun passes +12 degrees at 05:10 and 18:54 UTC, and it
 reaches +58 degrees at noon. The star of the scenario drifts off the sensor after 13 hours, so a
@@ -42,7 +41,7 @@ from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.config import SearchConfig
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
 from seeingmon.scheduler.status import SchedulerStatus
-from tests.scheduler.scenario import SITE, TEST_CONFIG, World, pole_sky
+from tests.scheduler.scenario import BLINDING_LIGHT, SITE, TEST_CONFIG, World, pole_sky
 
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")  # the Sun is 40 degrees down
 JUNE = iso_to_utc_ns("2026-06-21T02:00:00Z")  # the Sun is 7.5 degrees down, and rising
@@ -50,13 +49,6 @@ JUNE_NOON = iso_to_utc_ns("2026-06-21T12:00:00Z")  # the Sun is 58 degrees up
 JUNE_AFTERNOON = iso_to_utc_ns("2026-06-21T16:00:00Z")  # the Sun is 33 degrees up, and sinking
 LIMIT_DEG = TEST_CONFIG.search.max_sun_elevation_deg
 HAZY = pole_sky(0.85)
-# A start in the hazy afternoon: the brightness frame (0.85 of saturation) is below the clip, and
-# this resume level lets a scheduler that starts in `safe` enter `auto` there.
-HAZY_CONFIG = TEST_CONFIG.model_copy(
-    update={
-        "daylight": TEST_CONFIG.daylight.model_copy(update={"brightness_resume_fraction": 0.88})
-    }
-)
 INTERVAL_S = TEST_CONFIG.search.interval_s
 PROBE_S = TEST_CONFIG.search.probe_interval_s
 CYCLE_S = TEST_CONFIG.survey.cadence_s
@@ -135,7 +127,7 @@ def hazy_morning() -> Day:
 @pytest.fixture(scope="module")
 def hazy_evening() -> Day:
     """June 21 from 16:00 to 20:30 UTC, in a hazy sky. The sample is the status at 17:00."""
-    world = World(start_utc_ns=JUNE_AFTERNOON, sky=HAZY, config=HAZY_CONFIG)
+    world = World(start_utc_ns=JUNE_AFTERNOON, sky=HAZY)
     return run_day(world, 4.5 * 3600, 3600)
 
 
@@ -305,7 +297,7 @@ class TestAProbeAboveTheLimit:
         """
         world = with_search(max_sun_elevation_deg=5.0)
         world.hide_star(0, 10_000)
-        world.light(100, 250, 1.0)
+        world.light(100, 250, BLINDING_LIGHT)
         world.run_until(900)
         assert world.states_visited() == ["safe", "auto", "safe", "auto"]
         returned_at = world.state_changes()[2][0]
@@ -363,7 +355,8 @@ class TestTheMeasuredGate:
     def test_a_move_to_safe_ends_measure_with_hidden(self) -> None:
         """A floodlight saturates the short survey frame at the end of the period at 1080."""
         world = World(start_utc_ns=NIGHT)
-        world.light(1195, 1500, 1.0)  # three frames before the survey step: too few to lose it
+        # Three frames before the survey step: too few to lose the star.
+        world.light(1195, 1500, BLINDING_LIGHT)
         world.run_until(1300)
         assert world.states_visited() == ["safe", "auto", "safe"]
         (hidden,) = world.events("polaris.hidden")
@@ -380,7 +373,7 @@ class TestTheMeasuredGate:
     def test_a_move_to_safe_ends_measure_in_the_same_step(self) -> None:
         """The step that leaves `auto` ends measure, before any later step could run."""
         world = World(start_utc_ns=NIGHT)
-        world.light(1195, 1500, 1.0)
+        world.light(1195, 1500, BLINDING_LIGHT)
         world.run_until(1190)
         scheduler = world.scheduler
         while scheduler.state is State.AUTO:
@@ -410,7 +403,7 @@ class TestTheMeasuredGate:
 
     def test_a_saturated_sky_runs_no_burst(self) -> None:
         world = World(start_utc_ns=NIGHT)
-        world.light(0, 2000, 1.0)
+        world.light(0, 2000, BLINDING_LIGHT)
         world.run_until(1800)
         assert world.states_visited() == ["safe"]
         assert world.burst_starts() == []
@@ -476,7 +469,7 @@ class TestNoSolutionNoSite:
 
     def test_without_a_site_the_search_has_no_limit(self) -> None:
         """At noon in June with a hazy sky: the Sun is unknown, so bursts run every 15 s."""
-        world = World(start_utc_ns=JUNE_NOON, site=None, sky=HAZY, config=HAZY_CONFIG)
+        world = World(start_utc_ns=JUNE_NOON, site=None, sky=HAZY)
         world.run_until(600)
         bursts = world.burst_starts()
         assert len(bursts) >= 20

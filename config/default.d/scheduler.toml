@@ -29,31 +29,43 @@ target_background_fraction = 0.3
 cadence_s = 180.0           # Start of one cycle to the start of the next.
 short_exposure_s = 0.001    # Bright stars, and the brightness check of the sky.
 short_gain = 0
-long_exposure_s = 30.0      # Faint stars and the sky.
+long_exposure_s = 30.0      # Faint stars and the sky. The longest: [survey.twilight] adapts it.
 long_gain = 120
 max_pending = 4             # Skip the step while this many frames wait for analysis.
 solve_wait_s = 120.0        # How long to wait for a pointing solution after a step.
 solve_retry_s = 60.0        # The pause between solve attempts.
 
-# The brightness watch in `safe`: one short frame per interval.
+# The brightness watch in `safe`: one short frame per interval. A watch frame that clips gives only
+# a lower bound of the sky, so a second frame at bright_exposure_us follows at once. In `auto`, that
+# frame also checks the sky when the 1 ms frame of a survey step clipped and the fast stream gives
+# no background that decides.
 [scheduler.watch]
 exposure_us = 1000
+# Provisional. The profile's shortest exposure, so that the frame does not clip in daylight: it
+# clips only where the fast stream at its shortest exposure would see 104% of saturation, twice the
+# limit of the gate. A value at or above exposure_us takes no second frame.
+bright_exposure_us = 32
 gain = 0
 interval_s = 60.0
 roi_arcmin = 20.0           # A central ROI. Use 0 for the full frame.
 
-# The daylight gate: the measured sky alone. The Sun's elevation gates nothing. From the
-# brightness frame (the watch frame, or the short survey frame), the gate derives through the
-# profile the background that the fast stream would have at the profile's shortest exposure, and
-# it compares that share of saturation with the limits below. A 1 ms bin2 frame clips first: at
-# its saturation the fast stream would see 3.7% in 32 us, so a clipped frame counts as too bright,
-# and `auto` resumes only when the frame falls below brightness_resume_fraction of its saturation.
+# The daylight gate: the measured sky alone. The Sun's elevation gates nothing. The gate judges the
+# background that the fast stream would have at the profile's shortest exposure, as a share of
+# saturation. The brightness frame gives it through the profile (the watch frame in `safe`, the 1 ms
+# survey frame in `auto`), and in `auto` so does the background of the last burst or window, scaled
+# to the shortest exposure. The 1 ms bin2 frame clips (brightness_clip_fraction) where the fast
+# stream at 32 us would see 3.3%.
 [scheduler.daylight]
 twilight_elevation_deg = -18.0   # Above this, results carry `twilight`.
 saturation_limit = 0.5           # A fast background above this share of saturation forces `safe`.
 resume_saturation = 0.35         # Hysteresis before `auto` resumes.
-brightness_clip_fraction = 0.9   # Provisional. A brightness frame this bright has clipped.
-brightness_resume_fraction = 0.6 # Provisional. Hysteresis of the clip before `auto` resumes.
+# Provisional. A frame whose median reaches this share of its saturation has clipped, so its level
+# is only a lower bound of the sky. A guard: the watch frame of bright_exposure_us that follows a
+# clipped one clips only in a sky far too bright for the fast stream, but the 1 ms watch and survey
+# frames clip at 3.3% for the fast stream at 32 us, and a burst or a window at a longer exposure,
+# and a long survey frame, can clip too. Neither the gate nor the long survey exposure takes such a
+# level as a measurement.
+brightness_clip_fraction = 0.9
 
 # The search mode of the fast stream, which looks for Polaris before it measures. A burst reads
 # burst_frames fast frames on the ROI where the pointing solution predicts Polaris, and it detects

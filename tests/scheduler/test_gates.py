@@ -1,7 +1,9 @@
 """The daylight gate, the twilight flag, the cloud tracker, and the background measurement.
 
-The gate decides from the background that the fast stream would have at its shortest exposure,
-which `read_sky` derives from a brightness frame through the profile. The Sun gates nothing.
+The gate decides from the background that the fast stream would have at its shortest exposure:
+`read_sky` derives it from a brightness frame through the profile, and a burst or a window of the
+fast stream gives it scaled to that exposure. A frame that clipped gives only a lower bound. The
+Sun gates nothing.
 """
 
 from __future__ import annotations
@@ -19,7 +21,9 @@ from seeingmon.scheduler.gates import (
     REASON_NO_MEASUREMENT,
     CloudTracker,
     DaylightGate,
+    FastSky,
     SkyReading,
+    combine,
     read_sky,
     saturation_level_dn,
     sky_background_fraction,
@@ -27,7 +31,7 @@ from seeingmon.scheduler.gates import (
 from tests.scheduler.helpers import make_frame
 
 PROFILE = load_profile("asi294mm-gs250")
-# Saturation 0.5 and resume at 0.35. A brightness frame clips at 0.9 and resumes below 0.6.
+# Saturation 0.5 and resume at 0.35. A frame clips at 0.9 of its saturation.
 CONFIG = DaylightConfig()
 SHORTEST_US = PROFILE.limits.exposure_us_range[0]  # 32 us
 
@@ -113,7 +117,8 @@ class TestTheSkyOfTheFastStream:
         )
         assert sky.fast_fraction == pytest.approx(0.0185, abs=1e-4)
         assert sky.clipped is False
-        assert sky.gate_fraction == sky.fast_fraction
+        assert sky.median_dn == round(saturation / 2)
+        assert FastSky.from_reading(sky) == FastSky(sky.fast_fraction, bound=False)
 
     def test_the_fast_background_scales_with_the_exposures(self) -> None:
         frame = self.brightness(20_000)
@@ -129,32 +134,39 @@ class TestTheSkyOfTheFastStream:
         half = self.read(frame, offset_dn=1000).fast_fraction
         assert half == pytest.approx(0.5 * self.read(frame).fast_fraction)
 
-    def test_a_clipped_brightness_frame_counts_as_too_bright(self) -> None:
-        """A clipped frame says only that the sky is at least that bright.
+    def test_a_clipped_brightness_frame_gives_only_a_lower_bound(self) -> None:
+        """A 1 ms frame at its saturation says only that the fast stream would see at least 3.7%.
 
-        Its fast background would be 3.7% of saturation, far below the limit, so the gate
-        compares 1 instead.
+        That bound lies far below the limit, so it decides nothing: a running scheduler keeps
+        running, and a stopped one stays stopped. Just below the clip, the frame measures.
         """
         saturation = PROFILE.saturation("bin2", 0).container_dn
         sky = self.read(self.brightness(round(saturation)))
         assert sky.clipped is True
         assert sky.fast_fraction == pytest.approx(0.037, abs=0.001)
-        assert sky.gate_fraction == 1.0
+        bound = FastSky.from_reading(sky)
+        assert bound == FastSky(sky.fast_fraction, bound=True)
+        gate = DaylightGate(CONFIG)
+        assert gate.evaluate(bound, running=True).allowed
+        decision = gate.evaluate(bound, running=False)
+        assert (decision.allowed, decision.reason) == (False, REASON_BRIGHT_SKY)
         just_below = self.read(self.brightness(round(0.89 * saturation)))
         assert just_below.clipped is False
-        gate = DaylightGate(CONFIG)
-        # A running scheduler keeps running just below the clip. A stopped one waits for the
-        # resume level of the clip.
-        assert gate.evaluate(
-            background_fraction=just_below.gate_fraction,
-            running=True,
-            frame_fraction=just_below.frame_fraction,
-        ).allowed
-        assert not gate.evaluate(
-            background_fraction=just_below.gate_fraction,
-            running=False,
-            frame_fraction=just_below.frame_fraction,
-        ).allowed
+        assert gate.evaluate(FastSky.from_reading(just_below), running=False).allowed
+
+    def test_the_watch_frame_of_32_us_reads_daylight_without_clipping(self) -> None:
+        """At 32 us in bin2, the frame reads 86% of what the fast stream sees at 32 us in bin1.
+
+        So it clips (0.9 of its saturation) only where the fast stream would see 104%, twice the
+        limit of the gate.
+        """
+        saturation = PROFILE.saturation("bin2", 0).container_dn
+        frame = self.brightness(round(0.5 * saturation), exposure_us=SHORTEST_US)
+        sky = self.read(frame)
+        assert sky.frame_fraction / sky.fast_fraction == pytest.approx(0.864, abs=0.001)
+        clip = self.read(self.brightness(round(0.9 * saturation), exposure_us=SHORTEST_US))
+        assert clip.clipped is True
+        assert clip.fast_fraction == pytest.approx(1.04, abs=0.01)
 
     def test_the_fast_gain_shrinks_the_full_well(self) -> None:
         frame = self.brightness(20_000)
@@ -163,45 +175,92 @@ class TestTheSkyOfTheFastStream:
         assert gain300 > 10 * gain0
 
 
+class TestTheFastStreamItself:
+    """A burst or a window reports its own background, which scales to the shortest exposure."""
+
+    def test_the_background_scales_with_the_exposure(self) -> None:
+        sky = FastSky.from_fast(0.3, 1500.0, SHORTEST_US, clipped=False)
+        assert sky.fraction == pytest.approx(0.3 * 32 / 1500, rel=1e-12)
+        assert sky.bound is False
+
+    def test_a_clipped_burst_gives_a_lower_bound(self) -> None:
+        sky = FastSky.from_fast(1.0, 2000.0, SHORTEST_US, clipped=True)
+        assert sky.bound is True
+        assert sky.fraction == pytest.approx(0.016)
+
+    def test_a_sunny_sky_where_the_fast_stream_is_fine_stays_in_auto(self) -> None:
+        """The 1 ms frame clipped, and the last burst at 150 us read 0.3 of saturation.
+
+        At 32 us the fast stream would see 0.064, far below the limit, so the scheduler measures.
+        """
+        clipped = FastSky(0.037, bound=True)
+        burst = FastSky.from_fast(0.3, 150.0, SHORTEST_US, clipped=False)
+        sky = combine([clipped, burst])
+        assert sky is not None
+        assert sky.fraction == pytest.approx(0.064, rel=1e-12)
+        assert sky.bound is False
+        assert DaylightGate(CONFIG).evaluate(sky, running=True).allowed
+
+    def test_a_sky_that_even_the_shortest_exposure_cannot_take_stops_auto(self) -> None:
+        """A burst at 32 us that reads 0.55 of saturation: nothing can be measured."""
+        burst = FastSky.from_fast(0.55, SHORTEST_US, SHORTEST_US, clipped=False)
+        decision = DaylightGate(CONFIG).evaluate(
+            combine([FastSky(0.037, bound=True), burst]), running=True
+        )
+        assert (decision.allowed, decision.reason) == (False, REASON_BRIGHT_SKY)
+
+
+class TestCombine:
+    def test_nothing_known_gives_nothing(self) -> None:
+        assert combine([]) is None
+        assert combine([None, None]) is None
+
+    def test_the_largest_measurement_stands(self) -> None:
+        assert combine([FastSky(0.1), FastSky(0.2), None]) == FastSky(0.2)
+
+    def test_a_bound_above_every_measurement_wins_as_a_bound(self) -> None:
+        assert combine([FastSky(0.1), FastSky(0.4, bound=True)]) == FastSky(0.4, bound=True)
+
+    def test_a_measurement_above_every_bound_stands_as_a_measurement(self) -> None:
+        assert combine([FastSky(0.2), FastSky(0.04, bound=True)]) == FastSky(0.2)
+
+    def test_bounds_alone_give_the_largest_bound(self) -> None:
+        sky = combine([FastSky(0.04, bound=True), FastSky(0.01, bound=True)])
+        assert sky == FastSky(0.04, bound=True)
+
+
 class TestDaylightGate:
     gate = DaylightGate(CONFIG)
 
     def test_a_dark_sky_allows_auto(self) -> None:
-        decision = self.gate.evaluate(background_fraction=0.01, running=False)
+        decision = self.gate.evaluate(FastSky(0.01), running=False)
         assert (decision.allowed, decision.reason) == (True, None)
 
     def test_the_measured_sky_alone_decides(self) -> None:
-        decision = self.gate.evaluate(background_fraction=0.6, running=True)
+        decision = self.gate.evaluate(FastSky(0.6), running=True)
         assert (decision.allowed, decision.reason) == (False, REASON_BRIGHT_SKY)
 
     def test_a_running_scheduler_stops_at_the_limit(self) -> None:
         run = self.gate.evaluate
-        assert run(background_fraction=0.49, running=True).allowed
-        assert not run(background_fraction=0.5, running=True).allowed
+        assert run(FastSky(0.49), running=True).allowed
+        assert not run(FastSky(0.5), running=True).allowed
+        assert self.gate.threshold(running=True) == 0.5
 
     def test_a_stopped_scheduler_resumes_only_below_the_stricter_value(self) -> None:
         run = self.gate.evaluate
-        assert run(background_fraction=0.34, running=False).allowed
-        assert not run(background_fraction=0.36, running=False).allowed
-        assert not run(background_fraction=1.0, running=False).allowed  # a clipped frame
+        assert run(FastSky(0.34), running=False).allowed
+        assert not run(FastSky(0.36), running=False).allowed
+        assert self.gate.threshold(running=False) == 0.35
 
-    def test_a_stopped_scheduler_resumes_only_below_the_resume_level_of_the_clip(self) -> None:
-        """A frame between the resume level (0.6) and the clip (0.9) keeps `safe`, not `auto`.
-
-        Its fast background (2.5% at 0.6) is far below both fast limits, so without this level a
-        sky that hovers at the clip would flip the state at every brightness frame.
-        """
+    def test_a_bound_at_the_limit_stops_and_a_bound_under_it_decides_nothing(self) -> None:
         run = self.gate.evaluate
-        assert CONFIG.brightness_resume_fraction == 0.6
-        assert run(background_fraction=0.025, running=True, frame_fraction=0.75).allowed
-        decision = run(background_fraction=0.025, running=False, frame_fraction=0.75)
-        assert (decision.allowed, decision.reason) == (False, REASON_BRIGHT_SKY)
-        assert not run(background_fraction=0.025, running=False, frame_fraction=0.6).allowed
-        assert run(background_fraction=0.025, running=False, frame_fraction=0.59).allowed
+        assert not run(FastSky(1.04, bound=True), running=True).allowed
+        assert run(FastSky(0.04, bound=True), running=True).allowed
+        assert not run(FastSky(0.04, bound=True), running=False).allowed
 
     def test_a_missing_measurement_keeps_a_running_scheduler_and_blocks_a_stopped_one(self) -> None:
-        assert self.gate.evaluate(background_fraction=None, running=True).allowed
-        decision = self.gate.evaluate(background_fraction=None, running=False)
+        assert self.gate.evaluate(None, running=True).allowed
+        decision = self.gate.evaluate(None, running=False)
         assert (decision.allowed, decision.reason) == (False, REASON_NO_MEASUREMENT)
 
     @pytest.mark.parametrize(
@@ -218,15 +277,15 @@ class TestDaylightGate:
         self, fraction: float
     ) -> None:
         """The resume value is stricter than the stop value, so resuming implies running."""
-        if self.gate.evaluate(background_fraction=fraction, running=False).allowed:
-            assert self.gate.evaluate(background_fraction=fraction, running=True).allowed
+        if self.gate.evaluate(FastSky(fraction), running=False).allowed:
+            assert self.gate.evaluate(FastSky(fraction), running=True).allowed
 
     @given(st.floats(0, 1), st.floats(0, 1), st.booleans())
     def test_a_darker_sky_never_turns_an_allowed_decision_into_a_refusal(
         self, fraction: float, scale: float, running: bool
     ) -> None:
-        bright = self.gate.evaluate(background_fraction=fraction, running=running)
-        darker = self.gate.evaluate(background_fraction=fraction * scale, running=running)
+        bright = self.gate.evaluate(FastSky(fraction), running=running)
+        darker = self.gate.evaluate(FastSky(fraction * scale), running=running)
         assert darker.allowed or not bright.allowed
 
 

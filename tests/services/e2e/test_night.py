@@ -11,6 +11,7 @@ The short test runs on every push. The others run for 15 to 60 seconds of CPU, s
 
 from __future__ import annotations
 
+import itertools
 import statistics
 from pathlib import Path
 from typing import Any
@@ -219,6 +220,105 @@ class TestPolarisAtDusk:
             # At most 2 ms, Polaris does not saturate in any window of the run.
             for window in night.records("seeing_window"):
                 assert "saturated" not in window.flags
+        finally:
+            night.app.stop()
+
+
+def solved_pointings(night: Night) -> list[Any]:
+    """The pointing records of the survey frames that solved, in order."""
+    return [p for p in night.records("pointing") if "unsolved" not in p.flags]
+
+
+def first_full_solve(night: Night) -> Any | None:
+    """The first solve with enough stars for no flag (12 matched, `[survey.pointing] few_stars`)."""
+    return next((p for p in solved_pointings(night) if not p.flags), None)
+
+
+def sun_at(t_utc_ns: int) -> float:
+    return sun_elevation_deg(t_utc_ns, SIM_LATITUDE_DEG, 0.0)
+
+
+@pytest.mark.slow
+class TestTheSurveyAtDusk:
+    """A winter dusk with the survey cycle of the camera (180 s) and the production pipeline.
+
+    The run starts with the Sun 2.8 degrees down. The fast stream measures there, but a long survey
+    frame of 1 s would hold about 14 times its saturation, so each survey step skips its long
+    exposure and keeps its 1 ms frame, which the daylight gate reads. The first step measures the
+    black level of the 1 ms frame with a frame of 32 us. Once the 1 ms frame shows less than about
+    5 counts of the ADC of sky, the long frames start at 1 s and grow as the sky darkens.
+
+    Two runs gave (`docs/research-notes.md`, "The survey at dusk"): the first survey frame solves
+    at -6.31 degrees (4 stars, `few_stars`), and the first with 12 stars or more at -8.55 degrees.
+    Long frames of a fixed 30 s first solve at -9.98 degrees. A degree is 3 survey steps here.
+    """
+
+    START = "2026-01-01T16:00:00Z"
+
+    def test_the_first_survey_frame_solves_while_the_sky_is_bright(self, tmp_path: Path) -> None:
+        night = build_night(tmp_path, start=self.START, cadence_s=180.0)
+        try:
+            night.run_until(
+                lambda: first_full_solve(night) is not None, limit_s=2 * 3600.0, slice_s=60.0
+            )
+            status = night.app.scheduler.status()
+            first = solved_pointings(night)[0]
+            full = first_full_solve(night)
+            assert full is not None
+            # The tolerance is the step of the cycle, 0.37 degrees, and a second step for the noise
+            # of the stars that a frame of 1 s detects.
+            assert sun_at(first.t_utc_ns) == pytest.approx(-6.31, abs=0.8)
+            assert sun_at(full.t_utc_ns) == pytest.approx(-8.55, abs=0.8)
+
+            frames = night.records("survey_frame")
+            longs = [f for f in frames if f.exposure_s >= 1.0]
+            shorts = [f for f in frames if f.exposure_s < 1.0]
+            # Every step took its 1 ms frame, and the bright steps skipped their long frame.
+            assert status.counters.survey_long_skips >= 5
+            assert len(shorts) == len(longs) + status.counters.survey_long_skips
+            assert longs[0].exposure_s == 1.0
+            assert sun_at(longs[0].t_utc_ns) < -5.0
+            # One or two long frames saturate before the black level puts the long frames where
+            # they serve (one at -5.6 degrees in the runs above), and none of them reports clouds.
+            # The frames of 1 to 3 s that do not saturate can read clouds under this clear sky,
+            # because the binned search misses stars in a bright sky (the research notes).
+            sky = night.records("sky_quality")
+            saturated = [q for q in sky if "saturated_sky" in q.flags]
+            assert 1 <= len(saturated) <= 2
+            assert all(q.cloud_fraction is None and "cloud" not in q.flags for q in saturated)
+            # The long exposure grows as the sky darkens, by at most 4 times a step.
+            exposures = [f.exposure_s for f in longs]
+            assert exposures == sorted(exposures)
+            assert all(b / a <= 4.0 + 1e-9 for a, b in itertools.pairwise(exposures))
+        finally:
+            night.app.stop()
+
+    def test_long_frames_of_a_fixed_30_s_solve_degrees_later(self, tmp_path: Path) -> None:
+        """The comparison: `[survey.twilight] min_exposure_s` at 30 s turns the adaptation off.
+
+        Each long frame saturates until the Sun is 9.6 degrees down, and the saturation guard keeps
+        them from reporting clouds.
+        """
+        night = build_night(
+            tmp_path,
+            start="2026-01-01T16:20:00Z",  # the Sun 5.1 degrees down: nothing solves before -9
+            cadence_s=180.0,
+            config_extra="[survey.twilight]\nmin_exposure_s = 30.0\n",
+        )
+        try:
+            night.run_until(lambda: solved_pointings(night), limit_s=2 * 3600.0, slice_s=60.0)
+            first = solved_pointings(night)[0]
+            assert sun_at(first.t_utc_ns) == pytest.approx(-9.98, abs=0.8)
+            assert (
+                sun_at(first.t_utc_ns) < -6.31 - 2.5
+            )  # the adaptive run solved 3.7 degrees earlier
+            sky = night.records("sky_quality")
+            saturated = [q for q in sky if "saturated_sky" in q.flags]
+            # The steps from -5.1 to -9.6 degrees, 3 a degree.
+            assert len(saturated) >= 10
+            early = [q for q in sky if q.t_utc_ns < first.t_utc_ns]
+            assert all(q.cloud_fraction is None and "cloud" not in q.flags for q in early)
+            assert all(q.cloud_fraction is None and "cloud" not in q.flags for q in saturated)
         finally:
             night.app.stop()
 

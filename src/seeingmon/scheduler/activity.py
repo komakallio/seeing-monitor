@@ -133,12 +133,13 @@ def watch_detail(exposure_s: float, interval_s: float) -> str:
     return f"The camera takes a {duration_text(exposure_s)} frame every {duration_text(interval_s)}"
 
 
-def bright_frame_detail(frame_fraction: float, resume_fraction: float, *, clipped: bool) -> str:
-    """The brightness frame holds the gate: it saturates, or it is still above its resume level."""
-    limit = f"the cycle resumes below {resume_fraction * 100:g}% of its saturation"
-    if clipped:
-        return f"The brightness frame saturates, so the sky is too bright to measure; {limit}"
-    return f"The brightness frame reads {frame_fraction * 100:.0f}% of its saturation; {limit}"
+def bright_frame_detail(resume_fraction: float) -> str:
+    """The brightness frame holds the gate: it saturates, so it shows only that the sky is too
+    bright."""
+    return (
+        "The brightness frame saturates, so the sky is too bright to measure; the cycle resumes "
+        f"when the fast stream would see less than {resume_fraction * 100:g}% of saturation"
+    )
 
 
 def bright_sky_detail(background_fraction: float | None, resume_fraction: float) -> str:

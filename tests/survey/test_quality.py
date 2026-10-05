@@ -248,6 +248,35 @@ def test_a_wrong_dark_level_shows_in_the_sky_and_not_in_the_zero_point(
     assert record.sky_mag_arcsec2 == pytest.approx(true_sky_mag() - 0.29, abs=0.03)
 
 
+@pytest.mark.parametrize("exposure_s", [1.0, 2.0, 5.0])
+def test_the_dark_level_scales_to_a_frame_shorter_than_the_dark_set(
+    profile: Profile, catalog: CapCatalog, tmp_path: Path, exposure_s: float
+) -> None:
+    """The adaptive long exposure of twilight takes 1 to 30 s, and the dark set takes 30 s.
+
+    The dark model is the bias plus the dark rate times the exposure, so a 2 s frame gets the bias
+    and a fifteenth of the dark of the set. A model that did not scale would subtract the dark of
+    30 s (24 counts at gain 120), far more than the 11 counts of sky and dark of a 2 s frame, and
+    the frame would read darker than its dark level.
+    """
+    frame, truth = render(profile, catalog, exposure_s=exposure_s, seed=21)
+    library = dark_library(tmp_path)
+    model = library.model("bin2", 120, prior_doubling_c=6.0)
+    assert model is not None
+    dark_s = DARK_E_PER_S_PX / E_PER_ADU  # the dark rate of the set, in counts per second
+    # One count of rounding in the master of the set, spread over its 30 s.
+    assert model.level_dn(TEMPERATURE_C, exposure_s) == pytest.approx(
+        BIAS_DN + dark_s * exposure_s, abs=exposure_s / EXPOSURE_S
+    )
+    record = sky_record(analyze(profile, catalog, frame, truth, library=library))
+    assert record.sky_mag_arcsec2 is not None
+    assert record.sky_rate_e_per_s_arcsec2 is not None
+    # The frame's own zero point calibrates the sky, and it scatters by up to 0.02 mag at these
+    # exposures, which hold fewer stars with enough signal. The run gave errors of 0.023, 0.030,
+    # and 0.013 mag at 1, 2, and 5 s.
+    assert record.sky_mag_arcsec2 == pytest.approx(true_sky_mag(), abs=0.05)
+
+
 # --- Transparency and clouds ---------------------------------------------------------------
 
 
@@ -696,8 +725,12 @@ def test_hot_pixels_in_the_dark_library_stay_out_of_the_detections(
 def test_a_short_exposure_gets_no_sky_quality_and_costs_nothing_for_it(
     profile: Profile, catalog: CapCatalog, tmp_path: Path
 ) -> None:
-    """The alignment helper analyzes frames of a second or less: it must not pay for the sky."""
-    frame, truth = render(profile, catalog, exposure_s=2.0, seed=13)
+    """The alignment helper analyzes frames of a second or less: it must not pay for the sky.
+
+    The limit (`[survey.sky] min_exposure_s`, 1 s) is the shortest adaptive long exposure of
+    twilight, so a frame of 0.5 s, such as an alignment frame, gets no sky quality.
+    """
+    frame, truth = render(profile, catalog, exposure_s=0.5, seed=13)
     library = dark_library(tmp_path)
     short = analyze(profile, catalog, frame, truth, library=library)
     assert [r.record_type for r in short.records] == ["survey_frame", "pointing", "star_list"]
@@ -710,7 +743,7 @@ def test_a_short_exposure_gets_no_sky_quality_and_costs_nothing_for_it(
     forced = analyze(profile, catalog, frame, truth, library=library, sky_quality=True)
     assert "sky_quality" in [r.record_type for r in forced.records]
     assert "quality" in forced.timings
-    config = SurveyConfig(sky=SkyConfig(min_exposure_s=1.0))
+    config = SurveyConfig(sky=SkyConfig(min_exposure_s=0.25))
     lowered = analyze(profile, catalog, frame, truth, library=library, config=config)
     assert "sky_quality" in [r.record_type for r in lowered.records]
     # And a long frame can be switched off.

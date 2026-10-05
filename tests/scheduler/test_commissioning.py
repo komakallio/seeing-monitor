@@ -483,22 +483,28 @@ class TestPreemption:
         world.close()
 
 
+# A sweep for the daylight of the scenario, which the fast stream cannot take at its shortest
+# exposure: a cell of 100 us that the sky fills in part, and one of 2 ms that it saturates.
+DAYLIGHT_SWEEP = QueueSweep(exposure_us=(100, 2000), gain=(0,), roi_arcmin=(4.1,), window_s=2.0)
+
+
 class TestWhenTasksRun:
     def test_a_task_runs_in_safe_too(self) -> None:
         world = World()  # daylight
-        submit_at(world, 130, SMALL_SWEEP)
+        submit_at(world, 130, DAYLIGHT_SWEEP)
         world.run_until(400)
         assert [(a, b) for _, a, b in commission_changes(world)] == [
             ("safe", "commission"),
             ("commission", "safe"),
         ]
         (result,) = world.results
-        short, long = result.data["cells"]  # 2 ms and 5 ms
-        # The Sun is up. The sky fills 58% of the range in 2 ms, and it saturates the frame in 5 ms.
-        # The bright sky hides Polaris in 2 ms (an SNR of 5.4, below the 6 that finds a star).
+        short, long = result.data["cells"]  # 100 us and 2 ms
+        # The Sun is up. The sky fills 58% of the range in 100 us, and it saturates the frame in
+        # 2 ms. The bright sky hides Polaris in both.
         assert short["background_fraction"] == pytest.approx(0.58, abs=0.02)
         assert short["saturated_fraction"] == 0.0
         assert short["star_found_fraction"] == 0.0
+        assert long["background_fraction"] == pytest.approx(1.0, abs=0.001)
         assert long["saturated_fraction"] == 1.0
         assert long["star_found_fraction"] == 0.0  # no contrast against a saturated sky
         # The brightness watch goes on afterwards.

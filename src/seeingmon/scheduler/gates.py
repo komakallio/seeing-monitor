@@ -2,16 +2,24 @@
 
 **Daylight.** The measured sky alone gates the `auto` state, and the Sun's elevation gates nothing:
 the celestial pole is always at least 66.5 degrees from the Sun, so the Sun never enters the
-field. The gate reads a brightness frame (the watch frame in `safe`, the short survey frame in
-`auto`), and `read_sky` derives through the profile the background that the fast stream would
-have at the profile's shortest exposure. A background above `saturation_limit` of saturation there
-forces `safe`, because nothing can be measured even at that exposure. A brightness frame that has
-clipped (its median reached `brightness_clip_fraction` of its own saturation level) shows only that
-the sky is at least that bright, so it counts as too bright. With a 1 ms bin2 brightness frame,
-the frame clips while the fast stream would still see less than 4% of saturation, so in practice
-the clip stops `auto`. Both rules have a stricter threshold for resuming than for stopping
-(`resume_saturation` for the fast background, `brightness_resume_fraction` for the brightness
-frame), so a sky that hovers at a limit does not flip the state every minute.
+field. The gate judges what the fast stream sees: its background at the profile's shortest
+exposure, as a share of saturation (`FastSky`). Above `saturation_limit` nothing can be measured
+even at that exposure, so the scheduler goes to `safe`, and it resumes `auto` only below the
+stricter `resume_saturation`, so that a sky that hovers at the limit does not flip the state every
+minute. Two sources give the background:
+
+- **A brightness frame.** `read_sky` derives the background through the profile from the watch
+  frame in `safe`, and from the 1 ms frame of each survey step in `auto`. Both take 1 ms in bin2,
+  and they clip while the fast stream would still see less than 4% of saturation. A second watch
+  frame at the profile's shortest exposure (`[scheduler.watch] bright_exposure_us`, 32 us) then
+  measures the sky, because it does not clip in daylight.
+- **The fast stream itself.** In `auto`, each search burst and each window reports its background,
+  which scales to the shortest exposure in proportion.
+
+A frame whose median reaches `brightness_clip_fraction` of its saturation level has clipped, so it
+gives only a lower bound: the sky is at least that bright. The gate takes the largest estimate. In
+`auto`, a lower bound under the limit decides nothing, and the scheduler then takes a watch frame
+at the bright exposure before the long survey exposure. In `safe`, it keeps the scheduler there.
 
 **Twilight.** While the Sun is above `twilight_elevation_deg`, windows and survey results carry
 the `twilight` flag. At some latitudes the Sun stays above that elevation for weeks.
@@ -24,9 +32,12 @@ current state.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 from seeingmon.frames import Frame, PixelFormat
 from seeingmon.profile import Profile, derived
@@ -63,20 +74,29 @@ def sky_background_fraction(frame: Frame, profile: Profile) -> float:
 
 def median_dn(frame: Frame) -> float:
     """The median of a frame in its own counts, on a stride of at most about 65,000 pixels."""
-    data = frame.data
+    return median_of(frame.data)
+
+
+def median_of(data: npt.NDArray[Any]) -> float:
+    """The median of an image, on a regular stride of at most about 65,000 pixels."""
     stride = max(1, math.isqrt(data.size // _MAX_SAMPLE_PIXELS))
     return float(np.median(data[::stride, ::stride]))
 
 
-def _e_per_dn(frame: Frame, profile: Profile) -> float:
-    """The electrons of one count of a frame, in the container that the frame uses.
+def e_per_dn(profile: Profile, mode: str, gain: int, pixel_format: PixelFormat) -> float:
+    """The electrons of one count of a readout mode and gain, in the container of a pixel format.
 
     A 16-bit container holds the ADC value of the readout mode in its high bits, and an 8-bit one
     its top 8 bits, as in the fast path.
     """
-    readout = profile.mode(frame.mode)
-    container_bits = 8 if frame.pixel_format is PixelFormat.RAW8 else 16
-    return derived.e_per_adu(readout, frame.gain) * 2.0 ** (readout.adc_bits - container_bits)
+    readout = profile.mode(mode)
+    container_bits = 8 if pixel_format is PixelFormat.RAW8 else 16
+    return derived.e_per_adu(readout, gain) * 2.0 ** (readout.adc_bits - container_bits)
+
+
+def _e_per_dn(frame: Frame, profile: Profile) -> float:
+    """The electrons of one count of a frame, in the container that the frame uses."""
+    return e_per_dn(profile, frame.mode, frame.gain, frame.pixel_format)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,18 +106,15 @@ class SkyReading:
     `frame_fraction` is the median of the brightness frame as a share of its own saturation level.
     `fast_fraction` is the background that the fast stream would have at its shortest exposure:
     the sky electrons of a fast-mode pixel over the full well at the fast gain. `clipped` says
-    that the brightness frame reached the clip level, so the sky is at least that bright, and
-    `fast_fraction` is only a lower bound.
+    that the brightness frame reached the clip level (`brightness_clip_fraction`), so the sky is
+    at least that bright, and `fast_fraction` is only a lower bound. `median_dn` is the median of
+    the frame in its own counts.
     """
 
     frame_fraction: float
     fast_fraction: float
     clipped: bool
-
-    @property
-    def gate_fraction(self) -> float:
-        """The share of saturation that the gate compares: 1 for a clipped brightness frame."""
-        return 1.0 if self.clipped else self.fast_fraction
+    median_dn: float = 0.0
 
 
 def read_sky(
@@ -136,7 +153,54 @@ def read_sky(
         frame_fraction=frame_fraction,
         fast_fraction=fast_e / full_well,
         clipped=frame_fraction >= clip_fraction,
+        median_dn=median,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class FastSky:
+    """The background of the fast stream at the profile's shortest exposure, for the gate.
+
+    `fraction` is a share of saturation. `bound` says that it comes from a frame that clipped, so
+    the sky is at least that bright.
+    """
+
+    fraction: float
+    bound: bool = False
+
+    @classmethod
+    def from_reading(cls, reading: SkyReading) -> FastSky:
+        """The estimate of a brightness frame: a lower bound when the frame clipped."""
+        return cls(reading.fast_fraction, bound=reading.clipped)
+
+    @classmethod
+    def from_fast(
+        cls, fraction: float, exposure_us: float, shortest_us: float, *, clipped: bool
+    ) -> FastSky:
+        """The estimate of a burst or a window of the fast stream, scaled to the shortest exposure.
+
+        The background grows in proportion to the exposure. `fraction` counts the camera's offset
+        as sky, as everywhere in the loop, and the offset scales down here with the exposure, where
+        a frame at the shortest exposure would hold all of it: 0.7% of saturation with the
+        simulator's offset, far below the limits of the gate.
+        """
+        return cls(fraction * shortest_us / exposure_us, bound=clipped)
+
+
+def combine(estimates: Iterable[FastSky | None]) -> FastSky | None:
+    """The estimate that the gate judges: the largest, and a bound only when it is one.
+
+    A bound larger than every measurement says that the sky is at least that bright, so the result
+    is that bound. A measurement at or above every bound stands as a measurement.
+    """
+    known = [estimate for estimate in estimates if estimate is not None]
+    if not known:
+        return None
+    measured = [e.fraction for e in known if not e.bound]
+    bounds = [e.fraction for e in known if e.bound]
+    if measured and (not bounds or max(measured) >= max(bounds)):
+        return FastSky(max(measured))
+    return FastSky(max(bounds), bound=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,35 +224,28 @@ class DaylightGate:
             and sun_elevation_deg > self._config.twilight_elevation_deg
         )
 
-    def evaluate(
-        self,
-        *,
-        background_fraction: float | None,
-        running: bool,
-        frame_fraction: float | None = None,
-    ) -> DaylightDecision:
+    def threshold(self, *, running: bool) -> float:
+        """The share of saturation that stops a running scheduler, or below which a stopped one
+        resumes."""
+        config = self._config
+        return config.saturation_limit if running else config.resume_saturation
+
+    def evaluate(self, sky: FastSky | None, *, running: bool) -> DaylightDecision:
         """Decide from the background of the fast stream at its shortest exposure.
 
-        `background_fraction` is `SkyReading.gate_fraction`, and `running` says whether the
-        scheduler is in `auto` now. A running scheduler stops at `saturation_limit` (a clipped
-        brightness frame reaches it), and a stopped one resumes only below the stricter
-        `resume_saturation`. `frame_fraction` is `SkyReading.frame_fraction`: a stopped scheduler
-        also needs it below `brightness_resume_fraction`, the hysteresis of the clip. A missing
-        measurement keeps a running scheduler running, and it stops a stopped one from starting.
+        `sky` is the estimate that `combine` gives, and `running` says whether the scheduler is in
+        `auto` now. A running scheduler stops at `saturation_limit`, and a stopped one resumes only
+        below the stricter `resume_saturation`. A missing estimate, or a lower bound under the
+        threshold, keeps a running scheduler running, and it keeps a stopped one stopped.
         """
-        config = self._config
-        if background_fraction is None:
+        threshold = self.threshold(running=running)
+        if sky is None:
             if running:
                 return DaylightDecision(True, None)
             return DaylightDecision(False, REASON_NO_MEASUREMENT)
-        if (
-            not running
-            and frame_fraction is not None
-            and frame_fraction >= config.brightness_resume_fraction
-        ):
+        if sky.fraction >= threshold:
             return DaylightDecision(False, REASON_BRIGHT_SKY)
-        threshold = config.saturation_limit if running else config.resume_saturation
-        if background_fraction >= threshold:
+        if sky.bound and not running:
             return DaylightDecision(False, REASON_BRIGHT_SKY)
         return DaylightDecision(True, None)
 

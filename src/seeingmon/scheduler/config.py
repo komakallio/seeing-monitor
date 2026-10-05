@@ -127,9 +127,26 @@ class SurveyConfig(SectionModel):
 
 
 class WatchConfig(SectionModel):
-    """The brightness watch: one short frame at a fixed interval while the camera is idle."""
+    """The brightness watch: one short frame at a fixed interval while the camera is idle.
+
+    A watch frame that clips gives only a lower bound of the sky, so the scheduler takes a second
+    frame at `bright_exposure_us` at once. In `auto`, that frame also checks the sky when the 1 ms
+    frame of a survey step clipped and the fast stream has no background that decides (see
+    `seeingmon.scheduler.gates`).
+    """
 
     exposure_us: PositiveInt = 1000
+    """The exposure of the watch frame, in microseconds. It reads a dim sky well above the camera's
+    offset, which the gate counts as sky."""
+
+    bright_exposure_us: PositiveInt = 32
+    """The exposure of the frame that follows a watch frame that clipped, in microseconds.
+
+    The profile's shortest exposure, so that the frame does not clip in daylight. In bin2 at gain 0
+    it reads 86% of the background that the fast stream would have at the same exposure in bin1,
+    so it clips (`brightness_clip_fraction`, 90%) only where that background passes 104%, twice
+    the limit of the gate. A value at or above `exposure_us` takes no second frame."""
+
     gain: NonNegativeInt = 0
     interval_s: Seconds = 60.0
     roi_arcmin: NonNegative = 20.0
@@ -139,9 +156,10 @@ class WatchConfig(SectionModel):
 class DaylightConfig(SectionModel):
     """The daylight gate: the measured sky, and the twilight flag. The Sun gates nothing.
 
-    The gate reads the brightness frame (the watch frame in `safe`, the short survey frame in
-    `auto`), and it derives through the profile the background that the fast stream would have
-    at the profile's shortest exposure. That background, as a share of saturation, decides.
+    The gate judges the background that the fast stream would have at the profile's shortest
+    exposure, as a share of saturation. It derives that background through the profile from the
+    brightness frame (the watch frame in `safe`, the short survey frame in `auto`), and in `auto`
+    also from the background of the last search burst or window (see `seeingmon.scheduler.gates`).
     """
 
     twilight_elevation_deg: Finite = -18.0
@@ -154,24 +172,19 @@ class DaylightConfig(SectionModel):
     """After `safe`, the fast background must fall below this share before `auto` resumes."""
 
     brightness_clip_fraction: Fraction = 0.9
-    """A brightness frame whose median reaches this share of its own saturation level has clipped.
+    """A frame whose median reaches this share of its own saturation level has clipped.
 
-    It tells only that the sky is at least that bright, so the gate counts it as too bright."""
-
-    brightness_resume_fraction: Fraction = 0.6
-    """After `safe`, the brightness frame must fall below this share of its own saturation level
-    before `auto` resumes.
-
-    It is the hysteresis of the clip, as `resume_saturation` is of `saturation_limit`. A 1 ms bin2
-    frame clips while the fast stream would still see less than 4% of saturation, so the clip and
-    this level decide in practice."""
+    Its level is only a lower bound of the sky. It is a guard: the watch frame of 32 us
+    (`WatchConfig.bright_exposure_us`) that follows a clipped one clips only in a sky that is far
+    too bright for the fast stream anyway, but the 1 ms watch frame and the 1 ms frame of a survey
+    step clip where the fast stream at 32 us would see 3.3%, and so can a burst or a window at a
+    longer exposure, or a long survey frame. The gate and the adaptive long exposure use such a
+    level as a lower bound, and never as a measurement."""
 
     @model_validator(mode="after")
     def _thresholds_are_ordered(self) -> Self:
         if self.resume_saturation >= self.saturation_limit:
             raise ValueError("resume_saturation must be below saturation_limit")
-        if self.brightness_resume_fraction >= self.brightness_clip_fraction:
-            raise ValueError("brightness_resume_fraction must be below brightness_clip_fraction")
         return self
 
 

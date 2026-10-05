@@ -35,12 +35,16 @@ from tests.services.web.client import TestClient
 from .night import Night, build_night
 
 API = "/api/v1"
-LONG_EXPOSURE_S = 30.0  # the default of the scheduler
+# A frame of at least `[survey.sky] min_exposure_s` (1 s) is long: it carries the sky quality and a
+# preview. The first long frame after a start takes `[survey.twilight] min_exposure_s` (1 s), and
+# the long exposure grows from there by 4 times a step in the dark sky of the night.
+LONG_MIN_EXPOSURE_S = 1.0
+FIRST_LONG_EXPOSURE_S = 1.0
 
 
 def long_frames(night: Night) -> list[SurveyFrameRecord]:
     records: list[SurveyFrameRecord] = [
-        r for r in night.records("survey_frame") if r.exposure_s >= 5.0
+        r for r in night.records("survey_frame") if r.exposure_s >= LONG_MIN_EXPOSURE_S
     ]
     return records
 
@@ -71,7 +75,7 @@ class TestAShortNight:
             assert layout.resolve(first.image_ref).is_file()  # the first long frame: a FITS file
             assert second.image_ref.startswith("previews/")  # the next ones: a preview only
             assert layout.resolve(second.image_ref).is_file()
-            assert all(r.image_ref is None for r in frames if r.exposure_s < 5.0)
+            assert all(r.image_ref is None for r in frames if r.exposure_s < LONG_MIN_EXPOSURE_S)
             assert not list(layout.root.rglob("*.tmp"))
 
             settings = WebSettings()
@@ -129,7 +133,7 @@ class TestAShortNight:
         assert path.read_bytes() == fits.content
         back = framefile.read_frame_fits(path)
         assert back.compressed is True
-        assert back.header["EXPTIME"] == LONG_EXPOSURE_S
+        assert back.header["EXPTIME"] == FIRST_LONG_EXPOSURE_S
         assert back.header["KEPT"] == "every_10"
         missing = client.get(f"{API}/images/{newest['id']}", params={"format": "fits"})
         assert missing.status_code == 404

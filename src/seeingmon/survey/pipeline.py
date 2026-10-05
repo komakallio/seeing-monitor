@@ -15,10 +15,11 @@
    the star list, the cloud fraction, and the matched stars for photometry.
 4. **Sky quality.** `seeingmon.survey.quality` measures the stars (photometry and the zero
    point), the sky (the dark level, the flat, and a clipped median), the transparency, and the
-   limiting magnitude. A frame with an exposure under `SkyConfig.min_exposure_s` (5 s) skips this
-   step: it shows too few stars and too little sky, and the alignment helper, which analyzes
-   short frames about once a second, would pay for work that it never uses. Pass
-   `sky_quality=True` to `analyze` to force the step.
+   limiting magnitude. A frame with an exposure under `SkyConfig.min_exposure_s` (1 s) skips this
+   step: a shorter frame, such as the 1 ms frame of a survey step, shows too few stars and too
+   little sky, and the adaptive long frames of 1 s and longer get the record. Pass
+   `sky_quality=True` to `analyze` to force the step, or `sky_quality=False` to skip it, as the
+   alignment helper does for its frames of 0.5 s.
 5. **Records.** The pipeline builds the `survey_frame`, `sky_quality`, `pointing`, and
    `star_list` records.
 
@@ -35,7 +36,10 @@ The 1 ms frame of each survey step shows Polaris alone by design, so no solver c
 `unsolved` record for it would say that a solve failed when none was tried. The frame keeps its
 `survey_frame` record, and the latest `pointing` record stays the latest frame that a solver or
 the tracker could try. A long frame (see `SkyConfig.min_exposure_s`) always gets one, so clouds
-that hide the stars show as `unsolved`, and so does any frame with enough stars that fails.
+that hide the stars show as `unsolved`, and so does any frame with enough stars that fails. The
+rule holds when detection fails too: a 1 ms frame that a sunny sky saturates whole keeps its
+`survey_frame` record alone, and only a long frame gets the empty `sky_quality` record and the
+`unsolved` pointing record of a failure.
 
 **Solver hints.** With a solution, the solvers search `[survey.solve] hint_radius_deg` (2 degrees)
 around the field center that the solution predicts. A solution has no age limit, so after the
@@ -59,12 +63,25 @@ photometric prior says a clear sky would show at a signal-to-noise ratio of
 `CloudConfig.expected_snr` or better. The cloud fraction is the share of them that no detection
 matches. Stars that a saturated star covers do not count. The `sky_quality` record keeps both
 counts (`n_expected` and `n_expected_found`), also when too few stars are expected for a fraction.
+
+**A saturated sky.** In a bright sky the background of a long frame can reach the saturation
+level. A clipped background looks quiet, so the noise of the frame promises many stars that
+detection then misses, and the frame would report clouds. A frame with more saturated pixels than
+`[survey.twilight] max_saturated_fraction` (1%), or with a sky background above
+`max_background_fraction` (80%) of saturation, therefore gets the flag `saturated_sky` on its
+`sky_quality` record. The ring background of every star is clipped too, so the record holds no
+photometry: no zero point, transparency, cloud fraction, counts of the expected stars, limiting
+magnitude, or sky brightness. The frame keeps its pointing record, because its stars can still
+solve, and the scheduler skips such frames in daylight (`seeingmon.scheduler.exposure`). The share
+of saturated pixels comes from a regular sample of about 65,000 pixels, at the detector's
+threshold.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -138,6 +155,9 @@ STAR_LIST_COLUMNS = ["x_px", "y_px", "flux_dn", "fwhm_px", "flags", "cat_row"]
 STAR_LIST_CATALOG = "gaia-dr3+tycho-2"
 STAR_LIST_G_LIMIT = 11.0  # matched stars brighter than this go to the star list
 _UNMATCHED_ROW = -1.0
+# The saturation guard counts the saturated pixels on a regular stride of at most about this many
+# pixels, so a share of 1% rests on some 650 of them.
+_GUARD_SAMPLE_PIXELS = 65_536
 
 # The outcomes of `SolveAttempt`.
 SOLVED = "solved"  # the solver found a field, and the fit confirmed it
@@ -351,6 +371,17 @@ class CloudCount:
     n_found: int | None = None
 
 
+def saturated_share(data: npt.NDArray[np.float32], threshold_dn: float) -> float:
+    """The share of the pixels of a frame at or above `threshold_dn`.
+
+    A large frame is measured on a regular stride of at most about 65,000 pixels, which keeps the
+    cost far below that of detection.
+    """
+    stride = max(1, math.isqrt(data.size // _GUARD_SAMPLE_PIXELS))
+    sample = data[::stride, ::stride]
+    return float(np.count_nonzero(sample >= threshold_dn)) / max(1, sample.size)
+
+
 def frame_time_invalid(frame: Frame) -> bool:
     """Whether the clock was not synchronized when the frame was taken."""
     return bool(frame.flags & FrameFlag.TIME_INVALID) or frame.t_quality == TimeQuality.INVALID
@@ -435,7 +466,13 @@ class SurveyPipeline:
         try:
             readout = self._profile.mode(frame.mode)
         except ProfileError:
-            return self._failure(frame, reference, f"unknown readout mode {frame.mode!r}", timings)
+            return self._failure(
+                frame,
+                reference,
+                f"unknown readout mode {frame.mode!r}",
+                timings,
+                sky_quality=sky_quality,
+            )
         mode_shape = (readout.height_px, readout.width_px)
 
         def lap(name: str) -> None:
@@ -457,6 +494,10 @@ class SurveyPipeline:
         saturation = self._profile.saturation(frame.mode, frame.gain)
         native = native_counts(frame)
         hot = self._hot_mask_for(frame)
+        guard = self._config.twilight
+        saturated = saturated_share(
+            native, self._detect_options.saturation_fraction * saturation.native_dn
+        )
 
         def detect(model: TrailModel | None) -> Detections:
             raw = detect_stars(
@@ -472,8 +513,24 @@ class SurveyPipeline:
         try:
             detections = detect(trail)
         except DetectionError as error:
-            return self._failure(frame, reference, f"detection failed: {error}", timings)
+            return self._failure(
+                frame,
+                reference,
+                f"detection failed: {error}",
+                timings,
+                saturated_sky=saturated > guard.max_saturated_fraction,
+                sky_quality=sky_quality,
+            )
         lap("detect")
+        background = float(detections.background_level) / saturation.native_dn
+        saturated_sky = (
+            saturated > guard.max_saturated_fraction or background > guard.max_background_fraction
+        )
+        if saturated_sky:
+            notes.append(
+                f"the sky is saturated: {saturated:.1%} of the pixels saturate, and the "
+                f"background reads {background:.0%} of saturation"
+            )
 
         epoch = apparent.epoch_from_utc_ns(frame.t_utc_ns, self._config.dut1_s)
         solved = self._solve(frame, detections, tracker, epoch, mode_shape, index, notes, attempts)
@@ -537,7 +594,13 @@ class SurveyPipeline:
         # A provisional zero point is no clear-sky level, so the cloud fraction keeps the
         # photometric prior of the profile, as it does while no reference exists.
         cloud_reference = None if zp_reference is None or zp_reference.provisional else zp_reference
-        count = self._cloud_count(frame, detections, coverage, cloud_reference)
+        # A clipped background promises stars that the frame cannot show, so a saturated sky gives
+        # no counts and no cloud fraction.
+        count = (
+            CloudCount()
+            if saturated_sky
+            else self._cloud_count(frame, detections, coverage, cloud_reference)
+        )
         cloud = count.fraction
         focus = self._focus(detections)
         solution: PointingSolution | None = None
@@ -580,6 +643,7 @@ class SurveyPipeline:
                 options=self._quality,
                 provenance=self._provenance(self._quality_provenance(dark_model)),
                 time_invalid=frame_time_invalid(frame),
+                saturated_sky=saturated_sky,
             )
             lap("quality")
         # A short frame that no solver could use is no failed solve, so it gets no pointing record.
@@ -1125,9 +1189,18 @@ class SurveyPipeline:
         reference: ReferenceSolution | None,
         reason: str,
         timings: dict[str, float],
+        *,
+        saturated_sky: bool = False,
+        sky_quality: bool | None = None,
     ) -> FrameAnalysis:
-        """The records of a frame that could not be processed at all."""
+        """The records of a frame that could not be processed at all.
+
+        A frame that saturates whole, which detection cannot process, carries `saturated_sky`. A
+        short frame gets neither the `sky_quality` record (unless `sky_quality` forces it) nor the
+        `unsolved` pointing record: no solve was tried (see "No attempt" in the module text).
+        """
         log.warning("survey frame at %d: %s", frame.t_utc_ns, reason)
+        long_frame = frame.exposure_us / 1e6 >= self._config.sky.min_exposure_s
         return FrameAnalysis(
             records=failure_records(
                 station_id=self._station_id,
@@ -1141,6 +1214,9 @@ class SurveyPipeline:
                 reference=reference,
                 provenance=self._provenance(),
                 reason=reason,
+                saturated_sky=saturated_sky,
+                sky_quality=long_frame if sky_quality is None else sky_quality,
+                pointing=long_frame,
             ),
             solved=False,
             cloud_fraction=None,
@@ -1162,42 +1238,60 @@ def failure_records(
     reference: ReferenceSolution | None,
     provenance: dict[str, str],
     reason: str,
+    saturated_sky: bool = False,
+    sky_quality: bool = True,
+    pointing: bool = True,
 ) -> tuple[Record, ...]:
-    """The survey_frame, empty sky_quality, and unsolved pointing records of a failed frame."""
-    survey_frame = SurveyFrameRecord(
-        station_id=station_id,
-        t_utc_ns=t_utc_ns,
-        profile_id=profile_id,
-        provenance=provenance,
-        quality={"n_detected": reason},
-        exposure_s=exposure_us / 1e6,
-        gain=gain,
-        readout_mode=mode,
-        sensor_temperature_c=temperature_c,
-    )
-    sky_quality = SkyQualityRecord(
-        station_id=station_id,
-        t_utc_ns=t_utc_ns,
-        profile_id=profile_id,
-        provenance=provenance,
-        quality={"sky_mag_arcsec2": reason, "zero_point_mag": reason},
-        n_stars_used=0,
-        flags=["time_invalid"] if time_invalid else [],
-    )
-    pointing = build_pointing_record(
-        station_id=station_id,
-        profile_id=profile_id,
-        t_utc_ns=t_utc_ns,
-        mode=mode,
-        solver="none",
-        provenance=provenance,
-        attitude=None,
-        epoch=None,
-        solution=None,
-        reference=reference,
-        time_invalid=time_invalid,
-    )
-    return survey_frame, sky_quality, pointing
+    """The survey_frame, empty sky_quality, and unsolved pointing records of a failed frame.
+
+    `saturated_sky` adds that flag to the `sky_quality` record, for a frame that saturates whole.
+    `sky_quality` and `pointing` false leave out those records, for a short frame.
+    """
+    flags = ["time_invalid"] if time_invalid else []
+    if saturated_sky:
+        flags.append("saturated_sky")
+    records: list[Record] = [
+        SurveyFrameRecord(
+            station_id=station_id,
+            t_utc_ns=t_utc_ns,
+            profile_id=profile_id,
+            provenance=provenance,
+            quality={"n_detected": reason},
+            exposure_s=exposure_us / 1e6,
+            gain=gain,
+            readout_mode=mode,
+            sensor_temperature_c=temperature_c,
+        )
+    ]
+    if sky_quality:
+        records.append(
+            SkyQualityRecord(
+                station_id=station_id,
+                t_utc_ns=t_utc_ns,
+                profile_id=profile_id,
+                provenance=provenance,
+                quality={"sky_mag_arcsec2": reason, "zero_point_mag": reason},
+                n_stars_used=0,
+                flags=flags,
+            )
+        )
+    if pointing:
+        records.append(
+            build_pointing_record(
+                station_id=station_id,
+                profile_id=profile_id,
+                t_utc_ns=t_utc_ns,
+                mode=mode,
+                solver="none",
+                provenance=provenance,
+                attitude=None,
+                epoch=None,
+                solution=None,
+                reference=reference,
+                time_invalid=time_invalid,
+            )
+        )
+    return tuple(records)
 
 
 def field_disagreement_px(

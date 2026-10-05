@@ -8,7 +8,9 @@ provisional until commissioning shows what a real sky needs (phase 3).
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Self
+
+from pydantic import Field, model_validator
 
 from seeingmon.config import SectionModel
 
@@ -159,7 +161,9 @@ class SkyConfig(SectionModel):
     mask_radius_scale: float = 3.0  # each star hides a disk of this many PSF sigmas
     bp_rp: float = 1.0  # the color that the V conversion assumes for the sky
     sqm_offset_mag: float = 0.0  # the offset that `seeingmon.survey.sqm_fit` gives
-    min_exposure_s: float = 5.0  # a shorter frame gets no sky quality record (and no extra cost)
+    # A shorter frame gets no sky quality record (and no extra cost). Keep it at or below
+    # `[survey.twilight] min_exposure_s`, so that every adaptive long frame gets one.
+    min_exposure_s: float = 1.0
 
 
 class TransparencyConfig(SectionModel):
@@ -182,6 +186,36 @@ class StarEpochConfig(SectionModel):
 
     min_frames: int = 3  # a star needs this many frames to appear in the summary
     min_snr: float = 20.0
+
+
+class TwilightConfig(SectionModel):
+    """The survey in a bright sky: the adaptive long exposure and the saturation guard.
+
+    The scheduler reads `target_background_fraction`, `min_exposure_s`, and
+    `max_background_fraction` (`seeingmon.scheduler.exposure.SurveyExposure`): the long exposure
+    of each survey step puts the sky background at `target_background_fraction` of saturation,
+    between `min_exposure_s` and `[scheduler.survey] long_exposure_s`, and the step skips its long
+    exposure when even `min_exposure_s` would pass the target. It also skips it while the last
+    long frame was beyond `max_background_fraction` at `min_exposure_s`, and the 1 ms frame has
+    not darkened since. The pipeline reads the last two keys (`seeingmon.survey.pipeline`): a
+    frame over either limit gets the flag `saturated_sky` and no photometry.
+    """
+
+    target_background_fraction: float = Field(0.3, gt=0, lt=1, allow_inf_nan=False)
+    min_exposure_s: float = Field(1.0, gt=0, allow_inf_nan=False)
+    # More saturated pixels than this share of the frame set `saturated_sky`.
+    max_saturated_fraction: float = Field(0.01, gt=0, le=1, allow_inf_nan=False)
+    # So does a sky background above this share of saturation. It must lie above the target.
+    max_background_fraction: float = Field(0.8, gt=0, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _guard_is_above_the_target(self) -> Self:
+        if self.max_background_fraction <= self.target_background_fraction:
+            raise ValueError(
+                "max_background_fraction must lie above target_background_fraction, because a long "
+                "frame at the target would otherwise get saturated_sky"
+            )
+        return self
 
 
 class DarknessConfig(SectionModel):
@@ -227,4 +261,5 @@ class SurveyConfig(SectionModel):
     sky: SkyConfig = SkyConfig()
     transparency: TransparencyConfig = TransparencyConfig()
     star_epoch: StarEpochConfig = StarEpochConfig()
+    twilight: TwilightConfig = TwilightConfig()
     darkness: DarknessConfig = DarknessConfig()

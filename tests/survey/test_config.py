@@ -135,3 +135,15 @@ def test_a_validity_limit_below_zero_or_not_finite_fails_at_load(
         local_file=tmp_path / "missing.toml", env={"SEEINGMON_SURVEY__POINTING__VALIDITY_S": "3600"}
     )
     assert limited.section("survey", SurveyConfig).pointing.validity_s == 3600.0
+
+
+@pytest.mark.parametrize("value", ["0.3", "0.2"])
+def test_a_saturation_guard_at_or_below_the_target_fails_at_load(
+    tmp_path: Path, value: str
+) -> None:
+    """A long frame at the target would get `saturated_sky`, and the scheduler would reject it."""
+    local = tmp_path / "config.toml"
+    local.write_text(f"[survey.twilight]\nmax_background_fraction = {value}\n", encoding="utf-8")
+    config = load_config(local_file=local, env={})
+    with pytest.raises(ConfigError, match="max_background_fraction must lie above"):
+        config.section("survey", SurveyConfig)

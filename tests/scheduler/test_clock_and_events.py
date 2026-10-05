@@ -126,7 +126,7 @@ class TestTheClockTheSchedulerTrusts:
         world.close()
 
     def test_without_synchronization_the_daylight_gate_relies_on_the_measured_sky(self) -> None:
-        """In daylight the sky saturates the brightness frame, so the scheduler stays in `safe`."""
+        """In daylight the fast stream could not measure even at 32 us, so `safe` holds."""
         world = World()  # 14:30 UTC, with the Sun up
         set_synchronized(world, False)
         world.run_until(1200)

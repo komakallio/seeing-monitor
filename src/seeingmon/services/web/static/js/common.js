@@ -213,6 +213,7 @@
     moon: "The Moon was up, so the sky is brighter.",
     dew: "Dew covered the optics.",
     dark_due: "The dark library is due for a new session.",
+    saturated_sky: "The sky saturated the survey frame, so it gives no photometry and no clouds.",
     unsolved: "The solver found no solution.",
     few_stars: "The solver matched few stars.",
     moved: "The mount moved since the reference.",

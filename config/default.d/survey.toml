@@ -173,7 +173,10 @@ edge_px = 8
 mask_radius_scale = 3.0
 bp_rp = 1.0                    # The color that the V conversion assumes for the sky.
 sqm_offset_mag = 0.0           # The offset that seeingmon.survey.sqm_fit gives at commissioning.
-min_exposure_s = 5.0           # A shorter frame, such as an alignment frame, gets no sky quality.
+# A shorter frame, such as the 1 ms frame of a survey step, gets no sky quality. Keep it at or below
+# [survey.twilight] min_exposure_s, so that every adaptive long frame gets the record. It also sets
+# which frames core counts as long (a preview, and the unsolved and cloud events). Provisional.
+min_exposure_s = 1.0
 
 # The reference zero point, transparency, and the cloud flag.
 [survey.transparency]
@@ -192,6 +195,27 @@ fallback_hours = 6.0
 [survey.star_epoch]
 min_frames = 3
 min_snr = 20.0
+
+# The survey in a bright sky. The scheduler reads target_background_fraction, min_exposure_s, and
+# max_background_fraction, and the pipeline reads the last two. All four values are provisional:
+# phase 3 sets them from real twilight skies.
+[survey.twilight]
+# The long exposure of each survey step puts the sky background at this share of saturation: from
+# the 1 ms frame of the step at first, and from the previous long frame after that, changing by at
+# most 4 times a step, between min_exposure_s and [scheduler.survey] long_exposure_s. In a dark sky
+# it stays at long_exposure_s. Provisional.
+target_background_fraction = 0.3
+# The shortest adaptive long exposure, in seconds. When even this would pass the target, the step
+# skips its long exposure and keeps the 1 ms frame, which the daylight gate reads. Provisional.
+min_exposure_s = 1.0
+# A frame with more saturated pixels than this share gets the flag saturated_sky, and no zero point,
+# transparency, cloud fraction, limiting magnitude, or sky brightness. Provisional.
+max_saturated_fraction = 0.01
+# So does a frame whose sky background passes this share of saturation. The scheduler reads it too:
+# while the last long frame was beyond it at min_exposure_s, and the 1 ms frame has not darkened
+# since, the next step skips its long exposure. It must lie above target_background_fraction.
+# Provisional.
+max_background_fraction = 0.8
 
 # The events sky.dark and sky.clear_verdict, which core writes from the survey results, each at
 # most once a night (night_split_utc_hour). sky.dark needs the sky brightness of the frames, which

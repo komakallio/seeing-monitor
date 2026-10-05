@@ -64,6 +64,10 @@ def test_the_defaults_follow_the_architecture() -> None:
     assert config.fast.roi_arcmin == 4.1
     assert config.survey.cadence_s == 180.0
     assert config.watch.exposure_us == 1000
+    # The profile's shortest exposure, so that the frame after a clipped watch frame does not clip
+    # in daylight.
+    shortest = load_profile("asi294mm-gs250").limits.exposure_us_range[0]
+    assert config.watch.bright_exposure_us == shortest
     assert config.watch.interval_s == 60.0
     assert config.daylight.saturation_limit == 0.5
     assert config.daylight.twilight_elevation_deg == -18.0
@@ -99,7 +103,6 @@ def test_the_daylight_gate_has_no_sun_limit() -> None:
         "saturation_limit",
         "resume_saturation",
         "brightness_clip_fraction",
-        "brightness_resume_fraction",
     }
 
 
@@ -115,6 +118,7 @@ def test_the_survey_exposures_fit_the_cadence_and_the_profile() -> None:
         config.survey.long_exposure_us,
         config.fast.exposure_us,
         config.watch.exposure_us,
+        config.watch.bright_exposure_us,
     ):
         assert limits.exposure_us_range[0] <= exposure_us <= limits.exposure_us_range[1]
     for gain in (config.fast.gain, config.survey.short_gain, config.survey.long_gain):
@@ -175,7 +179,7 @@ def test_the_local_file_and_the_environment_turn_the_high_speed_mode_on(tmp_path
         {"daylight": {"sun_elevation_limit_deg": -3.0}},  # the Sun gates nothing any more
         {"daylight": {"sun_resume_margin_deg": 1.0}},
         {"daylight": {"brightness_clip_fraction": 1.5}},
-        {"daylight": {"brightness_clip_fraction": 0.6, "brightness_resume_fraction": 0.7}},
+        {"daylight": {"brightness_resume_fraction": 0.6}},  # the gate judges the fast stream
         {"search": {"burst_frames": 0}},
         {"search": {"confirm_bursts": 0}},
         {"search": {"detect_snr": 0.0}},

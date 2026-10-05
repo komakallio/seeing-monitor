@@ -6308,6 +6308,7 @@
                 "dark_due",
                 "dew",
                 "moon",
+                "saturated_sky",
                 "time_invalid",
                 "twilight"
               ],
@@ -6319,6 +6320,7 @@
               "dark_due": "The dark library misses the current temperature or is older than 6 months.",
               "dew": "The star widths and the transparency indicate dew on the optics.",
               "moon": "The Moon was above the horizon and bright enough to raise the sky background.",
+              "saturated_sky": "The sky background reached the saturation guard (`[survey.twilight]`), so the frame gives no zero point, transparency, cloud fraction, limiting magnitude, or sky brightness.",
               "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
               "twilight": "The Sun was less than 18 degrees below the horizon."
             }
@@ -6613,6 +6615,7 @@
                 "dark_due",
                 "dew",
                 "moon",
+                "saturated_sky",
                 "time_invalid",
                 "twilight"
               ],
@@ -6624,6 +6627,7 @@
               "dark_due": "The dark library misses the current temperature or is older than 6 months.",
               "dew": "The star widths and the transparency indicate dew on the optics.",
               "moon": "The Moon was above the horizon and bright enough to raise the sky background.",
+              "saturated_sky": "The sky background reached the saturation guard (`[survey.twilight]`), so the frame gives no zero point, transparency, cloud fraction, limiting magnitude, or sky brightness.",
               "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
               "twilight": "The Sun was less than 18 degrees below the horizon."
             }

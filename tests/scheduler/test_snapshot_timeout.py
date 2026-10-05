@@ -94,9 +94,13 @@ def test_the_watch_and_the_survey_wait_for_what_the_camera_needs() -> None:
     """Without a solution, the scheduler takes the brightness frame, and then the survey step: a
     short exposure and a long one, both of the full frame."""
     scheduler, driver = build(solved=False)
-    step_until(scheduler, driver, 3)
+    step_until(scheduler, driver, 4)
     scheduler.close()
-    (watch, short, long) = driver.reads[:3]
+    # The first survey step also takes a frame of 32 us of the region of the watch, which measures
+    # the black level of the 1 ms frame for the long exposure.
+    (watch, short, black, long) = driver.reads[:4]
+    assert black[0].exposure_us == 32
+    assert black[0].roi == watch[0].roi
 
     watch_config, watch_period_s, watch_timeout_s = watch
     assert watch_config.kind is StreamKind.SNAPSHOT
@@ -118,11 +122,13 @@ def test_the_watch_and_the_survey_wait_for_what_the_camera_needs() -> None:
     assert short_timeout_s > 1.0  # the video model gave 0.61 s, and the frame needed 0.53 s
     assert short_timeout_s - SLOWEST_FULL_FRAME_S > 0.9  # the old model left 0.08 s
 
+    # The first long frame of an episode of `auto` takes `[survey.twilight] min_exposure_s` (1 s),
+    # because the 1 ms frame cannot tell a longer one (`seeingmon.scheduler.exposure`).
     long_config, long_period_s, long_timeout_s = long
-    assert long_config.exposure_us == 30_000_000
-    assert long_period_s == pytest.approx(30.0 + 0.27 + 2822 * 75e-6)
+    assert long_config.exposure_us == 1_000_000
+    assert long_period_s == pytest.approx(1.0 + 0.27 + 2822 * 75e-6)
     assert long_timeout_s == pytest.approx(2 * long_period_s + 0.5)
-    assert long_timeout_s > 2 * (30.0 + SLOWEST_FULL_FRAME_S)
+    assert long_timeout_s > 2 * (1.0 + SLOWEST_FULL_FRAME_S)
 
 
 def test_the_fast_stream_keeps_its_short_wait() -> None:

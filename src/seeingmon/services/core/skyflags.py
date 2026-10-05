@@ -1,9 +1,9 @@
 """The flags that only `core` can set on a `sky_quality` record: the Moon and the dew.
 
-A `sky_quality` record carries the flags `cloud`, `twilight`, `moon`, `dew`, `dark_due`, and
-`time_invalid`. The survey pipeline sets `cloud`, `dark_due`, and `time_invalid`, and the scheduler
-sets `twilight` (and `cloud` and `time_invalid` again) from its own gates when it takes a survey
-result. Two flags need knowledge that neither has:
+A `sky_quality` record carries the flags `cloud`, `twilight`, `moon`, `dew`, `dark_due`,
+`time_invalid`, and `saturated_sky`. The survey pipeline sets `cloud`, `dark_due`, `time_invalid`,
+and `saturated_sky`, and the scheduler sets `twilight` (and `cloud` and `time_invalid` again) from
+its own gates when it takes a survey result. Two flags need knowledge that neither has:
 
 - **`moon`.** The survey path knows no site, and the scheduler has no Moon. `core` has the site and
   the Moon (`seeingmon.services.core.moon`), so it sets the flag when the Moon was above the

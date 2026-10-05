@@ -5,9 +5,10 @@ describes the world as functions of time, and the frame factory of the fake came
 
 - **Sky light.** The background follows the Sun's elevation at a synthetic site (latitude 55
   degrees north, longitude 0, which is nobody's real site), through a brightness curve. The
-  default curve (`saturating_sky`) saturates the brightness frame by day, so the scheduler waits
-  in `safe` and enters `auto` at about -2.8 degrees. `pole_sky` is the simulator's sky near the
-  pole, which never saturates it, for a day in `auto`. `light` adds a floodlight on top.
+  default curve (`saturating_sky`) is too bright by day even for the fast stream at its shortest
+  exposure, so the scheduler waits in `safe` and enters `auto` at about -0.4 degrees, while the
+  1 ms brightness frame still clips. `pole_sky` is the simulator's sky near the pole, which never
+  saturates it, for a day in `auto`. `light` adds a floodlight on top.
 - **Polaris.** The fake fast analysis takes the SNR of the star from the truth of the world: the
   centroid aperture's formula of the detection estimate in `docs/research-notes.md` ("Polaris in
   a bright sky") for a 2 ms bin1 frame, with the sky of the curve and the transparency of the
@@ -32,7 +33,9 @@ The scenario uses a small bin2 frame and a slow, small fast stream (one frame in
 night to a few seconds of real time. The slow stream stands for the real one of 2 ms, so the
 world cannot render a shorter exposure of it, and the adaptive exposure is off
 (`target_background_fraction = 0`). `test_exposure.py` tests the adaptive exposure on the
-simulator's sky.
+simulator's sky. The long survey frame keeps its 30 s too (`SCENARIO_TWILIGHT`), so that the
+timing of every scenario stays that of a dark sky. Pass `twilight=TwilightConfig()` for the
+adaptive long exposure and the skip in daylight (`test_survey_exposure.py`).
 """
 
 from __future__ import annotations
@@ -77,6 +80,7 @@ from seeingmon.scheduler import CommissionResult, Scheduler, SchedulerConfig, Si
 from seeingmon.scheduler.config import FastConfig, LoopConfig, SearchConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
 from seeingmon.scheduler.levels import EscalationLevel
+from seeingmon.survey.config import TwilightConfig
 from seeingmon.testing import (
     FakeCameraDriver,
     FakeFastAnalyzer,
@@ -133,6 +137,16 @@ TEST_CONFIG = SchedulerConfig(
     loop=LoopConfig(max_sleep_s=5.0),
 )
 
+# A sky of 20 times the saturation of the 1 ms frame: the fast stream at 32 us would see 74% of
+# saturation, so nothing can be measured. The default sky stops there by day, and a floodlight of
+# this level forces `safe`. A floodlight of 1 clips the 1 ms frame, but the fast stream at 32 us
+# would see only 3.7%, so it measures on.
+BLINDING_LIGHT = 20.0
+
+# The shortest adaptive long exposure is the longest one (30 s), so the long frame never adapts and
+# never skips.
+SCENARIO_TWILIGHT = TwilightConfig(min_exposure_s=30.0)
+
 SkyCurve = Callable[[float], float]
 """The sky at 1 ms and gain 0 in bin2, as a share of saturation, against the Sun's elevation."""
 
@@ -140,11 +154,13 @@ SkyCurve = Callable[[float], float]
 def saturating_sky(elevation: float) -> float:
     """The default sky: 0.5 at -3 degrees, and 3 times brighter for each degree that the Sun rises.
 
-    The brightness frame clips (0.9 of saturation) at about -2.5 degrees, so by day the scheduler
-    waits in `safe`, and it falls below the resume level of the clip (0.6) at about -2.8 degrees,
-    where `auto` starts. Polaris becomes detectable below about -3.5 degrees.
+    It stops at `BLINDING_LIGHT`, a daylight that the fast stream cannot take even at its shortest
+    exposure, so by day the scheduler waits in `safe`. The 1 ms brightness frame clips (0.9 of its
+    saturation) above about -2.5 degrees. The fast stream at 32 us would see 35% of saturation at
+    about -0.4 degrees, where `auto` starts, and 50% at about -0.1 degrees, where it stops. Polaris
+    becomes detectable below about -3.5 degrees.
     """
-    return 0.5 * 10 ** (0.493 * (elevation + 3.0))
+    return min(BLINDING_LIGHT, 0.5 * 10 ** (0.493 * (elevation + 3.0)))
 
 
 def pole_sky(daylight: float = 0.21) -> SkyCurve:
@@ -352,6 +368,7 @@ class World:
         clock: Clock | None = None,
         context_provider: Callable[[int], FastContext] | None = None,
         sky: SkyCurve = saturating_sky,
+        twilight: TwilightConfig = SCENARIO_TWILIGHT,
     ) -> None:
         self.start_utc_ns = start_utc_ns
         self.clock: Clock = clock or VirtualClock(start_utc_ns)
@@ -401,6 +418,7 @@ class World:
             focus_sink=self.focus,
             result_sink=self.results.append,
             context_provider=context_provider,
+            twilight=twilight,
         )
 
     # --- Time ---
@@ -470,10 +488,11 @@ class World:
         """The sky background at 1 ms and gain 0 in bin2, as a share of saturation.
 
         The sky curve of the world gives it, with the brightness of a dark sky as its floor, and
-        a floodlight adds to it.
+        a floodlight adds to it. It may pass 1: the frame clips, and a shorter exposure, such as
+        the watch frame of 32 us, still reads it.
         """
         base = max(NIGHT_SKY_FRACTION, self.sky(self.sun_elevation(t_utc_ns)))
-        return min(1.0, base + _interval_value(self._lights, t_utc_ns))
+        return base + _interval_value(self._lights, t_utc_ns)
 
     def snr(self, t_utc_ns: int, exposure_ms: float = REAL_FAST_EXPOSURE_MS) -> float:
         """The SNR of Polaris in a bin1 frame at gain 0, from the truth of the world.

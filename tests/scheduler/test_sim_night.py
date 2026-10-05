@@ -31,6 +31,7 @@ from seeingmon.scheduler.config import (
     SurveyConfig,
 )
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
+from seeingmon.survey.config import TwilightConfig
 from seeingmon.testing import FakeFastAnalyzer, ListRecordWriter
 
 try:
@@ -129,6 +130,9 @@ def evening() -> Evening:
         config=config,
         site=SITE,
         escalate=lambda level: None,
+        # The long frame keeps its 2 s, so that every step reports the clouds: in this bright dusk
+        # the adaptive long exposure would skip it (`test_survey_exposure.py` tests that).
+        twilight=TwilightConfig(min_exposure_s=2.0),
     )
     driver.scheduler = scheduler
     scheduler.run_until(dusk + 150 * NS_PER_S)

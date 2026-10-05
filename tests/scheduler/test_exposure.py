@@ -15,6 +15,9 @@ mean of the frame medians as the background of a window:
 - **An episode of `auto`** under a constant sky of 6 mag/arcsec^2, with a pause and with a camera
   fault. The first burst after an entry into `auto` takes its exposure from the brightness frame,
   and a fault inside `auto` keeps the background of the last window.
+- **The daylight gate** under a sunny sky of 0.8 mag/arcsec^2, which clips the 1 ms brightness
+  frame while the fast stream at 32 us sees 18% of saturation, and under a sky that brightens past
+  50% at 32 us. The bursts decide the gate there, as the brightness frame cannot.
 
 The tests skip when the simulator is not available, which includes a machine without SciPy.
 """
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 import pytest
@@ -30,7 +34,14 @@ import pytest
 from seeingmon.clock import NS_PER_S, VirtualClock, iso_to_utc_ns
 from seeingmon.frames import StreamConfig
 from seeingmon.records import EventRecord, SeeingWindowRecord
-from seeingmon.scheduler import Pause, Resume, Scheduler, SchedulerConfig
+from seeingmon.scheduler import (
+    Command,
+    Pause,
+    QueueSweep,
+    Resume,
+    Scheduler,
+    SchedulerConfig,
+)
 from seeingmon.scheduler.config import FastConfig, LoopConfig, SearchConfig, SurveyConfig
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
 from seeingmon.scheduler.exposure import adapted_exposure_us, background_fraction
@@ -123,6 +134,10 @@ class Run:
     def sun_at(self, t_utc_ns: int) -> float:
         return float(self.driver.truth.sun_altitude_deg(t_utc_ns))
 
+    def seconds(self, t_utc_ns: int) -> float:
+        """The seconds from the start of the run."""
+        return (t_utc_ns - self.start_utc_ns) / NS_PER_S
+
 
 def run(
     start_utc_ns: int,
@@ -130,13 +145,17 @@ def run(
     config: SchedulerConfig,
     *,
     sky: float | None = None,
+    sky_at: Callable[[int], float] | None = None,
     faults: SimFaults | None = None,
     pause_s: tuple[float, float] | None = None,
+    commands: Sequence[tuple[float, Command]] = (),
 ) -> Run:
     """Run the scheduler against the simulator for `seconds` from `start_utc_ns`.
 
-    `sky` is a constant sky in mag/arcsec^2. Without it, the sky follows the Sun. `faults` are the
-    camera's, and `pause_s` gives the seconds from the start at which `Pause` and `Resume` come.
+    `sky` is a constant sky in mag/arcsec^2, and `sky_at` a sky that changes: the sky in
+    mag/arcsec^2 at a UTC time in nanoseconds. Without either, the sky follows the Sun. `faults`
+    are the camera's, and `pause_s` gives the seconds from the start at which `Pause` and `Resume`
+    come. `commands` gives other commands, each with the seconds from the start at which it comes.
     """
     clock = VirtualClock(start_utc_ns)
     options = SimOptions(seed=3, epoch_utc_ns=start_utc_ns, psf=PsfConfig(mode="gaussian"))
@@ -166,13 +185,17 @@ def run(
         escalate=lambda level: None,
     )
     driver.scheduler = scheduler
+    script = list(commands)
     if pause_s is not None:
         pause, resume = pause_s
-        scheduler.run_until(start_utc_ns + round(pause * NS_PER_S))
-        assert scheduler.submit(Pause()).accepted
-        scheduler.run_until(start_utc_ns + round(resume * NS_PER_S))
-        assert scheduler.submit(Resume()).accepted
-    scheduler.run_until(start_utc_ns + round(seconds * NS_PER_S))
+        script += [(pause, Pause()), (resume, Resume())]
+    with pytest.MonkeyPatch.context() as patch:
+        if sky_at is not None:
+            patch.setattr(driver.truth, "sky_mag_arcsec2", sky_at)
+        for at_s, command in sorted(script, key=lambda item: item[0]):
+            scheduler.run_until(start_utc_ns + round(at_s * NS_PER_S))
+            assert scheduler.submit(command).accepted
+        scheduler.run_until(start_utc_ns + round(seconds * NS_PER_S))
     scheduler.close()
     return Run(scheduler, driver, writer, start_utc_ns)
 
@@ -382,3 +405,126 @@ class TestAnEpisodeOfAuto:
         assert after.exposure_us == kept
         first = faulted.streams("search")[0][2].exposure_us
         assert after.exposure_us > first * 1.1  # not the brightness frame's (see `DIM_SKY`)
+
+
+# --- The daylight gate judges the fast stream ------------------------------------------------
+
+SHORTEST_US = PROFILE.limits.exposure_us_range[0]
+# A sunny sky that the fast stream can take: 18% of saturation at 32 us, where the best exposure is
+# 53 us. It clips the 1 ms bin2 brightness frame, which gives only a lower bound of 3.3%.
+SUNNY_SKY = 0.8
+GATE_LIMIT = 0.5  # [scheduler.daylight] saturation_limit
+GATE_CADENCE_S = 20.0
+# The brightening sky: the sunny sky for a minute, and then 1 mag brighter every 150 s.
+RAMP_START_S = 60.0
+RAMP_S_PER_MAG = 150.0
+
+
+def fast_fraction(sky_mag_arcsec2: float, exposure_us: float = SHORTEST_US) -> float:
+    """The sky and the dark of a bin1 pixel at gain 0, as a share of the full well."""
+    rate = PARAMS.sky_rate_e_per_s_px(sky_mag_arcsec2) + PARAMS.dark_rate_e_per_s(SENSOR_C)
+    return rate * exposure_us * 1e-6 / FULL_WELL_E
+
+
+def brightening_sky(t_utc_ns: int) -> float:
+    """The sky of `brightening`, in mag/arcsec^2."""
+    seconds = (t_utc_ns - NIGHT) / NS_PER_S
+    return SUNNY_SKY - max(0.0, seconds - RAMP_START_S) / RAMP_S_PER_MAG
+
+
+def bright_watch_times(result: Run) -> list[int]:
+    """The times of the watch frames at the profile's shortest exposure."""
+    return [t for t, _, config in result.streams("watch") if config.exposure_us == SHORTEST_US]
+
+
+def state_changes(result: Run) -> list[tuple[int, str, str]]:
+    """The time, the state before, and the state after, of each change of state."""
+    return [
+        (e.t_utc_ns, (e.detail or {})["from"], (e.detail or {})["to"])
+        for e in result.events("scheduler.state_change")
+    ]
+
+
+@pytest.fixture(scope="module")
+def sunny() -> Run:
+    """Fifteen cycles of 20 s under a constant sunny sky."""
+    return run(NIGHT, 300.0, short_cycles(cadence_s=GATE_CADENCE_S), sky=SUNNY_SKY)
+
+
+@pytest.fixture(scope="module")
+def brightening() -> Run:
+    """Cycles of 20 s under a sky that brightens past what the fast stream can take."""
+    return run(NIGHT, 400.0, short_cycles(cadence_s=GATE_CADENCE_S), sky_at=brightening_sky)
+
+
+class TestTheGateJudgesTheFastStream:
+    """In `auto` the daylight gate judges the background of the bursts and windows, scaled to the
+    profile's shortest exposure, as well as the 1 ms frame of each survey step
+    (`seeingmon.scheduler.gates`). The 1 ms frame clips in these skies, so only the fast stream
+    measures them, and a survey step takes a watch frame of 32 us only when it does not."""
+
+    def test_a_sunny_sky_where_the_fast_stream_is_fine_stays_in_auto(self, sunny: Run) -> None:
+        assert fast_fraction(SUNNY_SKY) == pytest.approx(0.18, abs=0.01)
+        assert [(before, after) for _, before, after in state_changes(sunny)] == [("safe", "auto")]
+        # In `safe`, the clipped 1 ms watch frame was followed by one of 32 us, which opened the
+        # gate. In `auto`, the bursts decide, so no survey step takes such a frame.
+        first_burst = sunny.streams("search")[0][0]
+        bright = bright_watch_times(sunny)
+        assert len(bright) == 1
+        assert bright[0] < first_burst
+        steps = [t for t, _, config in sunny.streams("survey") if config.exposure_us == 1000]
+        assert len([t for t in steps if t > first_burst]) >= 14  # one in each cycle of 20 s
+        # The bursts settle at the best exposure, and the gate judges what they measure. The
+        # offset of their frames, 0.7% of saturation, scales down with the exposure to 0.4%.
+        status = sunny.scheduler.status()
+        assert status.background_fraction == pytest.approx(fast_fraction(SUNNY_SKY), abs=0.01)
+        assert status.counters.survey_long_skips >= 13
+
+    def test_a_burst_beyond_the_limit_at_the_shortest_exposure_ends_auto(
+        self, brightening: Run
+    ) -> None:
+        """The bursts shorten their exposure to 32 us as the sky brightens, and the first gate
+        check after a burst at 32 us reads more than 50% sends the scheduler to `safe`."""
+        changes = state_changes(brightening)
+        assert [(before, after) for _, before, after in changes] == [
+            ("safe", "auto"),
+            ("auto", "safe"),
+        ]
+        stopped = changes[1][0]
+        crossed_s = next(
+            s / 10.0
+            for s in range(4000)
+            if fast_fraction(brightening_sky(NIGHT + s * NS_PER_S // 10)) >= GATE_LIMIT
+        )
+        assert crossed_s == pytest.approx(227.0, abs=1.0)
+        # A cycle (20 s) at most passes between the crossing and the next gate check.
+        assert 0.0 < brightening.seconds(stopped) - crossed_s < GATE_CADENCE_S
+        before = [config for t, _, config in fast_streams(brightening) if t < stopped]
+        assert before[-1].exposure_us == SHORTEST_US
+        first_burst = brightening.streams("search")[0][0]
+        assert not [t for t in bright_watch_times(brightening) if first_burst <= t <= stopped]
+
+    def test_after_commissioning_the_first_burst_takes_the_shortest_exposure(self) -> None:
+        """A sweep in a sunny sky, and `auto` again: the fast background of the episode is gone.
+
+        The last brightness frame is the clipped 1 ms frame of a survey step, a lower bound of
+        3.3%, which would ask for 291 us, more than 5 times the best exposure. The first burst
+        therefore takes the shortest exposure, and the next one scales its background.
+        """
+        sweep = QueueSweep(exposure_us=(2000,), gain=(0,), roi_arcmin=(4.1,), window_s=1.0)
+        result = run(
+            NIGHT,
+            160.0,
+            short_cycles(cadence_s=GATE_CADENCE_S),
+            sky=SUNNY_SKY,
+            commands=((90.0, sweep),),
+        )
+        changes = state_changes(result)
+        returned = next(t for t, before, _ in changes if before == "commission")
+        assert changes[-1][1:] == ("commission", "auto")
+        after = [config.exposure_us for t, _, config in fast_streams(result) if t >= returned]
+        assert after[0] == SHORTEST_US
+        best = TARGET / fast_fraction(SUNNY_SKY) * SHORTEST_US
+        assert best == pytest.approx(53.5, abs=0.5)
+        # The offset counts as sky, so the exposure falls about 4% short of the best one.
+        assert after[1] == pytest.approx(best, rel=0.06)

@@ -27,6 +27,9 @@ from . import previewfx
 from .rig import NIGHT, SMALL_BIN2, CoreRig, build_rig
 
 GB = 1_000_000_000
+# A survey frame of at least `[survey.sky] min_exposure_s` is long: it gets a preview. The first
+# long frames after a start take 1 s and grow by 4 times a step (`[survey.twilight]`).
+LONG_MIN_EXPOSURE_S = 1.0
 
 
 class NightFake(FakeSurveyAnalyzer):
@@ -207,8 +210,8 @@ class TestASteppedRun:
             run_until_stored(rig, 4)
             layout = rig.app.storage.layout  # type: ignore[union-attr]
             frames = survey_frames(rig)
-            long_frames = [r for r in frames if r.exposure_s >= 5.0]
-            short_frames = [r for r in frames if r.exposure_s < 5.0]
+            long_frames = [r for r in frames if r.exposure_s >= LONG_MIN_EXPOSURE_S]
+            short_frames = [r for r in frames if r.exposure_s < LONG_MIN_EXPOSURE_S]
             assert long_frames
             assert short_frames
             assert all(r.image_ref is None for r in short_frames)
@@ -261,7 +264,7 @@ class TestASteppedRun:
         try:
             run_until_stored(rig, 4)
             layout = rig.app.storage.layout  # type: ignore[union-attr]
-            long_frames = [r for r in survey_frames(rig) if r.exposure_s >= 5.0]
+            long_frames = [r for r in survey_frames(rig) if r.exposure_s >= LONG_MIN_EXPOSURE_S]
             assert long_frames
             assert not list(layout.survey_dir.rglob("*.fits"))
             assert all(r.image_ref and r.image_ref.startswith("previews/") for r in long_frames)

@@ -39,12 +39,12 @@ from seeingmon.scheduler import (
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.config import AlignConfig
 from seeingmon.scheduler.status import ActivityPhase, ActivityStatus, SchedulerStatus
-from tests.scheduler.scenario import START, TEST_CONFIG, World
+from tests.scheduler.scenario import BLINDING_LIGHT, START, TEST_CONFIG, World
 
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
 STATES = {"safe", "auto", "align", "commission", "paused"}
 PHASES = {phase.value for phase in ActivityPhase}
-RESUME_FRACTION = TEST_CONFIG.daylight.brightness_resume_fraction
+RESUME_FRACTION = TEST_CONFIG.daylight.resume_saturation
 # How far an announced time may differ from the time of what then happens. One fast frame takes 2
 # seconds in these scenarios, and the first survey exposure uses the default for its overhead.
 TOLERANCE_S = 2.5
@@ -108,14 +108,10 @@ class TestTheWords:
         )
         assert words.bright_sky_detail(None, 0.35) == "The cycle resumes below 35% of saturation"
 
-    def test_the_brightness_gate_says_how_bright_the_brightness_frame_is(self) -> None:
-        assert words.bright_frame_detail(1.0, 0.6, clipped=True) == (
+    def test_the_brightness_gate_says_that_the_brightness_frame_saturates(self) -> None:
+        assert words.bright_frame_detail(0.35) == (
             "The brightness frame saturates, so the sky is too bright to measure; "
-            "the cycle resumes below 60% of its saturation"
-        )
-        assert words.bright_frame_detail(0.744, 0.6, clipped=False) == (
-            "The brightness frame reads 74% of its saturation; "
-            "the cycle resumes below 60% of its saturation"
+            "the cycle resumes when the fast stream would see less than 35% of saturation"
         )
 
     def test_a_reason_that_is_a_code_reads_as_words(self) -> None:
@@ -225,16 +221,17 @@ def episodes(statuses: list[SchedulerStatus]) -> list[Episode]:
 def evening() -> tuple[World, list[SchedulerStatus]]:
     """An afternoon that turns into a night with every kind of activity.
 
-    The Sun sets, and the daylight gate opens at about 5280 s, when the brightness frame no longer
-    saturates. The first survey steps find no pointing and the analysis fails, so the scheduler
-    waits and tries again. Once a survey step solves, search bursts look for Polaris, and they
-    find it. Clouds shorten the cycle. Alignment runs from 8000 s to 8100 s, a sweep follows, a
-    pause lasts from 9300 s to 9400 s, the camera fails from 10000 s to 10100 s, and a floodlight
-    saturates the brightness frame from 11000 s to 11400 s. A second alignment runs from 12000 s
-    to 12200 s, with rapid focus from 12040 s to 12060 s.
+    The Sun sets, and the daylight gate opens at about 4140 s, when the fast stream at its
+    shortest exposure would see less than 35% of saturation. The first survey steps find no
+    pointing and the analysis fails, so the scheduler waits and tries again. Once a survey step
+    solves, search bursts look for Polaris, and they find it. Clouds shorten the cycle. Alignment
+    runs from 8000 s to 8100 s, a sweep follows, a pause lasts from 9300 s to 9400 s, the camera
+    fails from 10000 s to 10100 s, and a floodlight that the fast stream cannot take holds the
+    gate from 11000 s to 11400 s. A second alignment runs from 12000 s to 12200 s, with rapid
+    focus from 12040 s to 12060 s.
     """
     world = World(start_utc_ns=START, solved_at_start=False, survey_polls=2)
-    world.no_solution(5000, 6400)
+    world.no_solution(4000, 6400)
     world.cloud(6600, 7400, 0.8)
     world.at(8000, send(StartAlignment()))
     world.at(8100, send(StopAlignment()))
@@ -242,7 +239,7 @@ def evening() -> tuple[World, list[SchedulerStatus]]:
     world.at(9300, send(Pause()))
     world.at(9400, send(Resume()))
     world.camera_fault(10000, 10100)
-    world.light(11000, 11400, 1.0)
+    world.light(11000, 11400, BLINDING_LIGHT)
     world.at(12000, send(StartAlignment()))
     star_x, star_y = world.star_position(world.t(12040))
     world.at(12040, send(StartRapidFocus(star_x, star_y, exposure_us=2000)))
@@ -516,7 +513,8 @@ class TestTheStatesThatTheCommandsChange:
     def test_the_brightness_gate_holds_the_scheduler_in_safe_at_the_start(
         self, evening: tuple[World, list[SchedulerStatus]]
     ) -> None:
-        """The first step takes a brightness frame, and the daylight sky saturates it."""
+        """The first step takes a brightness frame, which the daylight sky saturates, and a second
+        one of 32 us, which says that the fast stream would see 74% of saturation."""
         _, statuses = evening
         first = statuses[0].activity
         assert first is not None
@@ -527,7 +525,10 @@ class TestTheStatesThatTheCommandsChange:
         assert first.next_label == words.WATCH_NEXT_LABEL
         assert first.next_utc_ns is not None
         assert first.since_utc_ns == START
-        assert first.detail == words.bright_frame_detail(1.0, RESUME_FRACTION, clipped=True)
+        assert first.detail == words.bright_sky_detail(
+            statuses[0].background_fraction, RESUME_FRACTION
+        )
+        assert first.detail.startswith("At its shortest exposure the fast stream would see 74% ")
 
     def test_the_next_brightness_frame_comes_when_the_watch_said(
         self, evening: tuple[World, list[SchedulerStatus]]
@@ -615,16 +616,14 @@ class TestTheStatesThatTheCommandsChange:
         ]
         assert bright
         details = {activity.detail for activity in bright}
-        # The frame saturates by day. In the evening it falls below the clip, and the gate holds
-        # until it falls below its resume level.
-        assert words.bright_frame_detail(1.0, RESUME_FRACTION, clipped=True) in details
-        dimming = details - {words.bright_frame_detail(1.0, RESUME_FRACTION, clipped=True)}
-        assert dimming
+        # The 1 ms frame saturates by day, and the frame of 32 us that follows it says what the
+        # fast stream would see, which falls in the evening until the gate opens below 35%.
+        assert len(details) > 1
         assert all(
             detail is not None
-            and detail.startswith("The brightness frame reads ")
-            and detail.endswith("; the cycle resumes below 60% of its saturation")
-            for detail in dimming
+            and detail.startswith("At its shortest exposure the fast stream would see ")
+            and detail.endswith("; the cycle resumes below 35% of saturation")
+            for detail in details
         )
         # The floodlight in the night saturated the brightness frame too, and it went out.
         assert any(world.t(11000) < a.since_utc_ns < world.t(11400) for a in bright)

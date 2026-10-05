@@ -209,7 +209,9 @@ class SchedulerMachine(RuleBasedStateMachine):
     def bump(self, dx: float) -> None:
         self.world.jolt(self._now(), dx)
 
-    @rule(duration=st.floats(5.0, 200.0), level=st.floats(0.4, 1.0))
+    # From a light that the 1 ms brightness frame shows to one that clips it, and on to one that
+    # the fast stream cannot take even at its shortest exposure (more than 13.5).
+    @rule(duration=st.floats(5.0, 200.0), level=st.floats(0.4, 25.0))
     def floodlight(self, duration: float, level: float) -> None:
         self.world.light(self._now(), self._now() + duration, level)
 

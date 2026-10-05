@@ -108,7 +108,8 @@ class Counters:
     survey_results: int = 0
     survey_unsolved: int = 0  # results with an unsolved pointing record (a 1 ms frame has none)
     survey_skipped: int = 0
-    watch_frames: int = 0
+    survey_long_skips: int = 0  # steps whose long exposure the bright sky skipped
+    watch_frames: int = 0  # brightness frames of the watch, in `safe` and for the gate in `auto`
     faults: int = 0
     recovery_steps: int = 0
     escalations: int = 0
@@ -172,11 +173,12 @@ class SchedulerStatus:
     `degraded` means that the camera failed repeatedly. The scheduler keeps retrying slowly, and
     the store and `web` stay up. `queued_tasks` counts the commissioning tasks that wait, and
     `survey_pending` counts the survey frames that await analysis. `activity` says what the
-    scheduler does now and what comes next. `background_fraction` is the background that the
-    fast stream would have at its shortest exposure, as a share of saturation, from the last
-    brightness frame (1 when that frame clipped), which the daylight gate compares. `search` says
-    whether the fast stream searches or measures, in `auto` with a pointing solution, and is
-    `None` elsewhere.
+    scheduler does now and what comes next. `background_fraction` is the estimate that the
+    daylight gate judges: the background that the fast stream would have at its shortest
+    exposure, as a share of saturation, the larger of the last brightness frame and, in `auto`,
+    the last burst or window scaled to that exposure. When the frame that decides clipped, the
+    value is only a lower bound. `search` says whether the fast stream searches or measures, in
+    `auto` with a pointing solution, and is `None` elsewhere.
     """
 
     t_utc_ns: int

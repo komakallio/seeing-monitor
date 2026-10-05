@@ -14,8 +14,9 @@ from seeingmon.config import ConfigError, load_config
 from seeingmon.profile import ProfileError
 from seeingmon.records import EventRecord
 from seeingmon.scheduler import Scheduler, SchedulerConfig, build_scheduler
-from seeingmon.scheduler.config import FastConfig, SurveyConfig
-from tests.scheduler.scenario import PROFILE, World
+from seeingmon.scheduler.config import FastConfig, SurveyConfig, WatchConfig
+from seeingmon.survey.config import TwilightConfig
+from tests.scheduler.scenario import PROFILE, TEST_CONFIG, World
 
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
 
@@ -87,6 +88,35 @@ class TestBuildFromTheConfiguration:
         assert scheduler.config.fast.window_s == 60.0
         scheduler.close()
 
+    @pytest.mark.parametrize(("twilight", "first_long_s"), [("", 1.0), ("30.0", 30.0)])
+    def test_it_passes_the_twilight_table_of_the_survey_to_the_scheduler(
+        self, tmp_path: Path, twilight: str, first_long_s: float
+    ) -> None:
+        """`[survey.twilight] min_exposure_s` sets the first long survey frame after a start.
+
+        The scheduler table takes the slow stream of the scenario (`TEST_CONFIG`), so that the run
+        takes little time.
+        """
+        text = (
+            'station_id = "synthetic-station"\n'
+            "[scheduler.fast]\nexposure_us = 2000000\nroi_arcmin = 1.0\n"
+            "roi_edge_margin_px = 4.0\nmissing_star_frames = 10\n"
+            "target_background_fraction = 0.0\n"
+            "[scheduler.search]\nburst_frames = 3\n"
+            "[scheduler.loop]\nmax_sleep_s = 5.0\n"
+        )
+        if twilight:
+            text += f"[survey.twilight]\nmin_exposure_s = {twilight}\n"
+        local = self.write_local(tmp_path, text)
+        world = World(start_utc_ns=NIGHT)
+        scheduler = build_scheduler(load_config(local_file=local, env={}), **collaborators(world))
+        assert scheduler.config.fast == TEST_CONFIG.fast
+        scheduler.run_until(NIGHT + 400 * NS_PER_S)
+        scheduler.close()
+        longs = [f.exposure_us for f in world.survey.submitted if f.exposure_us >= 1_000_000]
+        assert longs
+        assert longs[0] == round(first_long_s * 1e6)
+
     def test_a_bad_scheduler_table_is_a_configuration_error_that_names_the_section(
         self, tmp_path: Path
     ) -> None:
@@ -115,8 +145,12 @@ class TestProfileLimits:
                 "scheduler.survey.long_exposure_s",
             ),
             (SchedulerConfig(survey=SurveyConfig(short_gain=700)), "scheduler.survey.short_gain"),
+            (
+                SchedulerConfig(watch=WatchConfig(bright_exposure_us=5)),
+                "scheduler.watch.bright_exposure_us",
+            ),
         ],
-        ids=["fast-exposure", "fast-gain", "long-exposure", "short-gain"],
+        ids=["fast-exposure", "fast-gain", "long-exposure", "short-gain", "bright-exposure"],
     )
     def test_a_value_outside_the_profile_fails_at_construction_and_names_the_key(
         self, config: SchedulerConfig, key: str
@@ -125,6 +159,13 @@ class TestProfileLimits:
         with pytest.raises(ValueError, match="outside the profile") as excinfo:
             Scheduler(profile=PROFILE, station_id="test", config=config, **collaborators(world))
         assert key.rsplit(".", 1)[-1] in str(excinfo.value)
+
+    def test_a_shortest_long_exposure_outside_the_profile_fails_and_names_the_key(self) -> None:
+        twilight = TwilightConfig(min_exposure_s=5000.0)
+        world = World(start_utc_ns=NIGHT)
+        with pytest.raises(ValueError, match="outside the profile") as excinfo:
+            Scheduler(profile=PROFILE, station_id="test", twilight=twilight, **collaborators(world))
+        assert "survey.twilight.min_exposure_s" in str(excinfo.value)
 
     def test_the_default_configuration_fits_the_reference_profile(self) -> None:
         world = World(start_utc_ns=NIGHT)

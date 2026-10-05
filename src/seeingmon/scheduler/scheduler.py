@@ -48,6 +48,23 @@ background of the previous window or burst, and never longer than `[scheduler.fa
 the background from the brightness frame, because an older fast background may come from another
 sky. The exposure changes only where a stream starts, so a window never mixes two exposures.
 
+**The survey in a bright sky.** The long frame of each survey step adapts too
+(`seeingmon.scheduler.exposure.SurveyExposure`, with `[survey.twilight]`): it puts the sky
+background at `target_background_fraction` of saturation, between `min_exposure_s` and
+`[scheduler.survey] long_exposure_s`, from the long frame of the step before and at first from
+the 1 ms frame. When the frames show that even `min_exposure_s` would pass the target, the step
+skips its long exposure and keeps the 1 ms frame, which the daylight gate reads (the module text
+of `seeingmon.scheduler.exposure` says how the frames show it). The pointing does not need the
+long frame: the solution has no age limit.
+
+**The daylight gate.** The gate judges the background that the fast stream would have at the
+profile's shortest exposure (`seeingmon.scheduler.gates`). In `safe` the watch frame gives it, and
+a watch frame that clipped is followed at once by one at `[scheduler.watch] bright_exposure_us`,
+the profile's shortest exposure. In `auto` the 1 ms frame of each survey step and the background
+of the last burst or window give it. When the 1 ms frame clipped and the fast stream gives no
+background that decides, the step takes a watch frame at the bright exposure before its long
+exposure.
+
 **Rapid focus.** The alignment session has a second mode for focusing by hand. `StartRapidFocus`
 switches the stream of the session from the survey readout mode over the whole frame to the fast
 readout mode over a small ROI around Polaris, and the scheduler reads its frames at the camera rate
@@ -131,7 +148,13 @@ from seeingmon.scheduler.config import (
 )
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
 from seeingmon.scheduler.events import DARK_PHASE_EVENT, FLAT_PHASE_EVENT
-from seeingmon.scheduler.exposure import adapted_exposure_us, background_fraction
+from seeingmon.scheduler.exposure import (
+    LongFrame,
+    ShortFrame,
+    SurveyExposure,
+    adapted_exposure_us,
+    background_fraction,
+)
 from seeingmon.scheduler.faults import FaultCause, FaultPlan, FaultTracker, classify, reason_text
 from seeingmon.scheduler.gates import (
     REASON_BRIGHT_SKY,
@@ -139,8 +162,12 @@ from seeingmon.scheduler.gates import (
     CloudTracker,
     DaylightDecision,
     DaylightGate,
+    FastSky,
     SkyReading,
+    combine,
+    e_per_dn,
     median_dn,
+    median_of,
     read_sky,
 )
 from seeingmon.scheduler.levels import DESTRUCTIVE_STEPS, EscalationLevel, step_name
@@ -155,6 +182,8 @@ from seeingmon.scheduler.status import (
     SearchStatus,
     StreamInfo,
 )
+from seeingmon.survey.config import SurveyConfig as SurveySectionConfig
+from seeingmon.survey.config import TwilightConfig
 
 _log = logging.getLogger(__name__)
 
@@ -220,6 +249,8 @@ class _Cycle:
     since_mono: int = 0  # when the cycle entered its current phase, for the activity
     period_end_mono: int = 0  # when the search period ends, and a measure that follows it
     period_bursts: int = 0  # the bursts that the search period started
+    long_exposure_us: int = 0  # the exposure of the long frame of the survey step that runs
+    short: ShortFrame | None = None  # the 1 ms frame of that step, for the long exposure
 
     def enter(self, phase: Phase, now_mono: int) -> None:
         """Move to another phase, and note when."""
@@ -260,10 +291,14 @@ class _Burst:
 
 @dataclass(frozen=True, slots=True)
 class _Background:
-    """The sky background that the fast stream saw: the exposure, and the share of saturation."""
+    """The sky background that the fast stream saw: the exposure, and the share of saturation.
+
+    `clipped` says that the background reached the clip level, so the sky is at least that bright.
+    """
 
     exposure_us: float
     fraction: float
+    clipped: bool = False
 
 
 @dataclass(slots=True)
@@ -355,6 +390,10 @@ class Scheduler:
         focus_sink: Measures every frame of the rapid focus mode, and says where the star is. The
             mode needs it: without a sink, the scheduler rejects `StartRapidFocus`.
         result_sink: Receives every commissioning result, so the core can store it as pinned.
+        twilight: The `[survey.twilight]` table: the target and the shortest exposure of the
+            adaptive long survey frame, and `max_background_fraction`, beyond which a long frame
+            at the shortest exposure skips the long exposure of the next step. The defaults apply
+            when you leave it out.
     """
 
     def __init__(
@@ -376,6 +415,7 @@ class Scheduler:
         alignment_sink: Callable[[Frame], None] | None = None,
         focus_sink: FocusSink | None = None,
         result_sink: Callable[[CommissionResult], None] | None = None,
+        twilight: TwilightConfig | None = None,
     ) -> None:
         self._driver = driver
         self._fast = fast
@@ -401,6 +441,18 @@ class Scheduler:
         self._validate_against_profile()
 
         self._gate = DaylightGate(self._config.daylight)
+        self._twilight = twilight or TwilightConfig()
+        self._validate_twilight()
+        steps = self._config.survey
+        self._long = SurveyExposure(
+            target=self._twilight.target_background_fraction,
+            shortest_us=min(seconds_to_us(self._twilight.min_exposure_s), steps.long_exposure_us),
+            longest_us=steps.long_exposure_us,
+            saturation_dn=self._saturation_dn(
+                self._survey_mode, steps.long_gain, self._survey_format
+            ),
+            usable_fraction=self._twilight.max_background_fraction,
+        )
         self._cloud = CloudTracker(self._config.cloud)
         self._faults = FaultTracker(self._config.faults, self._config.ladder)
 
@@ -446,7 +498,6 @@ class Scheduler:
         self._pointing_known = False  # whether the pointing provider had a position at last look
         self._survey_overhead_s: float | None = None  # what a survey exposure cost beyond itself
         self._activity_error_reported = False
-        self._background_fraction: float | None = None  # the gate fraction of the last reading
         self._sky: SkyReading | None = None  # what the last brightness frame said
         # The background of the last fast window or burst in this episode of `auto`, from which the
         # next period or burst takes its exposure.
@@ -557,7 +608,7 @@ class Scheduler:
                 cloud_fraction=self._cloud.fraction,
                 twilight=self._gate.is_twilight(self._sun_elevation()),
                 sun_elevation_deg=self._sun_elevation(),
-                background_fraction=self._background_fraction,
+                background_fraction=self._gate_fraction(self._machine.state is State.AUTO),
                 sensor_temperature_c=self._last_temperature_c,
                 counters=replace(self._counters),
                 fault=self._fault_status(now_utc, now_mono, pending),
@@ -806,15 +857,11 @@ class Scheduler:
         sky = self._sky
         if decision.reason == REASON_BRIGHT_SKY:
             label = words.BRIGHT_SKY_LABEL
-            if sky is not None and (
-                sky.clipped or sky.frame_fraction >= daylight.brightness_resume_fraction
-            ):
-                detail = words.bright_frame_detail(
-                    sky.frame_fraction, daylight.brightness_resume_fraction, clipped=sky.clipped
-                )
+            if sky is not None and sky.clipped:
+                detail = words.bright_frame_detail(daylight.resume_saturation)
             else:
                 detail = words.bright_sky_detail(
-                    self._background_fraction, daylight.resume_saturation
+                    self._gate_fraction(False), daylight.resume_saturation
                 )
         elif decision.reason == REASON_NO_MEASUREMENT:
             label = words.FIRST_FRAME_LABEL
@@ -849,7 +896,9 @@ class Scheduler:
         phase, stage, since_mono = cycle.phase, cycle.survey_stage, cycle.since_mono
         fast, survey = self._config.fast, self._config.survey
         cadence_ns = self._cadence_ns()
-        step_label = words.survey_step_label(survey.short_exposure_s, survey.long_exposure_s)
+        planned_us = cycle.long_exposure_us if phase is Phase.SURVEY and stage == 1 else 0
+        long_s = (planned_us or self._long.next_estimate_us()) / 1e6
+        step_label = words.survey_step_label(survey.short_exposure_s, long_s)
         period_label = words.FAST_LABEL if search.measuring else words.SEARCH_LABEL
 
         def make(**fields: Any) -> ActivityStatus:
@@ -902,7 +951,7 @@ class Scheduler:
             )
 
         def survey_frame(stage: int, started_mono: int) -> ActivityStatus:
-            exposure_s = survey.short_exposure_s if stage == 0 else survey.long_exposure_s
+            exposure_s = survey.short_exposure_s if stage == 0 else long_s
             ends_mono = started_mono + round((exposure_s + self._survey_overhead()) * NS_PER_S)
             ends = at(ends_mono)
             if stage == 0:
@@ -911,7 +960,7 @@ class Scheduler:
                     label=words.survey_frame_label(exposure_s),
                     since_utc_ns=at(started_mono),
                     ends_utc_ns=ends,
-                    next_label=words.survey_frame_label(survey.long_exposure_s),
+                    next_label=words.survey_frame_label(long_s),
                     next_utc_ns=ends,
                     detail=words.SURVEY_SHORT_DETAIL,
                 )
@@ -1456,11 +1505,14 @@ class Scheduler:
         earlier episode, because the sky may have changed while the scheduler was out of `auto`.
         An entry from `safe` follows a fresh brightness frame. A session that starts at once and
         cuts a fast period short leaves a brightness frame a cycle older than the last window,
-        and the next burst corrects the exposure.
+        and the next burst corrects the exposure. For the same reason, the long survey frame of
+        the first step keeps the exposure of the last long frame only when its 1 ms frame shows the
+        same sky (`SurveyExposure.reset`).
         """
         self._end_measure("state_change")  # a measure that no step saw end, if any
         self._fast_run = None
         self._fast_background = None
+        self._long.reset()
         now = self._clock.monotonic_ns()
         self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
         search = self._search
@@ -1706,8 +1758,9 @@ class Scheduler:
                 saturation = self._saturation_dn(
                     window.readout_mode, window.gain, self._fast_format
                 )
+                fraction = background_fraction(window.background_mean_dn, saturation)
                 self._fast_background = _Background(
-                    window.exposure_us, background_fraction(window.background_mean_dn, saturation)
+                    window.exposure_us, fraction, clipped=self._clipped(fraction)
                 )
 
     def _drain_metrics(self, stream_id: int) -> None:
@@ -1878,17 +1931,41 @@ class Scheduler:
 
     # --- The `safe` state ------------------------------------------------------------------
 
-    def _watch_config(self) -> StreamConfig:
+    def _watch_config(self, exposure_us: int | None = None) -> StreamConfig:
+        """The watch frame: a central ROI of the survey mode, at the watch exposure or another."""
         watch = self._config.watch
         roi = roi_at_sensor_center(self._profile, self._survey_mode, watch.roi_arcmin)
         return StreamConfig(
             mode=self._survey_mode,
-            exposure_us=watch.exposure_us,
+            exposure_us=watch.exposure_us if exposure_us is None else exposure_us,
             gain=watch.gain,
             pixel_format=self._survey_format,
             roi=roi,
             kind=StreamKind.SNAPSHOT,
         )
+
+    def _brightness_frame(self, exposure_us: int, where: str) -> StepKind | None:
+        """Take one watch frame at `exposure_us`, and read the sky from it for the gate.
+
+        The frame goes to no analysis. Returns the result of the fault response after a camera
+        error, and `None` after a frame.
+        """
+        try:
+            active = self._reconfigure(self._watch_config(exposure_us), Purpose.WATCH)
+            self._start_stream()
+            frame = self._read(self._timeout_s(active))
+        except CameraError as error:
+            return self._camera_error(error, where)
+        self._end_stream("snapshot_done")
+        self._note_frame(frame)
+        self._counters.watch_frames += 1
+        self._read_sky(frame)
+        return None
+
+    def _bright_exposure_us(self) -> int | None:
+        """The exposure of a frame that follows a clipped one, or `None` when it is not shorter."""
+        watch = self._config.watch
+        return watch.bright_exposure_us if watch.bright_exposure_us < watch.exposure_us else None
 
     def _check_clock(self) -> None:
         """Ask the clock whether it is synchronized, at most once every few seconds.
@@ -1931,19 +2008,23 @@ class Scheduler:
         return self._watch_step()
 
     def _watch_step(self) -> StepKind:
-        """Take one brightness frame, and go to `auto` when the measured sky allows it."""
+        """Take one brightness frame, and go to `auto` when the measured sky allows it.
+
+        A frame that clipped shows only that the sky is at least that bright, so a second frame at
+        `bright_exposure_us` follows at once, and the gate reads that one.
+        """
         started = self._mono()
-        try:
-            active = self._reconfigure(self._watch_config(), Purpose.WATCH)
-            self._start_stream()
-            frame = self._read(self._timeout_s(active))
-        except CameraError as error:
-            return self._camera_error(error, "the brightness watch")
-        self._end_stream("snapshot_done")
-        self._note_frame(frame)
-        self._counters.watch_frames += 1
-        self._read_sky(frame)
-        self._next_watch_mono = started + round(self._config.watch.interval_s * NS_PER_S)
+        watch = self._config.watch
+        failed = self._brightness_frame(watch.exposure_us, "the brightness watch")
+        if failed is not None:
+            return failed
+        bright = self._bright_exposure_us()
+        sky = self._sky
+        if sky is not None and sky.clipped and bright is not None:
+            failed = self._brightness_frame(bright, "the brightness watch")
+            if failed is not None:
+                return failed
+        self._next_watch_mono = started + round(watch.interval_s * NS_PER_S)
         decision = self._gate_decision(running=False)
         if decision.allowed and self._transition(
             "the sky is dark enough", State.AUTO, expect=State.SAFE
@@ -1951,7 +2032,7 @@ class Scheduler:
             self._enter_auto()
         return StepKind.WORK
 
-    def _read_sky(self, frame: Frame) -> None:
+    def _read_sky(self, frame: Frame) -> SkyReading:
         """Take a brightness frame: derive the background of the fast stream for the gate.
 
         The fast stream is the profile's fast readout mode at the profile's shortest exposure and
@@ -1966,16 +2047,45 @@ class Scheduler:
             clip_fraction=self._config.daylight.brightness_clip_fraction,
         )
         self._sky = sky
-        self._background_fraction = sky.gate_fraction
+        return sky
+
+    def _clipped(self, fraction: float) -> bool:
+        """Whether a level at this share of saturation has clipped, so that it is only a bound."""
+        return fraction >= self._config.daylight.brightness_clip_fraction
+
+    def _gate_sky(self, running: bool) -> FastSky | None:
+        """The background of the fast stream at its shortest exposure that the gate judges.
+
+        The last brightness frame gives it, and in `auto` (`running`) also the last burst or
+        window of the episode, scaled to the shortest exposure. An older fast background belongs
+        to an earlier episode and another sky, so `safe` reads the brightness frame alone.
+        """
+        estimates: list[FastSky | None] = []
+        sky = self._sky
+        if sky is not None:
+            estimates.append(FastSky.from_reading(sky))
+        fast = self._fast_background
+        if running and fast is not None:
+            shortest = self._profile.limits.exposure_us_range[0]
+            estimates.append(
+                FastSky.from_fast(fast.fraction, fast.exposure_us, shortest, clipped=fast.clipped)
+            )
+        return combine(estimates)
+
+    def _gate_fraction(self, running: bool) -> float | None:
+        """The share of saturation that the gate judges now, for the status."""
+        sky = self._gate_sky(running)
+        return None if sky is None else sky.fraction
 
     def _gate_decision(self, *, running: bool) -> DaylightDecision:
-        """The daylight gate's verdict on the last brightness frame."""
-        sky = self._sky
-        return self._gate.evaluate(
-            background_fraction=self._background_fraction,
-            running=running,
-            frame_fraction=None if sky is None else sky.frame_fraction,
-        )
+        """The daylight gate's verdict on the last brightness frame and the fast stream."""
+        return self._gate.evaluate(self._gate_sky(running), running=running)
+
+    def _gate_undecided(self) -> bool:
+        """Whether the gate in `auto` holds only a lower bound under its limit, which decides
+        nothing: the 1 ms frame clipped, and the fast stream gave no background that decides."""
+        sky = self._gate_sky(True)
+        return sky is not None and sky.bound and sky.fraction < self._gate.threshold(running=True)
 
     # --- The `auto` state ------------------------------------------------------------------
 
@@ -2075,7 +2185,10 @@ class Scheduler:
         It puts the sky background at `target_background_fraction` of saturation, from the
         background of the last fast window or burst, or else from the brightness frame, which
         gives the background at the profile's shortest exposure (see
-        `seeingmon.scheduler.exposure`).
+        `seeingmon.scheduler.exposure`). A brightness frame that clipped gives only a lower bound,
+        and the sky can be far brighter, so the exposure is then the shortest, and the next burst
+        corrects it. That happens when `auto` resumes after commissioning in a sunny sky, where
+        the last brightness frame is the 1 ms frame of a survey step.
         """
         fast = self._config.fast
         if fast.target_background_fraction <= 0.0:
@@ -2086,6 +2199,8 @@ class Scheduler:
             sky = self._sky
             if sky is None:
                 return fast.exposure_us
+            if sky.clipped:
+                return shortest
             sample = _Background(self._profile.limits.exposure_us_range[0], sky.fast_fraction)
         return adapted_exposure_us(
             sample.exposure_us,
@@ -2409,9 +2524,9 @@ class Scheduler:
         search = self._search
         config = self._config.search
         search.burst_ns = self._mono() - burst.started_mono
+        fraction = background_fraction(statistics.median(burst.backgrounds_dn), burst.saturation_dn)
         self._fast_background = _Background(
-            burst.exposure_us,
-            background_fraction(statistics.median(burst.backgrounds_dn), burst.saturation_dn),
+            burst.exposure_us, fraction, clipped=self._clipped(fraction)
         )
         snr = statistics.median(burst.snrs)
         search.last_snr = round(snr, 2)
@@ -2506,10 +2621,71 @@ class Scheduler:
         return None if sun is None else round(sun, 2)
 
     def _survey_exposure(self, stage: int) -> tuple[int, int]:
+        """The exposure and the gain of a frame of the survey step: the long one is adaptive."""
         survey = self._config.survey
         if stage == 0:
             return survey.short_exposure_us, survey.short_gain
-        return survey.long_exposure_us, survey.long_gain
+        return self._cycle.long_exposure_us or survey.long_exposure_us, survey.long_gain
+
+    def _short_frame(self, frame: Frame, sky: SkyReading) -> ShortFrame:
+        """What the 1 ms frame of a survey step tells the long exposure (see `SurveyExposure`)."""
+        survey = self._config.survey
+        long_e = e_per_dn(self._profile, self._survey_mode, survey.long_gain, self._survey_format)
+        short_e = e_per_dn(self._profile, frame.mode, frame.gain, frame.pixel_format)
+        bits = self._profile.mode(frame.mode).adc_bits
+        step = 1.0 if frame.pixel_format is PixelFormat.RAW8 else 2.0 ** max(0, 16 - bits)
+        return ShortFrame(
+            median_dn=sky.median_dn,
+            clipped=sky.clipped,
+            long_dn_per_dn_us=short_e / long_e / frame.exposure_us,
+            step_dn=step,
+        )
+
+    def _needs_black_level(self, short: ShortFrame) -> bool:
+        """Whether the step takes a short frame to measure the black level of the 1 ms frame.
+
+        `SurveyExposure.needs_black` says when. The watch frame must take the gain of the 1 ms
+        frame, because another gain has another black level.
+        """
+        survey = self._config.survey
+        bright = self._bright_exposure_us()
+        return (
+            self._config.watch.gain == survey.short_gain
+            and bright is not None
+            and bright < survey.short_exposure_us
+            and self._long.needs_black(short)
+        )
+
+    def _black_frame(self, short: Frame) -> StepKind | None:
+        """Take a watch frame at the bright exposure, and measure the black level with `short`.
+
+        The watch frame covers the central region of the sensor, so the median of the same region
+        of the 1 ms frame pairs with it. The frame goes to no analysis, and the gate does not read
+        it. Returns the result of the fault response after a camera error, and `None` after a frame.
+        """
+        bright_us = self._bright_exposure_us()
+        assert bright_us is not None  # `_needs_black_level` checked it
+        try:
+            active = self._reconfigure(self._watch_config(bright_us), Purpose.WATCH)
+            self._start_stream()
+            frame = self._read(self._timeout_s(active))
+        except CameraError as error:
+            return self._camera_error(error, "a frame for the black level")
+        self._end_stream("snapshot_done")
+        self._note_frame(frame)
+        self._counters.watch_frames += 1
+        region = frame.roi
+        x, y = region.x - short.roi.x, region.y - short.roi.y
+        crop = short.data[y : y + region.height, x : x + region.width]
+        if not crop.size:
+            return None
+        short_dn = median_of(crop)
+        bright_dn = median_dn(frame)
+        saturation = self._saturation_dn(frame.mode, frame.gain, frame.pixel_format)
+        # The center of the sensor can clip where the median of the whole frame does not.
+        if not (self._clipped(bright_dn / saturation) or self._clipped(short_dn / saturation)):
+            self._long.measure_black(short_dn, short.exposure_us, bright_dn, frame.exposure_us)
+        return None
 
     def _survey_step(self) -> StepKind:
         """One survey exposure: the short one first, then the long one."""
@@ -2548,14 +2724,44 @@ class Scheduler:
         self._survey_pending = self._survey.pending()
         self._counters.survey_frames += 1
         if cycle.survey_stage == 0:
-            self._read_sky(frame)
+            short = self._short_frame(frame, self._read_sky(frame))
+            bright = self._bright_exposure_us()
+            if bright is not None and self._gate_undecided():
+                # The 1 ms frame clipped, and no burst or window decides: a watch frame at the
+                # bright exposure measures what the fast stream would see.
+                failed = self._brightness_frame(bright, "a brightness frame")
+                if failed is not None:
+                    return failed
             decision = self._gate_decision(running=True)
             if not decision.allowed:  # skip the long exposure, because the sky is too bright
                 self._enter_safe(decision.reason or "the sky is too bright", expect=State.AUTO)
                 return StepKind.WORK
+            if self._needs_black_level(short):
+                failed = self._black_frame(frame)
+                if failed is not None:
+                    return failed
+            plan = self._long.plan(short)
+            if plan.exposure_us is None:  # even the shortest long exposure would pass the target
+                self._counters.survey_long_skips += 1
+                self._finish_survey()
+                return StepKind.WORK
+            cycle.long_exposure_us = plan.exposure_us
+            cycle.short = short
             cycle.survey_stage = 1
             cycle.since_mono = self._mono()  # the long exposure begins where the short one ended
         else:
+            if cycle.short is not None:
+                level = median_dn(frame)
+                saturation = self._saturation_dn(frame.mode, frame.gain, frame.pixel_format)
+                self._long.update(
+                    cycle.short,
+                    LongFrame(
+                        exposure_us=frame.exposure_us,
+                        median_dn=level,
+                        saturation_dn=saturation,
+                        clipped=self._clipped(level / saturation),
+                    ),
+                )
             self._finish_survey()
         return StepKind.WORK
 
@@ -2566,6 +2772,8 @@ class Scheduler:
         """
         cycle = self._cycle
         now = self._mono()
+        cycle.long_exposure_us = 0
+        cycle.short = None
         if counted:
             self._counters.survey_steps += 1
         cycle.anchored = not cycle.survey_forced
@@ -3141,6 +3349,16 @@ class Scheduler:
 
     # --- Setup -----------------------------------------------------------------------------
 
+    def _validate_twilight(self) -> None:
+        """Fail early when the shortest long survey exposure does not fit the profile."""
+        low_us, high_us = self._profile.limits.exposure_us_range
+        value = seconds_to_us(self._twilight.min_exposure_s)
+        if not low_us <= value <= high_us:
+            raise ValueError(
+                f"survey.twilight.min_exposure_s is {value} us, outside the profile's {low_us} "
+                f"to {high_us} us"
+            )
+
     def _validate_against_profile(self) -> None:
         """Fail early, with a plain message, when the configuration does not fit the profile."""
         config = self._config
@@ -3152,6 +3370,7 @@ class Scheduler:
             "survey.short_exposure_s": config.survey.short_exposure_us,
             "survey.long_exposure_s": config.survey.long_exposure_us,
             "watch.exposure_us": config.watch.exposure_us,
+            "watch.bright_exposure_us": config.watch.bright_exposure_us,
             "align.exposure_s": seconds_to_us(config.align.exposure_s),
         }
         for name, value in exposures.items():
@@ -3263,10 +3482,11 @@ def build_scheduler(
 ) -> Scheduler:
     """Build a scheduler from the layered configuration.
 
-    The function reads the `[scheduler]` table, the `[site]` table (optional), the station ID, and
-    the profile from `config`. Pass the collaborators as keywords. The caller starts the loop with
-    `Scheduler.run`.
+    The function reads the `[scheduler]` table, the `[site]` table (optional), the
+    `[survey.twilight]` table, the station ID, and the profile from `config`. Pass the
+    collaborators as keywords. The caller starts the loop with `Scheduler.run`.
     """
+    twilight = config.section("survey", SurveySectionConfig).twilight
     return Scheduler(
         driver=driver,
         fast=fast,
@@ -3284,6 +3504,7 @@ def build_scheduler(
         alignment_sink=alignment_sink,
         focus_sink=focus_sink,
         result_sink=result_sink,
+        twilight=twilight,
     )
 
 

@@ -14,8 +14,13 @@ makes the `sky_quality` record and the stars for the nightly summary. The steps:
 4. **Transparency and clouds.** The zero point against the reference from the clearest conditions
    (`seeingmon.survey.transparency`), the cloud fraction that the pipeline measured with the
    counts of the expected stars and of the ones found, and the limiting magnitude of the frame.
-5. **Flags and reasons.** The record carries `cloud`, `dark_due`, and `time_invalid` flags, and a
-   `quality` map that says why any value is missing.
+5. **Flags and reasons.** The record carries `cloud`, `dark_due`, `time_invalid`, and
+   `saturated_sky` flags, and a `quality` map that says why any value is missing.
+
+A frame whose sky the pipeline found saturated (`saturated_sky`, see `seeingmon.survey.pipeline`)
+skips the photometry, the zero point, the sky, and the limiting magnitude: the ring background of
+every star and the sky level are clipped, so each of these values would be wrong. The record
+says so in `quality`, and the frame adds no stars to the nightly summary.
 
 A value that the frame cannot support is `None`, and the reason is in `quality`. A frame without
 a pointing solution has no matched stars, so it has no zero point, but it can still have a sky
@@ -78,6 +83,7 @@ from seeingmon.survey.zero_point import (
 )
 
 QUALITY_ALGORITHM = "sky-1"
+SATURATED_REASON = "the sky is saturated, so the sky level and the ring of every star are clipped"
 
 BoolArray = npt.NDArray[np.bool_]
 IntArray = npt.NDArray[np.intp]
@@ -260,6 +266,7 @@ def assess_frame(
     time_invalid: bool,
     n_expected: int | None,
     n_expected_found: int | None,
+    saturated_sky: bool = False,
 ) -> SkyQualityResult:
     """Make the `sky_quality` record of a frame. See the module documentation.
 
@@ -270,7 +277,8 @@ def assess_frame(
     of `data`, and `zp_reference` the reference zero point. While the history is short it is the
     provisional zero point (its `provisional` field is true), or `None` when even that is missing.
     `n_expected` and `n_expected_found` are the counts behind `cloud_fraction`, which the record
-    keeps: the expected stars, and those of them that detection found.
+    keeps: the expected stars, and those of them that detection found. `saturated_sky` says that
+    the sky of the frame is saturated: the record gets the flag and no photometry.
     """
     reasons: dict[str, str] = {}
     exposure_s = frame.exposure_us / 1e6
@@ -285,7 +293,9 @@ def assess_frame(
     fit: ZeroPointFit | None = None
     stars: StarPhotometry | None = None
     chosen = np.zeros(0, dtype=np.bool_)
-    if attitude is None or not np.any(cat_row >= 0):
+    if saturated_sky:
+        reasons["zero_point_mag"] = SATURATED_REASON
+    elif attitude is None or not np.any(cat_row >= 0):
         reasons["zero_point_mag"] = "no pointing solution, so no star matched the catalog"
     else:
         stars = measure_matched_stars(
@@ -322,7 +332,9 @@ def assess_frame(
 
     # --- The sky ----------------------------------------------------------------------------
     sky: SkyMeasurement | None = None
-    if frame.temperature_c is None:
+    if saturated_sky:
+        reasons["sky_mag_arcsec2"] = SATURATED_REASON
+    elif frame.temperature_c is None:
         reasons["sky_mag_arcsec2"] = "the camera reports no sensor temperature"
     elif dark_model is None:
         reasons["sky_mag_arcsec2"] = "no dark model: record a dark set with seeingmon dark"
@@ -384,20 +396,24 @@ def assess_frame(
 
     # --- Transparency, clouds, and the limiting magnitude ------------------------------------
     transparency_value: float | None = None
-    if fit is None:
+    if saturated_sky:
+        reasons["transparency"] = SATURATED_REASON
+    elif fit is None:
         reasons["transparency"] = "no zero point"
     elif zp_reference is None or zp_reference.provisional:  # a median is no clear-sky level
         reasons["transparency"] = "no reference yet: the history holds too few clear zero points"
     else:
         transparency_value = transparency(fit.zero_point_mag, zp_reference)
-    count_reason = missing_count_reason(field, n_expected)
+    count_reason = SATURATED_REASON if saturated_sky else missing_count_reason(field, n_expected)
     if count_reason is not None:
         reasons["n_expected"] = reasons["n_expected_found"] = count_reason
     if cloud_fraction is None:
         reasons["cloud_fraction"] = count_reason or f"too few expected stars ({n_expected})"
 
     limiting: LimitingMagnitude | None = None
-    if field is None:
+    if saturated_sky:
+        reasons["limiting_mag"] = SATURATED_REASON
+    elif field is None:
         reasons["limiting_mag"] = "no pointing solution"
     else:
         predicted = None
@@ -437,6 +453,8 @@ def assess_frame(
         flags.append("dark_due")
     if time_invalid:
         flags.append("time_invalid")
+    if saturated_sky:
+        flags.append("saturated_sky")
 
     out_provenance = dict(provenance)
     out_provenance["algo"] = QUALITY_ALGORITHM

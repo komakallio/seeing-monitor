@@ -28,6 +28,10 @@ SKY_QUALITY_FLAGS: dict[str, str] = {
     "dew": "The star widths and the transparency indicate dew on the optics.",
     "dark_due": "The dark library misses the current temperature or is older than 6 months.",
     "time_invalid": TIME_INVALID,
+    "saturated_sky": (
+        "The sky background reached the saturation guard (`[survey.twilight]`), so the frame gives "
+        "no zero point, transparency, cloud fraction, limiting magnitude, or sky brightness."
+    ),
 }
 
 POINTING_FLAGS: dict[str, str] = {

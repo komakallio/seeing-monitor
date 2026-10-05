@@ -1,9 +1,9 @@
 """A whole night in virtual time: 12 hours, with everything that can happen to it.
 
 The scenario starts at 14:30 UTC on a winter day at a synthetic site (55 degrees north on the
-prime meridian), in daylight. The scheduler watches the sky, enters `auto` at dusk when the
-brightness frame falls below the resume level of the clip, searches for Polaris until it shows,
-and then the script disturbs the night, one thing at a time:
+prime meridian), in daylight. The scheduler watches the sky, enters `auto` at dusk when the fast
+stream at its shortest exposure would see less than 35% of saturation, searches for Polaris until
+it shows, and then the script disturbs the night, one thing at a time:
 
 | Time (hours) | What happens |
 |---|---|
@@ -162,10 +162,12 @@ class TestTheShapeOfTheNight:
     def test_the_changes_come_at_the_scripted_times(self, night: Night) -> None:
         world = night.world
         times = [t for t, _, _ in world.state_changes()]
-        dusk = crossing(-2.844, rising=False)
-        # The change comes with the first brightness frame below the resume level of the clip.
+        dusk = crossing(-0.420, rising=False)
+        # The change comes with the first brightness frame that shows a fast background below the
+        # resume level (35%).
         assert dusk <= times[0] <= dusk + 61
-        assert SWEEP_AT < times[1] < SWEEP_AT + 200  # the boundary of the cycle that was running
+        # The boundary of the cycle that was running, which may be the moment of the command.
+        assert SWEEP_AT <= times[1] < SWEEP_AT + 200
         # The test injects a command between steps, so a survey exposure in progress holds it.
         assert PAUSE_AT <= times[3] <= PAUSE_AT + 31.0
         assert times[4] == pytest.approx(RESUME_AT, abs=1.0)
@@ -343,7 +345,7 @@ class TestTheDisturbances:
             ("shutdown", None),  # the close at the end of the night
         ]
         times = world.hidden_times()
-        assert SWEEP_AT < times[0] < SWEEP_AT + 200
+        assert SWEEP_AT <= times[0] < SWEEP_AT + 200  # a cycle boundary, which may be the moment
         assert PAUSE_AT <= times[1] <= PAUSE_AT + 31.0  # after the exposure in progress
         assert times[2] == pytest.approx(HIDE_FROM + 20.0, abs=2.5)
         assert times[3] == pytest.approx(ALIGN_FROM, abs=1.0)
@@ -407,7 +409,10 @@ class TestTheDisturbances:
     def test_the_partial_windows_all_have_a_cause(self, night: Night) -> None:
         """No window is cut short without a reason: every `partial` one is next to an event."""
         world = night.world
-        causes = [PAUSE_AT, HIDE_FROM, ALIGN_FROM, FAULT_FROM, JOLT_AT, SWEEP_AT]
+        # The first period that measures at dusk starts in the middle of a search period, and its
+        # last window ends with the period.
+        dusk = world.visible_times()[0]
+        causes = [dusk, PAUSE_AT, HIDE_FROM, ALIGN_FROM, FAULT_FROM, JOLT_AT, SWEEP_AT]
         for window in world.windows():
             if "partial" in window.flags:
                 end = world.seconds(window.t_utc_ns) + window.duration_s

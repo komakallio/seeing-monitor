@@ -20,7 +20,13 @@ from seeingmon.records.survey import (
 from seeingmon.solvers.base import PlateSolver, SolveRequest, SolverError, SolveResult
 from seeingmon.survey import pointing as pt
 from seeingmon.survey.catalog import CapCatalog
-from seeingmon.survey.config import FitConfig, SkyConfig, SolveConfig, SurveyConfig
+from seeingmon.survey.config import (
+    FitConfig,
+    SkyConfig,
+    SolveConfig,
+    SurveyConfig,
+    TwilightConfig,
+)
 from seeingmon.survey.detect import StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import (
@@ -36,6 +42,7 @@ from seeingmon.survey.pipeline import (
     SolveAttempt,
     SurveyPipeline,
 )
+from seeingmon.survey.transparency import sample_from_record
 from seeingmon.survey.wcs_fit import CameraAttitude
 from seeingmon.testing import FakeSolver
 from tests.survey import synth
@@ -849,6 +856,286 @@ def test_a_cloud_over_a_known_pointing_gives_a_full_cloud_fraction(
     assert sky.n_expected is not None
     assert sky.n_expected >= 8  # [survey.cloud] min_expected
     assert sky.n_expected_found == 0
+
+
+@pytest.fixture(scope="module")
+def bright(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> tuple[Frame, pt.PointingSolution]:
+    """A frame under a sky of 97% of saturation at 30 s, and the stored pointing of `scene`."""
+    frame, truth = scene
+    first = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+    assert first.solution is not None
+    full_well_e = profile.saturation("bin2", 120).full_well_e
+    bright, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        t_utc_ns=truth.t_utc_ns + 180 * NS,
+        exposure_s=30.0,
+        sky_e_per_s_px=0.97 * full_well_e / 30.0,  # so that the noise reaches the clip
+        seed=5,
+    )
+    return bright, first.solution
+
+
+@pytest.fixture(scope="module")
+def at_target(
+    profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+) -> Frame:
+    """The stars of `scene` under a sky at 30% of saturation at 30 s, the target of the adaptive
+    long exposure."""
+    _, truth = scene
+    full_well_e = profile.saturation("bin2", 120).full_well_e
+    frame, _ = synth.render_frame(
+        catalog,
+        profile,
+        rotation_tirs=truth.rotation_tirs,
+        exposure_s=30.0,
+        sky_e_per_s_px=0.3 * full_well_e / 30.0,
+        seed=9,
+    )
+    return frame
+
+
+class TestASaturatedSky:
+    """A bright sky that reaches saturation must not read as clouds.
+
+    The frame of `bright` holds the stars of `scene` under a sky of 97% of saturation at 30 s, with
+    the stored pointing of `scene`, as at dusk with a long frame that the sky has nearly filled. A
+    fifth of the pixels clip, which leaves the background quiet: without the guard, the noise
+    promises dozens of stars, detection finds none, and the cloud fraction reads 1. Other frames
+    trip one rule of the guard at a time, and the dark frame of `scene` shows what the guard takes
+    from a frame that has its photometry.
+    """
+
+    def test_without_the_guard_the_frame_reports_clouds(
+        self,
+        profile: Profile,
+        catalog: CapCatalog,
+        bright: tuple[Frame, pt.PointingSolution],
+    ) -> None:
+        """The bug that the guard fixes: limits of 1 turn it off."""
+        frame, previous = bright
+        unguarded = SurveyConfig(
+            twilight=TwilightConfig(max_saturated_fraction=1.0, max_background_fraction=1.0)
+        )
+        analysis = pipeline_for(profile, catalog, config=unguarded).analyze(
+            frame, previous=previous
+        )
+        assert analysis.cloud_fraction == pytest.approx(1.0, abs=0.01)
+        sky = sky_of(analysis)
+        assert "cloud" in sky.flags
+        assert "saturated_sky" not in sky.flags
+        assert sky.n_expected is not None
+        assert sky.n_expected >= 8  # [survey.cloud] min_expected
+
+    def test_the_guard_flags_the_frame_and_reports_no_clouds(
+        self,
+        profile: Profile,
+        catalog: CapCatalog,
+        bright: tuple[Frame, pt.PointingSolution],
+    ) -> None:
+        frame, previous = bright
+        analysis = pipeline_for(profile, catalog).analyze(frame, previous=previous)
+        # No cloud fraction reaches the scheduler, so its cloud tracker and the cloud event of
+        # the frame store see nothing.
+        assert analysis.cloud_fraction is None
+        sky = sky_of(analysis)
+        assert "saturated_sky" in sky.flags
+        assert "cloud" not in sky.flags
+        for name in (
+            "cloud_fraction",
+            "n_expected",
+            "n_expected_found",
+            "limiting_mag",
+            "sky_mag_arcsec2",
+            "sky_mag_arcsec2_v",
+            "sky_rate_e_per_s_arcsec2",
+            "zero_point_mag",
+            "transparency",
+        ):
+            assert getattr(sky, name) is None, name
+        assert sky.quality is not None
+        for name in (
+            "cloud_fraction",
+            "n_expected",
+            "n_expected_found",
+            "limiting_mag",
+            "sky_mag_arcsec2",
+            "zero_point_mag",
+            "transparency",
+        ):
+            assert "saturated" in sky.quality[name], name
+        assert any("the sky is saturated" in note for note in analysis.notes)
+
+    def test_the_guard_keeps_a_frame_out_of_the_reference_and_the_nightly_summary(
+        self, profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+    ) -> None:
+        """The guard forced on the dark frame of `scene`, which has its photometry without it.
+
+        The frame of 97% has no photometry even without the guard, so it cannot show what the
+        guard removes. Limits far below the sky of `scene` (1% of saturation) force the guard on.
+        """
+        frame, truth = scene
+        forced = SurveyConfig(
+            twilight=TwilightConfig(target_background_fraction=1e-4, max_background_fraction=1e-3)
+        )
+        plain = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+        plain_sky = sky_of(plain)
+        assert plain_sky.zero_point_mag is not None
+        assert sample_from_record(plain_sky) is not None
+        assert plain.epoch_stars is not None
+        assert len(plain.epoch_stars) > 200
+        assert plain.cloud_fraction == 0.0
+        guarded = pipeline_for(profile, catalog, [truth_solver(truth, catalog)], config=forced)
+        analysis = guarded.analyze(frame)
+        sky = sky_of(analysis)
+        assert "saturated_sky" in sky.flags
+        # No zero point reaches the reference, no star the nightly summary, and no cloud fraction
+        # the cloud tracker of the scheduler.
+        assert sky.zero_point_mag is None
+        assert sample_from_record(sky) is None
+        assert analysis.epoch_stars is not None
+        assert len(analysis.epoch_stars) == 0
+        assert analysis.cloud_fraction is None
+        # Its stars still solve, so the frame keeps its pointing.
+        assert analysis.solved
+        assert "unsolved" not in pointing_of(analysis).flags
+
+    def test_a_background_beyond_its_limit_alone_sets_the_flag(
+        self, profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+    ) -> None:
+        """A sky of 85% of saturation: 0.3% of the pixels saturate, under the limit of 1%."""
+        _, truth = scene
+        full_well_e = profile.saturation("bin2", 120).full_well_e
+        frame, _ = synth.render_frame(
+            catalog,
+            profile,
+            rotation_tirs=truth.rotation_tirs,
+            exposure_s=30.0,
+            sky_e_per_s_px=0.85 * full_well_e / 30.0,
+            seed=8,
+        )
+        analysis = pipeline_for(profile, catalog).analyze(frame)
+        assert "saturated_sky" in sky_of(analysis).flags
+        (note,) = [n for n in analysis.notes if "the sky is saturated" in n]
+        assert "0.3% of the pixels saturate" in note
+        assert "85% of saturation" in note
+        no_background_limit = SurveyConfig(twilight=TwilightConfig(max_background_fraction=1.0))
+        analysis = pipeline_for(profile, catalog, config=no_background_limit).analyze(frame)
+        assert "saturated_sky" not in sky_of(analysis).flags
+
+    def test_a_share_of_saturated_pixels_beyond_its_limit_alone_sets_the_flag(
+        self, profile: Profile, catalog: CapCatalog, at_target: Frame
+    ) -> None:
+        """A sky at the target (30% of saturation) with a clipped patch over 2.8% of the pixels,
+        as from a light in a corner of the field."""
+        data = at_target.data.copy()
+        data[:160, :160] = 65_535
+        frame = replace(at_target, data=data)
+        analysis = pipeline_for(profile, catalog).analyze(frame)
+        assert "saturated_sky" in sky_of(analysis).flags
+        (note,) = [n for n in analysis.notes if "the sky is saturated" in n]
+        assert "2.8% of the pixels saturate" in note
+        assert "30% of saturation" in note
+        no_share_limit = SurveyConfig(twilight=TwilightConfig(max_saturated_fraction=1.0))
+        analysis = pipeline_for(profile, catalog, config=no_share_limit).analyze(frame)
+        assert "saturated_sky" not in sky_of(analysis).flags
+
+    def test_a_frame_that_saturates_whole_carries_the_flag(
+        self, profile: Profile, catalog: CapCatalog
+    ) -> None:
+        """Detection cannot process a constant frame, and its empty record says why."""
+        full_well_e = profile.saturation("bin2", 120).full_well_e
+        frame, _ = synth.render_frame(
+            catalog,
+            profile,
+            rotation_tirs=synth.make_attitude(0.9, 40.0, 25.0),
+            exposure_s=30.0,
+            sky_e_per_s_px=1.2 * full_well_e / 30.0,
+            seed=6,
+        )
+        analysis = pipeline_for(profile, catalog).analyze(frame)
+        assert analysis.cloud_fraction is None
+        assert analysis.notes[0].startswith("detection failed")
+        assert sky_of(analysis).flags == ["saturated_sky"]
+        assert "unsolved" in pointing_of(analysis).flags  # a long frame, so a solve was due
+
+    def test_a_short_frame_that_saturates_whole_gets_no_pointing_record(
+        self, profile: Profile, catalog: CapCatalog
+    ) -> None:
+        """The 1 ms frame of a survey step in a sunny sky, which the scheduler takes in `auto`.
+
+        No solver can use it, so it gets no `unsolved` record, which would replace the latest
+        solution on the Now page at every step of the day, and, as a short frame, no
+        `sky_quality` record unless the caller forces one.
+        """
+        saturation = round(profile.saturation("bin2", 0).container_dn)
+        frame = Frame(
+            data=np.full((800, 1200), saturation, dtype=np.uint16),
+            stream_id=1,
+            seq=0,
+            t_arrival_ns=0,
+            t_utc_ns=synth.NIGHT_UTC_NS,
+            t_err_ns=0,
+            t_quality=TimeQuality.EXACT,
+            dropped_before=0,
+            exposure_us=1000,
+            gain=0,
+            mode="bin2",
+            roi=Roi(0, 0, 1200, 800),
+            adc_bits=14,
+        )
+        analysis = pipeline_for(profile, catalog, [FakeSolver()]).analyze(frame)
+        assert not analysis.solved
+        assert analysis.notes[0].startswith("detection failed")
+        assert [record.record_type for record in analysis.records] == ["survey_frame"]
+        forced = pipeline_for(profile, catalog).analyze(frame, sky_quality=True)
+        assert [record.record_type for record in forced.records] == [
+            "survey_frame",
+            "sky_quality",
+        ]
+        assert sky_of(forced).flags == ["saturated_sky"]
+
+    def test_a_sky_at_the_target_keeps_its_photometry(
+        self,
+        at_target: Frame,
+        profile: Profile,
+        catalog: CapCatalog,
+        scene: tuple[Frame, synth.SynthTruth],
+    ) -> None:
+        """A long frame at the target of the adaptive exposure (30% of saturation)."""
+        _, truth = scene
+        analysis = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(at_target)
+        sky = sky_of(analysis)
+        assert "saturated_sky" not in sky.flags
+        assert sky.zero_point_mag is not None
+        assert sample_from_record(sky) is not None
+        assert analysis.cloud_fraction == 0.0
+        assert analysis.epoch_stars is not None
+        assert len(analysis.epoch_stars) > 100
+
+    def test_a_bright_sky_below_the_limits_gets_no_flag(
+        self, profile: Profile, catalog: CapCatalog, scene: tuple[Frame, synth.SynthTruth]
+    ) -> None:
+        """A sky at 60% of saturation stays under both limits.
+
+        The sky hides most stars of this frame (4 expected), so it has no zero point either way.
+        """
+        _, truth = scene
+        full_well_e = profile.saturation("bin2", 120).full_well_e
+        frame, _ = synth.render_frame(
+            catalog,
+            profile,
+            rotation_tirs=truth.rotation_tirs,
+            exposure_s=30.0,
+            sky_e_per_s_px=0.6 * full_well_e / 30.0,
+            seed=7,
+        )
+        analysis = pipeline_for(profile, catalog, [truth_solver(truth, catalog)]).analyze(frame)
+        assert analysis.solved
+        assert "saturated_sky" not in sky_of(analysis).flags
 
 
 def test_an_unknown_readout_mode_gives_the_failure_records(

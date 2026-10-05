@@ -4,11 +4,13 @@ Every scenario runs on a virtual clock at a synthetic site, 55 degrees north on 
 meridian. The scenario starts at 14:30 UTC on a winter day: the Sun is 6 degrees up, it sets at
 about 15:55, and astronomical night begins at about 18:10.
 
-The Sun's elevation gates nothing. The default sky of the scenario saturates the brightness frame
-by day, and the gate counts a saturated brightness frame as too bright. That sky stops saturating
-the frame (0.9 of its saturation) when the Sun is 2.49 degrees down, and it falls below the resume
-level of the clip (0.6) at 2.84 degrees down, where `auto` starts. Polaris becomes detectable at
-about 3.5 degrees down.
+The Sun's elevation gates nothing. The gate judges the background that the fast stream would
+have at its shortest exposure (32 us). The default sky of the scenario clips the 1 ms brightness
+frame (0.9 of its saturation) until the Sun is 2.49 degrees down, and a second watch frame of
+32 us then reads the sky. The fast stream at 32 us would see 35% of saturation, where `auto`
+starts, with the Sun 0.42 degrees down, and 50%, where `auto` stops, with the Sun 0.10 degrees
+down. Polaris becomes detectable at about 3.5 degrees down. A floodlight adds to the sky: one of
+1 (the 1 ms frame at its saturation) is 3.7% for the fast stream at 32 us, and one of 20 is 74%.
 """
 
 from __future__ import annotations
@@ -20,23 +22,29 @@ import pytest
 from seeingmon.clock import NS_PER_S, iso_to_utc_ns
 from seeingmon.frames import StreamKind
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
-from tests.scheduler.scenario import SITE, START, World
+from tests.scheduler.scenario import BLINDING_LIGHT, SITE, START, World
 
 DARK = iso_to_utc_ns("2026-01-01T22:00:00Z")  # the Sun is 40 degrees down
-# The default sky saturates the brightness frame (0.9 of saturation with the offset of 200 counts)
-# down to this elevation, and Polaris reaches an SNR of 10 below about -3.49 degrees.
+# The default sky saturates the 1 ms brightness frame (0.9 of saturation with the offset of 200
+# counts) down to this elevation, and Polaris reaches an SNR of 10 below about -3.49 degrees.
 CLIP_DEG = -2.485
-# The brightness frame falls below the resume level of the clip (0.6 of saturation, with the
-# offset) at this elevation, so a scheduler in `safe` resumes there.
-RESUME_DEG = -2.844
+# The fast stream at 32 us would see 35% of saturation at this elevation, so a scheduler in `safe`
+# resumes there, and 50% at the next, where a scheduler in `auto` stops. The watch frame of 32 us
+# reads it, with the offset counted as sky.
+RESUME_DEG = -0.420
+STOP_DEG = -0.103
+# A floodlight that clips the 1 ms frame, but that the fast stream can take: 18% of saturation at
+# 32 us. `BLINDING_LIGHT` gives 74%.
+SUNNY_LIGHT = 5.0
 
 
-def watch_times(world: World) -> list[float]:
-    """The times of the brightness frames: 1 ms snapshots of the central ROI in bin2."""
+def watch_times(world: World, exposure_us: int = 1000) -> list[float]:
+    """The times of the brightness frames: snapshots of the central ROI in bin2, at 1 ms or at the
+    bright exposure that follows a clipped one."""
     return [
         world.seconds(call.t_utc_ns)
         for call in world.configures(mode="bin2", video=False)
-        if call.config.exposure_us == 1000 and call.config.roi is not None
+        if call.config.exposure_us == exposure_us and call.config.roi is not None
     ]
 
 
@@ -71,8 +79,11 @@ class TestDaylight:
         assert status.state == "safe"
         assert status.stream is not None
         assert status.stream.purpose == "watch"
-        assert status.counters.watch_frames == 60
-        assert status.background_fraction == 1.0  # the sky saturates the 1 ms frame
+        # Each 1 ms frame clips, so a frame of 32 us follows it at once. It says that the fast
+        # stream would see 74% of saturation in the daylight of the scenario, too much to measure.
+        assert status.counters.watch_frames == 120
+        assert watch_times(world, 32) == pytest.approx(watch_times(world), abs=1.0)
+        assert status.background_fraction == pytest.approx(0.744, abs=0.001)
         assert world.state_changes() == []
         world.close()
 
@@ -108,12 +119,11 @@ class TestDaylight:
 
 
 class TestDusk:
-    def test_the_scheduler_enters_auto_when_the_brightness_frame_falls_below_its_resume_level(
-        self,
-    ) -> None:
-        """The measured sky alone opens the gate, with the Sun higher than the old -4 degrees.
+    def test_the_scheduler_enters_auto_where_the_fast_stream_could_measure(self) -> None:
+        """The gate opens where the fast stream at 32 us would see less than 35% of saturation.
 
-        The frame stops saturating first, and the gate waits for the resume level of the clip.
+        The 1 ms frame still clips there, two degrees above the Sun of its clip, and the watch
+        frame of 32 us that follows it reads the sky.
         """
         world = World()
         clip = crossing(CLIP_DEG, rising=False)
@@ -123,20 +133,20 @@ class TestDusk:
         ((changed_at, _, _),) = world.state_changes()
         # The change happens at the first brightness frame after the sky falls below the level.
         assert world.seconds(dusk) <= changed_at <= world.seconds(dusk) + 61
-        assert changed_at > world.seconds(clip) + 120  # the hysteresis held for minutes
-        assert world.sun_elevation(world.t(changed_at)) > -3.2
+        assert changed_at < world.seconds(clip) - 600  # the 1 ms frame still clips
+        assert world.sun_elevation(world.t(changed_at)) > -0.7
         event = world.events("scheduler.state_change")[0]
         assert event.detail == {"from": "safe", "to": "auto", "reason": "the sky is dark enough"}
         world.close()
 
     def test_the_search_follows_the_change_at_once_and_measure_waits_for_polaris(self) -> None:
         world = World()
-        dusk = crossing(CLIP_DEG, rising=False)
+        clip = crossing(CLIP_DEG, rising=False)
         world.run_until(world.seconds(crossing(-4.5, rising=False)))
         ((changed_at, _, _),) = world.state_changes()
         bursts = world.burst_starts()
         assert bursts[0] == pytest.approx(changed_at, abs=1.0)
-        assert world.seconds(dusk) < bursts[0]
+        assert bursts[0] < world.seconds(clip)  # the search starts while the 1 ms frame clips
         # Polaris shows in the bursts once its SNR reaches 10, at about -3.49 degrees, and the
         # second detection in a row starts measure, within a period and a half after that.
         (visible,) = world.events("polaris.visible")
@@ -148,9 +158,9 @@ class TestDusk:
         world.close()
 
     def test_a_saturated_sky_holds_the_scheduler_in_safe_without_a_burst(self) -> None:
-        """A floodlight that saturates the brightness frame keeps the gate shut at night."""
+        """A floodlight that the fast stream cannot take even at 32 us keeps the gate shut."""
         world = World(start_utc_ns=DARK)
-        world.light(0, 3600, 1.0)  # a floodlight that saturates the 1 ms frame
+        world.light(0, 3600, BLINDING_LIGHT)
         world.run_until(3000)
         assert world.scheduler.state.value == "safe"
         assert world.state_changes() == []
@@ -178,30 +188,49 @@ class TestDusk:
         assert world.burst_starts()
         world.close()
 
-    def test_a_running_scheduler_keeps_auto_up_to_the_clip(self) -> None:
-        """A floodlight at 80% of saturation in the 1 ms frame comes on in `auto`.
+    def test_a_clipped_brightness_frame_does_not_hold_safe(self) -> None:
+        """A floodlight that clips the 1 ms frame (5 times its saturation) at night, from the start.
 
-        The fast stream would see 3% of saturation at 32 us, so `auto` goes on. From `safe`, the
-        same light would wait for the resume level of the clip (60%).
+        The watch frame of 32 us that follows the clipped one reads 18% for the fast stream, so
+        `auto` starts at the first watch. The clip of the 1 ms frame no longer decides.
         """
         world = World(start_utc_ns=DARK)
-        world.light(300, 10_000, 0.8)
-        world.run_until(1200)
+        world.light(0, 10_000, SUNNY_LIGHT)
+        world.run_until(600)
+        assert world.states_visited() == ["safe", "auto"]
+        ((changed_at, _, _),) = world.state_changes()
+        assert changed_at == pytest.approx(0.0, abs=1.0)
+        assert watch_times(world, 32)[0] == pytest.approx(0.0, abs=1.0)
+        world.close()
+
+
+class TestASunnySky:
+    """A bright sky that the fast stream can still take: the 1 ms frame clips, and `auto` holds."""
+
+    def test_a_sunny_sky_where_the_fast_stream_is_fine_stays_in_auto(self) -> None:
+        """A floodlight of 5 times the saturation of the 1 ms frame comes on in `auto`.
+
+        Each survey step finds its 1 ms frame clipped, and the scenario's slow fast stream gives
+        no background that decides, so a watch frame of 32 us follows the 1 ms frame. It reads 18%
+        for the fast stream at 32 us, far below the limit of 50%, so the scheduler stays.
+        """
+        world = World(start_utc_ns=DARK)
+        world.light(300, 10_000, SUNNY_LIGHT)
+        world.run_until(1800)
         assert world.states_visited() == ["safe", "auto"]
         status = world.scheduler.status()
-        assert status.background_fraction == pytest.approx(0.03, abs=0.005)
+        assert status.background_fraction == pytest.approx(0.185, abs=0.01)
+        steps_in_light = [t for t in watch_times(world, 32) if t > 300]
+        assert len(steps_in_light) >= 7  # one for each survey step of the 1,500 s in the light
+        assert world.burst_starts() or world.fast_starts()
         world.close()
-        held = World(start_utc_ns=DARK)
-        held.light(0, 10_000, 0.8)
-        held.run_until(600)
-        assert held.states_visited() == ["safe"]
-        held.close()
 
 
 class TestAutoStopsWhenTheSkyBrightens:
     def test_a_floodlight_forces_safe_and_skips_the_long_exposure(self) -> None:
+        """A sky where even 32 us would pass 50% of saturation: the fast stream would see 74%."""
         world = World(start_utc_ns=DARK)
-        world.light(1000, 2500, 1.0)
+        world.light(1000, 2500, BLINDING_LIGHT)
         world.run_until(2400)
         # Auto stops at the next survey step: the short exposure sees the bright sky.
         assert world.states_visited() == ["safe", "auto", "safe"]
@@ -214,11 +243,14 @@ class TestAutoStopsWhenTheSkyBrightens:
         assert last.exposure_us == 1000
         assert world.survey.submitted[-1].t_utc_ns / NS_PER_S - START / NS_PER_S > 0
         assert world.scheduler.status().counters.survey_frames % 2 == 1  # a short without a long
+        # The 1 ms frame clipped, so a watch frame of 32 us measured the sky before the decision.
+        (checked_at,) = [t for t in watch_times(world, 32) if 1000 < t < changed_at + 1]
+        assert checked_at == pytest.approx(changed_at, abs=1.0)
         world.close()
 
     def test_auto_resumes_when_the_light_goes_out(self) -> None:
         world = World(start_utc_ns=DARK)
-        world.light(1000, 2500, 1.0)
+        world.light(1000, 2500, BLINDING_LIGHT)
         world.run_until(3000)
         assert world.states_visited() == ["safe", "auto", "safe", "auto"]
         resumed_at = world.state_changes()[2][0]
@@ -227,7 +259,7 @@ class TestAutoStopsWhenTheSkyBrightens:
 
     def test_the_watch_runs_a_minute_after_the_scheduler_entered_safe(self) -> None:
         world = World(start_utc_ns=DARK)
-        world.light(1000, 2500, 1.0)
+        world.light(1000, 2500, BLINDING_LIGHT)
         world.run_until(2400)
         changed_at = world.state_changes()[1][0]
         later = [t for t in watch_times(world) if t > changed_at]
@@ -235,14 +267,15 @@ class TestAutoStopsWhenTheSkyBrightens:
         world.close()
 
     def test_the_brightening_sky_stops_auto_at_the_next_survey_step(self) -> None:
-        """At dawn the sky saturates the brightness frame, and the short survey frame sees it.
+        """At dawn the sky passes 50% for the fast stream at 32 us, and a survey step sees it.
 
         Before that, the brightening sky hides Polaris (an SNR below 6 at about -2.6 degrees), so
-        measure ends with `polaris.hidden`, and the search finds nothing more.
+        measure ends with `polaris.hidden`, and the search finds nothing more. The 1 ms frame
+        clips from -2.49 degrees on, and the watch frame of 32 us that follows it decides.
         """
         start = iso_to_utc_ns("2026-01-02T07:00:00Z")  # the Sun is 6 degrees down
         world = World(start_utc_ns=start)
-        dawn_limit = crossing(CLIP_DEG, rising=True, after=start)
+        dawn_limit = crossing(STOP_DEG, rising=True, after=start)
         world.run_until(world.seconds(dawn_limit) + 600)
         assert world.states_visited() == ["safe", "auto", "safe"]
         stopped_at = world.state_changes()[1][0]
