@@ -292,3 +292,10 @@ saturation_warn_fraction = 0.0005
 
 # While a live view is open, core tells the scheduler this often that someone watches.
 touch_interval_s = 5.0
+
+# The offer of the rapid focus mode, which reads a ROI around Polaris at the full frame rate and
+# reports the star width in arcseconds 20 times a second. The Align page offers it when the coarse
+# focus (the median of the last five focus values of the normal view) is at most this wide, and
+# when core knows where Polaris is. A solution that is older than the age below no longer counts.
+rapid_focus_max_fwhm_arcsec = 12.0
+rapid_focus_max_solution_age_s = 600.0

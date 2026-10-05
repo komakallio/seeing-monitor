@@ -251,6 +251,13 @@ def build_state(
     )
 
 
+def current_solved(
+    solution: QuickSolution | None, frame: FrameSummary, settings: AlignmentSettings
+) -> SolvedView | None:
+    """The solved position of a solution when it is current for the frame, or `None`."""
+    return _current_solution(solution, frame, settings)[0]
+
+
 def _arcsec(value_px: float | None, scale_arcsec_px: float | None) -> float | None:
     if value_px is None or scale_arcsec_px is None:
         return None
@@ -368,6 +375,31 @@ def ring_from_solution(
     picture. Returns `None` for a solution without an attitude and when the pole or Polaris lies
     behind the camera.
     """
+    projected = _project_polaris(solution, t_utc_ns)
+    if projected is None:
+        return None
+    x, y, pole = projected
+    aim = settings.aim_xy or frame_center(width_px, height_px)
+    return round(x + aim[0] - pole[0], 3), round(y + aim[1] - pole[1], 3)
+
+
+def polaris_from_solution(solution: QuickSolution, t_utc_ns: int) -> tuple[float, float] | None:
+    """Where Polaris falls at a time, from a solution of an earlier or later frame.
+
+    The camera of a rigid mount is fixed to the Earth, so the solution fixes the attitude at any
+    other time, as for `ring_from_solution`. This is the place where Polaris is when the mount has
+    not moved since the solution, and the ring is the place where it belongs when the pole sits at
+    the aim. The position is in the pixels of the frame of the solution. It is `None` for a
+    solution without an attitude, and when the pole or Polaris lies behind the camera.
+    """
+    projected = _project_polaris(solution, t_utc_ns)
+    return None if projected is None else (round(projected[0], 3), round(projected[1], 3))
+
+
+def _project_polaris(
+    solution: QuickSolution, t_utc_ns: int
+) -> tuple[float, float, tuple[float, float]] | None:
+    """The pixel of Polaris and the pixel of the pole at a time, through a turned solution."""
     attitude = solution.attitude
     if attitude is None:
         return None
@@ -382,8 +414,7 @@ def ring_from_solution(
     pole = turned.pole_pixel()
     if pole is None or not bool(front[0]):
         return None
-    aim = settings.aim_xy or frame_center(width_px, height_px)
-    return round(float(x[0]) + aim[0] - pole[0], 3), round(float(y[0]) + aim[1] - pole[1], 3)
+    return float(x[0]), float(y[0]), (float(pole[0]), float(pole[1]))
 
 
 def _last_solution_view(

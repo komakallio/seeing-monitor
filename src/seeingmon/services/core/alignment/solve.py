@@ -12,6 +12,13 @@ number of matched stars and the residual, and the **focus value**, which is the 
 detected stars that are neither saturated nor otherwise unreliable. The pipeline measures the FWHM
 across the trail, so the focus value stays free of trailing.
 
+**The brightest star.** A frame that the solver cannot solve still shows Polaris, which is far
+brighter than any other star of the field (magnitude 2, against about 4 for the next one in 3
+degrees). The solution keeps the position of the brightest detection and how many times brighter it
+is than the next one (`brightest_ratio`), so that the rapid focus mode can find Polaris without a
+solution (`seeingmon.services.core.alignment.rapid_availability`). A detection that carries the flag
+of a hot pixel or of a streak does not count. A saturated star does, because Polaris saturates.
+
 A frame that cannot be solved is a normal result (`solved` is false). The solver never raises: an
 unexpected error becomes an unsolved result with a note, because a bad frame must not stop the live
 view.
@@ -35,7 +42,7 @@ import numpy as np
 
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import Frame
-from seeingmon.survey.detect import Detections
+from seeingmon.survey.detect import Detections, StarFlag
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import FrameAnalysis
 from seeingmon.survey.pointing import PointingSolution, ReferenceSolution
@@ -46,6 +53,7 @@ _log = logging.getLogger(__name__)
 
 MIN_FOCUS_SNR = 10.0
 MIN_FOCUS_STARS = 3
+LONE_STAR_RATIO = 1000.0  # the ratio of a brightest star that has no second star to compare with
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +68,11 @@ class QuickSolution:
     frame), and `polaris_colatitude_deg` is the angle between Polaris and the pole at that time.
     The live view builds its sky view, the pole, and the orbit of Polaris from the two. `elapsed_s`
     is the time that the analysis took.
+
+    `brightest_x_px` and `brightest_y_px` give the position of the brightest detection in the
+    pixels of the frame, and `brightest_ratio` says how many times brighter it is than the next
+    one (`LONE_STAR_RATIO` when it has no next one). They are `None` when the frame has no
+    detection that counts (see `brightest_star`), and they hold for an unsolved frame too.
     """
 
     t_utc_ns: int
@@ -79,6 +92,9 @@ class QuickSolution:
     note: str = ""
     attitude: CameraAttitude | None = None
     polaris_colatitude_deg: float | None = None
+    brightest_x_px: float | None = None
+    brightest_y_px: float | None = None
+    brightest_ratio: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """The solution as plain data (numbers, text, and lists), for another process."""
@@ -100,6 +116,9 @@ class QuickSolution:
             "note": self.note,
             "attitude": None,
             "polaris_colatitude_deg": self.polaris_colatitude_deg,
+            "brightest_x_px": self.brightest_x_px,
+            "brightest_y_px": self.brightest_y_px,
+            "brightest_ratio": self.brightest_ratio,
         }
         if self.attitude is not None:
             data["attitude"] = {
@@ -142,6 +161,9 @@ class QuickSolution:
             note=str(data["note"]),
             attitude=attitude,
             polaris_colatitude_deg=_optional_float(data["polaris_colatitude_deg"]),
+            brightest_x_px=_optional_float(data.get("brightest_x_px")),
+            brightest_y_px=_optional_float(data.get("brightest_y_px")),
+            brightest_ratio=_optional_float(data.get("brightest_ratio")),
         )
 
 
@@ -193,6 +215,32 @@ def focus_value(detections: Detections | None) -> tuple[float | None, int]:
     return float(np.median(detections.fwhm_px[usable])), count
 
 
+def brightest_star(
+    detections: Detections | None,
+) -> tuple[float | None, float | None, float | None]:
+    """The position of the brightest star, and how many times brighter it is than the next one.
+
+    A star that carries the flag of a hot pixel or of a streak, or that has no positive flux, does
+    not count. The ratio is `LONE_STAR_RATIO` for a brightest star that has no next one. Without a
+    star that counts, the three values are `None`.
+    """
+    if detections is None or len(detections) == 0:
+        return None, None, None
+    counts = ~detections.has(StarFlag.HOT_PIXEL | StarFlag.STREAK)
+    counts &= np.isfinite(detections.flux) & (detections.flux > 0.0)
+    flux = detections.flux[counts]
+    if len(flux) == 0:
+        return None, None, None
+    order = np.argsort(flux)
+    first = int(order[-1])
+    ratio = LONE_STAR_RATIO if len(flux) == 1 else float(flux[first] / flux[int(order[-2])])
+    return (
+        float(detections.x[counts][first]),
+        float(detections.y[counts][first]),
+        min(ratio, LONE_STAR_RATIO),
+    )
+
+
 def analyze_frame(
     pipeline: Analyzer,
     frame: Frame,
@@ -230,6 +278,7 @@ def analyze_frame(
         )
     elapsed_s = (clock.monotonic_ns() - started) / NS_PER_S
     focus, n_focus = focus_value(analysis.detections)
+    bright_x, bright_y, bright_ratio = brightest_star(analysis.detections)
     n_detected = 0 if analysis.detections is None else len(analysis.detections)
     note = analysis.notes[-1] if analysis.notes else ""
     solution = analysis.solution
@@ -244,6 +293,9 @@ def analyze_frame(
                 n_focus_stars=n_focus,
                 elapsed_s=elapsed_s,
                 note=note or "the frame could not be solved",
+                brightest_x_px=bright_x,
+                brightest_y_px=bright_y,
+                brightest_ratio=bright_ratio,
             )
         )
     position = solution.polaris_pixel(frame.t_utc_ns)
@@ -267,6 +319,9 @@ def analyze_frame(
             note=note,
             attitude=attitude,
             polaris_colatitude_deg=solution.polaris_colatitude_deg(frame.t_utc_ns),
+            brightest_x_px=bright_x,
+            brightest_y_px=bright_y,
+            brightest_ratio=bright_ratio,
         ),
         solution,
     )

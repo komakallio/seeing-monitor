@@ -33,6 +33,14 @@ so a test needs no threads and no waiting. `start` launches the two threads for 
 **Streams.** `attach` takes the `StreamSender` of a new live-view client (see
 `seeingmon.services.core.rpc`). The encoder thread owns the sender from then on: it sends and
 reads the acknowledgements, and it drops the sender when the client goes away.
+
+**Rapid focus.** With a `RapidFocusHelper`, every state carries `rapid_focus`: whether the rapid
+focus mode is offered, and what it measures while it runs (`seeingmon.services.core.alignment.rapid`
+and `rapid_availability`). The mode streams the fast readout mode, so no alignment frame arrives
+while it runs, and the state that `state` builds then keeps the last frame and adds the readings.
+`rapid_start_command` makes the command that starts the mode, with the center of its ROI from the
+same judgement, so that the page needs no position. `reset_focus` restarts the best value of the
+mode as well.
 """
 
 from __future__ import annotations
@@ -46,19 +54,28 @@ from typing import Any, Protocol
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import Frame, FrameFlag, TimeQuality
 from seeingmon.profile import Profile
+from seeingmon.scheduler.commands import StartRapidFocus
 from seeingmon.scheduler.config import SiteConfig
 from seeingmon.services.core.alignment.calibration import PreviewCalibrator
-from seeingmon.services.core.alignment.focus import FocusHistory
+from seeingmon.services.core.alignment.focus import FocusHistory, FocusSnapshot
 from seeingmon.services.core.alignment.preview import (
     frame_saturation_dn,
     histogram_counts,
     make_preview,
     saturated_fraction,
 )
+from seeingmon.services.core.alignment.rapid import (
+    RapidAvailability,
+    RapidFocusHelper,
+    build_view,
+)
+from seeingmon.services.core.alignment.rapid_availability import rapid_availability
 from seeingmon.services.core.alignment.solve import QuickSolution
 from seeingmon.services.core.alignment.state import (
     FrameSummary,
     build_state,
+    current_solved,
+    polaris_from_solution,
     resolve_target,
 )
 from seeingmon.services.core.settings import AlignmentSettings
@@ -67,7 +84,9 @@ from seeingmon.services.ipc.stream import StreamSender
 from seeingmon.services.web.contract import (
     AlignmentState,
     HistogramView,
+    RapidFocusView,
     SaturationView,
+    SolvedView,
     pack_frame,
 )
 from seeingmon.survey.tracker import PointingTracker
@@ -111,6 +130,7 @@ class AlignmentHelper:
         touch: Callable[[], None] | None = None,
         site: SiteConfig | None = None,
         calibrator: PreviewCalibrator | None = None,
+        rapid: RapidFocusHelper | None = None,
     ) -> None:
         self._settings = settings
         self._site = site
@@ -121,6 +141,7 @@ class AlignmentHelper:
         self._tracker = tracker
         self._touch = touch
         self._calibrator = calibrator
+        self._rapid = rapid
 
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
@@ -197,7 +218,11 @@ class AlignmentHelper:
         with self._lock:
             summary, solution = self._summary, self._solution
         if summary is None:
-            return AlignmentState(active=True, quality={"frame": "no frame has arrived yet"})
+            state = AlignmentState(active=True, quality={"frame": "no frame has arrived yet"})
+            rapid = None if self._rapid is None else self._rapid.snapshot()
+            if rapid is not None and rapid.active:
+                state = state.model_copy(update={"rapid_focus": build_view(rapid)})
+            return state
         return self._build(summary, solution)
 
     def _build(self, summary: FrameSummary, solution: QuickSolution | None) -> AlignmentState:
@@ -218,6 +243,9 @@ class AlignmentHelper:
             solving=None if solving is None else (solving[0], (now_ns - solving[1]) / NS_PER_S),
             last_good=last_good,
         )
+        if self._rapid is not None:
+            view = self._rapid_view(summary, solution, last_good, focus, state.solved)
+            state = state.model_copy(update={"rapid_focus": view})
         if self._solver is not None:
             return state
         reason = "the quick solve is not available: no catalog is configured"
@@ -226,7 +254,86 @@ class AlignmentHelper:
             return state
         return state.model_copy(update={"quality": {**state.quality, **replaced}})
 
+    # --- Rapid focus -----------------------------------------------------------------------
+
+    def _rapid_view(
+        self,
+        summary: FrameSummary,
+        solution: QuickSolution | None,
+        last_good: QuickSolution | None,
+        focus: FocusSnapshot,
+        solved: SolvedView | None,
+    ) -> RapidFocusView:
+        """The state of the mode: what it measures while it runs, and else whether it is offered."""
+        assert self._rapid is not None
+        snapshot = self._rapid.snapshot()
+        if snapshot.active:
+            return build_view(snapshot)
+        return build_view(snapshot, self._availability(summary, solution, last_good, focus, solved))
+
+    def _availability(
+        self,
+        summary: FrameSummary,
+        solution: QuickSolution | None,
+        last_good: QuickSolution | None,
+        focus: FocusSnapshot,
+        solved: SolvedView | None,
+    ) -> RapidAvailability:
+        """Judge whether the mode is offered for the frame of `summary`."""
+        scale = summary.plate_scale_arcsec_px or (
+            None if solution is None else solution.scale_arcsec_px
+        )
+        position = None
+        if solved is None and last_good is not None:
+            age_s = (summary.t_utc_ns - last_good.t_utc_ns) / NS_PER_S
+            if age_s <= self._settings.rapid_focus_max_solution_age_s:
+                position = polaris_from_solution(last_good, summary.t_utc_ns)
+        return rapid_availability(
+            profile=self._profile,
+            settings=self._settings,
+            frame=summary,
+            scale_arcsec_px=scale,
+            focus=focus,
+            current=solved,
+            last_good=last_good,
+            last_good_position=position,
+            latest=solution,
+        )
+
+    def rapid_start_command(
+        self, exposure_us: int | None = None, gain: int | None = None
+    ) -> tuple[StartRapidFocus | None, str]:
+        """The command that starts the rapid focus mode now, or the reason that it cannot start.
+
+        The center of the ROI comes from the judgement that `state` shows as `rapid_focus`: the
+        pixel of Polaris, in pixels of the fast readout mode. While the mode runs, a start restarts
+        its idle timer, and the center is the place where the last frame showed the star. The
+        answer is `(command, "")` or `(None, reason)`.
+        """
+        rapid = self._rapid
+        if rapid is None:
+            return None, "core has no rapid focus helper"
+        if not self._is_active():
+            return None, "the alignment does not run, and rapid focus belongs to it"
+        with self._lock:
+            summary, solution, last_good = self._summary, self._solution, self._last_good
+            focus = self._focus.snapshot()
+        if rapid.active:
+            star = rapid.last_star()
+            if star is not None:
+                return StartRapidFocus(star[0], star[1], exposure_us, gain), ""
+        if summary is None:
+            return None, "no frame has arrived yet"
+        solved = current_solved(solution, summary, self._settings)
+        availability = self._availability(summary, solution, last_good, focus, solved)
+        if not availability.available or availability.center is None:
+            return None, availability.reason or "the rapid focus mode is not offered now"
+        x, y = availability.center
+        return StartRapidFocus(x, y, exposure_us, gain), ""
+
     def _end_session(self) -> None:
+        if self._rapid is not None:  # the scheduler ended it already, and ending it twice is fine
+            self._rapid.end_session("the alignment ended")
         with self._lock:
             if not self._session and self._summary is None and not self._prepared:
                 return
@@ -360,9 +467,14 @@ class AlignmentHelper:
         return solution
 
     def reset_focus(self) -> None:
-        """Restart the best focus value, for example after a refocus. The history stays."""
+        """Restart the best focus value, for example after a refocus. The history stays.
+
+        The best value of the rapid focus mode restarts too.
+        """
         with self._lock:
             self._focus.reset_best()
+        if self._rapid is not None:
+            self._rapid.reset_best()
 
     def _log_outcome(self, solution: QuickSolution) -> None:
         """Say in the log when the solve starts to fail or starts to work again."""

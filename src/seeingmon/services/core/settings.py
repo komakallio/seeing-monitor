@@ -218,6 +218,14 @@ class AlignmentSettings(SectionModel):
     `seeingmon.survey.detect`). A frame without a trail model, such as the first one after a
     start, takes the full search. The survey analysis keeps its own settings (`[survey.detect]`),
     and a lower threshold, more stars, and a smaller bin only make the quick solve slower.
+
+    **Rapid focus.** The mode (a ROI of the fast readout mode around Polaris, with the star width in
+    arcseconds 20 times a second) is offered when the coarse focus is good enough and `core` knows
+    where Polaris is. The coarse focus is the median of the last five focus values of the normal
+    view, and it must be at most `rapid_focus_max_fwhm_arcsec` (12 arcseconds): the aperture of the
+    fast analysis (16 pixels in bin1) cuts off a wider star, so its width reads too small and the
+    curve flattens. A solution that is older than `rapid_focus_max_solution_age_s` (600 seconds) no
+    longer places Polaris for the mode.
     """
 
     target_x_px: float | None = None
@@ -246,6 +254,10 @@ class AlignmentSettings(SectionModel):
 
     # How often `core` tells the scheduler that someone watches, while a live view is open.
     touch_interval_s: float = Field(5.0, gt=0)
+
+    # The offer of the rapid focus mode.
+    rapid_focus_max_fwhm_arcsec: float = Field(12.0, gt=0)
+    rapid_focus_max_solution_age_s: float = Field(600.0, gt=0)
 
     @model_validator(mode="after")
     def _target_is_whole(self) -> AlignmentSettings:
