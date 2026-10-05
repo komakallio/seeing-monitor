@@ -46,6 +46,7 @@ from ..addresses import unique_address
 from ..core.rig import FakeRemote, NoSleepClock, read_all
 
 SIM_LATITUDE_DEG = 55.0
+REFERENCE_PROFILE = "asi294mm-gs250"  # the full sensor, as on the camera
 KEY = ConnectionKey.from_text("an-e2e-key-of-more-than-32-characters-long")
 
 
@@ -127,12 +128,22 @@ def build_night(
     config_extra: str = "",
     sim_extra: Mapping[str, Any] | None = None,
     parts: Mapping[str, Any] | None = None,
+    sensor: str = "small",
 ) -> Night:
-    """Build and start a `CoreApp` on the simulated sky. Stop it with `night.app.stop()`."""
+    """Build and start a `CoreApp` on the simulated sky. Stop it with `night.app.stop()`.
+
+    `sensor` is `small` for a sensor of 1280 by 960 bin1 pixels, which keeps the survey frames
+    cheap, or `full` for the reference profile, whose survey frames take seconds of CPU each.
+    """
     start_utc_ns = iso_to_utc_ns(start)
     clock = VirtualClock(start_utc_ns)
-    profile_path = write_small_profile(directory)
-    profile = load_profile(str(profile_path))
+    if sensor == "small":
+        profile_name = write_small_profile(directory).as_posix()
+    elif sensor == "full":
+        profile_name = REFERENCE_PROFILE
+    else:
+        raise ValueError(f"sensor must be small or full, not {sensor!r}")
+    profile = load_profile(profile_name)
     catalog, _ = sim_catalog(1, polaris_mag=polaris_mag)
     catalog_path = directory / "catalog.bin"
     write_catalog(catalog_path, catalog)
@@ -146,7 +157,7 @@ def build_night(
     )
     lines = [
         'station_id = "e2e"',
-        f'profile = "{profile_path.as_posix()}"',
+        f'profile = "{profile_name}"',
         "[paths]",
         f'data_dir = "{(directory / "data").as_posix()}"',
         "[site]",

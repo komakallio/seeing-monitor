@@ -24,6 +24,7 @@ from seeingmon.clock import NS_PER_S, iso_to_utc_ns
 from seeingmon.drivers.sim.detection import DetectionModel
 from seeingmon.drivers.sim.params import SimParams
 from seeingmon.records import RunRecord
+from seeingmon.scheduler.ephemeris import sun_elevation_deg
 from seeingmon.store.db import StoreReader
 
 from ..core.rig import read_all
@@ -138,6 +139,61 @@ class TestTheDaylightGate:
             first = night.records("seeing_window")[0]
             assert first.t_utc_ns >= visible.t_utc_ns - NS_PER_S
             assert "twilight" in first.flags  # the Sun is near the horizon, not 18 degrees down
+        finally:
+            night.app.stop()
+
+
+@pytest.mark.slow
+class TestPolarisAtDusk:
+    def test_seeing_starts_where_the_detection_estimate_puts_polaris(self, tmp_path: Path) -> None:
+        """A spring dusk with the fast stream of the camera: the full reference sensor, the real
+        Polaris, at most 2 ms, and the adaptive exposure (`target_background_fraction` 0.3).
+
+        The detection estimate (`seeingmon.drivers.sim.detection`) puts the median-frame SNR of
+        Polaris at 10 where the Sun is +8.9 degrees up, with the exposure that the adaptive
+        exposure picks there (1.48 ms). The run starts with the Sun at +11.5 degrees, below the
+        search limit, and seeing windows must start within 1 degree of that elevation: the tolerance
+        of the brief, for the bursts that run once a cycle (one degree is 7 minutes here), the
+        noise of the SNR of a burst, the offset that the loop counts as sky (0.1 degree), and the
+        two detecting bursts in a row that measure needs.
+        """
+        start = "2026-04-20T17:45:00Z"  # the Sun at +11.5 degrees on the synthetic site
+        night = build_night(tmp_path, start=start, sensor="full", fast_exposure_us=2000)
+        try:
+            profile = night.app.profile
+            params = SimParams.from_profile(profile, profile.fast_mode.mode)
+            model = DetectionModel.for_simulator(params)
+            crossing = model.crossing_deg()
+            assert crossing is not None
+            assert night.app.scheduler.config.fast.target_background_fraction == pytest.approx(
+                model.target_background_fraction
+            )
+            night.run_until(lambda: windows_with_r0(night), limit_s=40 * 60.0, slice_s=30.0)
+            first = windows_with_r0(night)[0]
+            sun = sun_elevation_deg(first.t_utc_ns, SIM_LATITUDE_DEG, 0.0)
+            assert sun == pytest.approx(crossing, abs=1.0)
+            (visible,) = night.events("polaris.visible")
+            assert visible.detail["sun_elevation_deg"] == pytest.approx(crossing, abs=1.0)
+            assert visible.detail["probe"] is False  # the Sun was below the search limit
+            # The adaptive exposure: the background sits near its target, and the star near the
+            # median-frame SNR of the estimate at that Sun. The run gave 1484 us against 1523 us,
+            # 0.299, and an SNR of 10.97 against 10.33.
+            assert first.exposure_us < 2000
+            # The loop counts the offset as sky, which makes the exposure 2.4% short
+            # (`tests/scheduler/test_exposure.py`), and the background that it scales may be up to
+            # a cycle (60 s) old, while the sky here darkens by 2.4% a minute.
+            assert first.exposure_us == pytest.approx(model.row(sun).exposure_us, rel=0.05)
+            # The window counts the offset as background too, so only that lag moves it from the
+            # target: by at most 2.4% of 0.3, about 0.007.
+            assert first.background_fraction == pytest.approx(0.3, abs=0.01)
+            # The tolerance of the crossing, 1 degree of Sun, which moves the SNR by 16 to 18%.
+            assert first.star_snr is not None
+            assert model.row(sun + 1.0).snr_median < first.star_snr
+            assert first.star_snr < model.row(sun - 1.0).snr_median
+            assert "twilight" in first.flags
+            # At most 2 ms, Polaris does not saturate in any window of the run.
+            for window in night.records("seeing_window"):
+                assert "saturated" not in window.flags
         finally:
             night.app.stop()
 

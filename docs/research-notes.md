@@ -546,6 +546,8 @@ Inputs (D): the reference profile `asi294mm-gs250` in bin1, normal readout, gain
 
 **The search limit.** The crossing plus a margin of 3° gives a provisional `scheduler.search.max_sun_elevation_deg` of **12°**. The check bursts above the limit find Polaris on days when the sky is darker than the model.
 
+**A simulated dusk.** The slow end-to-end test `TestPolarisAtDusk` (`tests/services/e2e/test_night.py`) runs `core` with the production analyzers on the simulator: the full reference sensor, the real Polaris, at most 2 ms, and the adaptive exposure, on the evening of April 20, 2026, from a Sun at +11.5°. The search finds Polaris at **+8.69°**, 0.19° below the crossing, because one burst runs in each cycle of 60 s and measure needs two detections in a row. The first window takes 1.48 ms, its background sits at 0.30 of saturation, and its star has a median SNR of 11.0, against 10.3 for the median frame of the estimate at that Sun. Its `r0` reads 4.8 cm against the injected 10 cm: the noise model of the centroid still leaves out the sky, and step 5 of the visibility lane measures that bias.
+
 ## Calculations
 
 | Item | Inputs and result |
