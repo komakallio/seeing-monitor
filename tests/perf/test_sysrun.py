@@ -17,7 +17,9 @@ from seeingmon.perf import procs, sysrun
 from seeingmon.perf.sysrun import (
     FULL_PLAN,
     MIN_FAST_FPS,
+    ROLES,
     SMOKE_PLAN,
+    UNNAMED_GRACE_S,
     Phase,
     Sampler,
     Snapshot,
@@ -246,6 +248,7 @@ class FakeTable:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.parents: dict[int, int] = {}
         self.lines: dict[int, str] = {}
+        self.names: dict[int, str] = {}
         self.images: dict[int, str] = {}
         self.readings: dict[int, procs.ProcessReading] = {}
         self.threads: dict[int, dict[int, int]] = {}
@@ -253,6 +256,7 @@ class FakeTable:
         monkeypatch.setattr(procs, "parent_map", lambda: dict(self.parents))
         monkeypatch.setattr(procs, "command_line", lambda pid: self.lines.get(pid))
         monkeypatch.setattr(procs, "image_path", lambda pid: self.images.get(pid))
+        monkeypatch.setattr(procs, "process_name", lambda pid: self.names.get(pid))
         monkeypatch.setattr(procs, "read_process", lambda pid: self.readings.get(pid))
         monkeypatch.setattr(procs, "thread_cpu_ns", lambda pid: dict(self.threads.get(pid, {})))
         monkeypatch.setattr(procs, "is_venv_launcher", lambda pid: pid in self.launchers)
@@ -278,6 +282,17 @@ def table(monkeypatch: pytest.MonkeyPatch) -> FakeTable:
 
 
 ROOTS = {"acquire": 100, "core": 200, "web": 300}
+SPAWNED = "python -c from multiprocessing.spawn import spawn_main; spawn_main()"
+
+
+class FakeClock:
+    """A clock that a test sets, in seconds."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class TestSampler:
@@ -321,6 +336,84 @@ class TestSampler:
         assert "survey_worker" in cpu
         assert sampler.peaks()["survey_worker"] == round(460 * MB)
         assert sampler.worker_cpu_ns() == 4_000_000_000
+
+    def test_the_roles_name_both_workers(self) -> None:
+        assert {"survey_worker", "alignment_worker"} <= set(ROLES)
+
+    def test_a_worker_that_named_itself_has_the_role_of_its_name(self, table: FakeTable) -> None:
+        table.process(210, 200, cpu_ms=4000, peak_mb=460)
+        table.lines[210] = SPAWNED
+        table.names[210] = "smon-survey"
+        table.process(220, 200, cpu_ms=900, peak_mb=390)
+        table.lines[220] = SPAWNED
+        table.names[220] = "smon-align"
+        sampler = Sampler(ROOTS)
+        found = sampler.processes()
+        assert (found[210], found[220]) == ("survey_worker", "alignment_worker")
+        cpu, _ = sampler.read()
+        assert cpu["survey_worker"] == 4_000_000_000
+        assert cpu["alignment_worker"] == 900_000_000
+        assert sampler.peaks()["survey_worker"] == round(460 * MB)
+        assert sampler.peaks()["alignment_worker"] == round(390 * MB)
+        assert "other" not in sampler.peaks()
+        assert sampler.worker_cpu_ns() == 4_000_000_000  # the alignment does not count as survey
+        assert sampler.worker_cpu_ns("alignment_worker") == 900_000_000
+
+    def test_an_alignment_worker_alone_is_no_survey_worker(self, table: FakeTable) -> None:
+        # By day, the alignment can run before any survey frame starts the survey worker.
+        table.process(220, 200, cpu_ms=900, peak_mb=390)
+        table.lines[220] = SPAWNED
+        table.names[220] = "smon-align"
+        sampler = Sampler(ROOTS)
+        sampler.read()
+        assert "survey_worker" not in sampler.peaks()
+        assert sampler.worker_cpu_ns() == 0
+        assert sampler.worker_cpu_ns("alignment_worker") == 900_000_000
+
+    def test_a_worker_waits_for_its_name_while_it_still_has_the_name_of_the_interpreter(
+        self, table: FakeTable
+    ) -> None:
+        clock = FakeClock()
+        table.process(220, 200, cpu_ms=20, peak_mb=40)
+        table.lines[220] = SPAWNED
+        table.names[220] = "python3"  # the worker imports its modules before it names itself
+        sampler = Sampler(ROOTS, clock=clock)
+        assert sampler.processes()[220] == "other"  # not decided yet, and not cached
+        clock.now += 2.0
+        table.names[220] = "smon-align"
+        assert sampler.processes()[220] == "alignment_worker"
+        table.names[220] = "python3"
+        assert sampler.processes()[220] == "alignment_worker"  # a decided child keeps its role
+
+    def test_a_worker_that_never_names_itself_is_the_survey_worker_after_the_grace(
+        self, table: FakeTable
+    ) -> None:
+        clock = FakeClock()
+        table.process(210, 200, cpu_ms=20, peak_mb=40)
+        table.lines[210] = SPAWNED
+        table.names[210] = "python3"
+        sampler = Sampler(ROOTS, clock=clock)
+        assert sampler.processes()[210] == "other"
+        clock.now += UNNAMED_GRACE_S - 1.0
+        assert sampler.processes()[210] == "other"
+        clock.now += 1.0
+        assert sampler.processes()[210] == "survey_worker"  # as every worker was before the names
+
+    def test_where_the_system_gives_no_name_every_worker_is_the_survey_worker(
+        self, table: FakeTable
+    ) -> None:
+        # Windows has no such name, so the two workers look alike there.
+        for pid in (210, 220):
+            table.process(pid, 200, peak_mb=100)
+            table.lines[pid] = SPAWNED
+        found = Sampler(ROOTS).processes()
+        assert (found[210], found[220]) == ("survey_worker", "survey_worker")
+
+    def test_the_resource_tracker_keeps_its_role_whatever_its_name(self, table: FakeTable) -> None:
+        table.process(211, 200, peak_mb=12)
+        table.lines[211] = "python -c from multiprocessing.resource_tracker import main;main(7)"
+        table.names[211] = "python3"
+        assert Sampler(ROOTS).processes()[211] == "other"
 
     def test_the_resource_tracker_is_another_process_and_adds_to_the_other_peak(
         self, table: FakeTable

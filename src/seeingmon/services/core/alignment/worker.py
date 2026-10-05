@@ -29,6 +29,11 @@ before it starts another worker, so a worker that cannot start does not spin.
 **Priority.** The worker lowers its own priority and raises its `oom_score_adj`, like the survey
 worker, so the camera, the live view, and the kernel's out-of-memory killer treat it as the
 expendable part of `core`.
+
+**Name.** On Linux the worker names itself `smon-align`, and the survey worker names itself
+`smon-survey`, so that `ps`, `top`, and the performance tooling tell the two processes apart
+(see `seeingmon.services.core.process_names`). Both start the same way and run the same interpreter,
+so nothing else tells them apart.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from seeingmon.services.core.alignment.solve import (
     adopt,
     analyze_frame,
 )
+from seeingmon.services.core.process_names import ALIGNMENT_WORKER_NAME, name_process
 from seeingmon.services.core.survey_worker import (
     lower_process_priority,
     make_worker_pool,
@@ -79,11 +85,14 @@ def install_pipeline(pipeline: Analyzer | None) -> None:
 
 
 def init_quick_worker(spec: PipelineSpec, nice: int, oom_score_adj: int) -> None:
-    """The initializer of the worker: lower the priority, raise the OOM score, build the pipeline.
+    """The initializer of the worker: its name, its priority, its OOM score, and then the pipeline.
 
     The priority applies before the catalog loads, so the slow start does not compete with `core`.
-    The function lives at the top level of the module, so that the `spawn` method can import it.
+    The name (`smon-align` on Linux) tells this worker from the survey worker in `ps`, in `top`,
+    and in the performance tooling. The function lives at the top level of the module, so that the
+    `spawn` method can import it.
     """
+    name_process(ALIGNMENT_WORKER_NAME)
     lower_process_priority(nice)
     raise_oom_score(oom_score_adj)
     install_pipeline(build_pipeline(spec))

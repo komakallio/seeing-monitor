@@ -188,6 +188,26 @@ class TestDescription:
     def test_a_process_that_does_not_exist_has_no_description(self) -> None:
         assert procs.command_line(2_147_483_000) is None
         assert procs.image_path(2_147_483_000) is None
+        assert procs.process_name(2_147_483_000) is None
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="only Linux gives the name of a process")
+    def test_a_process_shows_the_name_that_it_gave_itself(self) -> None:
+        code = (
+            "import sys;"
+            "from seeingmon.services.core.process_names import ALIGNMENT_WORKER_NAME, name_process;"
+            "name_process(ALIGNMENT_WORKER_NAME);"
+            "print('named', flush=True);"
+            "sys.stdin.readline()"
+        )
+        with running(code) as child:
+            assert child.stdout is not None
+            assert child.stdout.readline().strip() == "named"
+            assert procs.process_name(child.pid) == "smon-align"
+        assert procs.process_name(os.getpid()) not in (None, "smon-align")  # the interpreter's own
+
+    @pytest.mark.skipif(sys.platform == "linux", reason="Linux gives the name of a process")
+    def test_other_systems_give_no_name(self) -> None:
+        assert procs.process_name(os.getpid()) is None
 
 
 class TestTree:

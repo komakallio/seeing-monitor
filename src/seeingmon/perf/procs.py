@@ -6,8 +6,8 @@ that those processes run. This module reads them:
 
 - **Linux:** `/proc/<pid>/status` gives the resident set and its peak (`VmHWM`), `/proc/<pid>/stat`
   gives the CPU time in clock ticks (10 ms), and `/proc/<pid>/task/<tid>/stat` gives the same for
-  each thread. The parent of a process comes from the same file, and the command line from
-  `/proc/<pid>/cmdline`.
+  each thread. The parent of a process comes from the same file, the command line from
+  `/proc/<pid>/cmdline`, and the name that the process gives itself from `/proc/<pid>/comm`.
 - **Windows:** `GetProcessMemoryInfo` gives the peak working set, `GetProcessTimes` gives the CPU
   time in units of 100 ns (the kernel charges it in clock ticks of about 15.6 ms), and a snapshot of
   the process list (`CreateToolhelp32Snapshot`) gives the parents. A thread reading needs a thread
@@ -126,6 +126,15 @@ if sys.platform == "linux":
             return os.readlink(f"/proc/{pid}/exe")
         except OSError:
             return None
+
+    def process_name(pid: int) -> str | None:
+        """The name that a process carries in the process table, or `None`.
+
+        A process names itself with `prctl`, as the workers of `core` do, and the interpreter's own
+        name is the default.
+        """
+        text = _read(f"/proc/{pid}/comm")
+        return None if text is None else text.strip()
 
 elif sys.platform == "win32":
     import ctypes
@@ -288,6 +297,10 @@ elif sys.platform == "win32":
         finally:
             kernel32.CloseHandle(handle)
 
+    def process_name(pid: int) -> str | None:
+        """The name that a process gives itself. Windows has no such name."""
+        return None
+
 else:
 
     def read_process(pid: int) -> ProcessReading | None:
@@ -308,6 +321,10 @@ else:
 
     def image_path(pid: int) -> str | None:
         """The path of the program that a process runs. This system gives none."""
+        return None
+
+    def process_name(pid: int) -> str | None:
+        """The name that a process gives itself. This system gives none."""
         return None
 
 

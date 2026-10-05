@@ -106,6 +106,35 @@ def thread_factory(pipeline: SurveyPipeline) -> ExecutorFactory:
     return make
 
 
+class TestTheWorkerStart:
+    def test_the_worker_names_itself_lowers_its_priority_and_builds_its_pipeline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from seeingmon.services.core.alignment import worker
+
+        calls: list[tuple[str, Any]] = []
+        built = object()
+
+        def record(label: str, result: Any = "x") -> Callable[..., Any]:
+            def call(*args: Any) -> Any:
+                calls.append((label, args[0]))
+                return result
+
+            return call
+
+        monkeypatch.setattr(worker, "name_process", record("name"))
+        monkeypatch.setattr(worker, "lower_process_priority", record("nice"))
+        monkeypatch.setattr(worker, "raise_oom_score", record("oom"))
+        monkeypatch.setattr(worker, "build_pipeline", record("build", built))
+        spec = PipelineSpec(
+            station_id="test", profile={}, config={}, catalog_path="none", solvers=()
+        )
+        worker.init_quick_worker(spec, 12, 600)
+        # The name tells this worker from the survey worker, which names itself `smon-survey`.
+        assert calls == [("name", "smon-align"), ("nice", 12), ("oom", 600), ("build", spec)]
+        assert worker._PIPELINE is built
+
+
 class TestTheRoundTrip:
     def test_the_worker_finds_what_the_same_solve_in_this_process_finds(self, scene: Scene) -> None:
         pipeline = pipeline_without_solver(scene)

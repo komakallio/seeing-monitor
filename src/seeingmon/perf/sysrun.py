@@ -6,8 +6,12 @@ machine. This module starts the same three processes from the plan of the launch
 that they run:
 
 - **Memory.** The peak resident size of each process, which the system keeps (`VmHWM` on Linux and
-  `PeakWorkingSetSize` on Windows), read at every sample and at the end. The survey worker is a
-  child of `core`, and the module finds it in the process tree.
+  `PeakWorkingSetSize` on Windows), read at every sample and at the end. The survey worker and,
+  while an alignment runs, the alignment worker are children of `core`, and the module finds them
+  in the process tree. They start the same way, so on Linux each worker names itself
+  (`seeingmon.services.core.process_names`) and the module reads the name, which gives each its
+  own role. Windows has no such name, so the module takes every worker for the survey worker
+  there.
 - **CPU time.** The CPU time of each process at every sample, and on Linux the CPU time of each
   thread (`seeingmon.perf.procs`). The share of a core in a phase is the CPU time that the
   processes used in the phase, divided by the length of the phase.
@@ -52,9 +56,13 @@ from typing import Any
 
 from seeingmon.perf import procs
 from seeingmon.perf.load import busy_percent_between, busy_ticks
+from seeingmon.services.core.process_names import ALIGNMENT_WORKER_NAME, SURVEY_WORKER_NAME
 
-ROLES = ("acquire", "core", "web", "survey_worker", "other")
+ROLES = ("acquire", "core", "web", "survey_worker", "alignment_worker", "other")
 THREAD_ROLES = ("acquire", "core", "web")
+# A worker that has not named itself after this long is taken for the survey worker, as every
+# worker was before the workers named themselves.
+UNNAMED_GRACE_S = 30.0
 MIN_FAST_FPS = 30.0  # a stream below this rate is not a fast stream at its steady state
 PAUSE_WAIT_S = 90.0
 WEB_PATHS = ("status", "seeing/latest", "health")
@@ -283,14 +291,19 @@ class Sampler:
     `roots` maps `acquire`, `core`, and `web` to the process IDs that the launcher started. The
     sampler follows each to the process that does the work (a virtual-environment launcher on
     Windows starts the interpreter as a child), and it finds the children of `core`: the survey
-    worker, and on Linux the resource tracker of the `multiprocessing` module.
+    worker, the alignment worker while an alignment runs, and on Linux the resource tracker of the
+    `multiprocessing` module. `clock` gives seconds, and a test passes its own.
     """
 
-    def __init__(self, roots: Mapping[str, int]) -> None:
+    def __init__(
+        self, roots: Mapping[str, int], *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self._roots = dict(roots)
+        self._clock = clock
         self._peak_by_pid: dict[int, int] = {}
         self._role_by_pid: dict[int, str] = {}
         self._decided: dict[int, str] = {}
+        self._first_seen: dict[int, float] = {}
         self._last_cpu: dict[int, int] = {}
         self.resident: dict[str, int] = {}  # the resident size by role at the last read
 
@@ -306,11 +319,29 @@ class Sampler:
             return None
         if line is not None:
             if "spawn_main" in line or "multiprocessing.spawn" in line:
-                return "survey_worker"
+                return self._worker_role(pid)
             if "resource_tracker" in line:
                 return "other"
         image = (procs.image_path(pid) or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-        return "survey_worker" if image.startswith("python") else "other"
+        return self._worker_role(pid) if image.startswith("python") else "other"
+
+    def _worker_role(self, pid: int) -> str | None:
+        """The role of a worker process of `core`, or `None` while the worker has no name yet.
+
+        The two workers start the same way, so the name that each gives itself tells them apart
+        (`seeingmon.services.core.process_names`). A worker keeps the name of the interpreter for
+        its first seconds, while it imports its modules, so the answer waits for the name, and a
+        worker that has not named itself after `UNNAMED_GRACE_S` counts as the survey worker.
+        Where the system gives no name (Windows), every worker is the survey worker.
+        """
+        name = procs.process_name(pid)
+        if name is None or name == SURVEY_WORKER_NAME:
+            return "survey_worker"
+        if name == ALIGNMENT_WORKER_NAME:
+            return "alignment_worker"
+        now = self._clock()
+        first = self._first_seen.setdefault(pid, now)
+        return "survey_worker" if now - first >= UNNAMED_GRACE_S else None
 
     def _child_role(self, pid: int) -> str:
         """The role of a child of `core`. A child that is not decided yet counts as `other`."""
@@ -373,13 +404,12 @@ class Sampler:
             for role, values in by_role.items()
         }
 
-    def worker_cpu_ns(self) -> int:
-        """The CPU time that the survey worker used, in nanoseconds."""
-        return sum(
-            used
-            for pid, used in self._last_cpu.items()
-            if self._role_by_pid[pid] == "survey_worker"
-        )
+    def worker_cpu_ns(self, role: str = "survey_worker") -> int:
+        """The CPU time that the workers of a role used, in nanoseconds.
+
+        The role is `survey_worker` or `alignment_worker`. A worker that ended keeps its time.
+        """
+        return sum(used for pid, used in self._last_cpu.items() if self._role_by_pid[pid] == role)
 
 
 # --- Starting and polling -----------------------------------------------------------------------

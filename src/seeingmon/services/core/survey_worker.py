@@ -9,6 +9,8 @@ cannot disturb the scheduler, and so that the kernel can take it first:
   priority class.
 - **Out-of-memory killer.** On Linux the worker raises its `oom_score_adj`, so that the kernel takes
   the worker before it takes `core` or `acquire`. Raising the score needs no privilege.
+- **Name.** On Linux the worker names itself `smon-survey`, so that `ps` and `top` tell it from the
+  alignment worker (see `seeingmon.services.core.process_names`).
 
 The worker process starts with the `spawn` method (see `seeingmon.survey.analyzer`), so it holds no
 state of `core`. Only plain data crosses the boundary: the pipeline specification, and the jobs and
@@ -29,6 +31,7 @@ from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from seeingmon.services.core.process_names import SURVEY_WORKER_NAME, name_process
 from seeingmon.services.core.settings import SurveyWorkerSettings
 from seeingmon.survey.analyzer import InlineExecutor, init_worker
 from seeingmon.survey.pipeline import PipelineSpec
@@ -85,12 +88,13 @@ def raise_oom_score(value: int, proc_dir: Path | str = "/proc/self") -> str:
 
 
 def init_survey_worker(spec: PipelineSpec, nice: int, oom_score_adj: int) -> None:
-    """The initializer of the worker: lower the priority, raise the OOM score, build the pipeline.
+    """The initializer of the worker: its name, its priority, its OOM score, and then the pipeline.
 
     The order matters: the priority applies before the catalog loads, so the slow start does not
     compete with `core`. The function must live at the top level of a module, so that the `spawn`
     method can import it in the new process.
     """
+    _log.info("the survey worker has %s", name_process(SURVEY_WORKER_NAME))
     _log.info("the survey worker runs at %s", lower_process_priority(nice))
     _log.info("the survey worker has %s", raise_oom_score(oom_score_adj))
     init_worker(spec)

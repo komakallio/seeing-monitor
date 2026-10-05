@@ -49,10 +49,14 @@ def test_the_priority_of_a_process_goes_down_without_an_error() -> None:
 
 
 class TestInitializer:
-    def test_the_priority_comes_before_the_pipeline_is_built(
+    def test_the_name_and_the_priority_come_before_the_pipeline_is_built(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls: list[Any] = []
+
+        def fake_name(name: str) -> str:
+            calls.append(("name", name))
+            return "w"
 
         def fake_nice(nice: int) -> str:
             calls.append(("nice", nice))
@@ -62,11 +66,12 @@ class TestInitializer:
             calls.append(("oom", value))
             return "y"
 
+        monkeypatch.setattr(survey_worker, "name_process", fake_name)
         monkeypatch.setattr(survey_worker, "lower_process_priority", fake_nice)
         monkeypatch.setattr(survey_worker, "raise_oom_score", fake_oom)
         monkeypatch.setattr(survey_worker, "init_worker", lambda spec: calls.append(("init", spec)))
         survey_worker.init_survey_worker(SPEC, 12, 600)
-        assert calls == [("nice", 12), ("oom", 600), ("init", SPEC)]
+        assert calls == [("name", "smon-survey"), ("nice", 12), ("oom", 600), ("init", SPEC)]
 
 
 class TestExecutors:
