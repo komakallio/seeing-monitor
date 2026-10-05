@@ -94,6 +94,7 @@ class _Stream:
     pixel_var_e2: float
     e_per_dn: float
     known: bool  # whether the profile describes the readout mode
+    saturation_dn: float  # the profile's saturation level in container counts, or `NaN`
 
 
 def _stream_key(
@@ -239,6 +240,7 @@ class FastPathAnalyzer:
                 measurement.noise_var_x,
                 measurement.noise_var_y,
             ),
+            measurement.snr,
         )
         windows = tuple(self._finalize(window) for window in closed) if closed else ()
         live = self._live
@@ -360,6 +362,7 @@ class FastPathAnalyzer:
         pixel_var = math.nan
         plate_scale = math.nan
         airy_px = math.nan
+        saturation_dn = math.nan
         sat_adc = adc_bits
         try:
             readout = profile.mode(mode)
@@ -374,6 +377,10 @@ class FastPathAnalyzer:
             e_per_adu = derived.e_per_adu(readout, gain)
             read_noise = derived.read_noise_e(readout, gain)
             e_per_dn = e_per_adu * 2.0 ** (readout.adc_bits - container_bits)
+            # The level of the scheduler's gate and exposure: an 8-bit container has its full scale.
+            saturation_dn = (
+                derived.saturation(readout, gain).container_dn if container_bits == 16 else 255.0
+            )
             pixel_var = read_noise**2
             if readout.adc_bits > container_bits:  # a coarse container adds quantization noise
                 # This is the noise of a signal that the read and photon noise dither across the
@@ -438,6 +445,7 @@ class FastPathAnalyzer:
             pixel_var_e2=pixel_var,
             e_per_dn=e_per_dn,
             known=plate_scale == plate_scale,
+            saturation_dn=saturation_dn,
         )
 
     def kernel_setup(
@@ -491,7 +499,7 @@ class FastPathAnalyzer:
 
         plate = stream.plate_scale_arcsec_per_px
         usable = window.usable
-        fields.update(self._star_statistics(window, usable, plate))
+        fields.update(self._star_statistics(window, usable, plate, stream.saturation_dn, quality))
         zenith = context.zenith_angle_deg
         outer = config.outer_scale_m
         aperture_m = self._profile.optics.aperture_mm * 1e-3
@@ -631,9 +639,20 @@ class FastPathAnalyzer:
         return fields, spectrum
 
     def _star_statistics(
-        self, window: ClosedWindow, usable: npt.NDArray[np.bool_], plate: float
+        self,
+        window: ClosedWindow,
+        usable: npt.NDArray[np.bool_],
+        plate: float,
+        saturation_dn: float,
+        quality: dict[str, str],
     ) -> dict[str, Any]:
-        """Window means of the star's width, peak, flux, and background."""
+        """Window means of the star's width, peak, flux, and background, and the star's SNR.
+
+        The background as a share of saturation divides the mean background by the profile's
+        saturation level, the level that the scheduler's gate and exposure use. The offset of the
+        camera counts as background, because the profile does not know it. The SNR is the median
+        over the frames with a usable centroid.
+        """
         out: dict[str, Any] = {}
         if window.n_frames == 0:
             return out
@@ -645,9 +664,21 @@ class FastPathAnalyzer:
             flux = window.flux_e[usable]
             if np.isfinite(flux).all():
                 out["flux_mean_e"] = _finite(float(np.mean(flux)))
+        snr = window.snr[np.isfinite(window.snr)]
+        if len(snr):
+            out["star_snr"] = _finite(float(np.median(snr)))
+        elif usable.any():
+            quality["star_snr"] = "the electron scale of the readout mode is unknown"
+        else:
+            quality["star_snr"] = "no frame had a usable centroid"
         background = window.bg_dn[np.isfinite(window.bg_dn)]
         if len(background):
-            out["background_mean_dn"] = _finite(float(np.mean(background)))
+            mean = float(np.mean(background))
+            out["background_mean_dn"] = _finite(mean)
+            if saturation_dn > 0.0:
+                out["background_fraction"] = _finite(min(max(mean / saturation_dn, 0.0), 1.0))
+            else:
+                quality["background_fraction"] = "the saturation level of the mode is unknown"
         return out
 
 

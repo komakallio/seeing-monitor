@@ -248,6 +248,19 @@ class TestSlotsAndCounts:
         assert window.peak_dn[1] == 100.0  # the peak and the background stay for every frame
         assert window.slot.tolist() == [0, 1, 2]
 
+    def test_the_snr_of_each_frame_is_kept_for_the_usable_frames(self) -> None:
+        assembler = WindowAssembler(WINDOW_S)
+        for index, (usable, snr) in enumerate([(True, 12.0), (False, 30.0), (True, 14.0)]):
+            assembler.add(
+                1, index * PERIOD_NS, 0, "bin1", 2000, 0, None, False, usable, False, VALUES, snr
+            )
+        add(assembler, 3 * PERIOD_NS)  # a frame without an SNR
+        (window,) = assembler.flush()
+        assert window.snr[0] == 12.0
+        assert np.isnan(window.snr[1])  # a frame without a usable centroid
+        assert window.snr[2] == 14.0
+        assert np.isnan(window.snr[3])
+
     def test_counts_flags_and_the_mean_temperature(self) -> None:
         assembler = WindowAssembler(WINDOW_S)
         add(assembler, 0, saturated=True, temperature_c=10.0)

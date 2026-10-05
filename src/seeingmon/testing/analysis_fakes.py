@@ -1,14 +1,15 @@
 """Scripted fakes of the analysis interfaces, for tests of the scheduler and the services.
 
 `FakeFastAnalyzer` finds the brightest pixel and groups frames into windows by frame time.
-It reports no seeing values: the real estimators live in `seeingmon.fastpath`. `FakeFocusSink`
+It reports no seeing values: the real estimators live in `seeingmon.fastpath`. It reports the
+background and the star's SNR, which the scheduler's adaptive exposure reads. `FakeFocusSink`
 stands in for the consumer of the rapid focus frames.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,9 @@ class _OpenWindow:
     n_dropped: int = 0
     temperature_sum: float = 0.0
     temperature_count: int = 0
+    background_sum: float = 0.0
+    saturation_dn: float = 0.0  # of the frames of the window, in their counts
+    snrs: list[float] = field(default_factory=list)  # of the frames with a star
 
 
 SnrModel = Callable[[Frame], float]
@@ -51,6 +55,10 @@ class FakeFastAnalyzer:
     `min_snr` defaults to 0, which finds a star by its contrast alone. A window shorter than
     `partial_below` of `window_s` closes with the `partial` flag, and a window with more than 5%
     dropped frames carries `degraded`. `measure` finds the star the same way, without a window.
+
+    A window reports the mean of the frame medians as its background (`background_mean_dn`), that
+    over `saturation_dn` as `background_fraction` (the full scale of the pixel type when a test
+    gives no level), and the median SNR of the frames with a star as `star_snr`.
     """
 
     def __init__(
@@ -63,6 +71,7 @@ class FakeFastAnalyzer:
         min_contrast_dn: float = 50.0,
         min_snr: float = 0.0,
         snr_model: SnrModel | None = None,
+        saturation_dn: float | None = None,
     ) -> None:
         self._station_id = station_id
         self._profile_id = profile_id
@@ -71,6 +80,7 @@ class FakeFastAnalyzer:
         self._min_contrast_dn = min_contrast_dn
         self._min_snr = min_snr
         self._snr_model = snr_model
+        self._saturation_dn = saturation_dn
         self._context = FastContext()
         self._stream_id: int | None = None
         self._window: _OpenWindow | None = None
@@ -105,6 +115,11 @@ class FakeFastAnalyzer:
                 mode=frame.mode,
                 exposure_us=frame.exposure_us,
                 gain=frame.gain,
+                saturation_dn=(
+                    float(np.iinfo(frame.data.dtype).max)
+                    if self._saturation_dn is None
+                    else self._saturation_dn
+                ),
             )
             self._window = window
         window.t_last_ns = frame.t_utc_ns
@@ -113,7 +128,10 @@ class FakeFastAnalyzer:
         if frame.temperature_c is not None:
             window.temperature_sum += frame.temperature_c
             window.temperature_count += 1
-        self.star = self._track(frame)
+        self.star, background = self._track(frame)
+        window.background_sum += background
+        if self.star.found and self.star.snr is not None:
+            window.snrs.append(self.star.snr)
         self.frames_pushed += 1
         return FastUpdate(star=self.star, windows=closed)
 
@@ -163,7 +181,7 @@ class FakeFastAnalyzer:
         )
         return star, x, y, peak, background
 
-    def _track(self, frame: Frame) -> StarState:
+    def _track(self, frame: Frame) -> tuple[StarState, float]:
         star, x, y, peak, background = self._find(frame)
         found = star.found
         self._rows.append(
@@ -182,7 +200,7 @@ class FakeFastAnalyzer:
                 min(frame.dropped_before, _UINT16_MAX),
             )
         )
-        return star
+        return star, background
 
     def _close_window(self, *, partial: bool) -> tuple[SeeingWindowRecord, ...]:
         window, self._window = self._window, None
@@ -200,6 +218,7 @@ class FakeFastAnalyzer:
         temperature = (
             window.temperature_sum / window.temperature_count if window.temperature_count else None
         )
+        background = window.background_sum / window.n_frames
         record = SeeingWindowRecord(
             station_id=self._station_id,
             t_utc_ns=window.t_start_ns,
@@ -218,6 +237,9 @@ class FakeFastAnalyzer:
             zenith_angle_deg=self._context.zenith_angle_deg,
             sensor_temperature_c=temperature,
             flags=sorted(flags),
+            background_mean_dn=background,
+            background_fraction=min(max(background / window.saturation_dn, 0.0), 1.0),
+            star_snr=float(np.median(window.snrs)) if window.snrs else None,
         )
         return (record,)
 

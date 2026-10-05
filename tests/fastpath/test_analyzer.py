@@ -455,6 +455,85 @@ class TestStreams:
         assert [w.n_frames for w in windows] == [10, 10, 10]
 
 
+class TestTheBackgroundAndTheSnr:
+    """The window's background as a share of saturation and the star's SNR, for the scheduler's
+    adaptive exposure and for a reader who judges the noise of a reading."""
+
+    def test_the_background_is_a_share_of_the_profiles_saturation_level(
+        self, profile: Profile, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
+    ) -> None:
+        analyzer.begin_stream(stream_of(driver))
+        for frame in read(driver, 10):
+            analyzer.push(frame)
+        (window,) = analyzer.flush()
+        saturation = profile.saturation("bin1", 120).container_dn
+        background = window.background_mean_dn
+        assert background is not None
+        assert background == pytest.approx(25 * 4, abs=2)  # the offset
+        assert window.background_fraction == pytest.approx(background / saturation)
+
+    def test_the_snr_is_the_median_over_the_frames_with_a_star(
+        self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
+    ) -> None:
+        analyzer.begin_stream(stream_of(driver))
+        snrs = []
+        for frame in read(driver, 11):
+            star = analyzer.push(frame).star
+            assert star.snr is not None
+            snrs.append(star.snr)
+        (window,) = analyzer.flush()
+        assert window.star_snr is not None
+        assert window.star_snr == pytest.approx(float(np.median(snrs)))
+        assert window.star_snr > 50.0  # 30,000 e- on a dark sky
+        assert "star_snr" not in (window.quality or {})
+
+    def test_without_a_star_the_snr_is_missing_and_says_why(self, profile: Profile) -> None:
+        fake = FakeCameraDriver(VirtualClock(), frame_factory=flat)
+        fake.open()
+        analyzer = FastPathAnalyzer(profile)
+        analyzer.begin_stream(stream_of(fake))
+        for frame in read(fake, 3):
+            analyzer.push(frame)
+        (window,) = analyzer.flush()
+        assert window.star_snr is None
+        assert window.quality is not None
+        assert window.quality["star_snr"] == "no frame had a usable centroid"
+        saturation = profile.saturation("bin1", 120).container_dn
+        assert window.background_fraction == pytest.approx(100 / saturation)
+
+    def test_an_eight_bit_background_is_a_share_of_its_full_scale(self, profile: Profile) -> None:
+        def eight_bit(config: StreamConfig, roi: Roi, seq: int) -> npt.NDArray[np.uint8]:
+            return np.full((roi.height, roi.width), 51, dtype=np.uint8)
+
+        fake = FakeCameraDriver(VirtualClock(), frame_factory=eight_bit)
+        fake.open()
+        analyzer = FastPathAnalyzer(profile)
+        analyzer.begin_stream(stream_of(fake, replace(CONFIG, pixel_format=PixelFormat.RAW8)))
+        analyzer.push(fake.read_frame(5.0))
+        (window,) = analyzer.flush()
+        assert window.background_fraction == pytest.approx(51 / 255)
+
+    def test_a_mode_that_the_profile_does_not_know_has_no_background_share(
+        self, profile: Profile
+    ) -> None:
+        fake = FakeCameraDriver(
+            VirtualClock(), frame_factory=gaussian_star, full_frames={"bin9": (4000, 3000)}
+        )
+        fake.open()
+        analyzer = FastPathAnalyzer(profile)
+        analyzer.begin_stream(stream_of(fake, replace(CONFIG, mode="bin9")))
+        analyzer.push(fake.read_frame(5.0))
+        (window,) = analyzer.flush()
+        assert window.background_mean_dn is not None
+        assert window.background_fraction is None
+        assert window.star_snr is None
+        assert window.quality is not None
+        assert (
+            window.quality["background_fraction"] == "the saturation level of the mode is unknown"
+        )
+        assert window.quality["star_snr"] == "the electron scale of the readout mode is unknown"
+
+
 class TestRecords:
     def test_the_assumptions_are_stored_with_the_window(
         self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver

@@ -135,6 +135,38 @@ class TestFakeFastAnalyzer:
         star = analyzer.push(driver.read_frame(5.0)).star
         assert (star.found, star.snr) == (True, 12.0)
 
+    def test_a_window_reports_its_background_and_the_median_snr_of_its_star(
+        self, driver: FakeCameraDriver
+    ) -> None:
+        snrs = iter([20.0, 3.0, 30.0, 40.0])  # the second frame's star is too weak to count
+        analyzer = FakeFastAnalyzer(min_snr=6.0, snr_model=lambda frame: next(snrs))
+        analyzer.begin_stream(stream_of(driver))
+        for frame in read(driver, 4):
+            analyzer.push(frame)
+        (window,) = analyzer.flush()
+        assert window.background_mean_dn == 100.0  # the median of each frame
+        assert window.background_fraction == pytest.approx(100 / 65535)  # of the full scale
+        assert window.star_snr == 30.0  # the median of 20, 30, and 40
+
+    def test_a_given_saturation_level_sets_the_background_share(
+        self, driver: FakeCameraDriver
+    ) -> None:
+        analyzer = FakeFastAnalyzer(saturation_dn=1000.0)
+        analyzer.begin_stream(stream_of(driver))
+        analyzer.push(driver.read_frame(5.0))
+        (window,) = analyzer.flush()
+        assert window.background_fraction == pytest.approx(0.1)
+
+    def test_a_window_without_a_star_has_no_snr(self) -> None:
+        driver = FakeCameraDriver(VirtualClock(), frame_factory=flat)
+        driver.open()
+        analyzer = FakeFastAnalyzer()
+        analyzer.begin_stream(stream_of(driver))
+        analyzer.push(driver.read_frame(5.0))
+        (window,) = analyzer.flush()
+        assert window.star_snr is None
+        assert window.background_mean_dn == 100.0
+
     def test_measure_finds_the_star_without_a_window_or_a_metric_row(
         self, driver: FakeCameraDriver
     ) -> None:

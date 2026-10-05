@@ -48,11 +48,10 @@ class ClosedWindow:
     """The frames of one finished window, as arrays with one entry per arrived frame.
 
     `slot` is the slot number of each frame (the first is 0), and `period_s` is the nominal frame
-    period. `usable` marks the frames with a usable centroid, and the position, width, flux, and
-    noise arrays hold `NaN` for the others. The peak and the background hold a value for every
-    frame. `closed_early` says that `begin_stream`, `flush`, a
-    new stream, or a time discontinuity ended the window before its full length, and `reason`
-    names the cause.
+    period. `usable` marks the frames with a usable centroid, and the position, width, flux,
+    noise, and SNR arrays hold `NaN` for the others. The peak and the background hold a value for
+    every frame. `closed_early` says that `begin_stream`, `flush`, a new stream, or a time
+    discontinuity ended the window before its full length, and `reason` names the cause.
     """
 
     stream_id: int
@@ -82,6 +81,7 @@ class ClosedWindow:
     noise_var_x: FloatArray
     noise_var_y: FloatArray
     saturated: npt.NDArray[np.bool_]
+    snr: FloatArray
 
     @property
     def n_slots(self) -> int:
@@ -120,6 +120,7 @@ class _Open:
     )  # x, y, width_x, width_y, peak, flux_e, bg, noise_x, noise_y
     usable: list[bool] = field(default_factory=list)
     saturated: list[bool] = field(default_factory=list)
+    snr: list[float] = field(default_factory=list)
 
 
 class WindowAssembler:
@@ -186,11 +187,13 @@ class WindowAssembler:
         usable: bool,
         saturated: bool,
         values: tuple[float, ...],
+        snr: float = math.nan,
     ) -> list[ClosedWindow]:
         """Add one frame, and return the windows that it closed (none or one).
 
         `values` holds `x, y, width_x, width_y, peak_dn, flux_e, bg_dn, noise_var_x, noise_var_y`
-        of the frame. The kernel gives `NaN` for the values that a missing star does not have.
+        of the frame, and `snr` the signal-to-noise ratio of its star. The kernel gives `NaN` for
+        the values that a missing star does not have.
         """
         closed: list[ClosedWindow] = []
         window = self._open
@@ -234,6 +237,7 @@ class WindowAssembler:
             column.append(value)
         window.usable.append(usable)
         window.saturated.append(saturated)
+        window.snr.append(snr)
         window.n_usable += usable
         window.n_saturated += saturated
         if time_invalid:
@@ -271,6 +275,8 @@ class WindowAssembler:
         for index, column in enumerate(columns):
             if index not in _KEPT_COLUMNS:  # the peak and the background stay for every frame
                 column[~usable] = np.nan
+        snr = np.asarray(window.snr, dtype=np.float64)
+        snr[~usable] = np.nan
         self._open = None if self._open is window else self._open
         return ClosedWindow(
             stream_id=window.stream_id,
@@ -304,6 +310,7 @@ class WindowAssembler:
             noise_var_x=columns[7],
             noise_var_y=columns[8],
             saturated=np.asarray(window.saturated, dtype=np.bool_),
+            snr=snr,
         )
 
 

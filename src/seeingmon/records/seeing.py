@@ -377,6 +377,24 @@ class SeeingWindowRecord(Record):
             "number."
         ),
     )
+    background_fraction: float | None = quantity(
+        ge=0,
+        le=1,
+        default=None,
+        definition=(
+            "The mean local background as a share of the saturation level of the readout mode "
+            "and gain, from 0 to 1, with the offset of the camera counted as background."
+        ),
+    )
+    star_snr: float | None = quantity(
+        ge=0,
+        default=None,
+        definition=(
+            "The median signal-to-noise ratio of the star in the frames with a usable centroid: "
+            "the aperture flux over the root of its photon noise and of the aperture area times "
+            "the variance of one pixel, measured on the ROI border."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_spectrum_lengths(self) -> Self:
