@@ -1,7 +1,8 @@
 """Scripted fakes of the analysis interfaces, for tests of the scheduler and the services.
 
 `FakeFastAnalyzer` finds the brightest pixel and groups frames into windows by frame time.
-It reports no seeing values: the real estimators live in `seeingmon.fastpath`.
+It reports no seeing values: the real estimators live in `seeingmon.fastpath`. `FakeFocusSink`
+stands in for the consumer of the rapid focus frames.
 """
 
 from __future__ import annotations
@@ -185,6 +186,51 @@ class FakeFastAnalyzer:
             flags=sorted(flags),
         )
         return (record,)
+
+
+class FakeFocusSink:
+    """A `FocusSink` that finds the brightest pixel and keeps a log of what the scheduler did.
+
+    A star counts as found when the brightest pixel exceeds the median by `min_contrast_dn`, as in
+    `FakeFastAnalyzer`. `frames` holds every frame that arrived, `begun` counts the sessions, and
+    `ended` holds the reason of each ended session. Set `failing` to make `push` raise.
+    """
+
+    def __init__(self, *, min_contrast_dn: float = 50.0) -> None:
+        self._min_contrast_dn = min_contrast_dn
+        self.frames: list[Frame] = []
+        self.begun = 0
+        self.ended: list[str] = []
+        self.failing = False
+        self.star = NO_STAR
+
+    def begin_session(self) -> None:
+        self.begun += 1
+
+    def end_session(self, reason: str) -> None:
+        self.ended.append(reason)
+
+    def push(self, frame: Frame) -> StarState | None:
+        if self.failing:
+            raise RuntimeError("the fake focus sink fails")
+        self.frames.append(frame)
+        data = frame.data
+        background = float(np.median(data))
+        row, column = np.unravel_index(int(np.argmax(data)), data.shape)
+        peak = float(data[row, column])
+        if peak - background < self._min_contrast_dn:
+            self.star = NO_STAR
+            return self.star
+        x = float(frame.roi.x + column)
+        y = float(frame.roi.y + row)
+        self.star = StarState(
+            found=True,
+            x_px=x,
+            y_px=y,
+            peak_fraction=peak / float(np.iinfo(data.dtype).max),
+            edge_distance_px=frame.roi.distance_to_edge(x, y),
+        )
+        return self.star
 
 
 @dataclass(slots=True)

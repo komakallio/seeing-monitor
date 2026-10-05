@@ -23,12 +23,16 @@ from seeingmon.scheduler.commands import (
     RejectReason,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 
 ALL_COMMANDS = [
     StartAlignment(),
     StopAlignment(),
+    StartRapidFocus(center_x_px=4144.0, center_y_px=2822.0),
+    StopRapidFocus(),
     Pause(),
     Resume(),
     QueueBurst(),
@@ -56,6 +60,8 @@ def test_the_commands_are_the_ones_that_the_brief_lists() -> None:
     assert names == {
         "StartAlignment",
         "StopAlignment",
+        "StartRapidFocus",
+        "StopRapidFocus",
         "Pause",
         "Resume",
         "QueueBurst",
@@ -129,6 +135,8 @@ def test_the_rejection_reasons_are_stable_codes() -> None:
         "not_paused",
         "not_aligning",
         "degraded",
+        "camera_fault",
+        "not_available",
         "no_handler",
         "queue_full",
         "busy",

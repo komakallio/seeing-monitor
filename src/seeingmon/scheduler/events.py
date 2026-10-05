@@ -50,6 +50,8 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.task_error": "A commissioning handler raised an error. The task failed.",
     "scheduler.result_sink_failed": "Storing a commissioning result failed.",
     "scheduler.alignment_sink_failed": "The consumer of the alignment frames raised an error.",
+    "scheduler.rapid_focus": "Rapid focus started or ended. The detail holds `phase` and `reason`.",
+    "scheduler.focus_sink_failed": "The consumer of the rapid focus frames raised an error.",
     "scheduler.stop_failed": "The camera did not stop cleanly when the scheduler ended a stream.",
     "scheduler.internal_error": "The loop hit an unexpected error and went on.",
     "scheduler.stalled": "The loop did not run for a while: the machine may have been suspended.",

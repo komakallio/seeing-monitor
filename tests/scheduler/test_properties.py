@@ -6,10 +6,11 @@ floodlight, and camera faults. After every rule, the invariants hold:
 
 - The scheduler is in one of the five legal states.
 - The camera serves one mode at a time: a running stream matches the state (a fast stream in `auto`,
-  an alignment stream in `align`), and a paused or safe scheduler has no stream running.
-- Every frame that the fast analyzer, the survey analyzer, or the alignment consumer receives comes
-  from the stream that the scheduler configured for that purpose, so no frame crosses a
-  reconfiguration.
+  an alignment stream or a rapid focus stream in `align`), and a paused or safe scheduler has no
+  stream running.
+- Every frame that the fast analyzer, the survey analyzer, the alignment consumer, or the focus
+  consumer receives comes from the stream that the scheduler configured for that purpose, so no
+  frame crosses a reconfiguration.
 - Every change of state has an event, and no event key repeats.
 
 When the run ends, no window is lost: every frame that the fast analyzer received is in a written
@@ -38,8 +39,10 @@ from seeingmon.scheduler import (
     QueueSweep,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     State,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.scheduler.commission import TaskStatus
 from tests.scheduler.scenario import World
@@ -85,6 +88,15 @@ commands: st.SearchStrategy[Command] = st.one_of(
     st.just(StartAlignment(exposure_s=0.0)),  # invalid
     st.just(StartAlignment(gain=9999)),  # invalid
     st.just(StopAlignment()),
+    st.builds(
+        StartRapidFocus,
+        center_x_px=st.floats(3900.0, 4400.0),
+        center_y_px=st.floats(2600.0, 3000.0),
+        exposure_us=st.one_of(st.none(), st.integers(500, 3000)),
+        gain=st.one_of(st.none(), st.integers(0, 100)),
+    ),
+    st.just(StartRapidFocus(float("nan"), 2822.0)),  # invalid
+    st.just(StopRapidFocus()),
     st.just(Pause()),
     st.just(Resume()),
     st.builds(
@@ -145,8 +157,15 @@ class SchedulerMachine(RuleBasedStateMachine):
             check(frame, {"align"})
             world.align_frames.append(frame)
 
+        focus_push = world.focus.push
+
+        def audited_focus(frame: Frame) -> Any:
+            check(frame, {"rapid_focus"})
+            return focus_push(frame)
+
         world.fast.push = audited_push  # type: ignore[method-assign]
         world.survey.submit = audited_submit  # type: ignore[method-assign]
+        world.focus.push = audited_focus  # type: ignore[method-assign]
         scheduler._alignment_sink = audited_sink
 
     # --- Rules ---
@@ -205,7 +224,11 @@ class SchedulerMachine(RuleBasedStateMachine):
             assert not running, f"a stream runs in {state}"
         if running:
             assert stream is not None
-            assert (stream.purpose, state.value) in {("fast", "auto"), ("align", "align")}, (
+            assert (stream.purpose, state.value) in {
+                ("fast", "auto"),
+                ("align", "align"),
+                ("rapid_focus", "align"),
+            }, (
                 stream.purpose,
                 state.value,
             )

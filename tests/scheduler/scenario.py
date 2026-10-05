@@ -55,6 +55,7 @@ from seeingmon.scheduler.levels import EscalationLevel
 from seeingmon.testing import (
     FakeCameraDriver,
     FakeFastAnalyzer,
+    FakeFocusSink,
     FakePointingProvider,
     FakeSurveyAnalyzer,
     ListRecordWriter,
@@ -262,6 +263,7 @@ class World:
         self.pointing = FakePointingProvider()
         self.escalations: list[tuple[int, EscalationLevel]] = []
         self.align_frames: list[Frame] = []
+        self.focus = FakeFocusSink()  # the consumer of the rapid focus frames
         self.results: list[CommissionResult] = []
         self._lights: list[tuple[int, int, float]] = []
         self._clouds: list[tuple[int, int, float]] = []
@@ -288,6 +290,7 @@ class World:
             site=site,
             escalate=self._escalate if escalate else None,
             alignment_sink=self.align_frames.append,
+            focus_sink=self.focus,
             result_sink=self.results.append,
             context_provider=context_provider,
         )

@@ -30,7 +30,9 @@ from seeingmon.scheduler.commands import (
     RejectReason,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.scheduler.commission import (
     CommissionContext,
@@ -71,9 +73,11 @@ __all__ = [
     "SchedulerStatus",
     "SiteConfig",
     "StartAlignment",
+    "StartRapidFocus",
     "State",
     "StepKind",
     "StopAlignment",
+    "StopRapidFocus",
     "SweepHandler",
     "build_scheduler",
     "format_sweep_table",

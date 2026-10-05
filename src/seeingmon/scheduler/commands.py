@@ -28,6 +28,8 @@ class RejectReason(StrEnum):
     NOT_PAUSED = "not_paused"
     NOT_ALIGNING = "not_aligning"
     DEGRADED = "degraded"  # the camera has failed repeatedly, so alignment cannot start
+    CAMERA_FAULT = "camera_fault"  # the camera has a fault that the scheduler still recovers from
+    NOT_AVAILABLE = "not_available"  # core finds the rapid focus mode not offered now
     NO_HANDLER = "no_handler"  # nothing is registered to run this kind of task
     QUEUE_FULL = "queue_full"
     BUSY = "busy"  # a task of this kind waits or runs, and only one may (a dark or flat session)
@@ -57,6 +59,30 @@ class StartAlignment(Command):
 @dataclass(frozen=True, slots=True)
 class StopAlignment(Command):
     """End the alignment stream. The scheduler goes back to `safe` and re-checks the sky."""
+
+
+@dataclass(frozen=True, slots=True)
+class StartRapidFocus(Command):
+    """Switch the running alignment to the rapid focus mode, or keep that mode alive.
+
+    The camera streams the fast readout mode on a small ROI around `(center_x_px, center_y_px)`,
+    which are pixels of that mode, and the scheduler hands each frame to the focus consumer
+    instead of the alignment consumer. The ROI follows the star as the fast stream does. Leave
+    `exposure_us` or `gain` `None` to take the value of the fast stream. The command works only
+    while the alignment runs. Send it again while the mode runs to restart its idle timer: the
+    mode then keeps its ROI, and it restarts the stream only when the exposure or the gain
+    changes.
+    """
+
+    center_x_px: float
+    center_y_px: float
+    exposure_us: int | None = None
+    gain: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StopRapidFocus(Command):
+    """Leave the rapid focus mode. The alignment goes on with its normal view."""
 
 
 @dataclass(frozen=True, slots=True)

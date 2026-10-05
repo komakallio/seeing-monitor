@@ -142,6 +142,19 @@ def align_detail(idle_s: float, timeout_s: float) -> str:
     )
 
 
+RAPID_FOCUS_LABEL = "Rapid focus on Polaris"
+RAPID_FOCUS_NEXT_LABEL = "Back to the alignment view of the whole frame"
+RAPID_FOCUS_REASON = "you started rapid focus"
+
+
+def rapid_focus_detail(running_s: float, idle_s: float, timeout_s: float) -> str:
+    """How long rapid focus has run, and the idle timer that ends it."""
+    return (
+        f"Rapid focus has run for {duration_text(running_s)}; the alignment view returns after "
+        f"{duration_text(timeout_s)} without use, and the idle time is {duration_text(idle_s)}"
+    )
+
+
 AFTER_TASK_AUTO = "Back to the normal cycle"
 AFTER_TASK_SAFE = "Back to the brightness watch"
 AFTER_TASK_PAUSED = "Paused: nothing records until you resume"

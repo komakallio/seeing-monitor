@@ -67,6 +67,36 @@ class FastUpdate:
 
 
 @runtime_checkable
+class FocusSink(Protocol):
+    """The consumer of the frames of the rapid focus mode.
+
+    The rapid focus mode belongs to the alignment helper. The camera streams the fast readout mode
+    on a small ROI around Polaris, and the scheduler hands every frame to the sink instead of the
+    fast analyzer, so these frames never reach a seeing window. The scheduler calls `begin_session`
+    when the mode starts, `push` for each frame, and `end_session` when the mode ends for any
+    reason (the person stops it, it idles, the star is lost, or the alignment ends). The
+    scheduler thread makes the calls, and `begin_session` and `end_session` may also run on the
+    thread of a command, so the sink guards its state.
+
+    `push` runs for every frame (about 80 times a second) and must neither block nor do I/O. It
+    returns the star as it measured it, in sensor pixels of the readout mode, or `None` when it
+    cannot tell. The scheduler uses the position to recenter the ROI and to notice a lost star.
+    """
+
+    def begin_session(self) -> None:
+        """A rapid focus session begins. Forget the readings of the last one."""
+        ...
+
+    def push(self, frame: Frame) -> StarState | None:
+        """Measure one frame, and return where the star is."""
+        ...
+
+    def end_session(self, reason: str) -> None:
+        """The session ended. `reason` says why, in words."""
+        ...
+
+
+@runtime_checkable
 class FastAnalyzer(Protocol):
     """Per-frame metrics and windowed seeing statistics for the fast stream."""
 

@@ -26,7 +26,8 @@ class ActivityPhase(StrEnum):
 
     The phases of `auto` are `fast`, `survey_short`, `survey_long`, `solve_wait`, and `idle`. The
     other states have one phase each (`watch` for `safe`, then `align`, `commission`, and
-    `paused`). `camera_fault` replaces the phase while the scheduler waits for a recovery step
+    `paused`), and `align` has a second one, `rapid_focus`, while the person focuses with the
+    fast stream. `camera_fault` replaces the phase while the scheduler waits for a recovery step
     of the camera, in whatever state it was.
     """
 
@@ -37,6 +38,7 @@ class ActivityPhase(StrEnum):
     IDLE = "idle"  # the camera rests until the next slot of the cycle
     WATCH = "watch"  # the brightness watch of `safe`
     ALIGN = "align"  # the alignment helper: the live view
+    RAPID_FOCUS = "rapid_focus"  # the alignment helper: the fast stream on a ROI around Polaris
     COMMISSION = "commission"  # a burst, a sweep, a replay, or a dark session
     PAUSED = "paused"  # nothing runs
     CAMERA_FAULT = "camera_fault"  # a camera error: the scheduler waits to try a recovery step
@@ -49,8 +51,9 @@ class ActivityStatus:
     `state` is the state of the machine and `phase` is an `ActivityPhase` value. `label` names
     the activity in words, and `since_utc_ns` is when it began. `ends_utc_ns` is when the activity
     ends, when the scheduler knows: the end of the fast period, of a survey exposure, of the wait
-    for a slot, or the idle timeout of the alignment. It is an expectation. A fast period can end
-    early, and a wait for a pointing solution ends when the solution arrives.
+    for a slot, or the idle timeout of the alignment (of the rapid focus mode, while it runs). It is
+    an expectation. A fast period can end early, and a wait for a pointing solution ends when the
+    solution arrives.
 
     `next_label` and `next_utc_ns` name the activity that follows and when it starts. `cadence_s`
     is the length of the cycle in force in `auto` (shorter under clouds) and `None` elsewhere.
@@ -74,7 +77,7 @@ class ActivityStatus:
 class StreamInfo:
     """The stream that the camera runs or ran last.
 
-    `purpose` is one of `fast`, `survey`, `watch`, `align`, and `commission`.
+    `purpose` is one of `fast`, `survey`, `watch`, `align`, `rapid_focus`, and `commission`.
     """
 
     stream_id: int

@@ -57,6 +57,7 @@ survey_cadence_s = 100.0       # More often than normal, but long enough for the
 idle_timeout_s = 1800.0     # 30 minutes without activity ends `align`.
 exposure_s = 0.5
 gain = 120
+rapid_focus_idle_timeout_s = 120.0   # Without use, rapid focus returns to the normal view.
 
 # Camera errors: back off, climb the ladder, then turn `degraded`.
 [scheduler.faults]

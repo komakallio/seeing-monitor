@@ -177,6 +177,11 @@ class AlignConfig(SectionModel):
     exposure_s: Seconds = 0.5
     gain: NonNegativeInt = 120
 
+    rapid_focus_idle_timeout_s: Seconds = 120.0
+    """The rapid focus mode returns to the normal alignment view after this long without a command
+    or a call to `touch_alignment`. The mode reads about 80 frames a second, so it does not run for
+    a person who left. The alignment itself ends after `idle_timeout_s`."""
+
 
 class FaultConfig(SectionModel):
     """The response to camera errors: back off, climb the ladder, and finally degrade."""

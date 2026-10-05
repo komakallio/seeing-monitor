@@ -32,7 +32,9 @@ from seeingmon.scheduler import (
     Resume,
     SchedulerConfig,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.config import AlignConfig
@@ -198,7 +200,8 @@ def evening() -> tuple[World, list[SchedulerStatus]]:
     pointing and the analysis fails, so the scheduler waits and tries again. Clouds shorten the
     cycle. Alignment runs from 8000 s to 8100 s, a sweep follows, a pause lasts from 9300 s to
     9400 s, the camera fails from 10000 s to 10100 s, and a floodlight brightens the sky from
-    11000 s to 11400 s.
+    11000 s to 11400 s. A second alignment runs from 12000 s to 12200 s, with rapid focus from
+    12040 s to 12060 s.
     """
     world = World(start_utc_ns=START, solved_at_start=False, survey_polls=2)
     world.no_solution(6000, 6400)
@@ -210,6 +213,11 @@ def evening() -> tuple[World, list[SchedulerStatus]]:
     world.at(9400, send(Resume()))
     world.camera_fault(10000, 10100)
     world.light(11000, 11400, 0.8)
+    world.at(12000, send(StartAlignment()))
+    star_x, star_y = world.star_position(world.t(12040))
+    world.at(12040, send(StartRapidFocus(star_x, star_y, exposure_us=2000)))
+    world.at(12060, send(StopRapidFocus()))
+    world.at(12200, send(StopAlignment()))
     statuses = one_step_samples(world, 13000)
     return world, statuses
 
@@ -232,6 +240,7 @@ class TestEveryStateAndPhase:
             ("auto", "idle"),
             ("auto", "fast"),
             ("align", "align"),
+            ("align", "rapid_focus"),
             ("commission", "commission"),
             ("paused", "paused"),
             ("auto", "camera_fault"),

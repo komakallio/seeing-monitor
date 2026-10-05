@@ -12,6 +12,7 @@ from seeingmon.analysis import (
     NO_STAR,
     FastAnalyzer,
     FastContext,
+    FocusSink,
     MetricsWriter,
     PointingProvider,
     RecordWriter,
@@ -24,6 +25,7 @@ from seeingmon.records.segments import segment_dtype
 from seeingmon.testing import (
     FakeCameraDriver,
     FakeFastAnalyzer,
+    FakeFocusSink,
     FakePointingProvider,
     FakeSurveyAnalyzer,
     ListRecordWriter,
@@ -58,6 +60,7 @@ def read(driver: FakeCameraDriver, count: int) -> list[Frame]:
 def test_the_fakes_satisfy_the_protocols() -> None:
     assert isinstance(FakeFastAnalyzer(), FastAnalyzer)
     assert isinstance(FakeSurveyAnalyzer(), SurveyAnalyzer)
+    assert isinstance(FakeFocusSink(), FocusSink)
     assert isinstance(FakePointingProvider(), PointingProvider)
     assert isinstance(ListRecordWriter(), RecordWriter)
     assert isinstance(ListRecordWriter(), MetricsWriter)
@@ -186,6 +189,34 @@ class TestFakeFastAnalyzer:
         (window,) = analyzer.flush()
         assert window.record_type == "seeing_window"
         assert type(window).from_row(window.to_row()) == window
+
+
+class TestFakeFocusSink:
+    def test_it_finds_the_star_and_keeps_a_log_of_the_session(self) -> None:
+        driver = FakeCameraDriver(VirtualClock(), frame_factory=star_at_center)
+        driver.open()
+        sink = FakeFocusSink()
+        stream_of(driver)
+        sink.begin_session()
+        star = sink.push(driver.read_frame(5.0))
+        sink.end_session("you stopped it")
+        assert star is not None
+        assert star.found
+        assert (star.x_px, star.y_px) == (ROI.x + 32, ROI.y + 32)
+        assert star.edge_distance_px == 32
+        assert (sink.begun, sink.ended, len(sink.frames)) == (1, ["you stopped it"], 1)
+
+    def test_a_flat_frame_has_no_star_and_a_failing_sink_raises(self) -> None:
+        driver = FakeCameraDriver(VirtualClock(), frame_factory=flat)
+        driver.open()
+        stream_of(driver)
+        sink = FakeFocusSink()
+        star = sink.push(driver.read_frame(5.0))
+        assert star is not None
+        assert not star.found
+        sink.failing = True
+        with pytest.raises(RuntimeError, match="fails"):
+            sink.push(driver.read_frame(5.0))
 
 
 class TestFakeSurveyAnalyzer:

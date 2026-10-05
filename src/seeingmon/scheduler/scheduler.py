@@ -24,6 +24,14 @@ the cycle. Records and the ephemeris use UTC.
 the stream in use (flushing the fast analyzer's window and its metrics), calls
 `CameraDriver.configure`, and then `FastAnalyzer.begin_stream`. A window therefore never spans two
 streams, and the camera never serves two modes at once.
+
+**Rapid focus.** The alignment session has a second mode for focusing by hand. `StartRapidFocus`
+switches the stream of the session from the survey readout mode over the whole frame to the fast
+readout mode over a small ROI around Polaris, and the scheduler reads its frames at the camera rate
+and hands them to the `FocusSink`, which says where the star is. The fast analyzer never sees them,
+so they reach no seeing window. The ROI follows the star as in the fast period. `StopRapidFocus`,
+an idle timer of the mode (`[scheduler.align] rapid_focus_idle_timeout_s`), and a star that stays
+out of the window end the mode, and the session goes back to its normal view.
 """
 
 from __future__ import annotations
@@ -43,6 +51,7 @@ from seeingmon import __version__
 from seeingmon.analysis import (
     FastAnalyzer,
     FastContext,
+    FocusSink,
     MetricsWriter,
     PointingProvider,
     RecordWriter,
@@ -75,7 +84,9 @@ from seeingmon.scheduler.commands import (
     RejectReason,
     Resume,
     StartAlignment,
+    StartRapidFocus,
     StopAlignment,
+    StopRapidFocus,
 )
 from seeingmon.scheduler.commission import (
     CommissionHandler,
@@ -153,6 +164,7 @@ class Purpose(StrEnum):
     SURVEY = "survey"
     WATCH = "watch"
     ALIGN = "align"
+    RAPID_FOCUS = "rapid_focus"
     COMMISSION = "commission"
 
 
@@ -198,12 +210,39 @@ class _FastRun:
     windows_at_start: int = 0  # the count of written windows when the period began
 
 
+@dataclass(frozen=True, slots=True)
+class _RapidPlan:
+    """What the rapid focus mode asks of the camera: a ROI of the fast readout mode, and settings.
+
+    The command side makes the plan. The loop replaces `roi` when it recenters the ROI on the star,
+    so that a restart of the stream after a camera fault keeps the star in view.
+    """
+
+    roi: Roi
+    exposure_us: int
+    gain: int
+    started_mono: int
+
+
+@dataclass(slots=True)
+class _RapidRun:
+    """The loop's bookkeeping for the rapid focus stream that runs now."""
+
+    stream_id: int
+    read_timeout_s: float
+    last_recenter_mono: int
+    missing_frames: int = 0
+    frames: int = 0
+    edge_blocked: bool = False  # the ROI cannot center the star, so stop looking at the edge
+
+
 @dataclass(slots=True)
 class _AlignSession:
     exposure_us: int
     gain: int
     last_activity_mono: int
     dirty: bool = True  # the camera needs (re)configuring
+    rapid: _RapidPlan | None = None  # set while the rapid focus mode runs
 
 
 @dataclass(slots=True)
@@ -236,6 +275,8 @@ class Scheduler:
         context_provider: Called with the UTC time, it returns the context that only the core
             knows, such as `heater_duty` and the `heater_on` flag. The scheduler adds its own.
         alignment_sink: Receives every frame of the alignment stream.
+        focus_sink: Measures every frame of the rapid focus mode, and says where the star is. The
+            mode needs it: without a sink, the scheduler rejects `StartRapidFocus`.
         result_sink: Receives every commissioning result, so the core can store it as pinned.
     """
 
@@ -256,6 +297,7 @@ class Scheduler:
         escalate: Callable[[EscalationLevel], None] | None = None,
         context_provider: Callable[[int], FastContext] | None = None,
         alignment_sink: Callable[[Frame], None] | None = None,
+        focus_sink: FocusSink | None = None,
         result_sink: Callable[[CommissionResult], None] | None = None,
     ) -> None:
         self._driver = driver
@@ -272,6 +314,7 @@ class Scheduler:
         self._escalate = escalate
         self._context_provider = context_provider
         self._alignment_sink = alignment_sink
+        self._focus_sink = focus_sink
         self._result_sink = result_sink
 
         self._fast_mode = profile.fast_mode.mode
@@ -315,6 +358,7 @@ class Scheduler:
         self._stream_running = False
         self._activity: Purpose | None = None
         self._fast_run: _FastRun | None = None
+        self._rapid_run: _RapidRun | None = None
         self._cycle = _Cycle(next_slot_mono=now_mono, since_mono=now_mono)
         self._return_state = State.SAFE
         self._pending_fault: _PendingFault | None = None
@@ -337,6 +381,7 @@ class Scheduler:
         self._counters = Counters()
         self._stop_event: threading.Event | None = None
         self._sink_error_reported = False
+        self._focus_error_reported = False
 
     # --- Public API ------------------------------------------------------------------------
 
@@ -394,6 +439,10 @@ class Scheduler:
                 result = self._start_alignment(command)
             elif isinstance(command, StopAlignment):
                 result = self._stop_alignment()
+            elif isinstance(command, StartRapidFocus):
+                result = self._start_rapid_focus(command)
+            elif isinstance(command, StopRapidFocus):
+                result = self._stop_rapid_focus()
             elif isinstance(command, Pause):
                 result = self._pause()
             elif isinstance(command, Resume):
@@ -559,13 +608,34 @@ class Scheduler:
         align: _AlignSession | None,
         reason: str | None,
     ) -> ActivityStatus:
-        """The alignment helper runs, and its idle timer decides when it ends."""
+        """The alignment helper runs, and its idle timer decides when it ends.
+
+        While the rapid focus mode runs, the activity is that mode, and the idle timer that ends
+        it is the shorter one of the mode.
+        """
         timeout_s = self._config.align.idle_timeout_s
         idle_s = 0.0
         ends = None
         if align is not None:
             idle_s = max(0.0, (now_mono - align.last_activity_mono) / NS_PER_S)
             ends = at(align.last_activity_mono + round(timeout_s * NS_PER_S))
+            plan = align.rapid
+            if plan is not None:
+                rapid_timeout_s = self._config.align.rapid_focus_idle_timeout_s
+                ends = at(align.last_activity_mono + round(rapid_timeout_s * NS_PER_S))
+                return ActivityStatus(
+                    state=State.ALIGN.value,
+                    phase=ActivityPhase.RAPID_FOCUS.value,
+                    label=words.RAPID_FOCUS_LABEL,
+                    since_utc_ns=at(plan.started_mono),
+                    ends_utc_ns=ends,
+                    next_label=words.RAPID_FOCUS_NEXT_LABEL,
+                    next_utc_ns=ends,
+                    detail=words.rapid_focus_detail(
+                        max(0.0, (now_mono - plan.started_mono) / NS_PER_S), idle_s, rapid_timeout_s
+                    ),
+                    reason=words.RAPID_FOCUS_REASON,
+                )
         return ActivityStatus(
             state=State.ALIGN.value,
             phase=ActivityPhase.ALIGN.value,
@@ -907,16 +977,142 @@ class Scheduler:
         with self._lock:
             if self._machine.state is not State.ALIGN:
                 return False
-            self._align = None
+            session, self._align = self._align, None
             self._next_watch_mono = self._clock.monotonic_ns()
+            if session is not None and session.rapid is not None:
+                self._rapid_ended("the alignment ended")
             return self._transition(reason, State.SAFE, expect=State.ALIGN)
 
     def _pause(self) -> CommandResult:
         if self._machine.state is State.PAUSED:
             return self._reject(RejectReason.ALREADY_PAUSED, "the scheduler is already paused")
-        self._align = None
+        session, self._align = self._align, None
+        if session is not None and session.rapid is not None:
+            self._rapid_ended("you paused the scheduler")
         self._transition("pause command", State.PAUSED)
         return self._accept("the scheduler paused, and nothing runs until you resume it")
+
+    def _start_rapid_focus(self, command: StartRapidFocus) -> CommandResult:
+        """Switch the alignment session to the rapid focus mode, or keep the mode alive."""
+        session = self._align
+        if self._machine.state is not State.ALIGN or session is None:
+            return self._reject(
+                RejectReason.NOT_ALIGNING, "no alignment runs, and rapid focus belongs to it"
+            )
+        if self._focus_sink is None:
+            return self._reject(
+                RejectReason.NO_HANDLER, "nothing is registered to measure the rapid focus frames"
+            )
+        if self._faults.degraded:
+            return self._reject(RejectReason.DEGRADED, "the camera has failed repeatedly")
+        if self._pending_fault is not None:
+            return self._reject(
+                RejectReason.CAMERA_FAULT,
+                "the camera has a fault that the scheduler recovers from; try again when it works",
+            )
+        fast = self._config.fast
+        exposure_us = fast.exposure_us if command.exposure_us is None else command.exposure_us
+        gain = fast.gain if command.gain is None else command.gain
+        problem = self._check_exposure_and_gain(exposure_us, gain)
+        if problem is not None:
+            return self._reject(RejectReason.INVALID, problem)
+        readout = self._profile.mode(self._fast_mode)
+        x, y = command.center_x_px, command.center_y_px
+        if not (
+            math.isfinite(x)
+            and math.isfinite(y)
+            and 0 <= x < readout.width_px
+            and 0 <= y < readout.height_px
+        ):
+            return self._reject(
+                RejectReason.INVALID,
+                f"the center must lie inside the {readout.width_px} x {readout.height_px} pixel "
+                f"frame of the {self._fast_mode} readout mode",
+            )
+        roi = roi_centered_on(self._profile, self._fast_mode, (x, y), fast.roi_arcmin)
+        now = self._clock.monotonic_ns()
+        session.last_activity_mono = now
+        plan = session.rapid
+        if plan is None:
+            session.rapid = _RapidPlan(roi, exposure_us, gain, now)
+            session.dirty = True
+            self._rapid_started(session.rapid)
+            return self._accept("rapid focus started")
+        if (plan.exposure_us, plan.gain) != (exposure_us, gain):
+            session.rapid = _RapidPlan(roi, exposure_us, gain, plan.started_mono)
+            session.dirty = True
+        return self._accept("rapid focus already runs, so the idle timer restarted")
+
+    def _stop_rapid_focus(self) -> CommandResult:
+        session = self._align
+        if self._machine.state is not State.ALIGN or session is None:
+            return self._reject(RejectReason.NOT_ALIGNING, "no alignment runs")
+        session.last_activity_mono = self._clock.monotonic_ns()
+        if not self._drop_rapid(session, "you stopped rapid focus"):
+            return self._accept("rapid focus does not run, so there is nothing to stop")
+        return self._accept("rapid focus stopped, and the alignment view returns")
+
+    def _drop_rapid(self, session: _AlignSession, reason: str) -> bool:
+        """End the rapid focus mode of an alignment session. Returns `False` when none runs.
+
+        The camera follows at the next step, which configures the alignment stream again.
+        """
+        with self._lock:
+            if session.rapid is None:
+                return False
+            session.rapid = None
+            session.dirty = True
+        self._rapid_ended(reason)
+        return True
+
+    def _rapid_started(self, plan: _RapidPlan) -> None:
+        """Write the event of a new rapid focus session, and tell the focus sink."""
+        roi = plan.roi
+        self._emit(
+            "info",
+            "scheduler.rapid_focus",
+            "Rapid focus started.",
+            {
+                "phase": "started",
+                "mode": self._fast_mode,
+                "roi": _roi_dict(roi),
+                "exposure_us": plan.exposure_us,
+                "gain": plan.gain,
+            },
+        )
+        sink = self._focus_sink
+        if sink is not None:
+            try:
+                sink.begin_session()
+            except Exception as error:  # a broken consumer must not stop the scheduler
+                self._focus_sink_failed(error)
+
+    def _rapid_ended(self, reason: str) -> None:
+        """Write the event of a rapid focus session that ended, and tell the focus sink."""
+        self._emit(
+            "info",
+            "scheduler.rapid_focus",
+            f"Rapid focus ended: {reason}.",
+            {"phase": "ended", "reason": reason},
+        )
+        sink = self._focus_sink
+        if sink is not None:
+            try:
+                sink.end_session(reason)
+            except Exception as error:
+                self._focus_sink_failed(error)
+
+    def _focus_sink_failed(self, error: Exception) -> None:
+        """Say once that the consumer of the rapid focus frames raised an error."""
+        if self._focus_error_reported:
+            return
+        self._focus_error_reported = True
+        self._emit(
+            "warning",
+            "scheduler.focus_sink_failed",
+            f"The rapid focus frame consumer raised {type(error).__name__}.",
+            {"error": f"{type(error).__name__}: {error}"},
+        )
 
     def _resume(self) -> CommandResult:
         if self._machine.state is not State.PAUSED:
@@ -1252,7 +1448,7 @@ class Scheduler:
         if self._activity is Purpose.FAST and state is not State.AUTO:
             self._end_stream("state_change")
             return True
-        if self._activity is Purpose.ALIGN and state is not State.ALIGN:
+        if self._activity in (Purpose.ALIGN, Purpose.RAPID_FOCUS) and state is not State.ALIGN:
             self._end_stream("state_change")
             return True
         if state is State.PAUSED and (self._stream_running or self._activity is not None):
@@ -1301,6 +1497,7 @@ class Scheduler:
 
     def _end_stream(self, reason: str) -> None:
         """End the stream in use: flush the open window, drain the metrics, and stop the camera."""
+        self._rapid_run = None
         run, self._fast_run = self._fast_run, None
         if run is not None:
             self._write_windows(self._fast.flush(reason))
@@ -1968,26 +2165,30 @@ class Scheduler:
         if session is None:
             self._end_alignment("no alignment session")
             return StepKind.TRANSITION
-        idle_ns = round(self._config.align.idle_timeout_s * NS_PER_S)
-        if now - session.last_activity_mono >= idle_ns:
+        align = self._config.align
+        if now - session.last_activity_mono >= round(align.idle_timeout_s * NS_PER_S):
             self._end_alignment("alignment idle timeout")
             return StepKind.TRANSITION
-        if self._activity is not Purpose.ALIGN or session.dirty:
-            config = StreamConfig(
-                mode=self._survey_mode,
-                exposure_us=session.exposure_us,
-                gain=session.gain,
-                pixel_format=self._survey_format,
-                roi=None,
-                kind=StreamKind.VIDEO,
+        if session.rapid is not None and now - session.last_activity_mono >= round(
+            align.rapid_focus_idle_timeout_s * NS_PER_S
+        ):
+            self._drop_rapid(
+                session,
+                f"nobody used it for {words.duration_text(align.rapid_focus_idle_timeout_s)}",
             )
-            try:
-                self._reconfigure(config, Purpose.ALIGN)
-                self._start_stream()
-            except CameraError as error:
-                return self._camera_error(error, "starting the alignment stream")
-            session.dirty = False
-            return StepKind.WORK
+        with self._lock:  # take the whole request in one hold, so that a command cannot split it
+            plan = session.rapid
+            exposure_us, gain = session.exposure_us, session.gain
+            reconfigure, session.dirty = session.dirty, False
+        wanted = Purpose.ALIGN if plan is None else Purpose.RAPID_FOCUS
+        if (
+            reconfigure
+            or self._activity is not wanted
+            or (plan is not None and self._rapid_run is None)
+        ):
+            return self._configure_align_stream(plan, exposure_us, gain, now)
+        if plan is not None:
+            return self._step_rapid_focus(session)
         try:
             frame = self._read(self._align_timeout_s(session))
         except CameraError as error:
@@ -2012,6 +2213,142 @@ class Scheduler:
         return (
             session.exposure_us / 1e6 * loop.read_timeout_factor + loop.read_timeout_margin_s + 1.0
         )
+
+    def _configure_align_stream(
+        self, plan: _RapidPlan | None, exposure_us: int, gain: int, now: int
+    ) -> StepKind:
+        """Configure and start the stream of the alignment: its normal view or the rapid mode.
+
+        The normal view streams the survey readout mode with a short exposure over the whole frame.
+        The rapid mode streams the fast readout mode, as the fast period does, over a small ROI
+        around Polaris.
+        """
+        if plan is None:
+            config = StreamConfig(
+                mode=self._survey_mode,
+                exposure_us=exposure_us,
+                gain=gain,
+                pixel_format=self._survey_format,
+                roi=None,
+                kind=StreamKind.VIDEO,
+            )
+            try:
+                self._reconfigure(config, Purpose.ALIGN)
+                self._start_stream()
+            except CameraError as error:
+                return self._camera_error(error, "starting the alignment stream")
+            return StepKind.WORK
+        fast = self._config.fast
+        config = StreamConfig(
+            mode=self._fast_mode,
+            exposure_us=plan.exposure_us,
+            gain=plan.gain,
+            pixel_format=self._fast_format,
+            roi=plan.roi,
+            kind=StreamKind.VIDEO,
+            high_speed=fast.high_speed,
+        )
+        try:
+            active = self._reconfigure(config, Purpose.RAPID_FOCUS)
+            self._start_stream()
+        except CameraError as error:
+            return self._camera_error(error, "starting the rapid focus stream")
+        # The read timeout follows the frame period of this stream, as in the fast stream: a stall
+        # of the camera shows within a fraction of a second, and not after the alignment's wait.
+        self._rapid_run = _RapidRun(
+            stream_id=active.stream_id,
+            read_timeout_s=self._timeout_s(active),
+            last_recenter_mono=now - round(fast.edge_cooldown_s * NS_PER_S),
+        )
+        return StepKind.WORK
+
+    def _step_rapid_focus(self, session: _AlignSession) -> StepKind:
+        """Read a frame of the rapid focus mode, give it to the focus sink, and follow the star."""
+        run = self._rapid_run
+        sink = self._focus_sink
+        assert run is not None
+        assert sink is not None
+        fast = self._config.fast
+        try:
+            frame = self._read(run.read_timeout_s)
+        except CameraError as error:
+            return self._camera_error(error, "reading a rapid focus frame")
+        now = self._mono()
+        self._note_frame(frame)
+        run.frames += 1
+        star: StarState | None = None
+        try:
+            star = sink.push(frame)
+        except Exception as error:  # a broken consumer must not stop the camera
+            self._focus_sink_failed(error)
+        if star is not None and star.found:
+            run.missing_frames = 0
+            edge = star.edge_distance_px
+            if (
+                edge is not None
+                and edge < fast.roi_edge_margin_px
+                and not run.edge_blocked
+                and now - run.last_recenter_mono >= round(fast.edge_cooldown_s * NS_PER_S)
+            ):
+                return self._recenter_rapid(session, run, star, now)
+        else:
+            run.missing_frames += 1
+            if run.missing_frames >= fast.missing_star_frames:
+                self._drop_rapid(
+                    session, f"the star was not in the window for {run.missing_frames} frames"
+                )
+        return StepKind.FRAME
+
+    def _recenter_rapid(
+        self, session: _AlignSession, run: _RapidRun, star: StarState, now: int
+    ) -> StepKind:
+        """The star neared the ROI edge: move the ROI onto it, as the fast stream does.
+
+        Rapid focus keeps no window to end, so it only moves the ROI. When the ROI cannot move
+        closer, the scheduler writes one event and stops watching the edge, as it does in `auto`.
+        """
+        previous = None if self._stream is None else self._stream.roi
+        roi = (
+            None
+            if star.x_px is None or star.y_px is None
+            else roi_centered_on(
+                self._profile, self._fast_mode, (star.x_px, star.y_px), self._config.fast.roi_arcmin
+            )
+        )
+        if roi is None or (previous is not None and (roi.x, roi.y) == (previous.x, previous.y)):
+            run.edge_blocked = True
+            self._emit(
+                "warning",
+                "scheduler.roi_at_limit",
+                "The star is near the ROI edge, and the ROI cannot move closer to it, so rapid "
+                "focus keeps the ROI.",
+                {"edge_distance_px": star.edge_distance_px, "roi": _roi_dict(previous)},
+            )
+            return StepKind.FRAME
+        self._counters.roi_recenters += 1
+        try:
+            applied = self._driver.move_roi(roi.x, roi.y)
+        except CameraError as error:
+            return self._camera_error(error, "moving the ROI")
+        run.last_recenter_mono = now
+        if self._stream is not None:
+            self._stream = replace(self._stream, roi=applied)
+        with self._lock:  # a restart of the stream after a camera fault keeps the star in view
+            plan = session.rapid
+            if plan is not None:
+                session.rapid = replace(plan, roi=applied)
+        self._emit(
+            "info",
+            "scheduler.roi_recentered",
+            "The star neared the ROI edge, so the ROI moved onto it in rapid focus.",
+            {
+                "edge_distance_px": star.edge_distance_px,
+                "margin_px": self._config.fast.roi_edge_margin_px,
+                "from": _roi_dict(previous),
+                "to": _roi_dict(applied),
+            },
+        )
+        return StepKind.FRAME
 
     # --- The `commission` state --------------------------------------------------------------
 
@@ -2368,6 +2705,7 @@ def build_scheduler(
     escalate: Callable[[EscalationLevel], None] | None = None,
     context_provider: Callable[[int], FastContext] | None = None,
     alignment_sink: Callable[[Frame], None] | None = None,
+    focus_sink: FocusSink | None = None,
     result_sink: Callable[[CommissionResult], None] | None = None,
 ) -> Scheduler:
     """Build a scheduler from the layered configuration.
@@ -2391,6 +2729,7 @@ def build_scheduler(
         escalate=escalate,
         context_provider=context_provider,
         alignment_sink=alignment_sink,
+        focus_sink=focus_sink,
         result_sink=result_sink,
     )
 
