@@ -70,8 +70,10 @@ above, and nothing else of your file: no sink, heater, SQM-LE, or power setting.
 and `SEEINGMON_AUTH__*`, and ignores every other key and variable. The address and the port come
 from your `[web]` section, and default to the loopback interface and port 8080 when you set none.
 The launcher prints one URL for each bind address (`bind_address` and `extra_bind_addresses`), and
-writes no address to a file or a log. It passes the settings to the child in its environment, and
-never on the command line.
+writes no address to a file or a log. A wildcard (`0.0.0.0` or `::`) stands for every interface, so
+it prints the loopback URL and, for `0.0.0.0`, one URL for each IPv4 address that this device has
+now (a phone on the same network opens one of them). It passes the settings to the child in its
+environment, and never on the command line.
 
 **The API token.** When your `[auth]` section has no token hash, the launcher makes a random token
 for the run, gives its hash (the one that `seeingmon web hash-token` makes) to the `web` child, and
@@ -103,6 +105,12 @@ from typing import IO, TYPE_CHECKING, Any, TypeVar
 from seeingmon.cli import CliError
 from seeingmon.clock import NS_PER_S, SystemClock, utc_ns_to_iso
 from seeingmon.config import Config, ConfigError
+from seeingmon.services.web.netaddr import (
+    LOOPBACK_V6,
+    connect_address,
+    device_addresses,
+    is_wildcard,
+)
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -247,8 +255,20 @@ class DevPlan:
     log_folder: str = ""  # the same folder, relative to the data folder, for the banner
 
     def urls(self) -> list[str]:
-        """One URL for each bind address, with an IPv6 address in brackets."""
-        return [url_for(address, self.port) for address in self.bind_addresses]
+        """One URL for each bind address, with an IPv6 address in brackets.
+
+        A wildcard stands for every interface of its family: it gives the loopback URL, and
+        `0.0.0.0` adds one URL for each IPv4 address that this device has now.
+        """
+        shown: list[str] = []
+        for address in self.bind_addresses:
+            if not is_wildcard(address):
+                shown.append(address)
+            elif ":" in address:  # the IPv6 wildcard
+                shown.append(LOOPBACK_V6)
+            else:  # the IPv4 wildcard
+                shown.extend((connect_address(address), *device_addresses()))
+        return [url_for(address, self.port) for address in dict.fromkeys(shown)]
 
 
 # --- Settings ----------------------------------------------------------------------------------
@@ -1063,8 +1083,7 @@ def wait_until_ready(
 
 def wait_for_web(plan: DevPlan, child: Child, timeout_s: float) -> bool:
     """Wait until the web child accepts a connection. Returns `False` when the child exits."""
-    host = plan.bind_addresses[0]
-    host = LOOPBACK if host == "localhost" else host
+    host = connect_address(plan.bind_addresses[0])
     deadline_ns = CLOCK.monotonic_ns() + round(timeout_s * NS_PER_S)
     while CLOCK.monotonic_ns() < deadline_ns:
         if not child.running:

@@ -169,6 +169,56 @@ class TestTheWebSettingsOfTheOwner:
         ]
         assert not any("token" in line.lower() for line in lines)  # the owner has a hash
 
+    def test_a_wildcard_prints_the_loopback_url_and_the_addresses_of_the_device(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dev, "device_addresses", lambda: ("198.51.100.2", "192.0.2.9"))
+        plan = plan_for(tmp_path, '[web]\nbind_address = "0.0.0.0"\nport = 8123\n')
+        assert plan.bind_addresses == ["0.0.0.0"]
+        assert plan.urls() == [
+            "http://127.0.0.1:8123/",
+            "http://198.51.100.2:8123/",
+            "http://192.0.2.9:8123/",
+        ]
+        web_lines = [line for line in banner(plan) if line.startswith("Web UI:")]
+        assert web_lines == [f"Web UI: {url}" for url in plan.urls()]
+
+    def test_the_ipv6_wildcard_prints_the_ipv6_loopback_url_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dev, "device_addresses", lambda: ("198.51.100.2",))
+        local = '[web]\nbind_address = "0.0.0.0"\nextra_bind_addresses = ["::"]\nport = 8123\n'
+        plan = plan_for(tmp_path, local)
+        assert plan.urls() == [
+            "http://127.0.0.1:8123/",
+            "http://198.51.100.2:8123/",
+            "http://[::1]:8123/",
+        ]
+
+    def test_a_wildcard_with_no_network_prints_the_loopback_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dev, "device_addresses", lambda: ())
+        plan = plan_for(tmp_path, '[web]\nbind_address = "0.0.0.0"\nport = 8123\n')
+        assert plan.urls() == ["http://127.0.0.1:8123/"]
+
+    def test_the_launcher_waits_for_the_web_child_on_the_loopback_for_a_wildcard(
+        self, tmp_path: Path
+    ) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        try:
+            plan = plan_for(tmp_path, '[web]\nbind_address = "0.0.0.0"\n')
+            plan.port = int(listener.getsockname()[1])
+
+            class Alive:
+                running = True
+
+            assert dev.wait_for_web(plan, Alive(), 5.0) is True  # type: ignore[arg-type]
+        finally:
+            listener.close()
+
     def test_the_url_of_an_ipv6_address_is_bracketed_once(self) -> None:
         assert url_for("2001:db8::1", 80) == "http://[2001:db8::1]:80/"
         assert url_for("[2001:db8::1]", 80) == "http://[2001:db8::1]:80/"

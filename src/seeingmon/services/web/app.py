@@ -80,9 +80,10 @@ with a `Retry-After` header.
 
 **Hosts.** The server answers a request only when its `Host` header names an allowed host: the
 loopback names, the addresses that the server listens on, and the entries of the `allowed_hosts`
-setting. Any other host gets `400 host_not_allowed`, and the message names the setting. A WebSocket
-handshake with an `Origin` header needs an allowed host there too. This rule does not change who
-may read or send commands.
+setting. A server that listens on a wildcard address also admits any IP address and the names of
+its device. Any other host gets `400 host_not_allowed`, and the message names the setting. A
+WebSocket handshake with an `Origin` header needs an allowed host there too. This rule does not
+change who may read or send commands.
 
 **Values.** Times are ISO 8601 UTC strings. A field name carries its unit, such as
 `seeing_fwhm_arcsec`. A missing value is `null`, and the `quality` object says why. Every error

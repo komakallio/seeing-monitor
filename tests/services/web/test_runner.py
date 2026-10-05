@@ -127,6 +127,31 @@ def test_an_ipv6_socket_accepts_ipv6_only() -> None:
         sock.close()
 
 
+def test_a_wildcard_socket_takes_connections_on_the_loopback_address() -> None:
+    (sock,) = bind_sockets(["0.0.0.0"], 0)
+    try:
+        assert sock.getsockname()[0] == "0.0.0.0"
+        socket.create_connection((LOOPBACK, int(sock.getsockname()[1])), timeout=5).close()
+    finally:
+        sock.close()
+
+
+@needs_ipv6
+def test_the_two_wildcards_share_one_port() -> None:
+    """The IPv6 wildcard accepts IPv6 only, so it leaves the IPv4 wildcard alone."""
+    (v4,) = bind_sockets(["0.0.0.0"], 0)
+    port = int(v4.getsockname()[1])
+    try:
+        (v6,) = bind_sockets(["::"], port)
+        try:
+            assert v6.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 1
+            socket.create_connection((IPV6_LOOPBACK, port), timeout=5).close()
+        finally:
+            v6.close()
+    finally:
+        v4.close()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="the exclusive bind is a Windows rule")
 def test_on_windows_no_other_socket_can_share_the_port() -> None:
     (first,) = bind_sockets([LOOPBACK], 0)
@@ -255,6 +280,27 @@ def test_a_repeated_address_opens_one_socket(start: Callable[..., Running]) -> N
         bind_address=LOOPBACK, extra_bind_addresses=["localhost", LOOPBACK, OTHER_LOOPBACK]
     ) as server:
         assert server.runner.addresses == (LOOPBACK, OTHER_LOOPBACK)
+
+
+def test_a_wildcard_address_serves_every_interface_and_any_address_as_host(
+    start: Callable[..., Running],
+) -> None:
+    with start(bind_address="0.0.0.0", allowed_hosts=["pi.example"]) as server:
+        assert server.runner.addresses == ("0.0.0.0",)
+        assert server.runner.url == f"http://{LOOPBACK}:{server.port}/"
+        assert fetch(LOOPBACK, server.port, f"{API}/status")[0] == 200
+        assert fetch(LOOPBACK, server.port, f"{API}/status", host="192.0.2.77")[0] == 200
+        assert fetch(LOOPBACK, server.port, f"{API}/status", host="pi.example")[0] == 200
+        assert fetch(LOOPBACK, server.port, f"{API}/status", host="evil.example")[0] == 400
+        assert fetch(LOOPBACK, server.port, f"{API}/status", host="0.0.0.0")[0] == 400
+    assert server.exit_code == 0
+    assert_nobody_listens(LOOPBACK, server.port)
+
+
+def test_a_wildcard_leaves_out_the_address_that_it_covers(start: Callable[..., Running]) -> None:
+    with start(bind_address="0.0.0.0", extra_bind_addresses=[LOOPBACK]) as server:
+        assert server.runner.addresses == ("0.0.0.0",)
+        assert fetch(LOOPBACK, server.port, f"{API}/status")[0] == 200
 
 
 @needs_ipv6
@@ -412,6 +458,15 @@ def test_systemd_hears_ready_then_heartbeats_then_stopping(start: Callable[..., 
     assert messages.count("STOPPING=1") == 1
     kinds = [item[0] for item in snapshot]
     assert kinds.index("READY=1") < kinds.index("WATCHDOG=1") < kinds.index("STOPPING=1")
+
+
+def test_the_heartbeat_probe_reaches_a_server_that_listens_on_a_wildcard(
+    start: Callable[..., Running],
+) -> None:
+    """The probe cannot connect to `0.0.0.0` on Windows, so it uses the loopback address."""
+    messages = Messages()
+    with start(bind_address="0.0.0.0", notifier=notifier_for(messages)):
+        assert wait_until(lambda: messages.count("WATCHDOG=1") >= 2, timeout_s=10)
 
 
 def test_ready_goes_out_when_the_server_accepts_connections(start: Callable[..., Running]) -> None:

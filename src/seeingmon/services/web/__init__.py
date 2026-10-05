@@ -19,6 +19,8 @@ modules that need them. The modules are:
 - `privacy`: the scrubbing of text and of the configuration.
 - `live`: the alignment hub, which shares one frame stream between many viewers.
 - `hosts`: the rule for the `Host` and `Origin` of a request (`allowed_hosts`).
+- `netaddr`: wildcard addresses, the loopback address that reaches a listener, and the addresses
+  and names of this device.
 - `models`, `schemas`, `errors`, `middleware`, `context`, and `api`: the request and response
   models, the OpenAPI components of the records, the error shape, the middleware (the host
   check, the headers, the body limit, and compression), the access rule, and the routes.

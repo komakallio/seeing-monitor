@@ -49,19 +49,20 @@ recordings_dir = "<path to the recordings folder>"
 token_hash = "<hash of the API token>"
 
 # The web process: the REST API, the UI, and the alignment live view. The defaults live in
-# config/default.d/web.toml. Set the LAN address of this device, so that the process listens on
-# that interface only (a wildcard address such as 0.0.0.0 is an error). The default address is the
-# loopback interface. Reads are open on the LAN unless you set require_token_for_reads, and every
-# POST needs the token. The lines below only show the shape.
+# config/default.d/web.toml. The default address is the loopback interface, which only this device
+# reaches. To reach the UI from another device, set bind_address to the wildcard "0.0.0.0", which
+# listens on every IPv4 interface whatever address the device has (a phone hotspot or a DHCP server
+# changes it), or to the address of one interface. Reads are open on the network unless you set
+# require_token_for_reads, and every POST needs the token. The lines below only show the shape.
 #
-# To reach the UI through a VPN, such as a tailnet, bind the address of the VPN interface too
-# (extra_bind_addresses), and list the names that clients type (allowed_hosts). The server answers
-# a request only when its Host header names the loopback interface, a bind address (the bind
-# addresses are always allowed, so list names only), or an entry of allowed_hosts. The entries
-# below are documentation addresses and example names.
+# The server answers a request only when its Host header names the loopback interface, a bind
+# address (the bind addresses are always allowed), an entry of allowed_hosts, or, when you bind a
+# wildcard, any IP address or a name of this device. List the other names that clients type, such as
+# a VPN name (allowed_hosts). To bind the address of a VPN interface of this device instead, list
+# it in extra_bind_addresses. The entries below are documentation addresses and example names.
 # [web]
-# bind_address = "<LAN address of this device>"
-# extra_bind_addresses = ["192.0.2.10", "2001:db8::10"]
+# bind_address = "0.0.0.0"
+# extra_bind_addresses = ["::"]    # IPv6 too; leave it out on a device with no IPv6
 # allowed_hosts = ["seeing-pi", "seeing-pi.tailnet.example"]
 # port = 8080
 # require_token_for_reads = false

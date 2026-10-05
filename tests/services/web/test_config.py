@@ -8,9 +8,12 @@ from pathlib import Path
 import pytest
 
 from seeingmon.config import ConfigError, load_config
+from seeingmon.services.web import config as web_config
 from seeingmon.services.web.config import AuthSettings, WebSettings
 
 HASH = "$scrypt$ln=10,r=8,p=1$c2FsdHNhbHRzYWx0$ZGlnZXN0ZGlnZXN0ZGlnZXN0"
+MDNS_NAME = "my-pi.local"  # repo-check: allow
+MULTICAST_V6 = "ff02::1"  # repo-check: allow
 
 
 def read_defaults(repo_root: Path) -> dict[str, object]:
@@ -41,20 +44,22 @@ def test_the_zenith_angle_is_withheld_by_default() -> None:
     assert WebSettings().withhold_fields == ("zenith_angle_deg",)
 
 
-@pytest.mark.parametrize("address", ["192.0.2.7", "::1", "2001:db8::5", "localhost", " 192.0.2.7 "])
-def test_a_bind_address_names_one_interface(address: str) -> None:
+@pytest.mark.parametrize(
+    "address", ["192.0.2.7", "::1", "2001:db8::5", "localhost", " 192.0.2.7 ", "0.0.0.0", "::"]
+)
+def test_a_bind_address_names_an_interface_or_a_wildcard(address: str) -> None:
     assert WebSettings(bind_address=address).bind_address in {
         "192.0.2.7",
         "::1",
         "2001:db8::5",
         "localhost",
+        "0.0.0.0",
+        "::",
     }
 
 
-@pytest.mark.parametrize(
-    "address", ["0.0.0.0", "::", "", "not-an-address", "192.0.2", "host.example"]
-)
-def test_a_wildcard_or_unparsable_bind_address_is_an_error(address: str) -> None:
+@pytest.mark.parametrize("address", ["", "not-an-address", "192.0.2", "host.example", "*"])
+def test_an_unparsable_bind_address_is_an_error(address: str) -> None:
     with pytest.raises(ValueError, match="bind_address"):
         WebSettings(bind_address=address)
 
@@ -102,21 +107,23 @@ def test_the_allowed_host_set_adds_the_list_and_every_bind_address() -> None:
     )
 
 
-@pytest.mark.parametrize("address", ["192.0.2.7", "::1", "2001:db8::5", "localhost", " 192.0.2.7 "])
-def test_an_extra_bind_address_names_one_interface_like_the_bind_address(address: str) -> None:
+@pytest.mark.parametrize(
+    "address", ["192.0.2.7", "::1", "2001:db8::5", "localhost", " 192.0.2.7 ", "0.0.0.0", "::"]
+)
+def test_an_extra_bind_address_reads_like_the_bind_address(address: str) -> None:
     settings = WebSettings(extra_bind_addresses=(address,))
     assert settings.extra_bind_addresses in {
         ("192.0.2.7",),
         ("::1",),
         ("2001:db8::5",),
         ("localhost",),
+        ("0.0.0.0",),
+        ("::",),
     }
 
 
-@pytest.mark.parametrize(
-    "address", ["0.0.0.0", "::", "", "not-an-address", "192.0.2", "host.example"]
-)
-def test_a_wildcard_or_unparsable_extra_bind_address_is_an_error(address: str) -> None:
+@pytest.mark.parametrize("address", ["", "not-an-address", "192.0.2", "host.example", "*"])
+def test_an_unparsable_extra_bind_address_is_an_error(address: str) -> None:
     with pytest.raises(ValueError, match="extra_bind_addresses"):
         WebSettings(extra_bind_addresses=("192.0.2.7", address))
 
@@ -131,6 +138,57 @@ def test_the_listen_addresses_are_distinct_and_keep_their_order() -> None:
 
 def test_localhost_listens_on_the_ipv4_loopback_address() -> None:
     assert WebSettings(bind_address="localhost").listen_addresses() == ("127.0.0.1",)
+
+
+def test_a_wildcard_listens_on_its_own() -> None:
+    assert WebSettings(bind_address="0.0.0.0").listen_addresses() == ("0.0.0.0",)
+    assert WebSettings(bind_address="::").listen_addresses() == ("::",)
+
+
+def test_a_wildcard_leaves_out_the_addresses_of_its_family() -> None:
+    """A wildcard socket and a socket of its family cannot share one port."""
+    both = WebSettings(
+        bind_address="0.0.0.0",
+        extra_bind_addresses=("127.0.0.1", "192.0.2.5", "::1", "2001:db8::5", "localhost"),
+    )
+    assert both.listen_addresses() == ("0.0.0.0", "::1", "2001:db8::5")
+    everything = WebSettings(
+        bind_address="192.0.2.5", extra_bind_addresses=("::", "0.0.0.0", "2001:db8::5", "::1")
+    )
+    assert everything.listen_addresses() == ("::", "0.0.0.0")
+
+
+def test_a_wildcard_bind_admits_every_address_and_the_names_of_the_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(web_config, "device_names", lambda: ("my-pi", MDNS_NAME))
+    rule = WebSettings(bind_address="0.0.0.0", allowed_hosts=("pi.example",)).allowed_host_set()
+    assert rule.any_address is True
+    for admitted in (
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "pi.example",
+        "my-pi",
+        MDNS_NAME,
+        "192.0.2.77",
+        "2001:db8::77",
+        "203.0.113.9",
+    ):
+        assert admitted in rule
+    for refused in ("evil.example", "0.0.0.0", "::", "224.0.0.1", MULTICAST_V6):
+        assert refused not in rule
+
+
+def test_an_address_bind_admits_that_address_and_not_every_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(web_config, "device_names", lambda: ("my-pi",))
+    rule = WebSettings(bind_address="192.0.2.5").allowed_host_set()
+    assert rule.any_address is False
+    assert "192.0.2.5" in rule
+    assert "192.0.2.77" not in rule
+    assert "my-pi" not in rule
 
 
 def test_the_new_keys_read_from_the_layers(tmp_path: Path) -> None:
@@ -178,11 +236,12 @@ def test_the_section_reads_from_the_layers(tmp_path: Path) -> None:
 
 def test_a_bad_section_names_the_key_and_not_the_value(tmp_path: Path) -> None:
     local = tmp_path / "local.toml"
-    local.write_text('[web]\nbind_address = "0.0.0.0"\n', encoding="utf-8")
+    local.write_text('[web]\nbind_address = "private-host.example"\n', encoding="utf-8")
     config = load_config(local_file=local, env={})
     with pytest.raises(ConfigError) as raised:
         config.section("web", WebSettings)
     assert "bind_address" in str(raised.value)
+    assert "private-host" not in str(raised.value)
 
 
 # --- The token hash --------------------------------------------------------------------------

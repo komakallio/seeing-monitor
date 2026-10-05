@@ -19,10 +19,13 @@ hash of the token (see `seeingmon.services.web.auth` for the format), and
 `seeingmon web hash-token` creates one.
 
 **Addresses and hosts.** `bind_address` and `extra_bind_addresses` name the interfaces to listen
-on. `allowed_hosts` names the hosts that a request may carry in its `Host` header, in addition to
-the loopback names and the bind addresses (see `seeingmon.services.web.hosts`). The two rules are
-separate: an address that the process listens on is always an allowed host, and a host can be
-allowed without a socket, for a name that reaches the same interface through a VPN.
+on: the address of one interface, or a wildcard (`0.0.0.0` for every IPv4 interface, `::` for every
+IPv6 interface). `allowed_hosts` names the hosts that a request may carry in its `Host` header, in
+addition to the loopback names and the bind addresses (see `seeingmon.services.web.hosts`). The two
+rules are separate: an address that the process listens on is always an allowed host, and a host
+can be allowed without a socket, for a name that reaches the same interface through a VPN. A
+wildcard bind admits any IP address as a host, because the settings cannot list the addresses that
+the device will have.
 """
 
 from __future__ import annotations
@@ -36,7 +39,8 @@ from pathlib import Path
 from pydantic import Field, SecretStr, field_validator, model_validator
 
 from seeingmon.config import ConfigError, SectionModel
-from seeingmon.services.web.hosts import allowed_set, normalize_entries
+from seeingmon.services.web.hosts import HostRule, allowed_set, normalize_entries
+from seeingmon.services.web.netaddr import WILDCARD_V4, WILDCARD_V6, WILDCARDS, device_names
 
 MIB = 1024 * 1024
 LOOPBACK_V4 = "127.0.0.1"
@@ -130,7 +134,7 @@ class RequestSettings(SectionModel):
 
 
 def _interface_address(value: str, setting: str) -> str:
-    """The canonical form of an address that names one interface of this device."""
+    """The canonical form of an address that names an interface of this device, or a wildcard."""
     text = value.strip()
     if text.lower() == "localhost":
         return "localhost"
@@ -138,28 +142,28 @@ def _interface_address(value: str, setting: str) -> str:
         address = ipaddress.ip_address(text)
     except ValueError:
         raise ValueError(
-            f"set {setting} to the IP address of one interface of this device"
+            f"set {setting} to the IP address of an interface of this device, "
+            f"or to {WILDCARD_V4} or {WILDCARD_V6} for every interface"
         ) from None
-    if address.is_unspecified:
-        raise ValueError(
-            f"set {setting} to the address of one interface of this device, not to 0.0.0.0 or ::"
-        )
     return str(address)
 
 
 class WebSettings(SectionModel):
     """The `[web]` section: the addresses, the access rule, and the limits of the API.
 
-    `bind_address` names one interface of this device, and `extra_bind_addresses` names more, such
-    as the address of a VPN interface. The process listens on each of them on the same `port`, and
-    never on every interface, so a wildcard address is an error. `localhost` means the IPv4
-    loopback address, and `::1` is the IPv6 one.
+    `bind_address` names an interface of this device, and `extra_bind_addresses` names more, such
+    as the address of a VPN interface. The process listens on each of them on the same `port`.
+    `0.0.0.0` listens on every IPv4 interface and `::` on every IPv6 interface, whatever address
+    the device gets later, so the UI stays reachable when a hotspot or a DHCP server hands out a
+    new one. The default is the loopback interface. `localhost` means the IPv4 loopback address,
+    and `::1` is the IPv6 one.
 
     `allowed_hosts` lists the names and addresses that a client may put in the `Host` header (and a
     browser in the `Origin` header of a WebSocket) in addition to the loopback names and the bind
-    addresses, which are always allowed. A request with another host gets an error. This rule does
-    not change who may read or send commands. It keeps a page from another site, or a name that
-    the owner did not list, from reaching the server through the browser of a visitor.
+    addresses, which are always allowed. A wildcard bind also admits every IP address and the names
+    of this device. A request with another host gets an error. This rule does not change who may
+    read or send commands. It keeps a page from another site, or a name that the owner did not
+    list, from reaching the server through the browser of a visitor.
 
     `withhold_fields` lists record fields that the API serves as `null` with a `quality` note,
     because they narrow down the site (the zenith angle of Polaris equals about 90 degrees minus
@@ -216,14 +220,36 @@ class WebSettings(SectionModel):
     def listen_addresses(self) -> tuple[str, ...]:
         """The distinct addresses to listen on: `bind_address` first, then the extra addresses.
 
-        `localhost` becomes the IPv4 loopback address, so that each entry names one socket.
+        `localhost` becomes the IPv4 loopback address, so that each entry names one socket. A
+        wildcard covers every address of its family, and two sockets of a family cannot share a
+        port when one of them is the wildcard, so the list leaves out the addresses that a
+        wildcard covers.
         """
-        names = (self.bind_address, *self.extra_bind_addresses)
-        return tuple(dict.fromkeys(LOOPBACK_V4 if name == "localhost" else name for name in names))
+        names = tuple(
+            dict.fromkeys(
+                LOOPBACK_V4 if name == "localhost" else name
+                for name in (self.bind_address, *self.extra_bind_addresses)
+            )
+        )
+        wildcard_v4 = WILDCARD_V4 in names
+        wildcard_v6 = WILDCARD_V6 in names
 
-    def allowed_host_set(self) -> frozenset[str]:
+        def covered(name: str) -> bool:
+            if name in WILDCARDS:
+                return False
+            version = ipaddress.ip_address(name).version
+            return (version == 4 and wildcard_v4) or (version == 6 and wildcard_v6)
+
+        return tuple(name for name in names if not covered(name))
+
+    def allowed_host_set(self) -> HostRule:
         """The hosts that a request may name. See `seeingmon.services.web.hosts.allowed_set`."""
-        return allowed_set(self.bind_address, self.extra_bind_addresses, self.allowed_hosts)
+        return allowed_set(
+            self.bind_address,
+            self.extra_bind_addresses,
+            self.allowed_hosts,
+            own_names=device_names(),
+        )
 
 
 class AuthSettings(SectionModel):

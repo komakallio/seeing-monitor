@@ -461,17 +461,39 @@ def test_a_taken_port_ends_the_command_with_a_message_that_names_the_address(
     assert "Traceback" not in err
 
 
-def test_a_wildcard_bind_address_is_refused_with_the_key_in_the_message(
+def test_an_unparsable_bind_address_is_refused_with_the_key_in_the_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], token_hash: str
 ) -> None:
     config = write_config(
-        tmp_path / "local.toml", tmp_path, token_hash=token_hash, web='bind_address = "0.0.0.0"'
+        tmp_path / "local.toml",
+        tmp_path,
+        token_hash=token_hash,
+        web='bind_address = "private-host.example"',
     )
     code, _out, err = run_cli(capsys, "web", "--local-config", str(config))
     assert code == 1
     assert "bind_address" in err
-    assert "0.0.0.0" not in err.replace("not to 0.0.0.0 or ::", "")
+    assert "private-host" not in err
     assert "Traceback" not in err
+
+
+def test_a_wildcard_bind_address_serves_every_interface_and_admits_any_address(
+    tmp_path: Path, recorded_runners: list[WebRunner], token_hash: str
+) -> None:
+    config = write_config(
+        tmp_path / "local.toml",
+        tmp_path,
+        token_hash=token_hash,
+        web='bind_address = "0.0.0.0"\nallowed_hosts = ["pi.example"]',
+    )
+    with Serving(recorded_runners, ["web", "--local-config", str(config)]) as running:
+        assert running.runners[0].addresses == ("0.0.0.0",)
+        assert running.runners[0].url == f"http://{LOOPBACK}:{running.port}/"
+        assert fetch(LOOPBACK, running.port, f"{API}/status")[0] == 200
+        assert fetch(LOOPBACK, running.port, f"{API}/status", host="192.0.2.77")[0] == 200
+        assert fetch(LOOPBACK, running.port, f"{API}/status", host="pi.example")[0] == 200
+        assert fetch(LOOPBACK, running.port, f"{API}/status", host="other.example")[0] == 400
+        assert fetch(LOOPBACK, running.port, f"{API}/status", host="0.0.0.0")[0] == 400
 
 
 def test_a_wildcard_in_allowed_hosts_is_refused(
@@ -600,7 +622,7 @@ def test_a_bad_web_section_stops_the_demo_with_a_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "local.toml"
-    config.write_text('[web]\nbind_address = "0.0.0.0"\n', encoding="utf-8")
+    config.write_text('[web]\nbind_address = "not-an-address"\n', encoding="utf-8")
     code, out, err = run_cli(capsys, "web", "--demo", "--local-config", str(config))
     assert code == 1
     assert out == ""

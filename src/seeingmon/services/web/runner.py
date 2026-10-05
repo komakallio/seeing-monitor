@@ -4,7 +4,8 @@
 
 - **Sockets.** The runner opens one listening socket for each distinct address of `bind_address`
   and `extra_bind_addresses`, all on the same port, and uvicorn serves them from one event loop.
-  It never binds a wildcard address. An IPv6 socket accepts IPv6 only (`IPV6_V6ONLY`), so the IPv4
+  A wildcard address (`0.0.0.0` or `::`) listens on every interface of its family, whatever
+  address the device gets later. An IPv6 socket accepts IPv6 only (`IPV6_V6ONLY`), so the IPv4
   and IPv6 addresses of one interface stay two separate listeners that the configuration names. On
   Windows a socket binds exclusively, so no other process can share the port. If an address
   cannot be bound, the runner closes the sockets that it opened, and `BindError` names the
@@ -13,7 +14,8 @@
   the watchdog interval, and `STOPPING=1` when the shutdown begins. A heartbeat goes out only if a
   real HTTP request to the first listening address (a read of the profile, which needs the event
   loop and a worker thread) gets an answer, so a wedged server stops sending and systemd restarts
-  it. The probe never touches the store or `core`: an outage of either must not restart `web`.
+  it. For a wildcard the request goes to the loopback address of its family. The probe never
+  touches the store or `core`: an outage of either must not restart `web`.
 - **Shutdown.** A stop request or a signal makes uvicorn stop accepting connections, close the live
   WebSocket connections, and wait up to `shutdown_timeout_s` for the rest. The lifespan of the app
   then closes the alignment hub. `run` returns 0 after a clean stop, and `EXIT_STARTUP_FAILURE`
@@ -41,6 +43,7 @@ from starlette.types import ASGIApp
 
 from seeingmon.services.acquire.notify import SystemdNotifier
 from seeingmon.services.web.config import WebSettings
+from seeingmon.services.web.netaddr import WILDCARD_V4, WILDCARD_V6, connect_address
 
 _log = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ PROBE_PATH = "/api/v1/profile"
 PROBE_TIMEOUT_S = 10.0
 POLL_S = 0.05
 WS_MAX_MESSAGE_BYTES = 64 * 1024
+_WILDCARD_SCOPE = {WILDCARD_V4: "every IPv4 interface", WILDCARD_V6: "every IPv6 interface"}
 
 
 class BindError(OSError):
@@ -184,11 +188,12 @@ class WebRunner:
 
     @property
     def url(self) -> str:
-        """The URL of the UI on the first address. It needs the port, so call it after `run`
-        has bound the sockets (see `started`)."""
+        """The URL of the UI on the first address, as a program on this device reaches it (a
+        wildcard gives the loopback address). It needs the port, so call it after `run` has bound
+        the sockets (see `started`)."""
         if self.port is None:
             raise RuntimeError("the runner has not bound its sockets yet")
-        return url_for(self._addresses[0], self.port)
+        return url_for(connect_address(self._addresses[0]), self.port)
 
     def request_stop(self, reason: str = "requested") -> None:
         """Ask the server to shut down. Safe to call from another thread or a signal handler."""
@@ -207,7 +212,9 @@ class WebRunner:
         self.port = int(sockets[0].getsockname()[1])
         try:
             for address in self._addresses:
-                _log.info("listening on %s", format_address(address, self.port))
+                scope = _WILDCARD_SCOPE.get(address)
+                shown = format_address(address, self.port)
+                _log.info("listening on %s%s", shown, f" ({scope})" if scope else "")
             try:
                 return asyncio.run(self._main(sockets))
             except SystemExit as stop:  # uvicorn exits with a code when the startup fails
@@ -277,7 +284,10 @@ class WebRunner:
                 notifier.stopping()
             if started and not stopping and interval is not None and time.monotonic() >= next_beat:
                 alive = await probe_http(
-                    self._addresses[0], self.port, self._probe_path, self._probe_timeout_s
+                    connect_address(self._addresses[0]),
+                    self.port,
+                    self._probe_path,
+                    self._probe_timeout_s,
                 )
                 if alive:
                     notifier.watchdog()

@@ -125,7 +125,7 @@ Keep these files outside the repository, or under `local/`, which Git ignores. N
 - **Local configuration.** Copy `config/local.example.toml` to `local/config.toml`. Set at least:
   - `station_id`, and the `[site]` table.
   - `driver = "asi"` in `[services.acquire]`. The default driver is the simulator.
-  - `bind_address` in `[web]`, the LAN address of the Pi. The default is the loopback address, so the UI is reachable from the Pi only. To open the UI by a host name, add the name to `allowed_hosts` (see [Reach the web UI through a VPN](#reach-the-web-ui-through-a-vpn)).
+  - `bind_address` in `[web]`: `"0.0.0.0"` listens on every interface, so the UI answers at the address that the Pi has now, however it changes. The default is the loopback address, so the UI is reachable from the Pi only. To open the UI by a host name, add the name to `allowed_hosts` (see [Reach the web UI](#reach-the-web-ui)).
   - `catalog_path` and `index_dir` in `[survey]`, the cap catalog and the solver index (see **Cap catalog and solver index** below). `core` does not start without `catalog_path`.
   - The `[power]` route and the `[services.core.escalation]` `reboot_command` (see [The camera recovery ladder](#the-camera-recovery-ladder)).
   - The `[heater]` table, once you know the HAT.
@@ -251,11 +251,28 @@ An external watchdog on your LAN can poll this endpoint (see [Remote power cycle
 
 `core` starts up to two worker processes, and on Linux each one names itself, so that you can tell them apart in `ps -eo pid,comm,rss,args` and in `top`: the survey worker is `smon-survey`, and the worker of the quick solve, which runs while the Align page streams, is `smon-align`. The other processes keep the name of the interpreter, and `args` shows which service each one runs.
 
-## Reach the web UI through a VPN
+## Reach the web UI
 
-`web` listens on `bind_address` and on every address of `extra_bind_addresses`, and it never listens on all interfaces. It answers a request only when the `Host` header names an allowed host: the loopback names, every bind address, and the entries of `allowed_hosts`. A WebSocket handshake (the live view of the Align page) that carries an `Origin` header must name an allowed host there too, so a page from another site cannot open it. The server answers a request with another `Host` with 400, and a handshake with another `Origin` with 403.
+`web` listens on `bind_address` and on every address of `extra_bind_addresses`, on `port` (8080 by default). The default is the loopback address, so only the device itself reaches the UI. An address names one interface, or it is a wildcard: `0.0.0.0` listens on every IPv4 interface and `::` on every IPv6 interface, whatever address the device gets later.
 
-To reach the UI through a VPN, such as a tailnet:
+`web` answers a request only when the `Host` header names an allowed host: the loopback names, every bind address, and the entries of `allowed_hosts`. A wildcard bind also admits every IP address (except `0.0.0.0`, `::`, and the multicast addresses) and the names of the device (its host name, and the same name under `.local`), because the settings cannot list the addresses that a hotspot or a DHCP server hands out. A name that clients type for a VPN, or any other name, still needs an entry in `allowed_hosts`. A WebSocket handshake (the live view of the Align page) that carries an `Origin` header must name an allowed host there too, so a page from another site cannot open it. The server answers a request with another `Host` with 400, and a handshake with another `Origin` with 403.
+
+The host rule does not change who may read or send commands: reads are open to every client that reaches the port, and every command needs the token. Bind a wildcard only on a network that you trust, or set `require_token_for_reads = true`.
+
+### Listen on every interface
+
+Set `bind_address = "0.0.0.0"` in `[web]` of the local configuration (`local/config.toml`, which stays out of the repository). Add `extra_bind_addresses = ["::"]` for IPv6, unless the device has no IPv6: the bind of `::` fails there, and `web` exits and names the address. Two cases need this setting:
+
+- **A laptop on the hotspot of a phone.** The hotspot hands the laptop a new address at each connection. Start `seeingmon dev`. The banner prints the URL of the loopback address and one URL for each IPv4 address that the laptop has, so you open `http://127.0.0.1:8080/` on the laptop and the URL in the range of the hotspot on the phone. Windows asks once whether Python may accept connections on the network: allow it for the network type that Windows gives the hotspot. If the phone gets no answer, the firewall is the likely cause.
+- **The Pi on the LAN of an observatory, behind a VPN gateway on another computer.** The gateway (Tailscale as a subnet router, for example) forwards the traffic of VPN clients to the LAN address of the Pi, and the Pi runs no VPN client. The Pi sees an ordinary request for its LAN address, which the wildcard admits. Clients that type a name, such as a name that the VPN or the LAN gives the Pi, need the name in `allowed_hosts`.
+
+### Listen on fixed addresses
+
+Name the addresses instead of a wildcard when the device must not answer on its other interfaces. `bind_address` and `extra_bind_addresses` then hold the addresses of the interfaces, and a bind of an address that the device does not have yet fails.
+
+### A VPN client on the device
+
+To reach the UI through a VPN that runs on the device itself, such as a tailnet:
 
 1. Note the address of the VPN interface of the Pi (IPv4 and IPv6, if both exist), the short host name, and the full name that the VPN gives the Pi.
 2. Put them in the `[web]` table of the local configuration (`local/config.toml`, which stays out of the repository):
@@ -270,7 +287,7 @@ To reach the UI through a VPN, such as a tailnet:
 3. Run the installer again, so that it copies the file, or restart the unit: `systemctl restart seeingmon-web`. The log of `web` has one `listening on` line for each address.
 4. From a client on the VPN, open the full name in a browser or run `curl -s -o /dev/null -w "%{http_code}\n" http://<full VPN name>:8080/api/v1/health`. The answer is 200 or 503. A 400 means that the name is not in `allowed_hosts`, and the log of `web` names each rejected host once.
 
-The addresses and names are deployment values, so the `/api/v1/config` endpoint and the `run` record show them as `<redacted>`. The bind of a VPN address fails while the VPN interface does not exist, and then `web` exits and systemd restarts it. At boot, the VPN can come up later than `web`, and the start limit of the unit can stop the restarts. If that happens, order `seeingmon-web` after the VPN service with a drop-in (`systemctl edit seeingmon-web`), and test a reboot. This is untested on a Pi.
+The addresses and names are deployment values, so the `/api/v1/config` endpoint and the `run` record show them as `<redacted>`. The bind of a VPN address fails while the VPN interface does not exist, and then `web` exits and systemd restarts it. At boot, the VPN can come up later than `web`, and the start limit of the unit can stop the restarts. If that happens, order `seeingmon-web` after the VPN service with a drop-in (`systemctl edit seeingmon-web`), and test a reboot. This is untested on a Pi. A wildcard bind has no such problem, because it binds at once, with or without the VPN interface.
 
 ## Where the logs go
 
@@ -1092,7 +1109,7 @@ API token for this run (shown once, never stored): <token>
 Press Ctrl+C to stop.
 ```
 
-Apart from the address of the web UI, the banner prints no coordinate, no path, and no host. A line that starts with `Warning:` follows the notes when the launcher finds a problem with a solver. Fix its cause before you rely on the run, because a solver that cannot run finds no pointing solution. The token is for the commands of the Align and Dark pages. The launcher prints none when `[auth]` holds a token hash.
+Apart from the addresses of the web UI, the banner prints no coordinate, no path, and no host. To open the UI on a phone or another computer, set `bind_address = "0.0.0.0"` in `[web]` of `local/config.toml`: the banner then prints one URL for each IPv4 address that the laptop has now (see [Listen on every interface](#listen-on-every-interface)). A line that starts with `Warning:` follows the notes when the launcher finds a problem with a solver. Fix its cause before you rely on the run, because a solver that cannot run finds no pointing solution. The token is for the commands of the Align and Dark pages. The launcher prints none when `[auth]` holds a token hash.
 
 ### Point the camera and align it
 
@@ -1187,21 +1204,22 @@ Press Ctrl+C in the console. The launcher prints `Stopping ...`, stops `web`, `c
 | A unit grows past its `MemoryMax`, and nothing stops it. Or the installer warns that the kernel has no memory cgroup. | The kernel of Raspberry Pi OS has the memory controller off, so systemd does not apply `MemoryMax`. A running unit shows `MemoryCurrent=[not set]`. | `cat /sys/fs/cgroup/cgroup.controllers` must list `memory`. If it does not, add `cgroup_enable=memory cgroup_memory=1` to the single line of `/boot/firmware/cmdline.txt`, and reboot (see the memory cgroup step of [Prepare the Pi](#prepare-the-pi)). |
 | Records carry `time_invalid`. | chrony has no synchronized source. | See [Time sync](#time-sync). |
 | The health endpoint answers 503. | A component failed, or `core` wrote no health record for three minutes. | Read the `reasons` in the answer, then `systemctl status seeingmon.target` and the log of `core`. |
-| The UI is not reachable from the LAN. | `bind_address` is still the loopback address. | Set the LAN address in `[web]` of the local configuration, and run the installer again. |
+| The UI is not reachable from the LAN. | `bind_address` is still the loopback address. | Set `bind_address = "0.0.0.0"` (every interface) or the LAN address in `[web]` of the local configuration, and run the installer again. |
+| The UI of a dev run on Windows answers on the laptop and not on a phone or another computer. | The firewall refuses the connection, or `bind_address` is still the loopback address. | Set `bind_address = "0.0.0.0"`, restart `seeingmon dev`, and allow Python through the firewall for the network of the hotspot when Windows asks. Open the URL that the banner prints for the address of the laptop. |
 | Commands over the API are refused. | `web` has no token hash. | Run `seeingmon web hash-token`, and install the hash with `--token-hash-file`. |
 | The data directory warns about the root file system. | No data partition. | See [Create the data partition](#create-the-data-partition). |
 | A burst fails because raw capture stopped, and the store wrote `retention.capture_stopped`. | Less than 1 GB of free space. | `df -h <data-dir>`. Free space, or unpin old bursts by deleting the `PINNED` file in their folders under `<data-dir>/bursts/`. |
 | The Images page is empty. | `core` writes the first preview after the first long exposure (30 s) of a survey step, and survey steps run only while the sky is dark. `[services.core.survey_frames]` may be off. | Check the state on the **Now** page, then `ls <data-dir>/previews/*/*/*`, and look for `survey_images.write_failed` events (`GET /api/v1/events?kind=survey_images.write_failed`) and for a full disk (`df -h <data-dir>`). |
 | `journalctl` shows nothing from before the last boot. | The journal lives in RAM. | Expected. The `event` table keeps the events that matter. |
 | The `sqm` component of `health` is `degraded`, and the event `sqm.read_failed` names a cause. | The SQM-LE reader gets no fresh reading: the point in InfluxDB is stale, the server does not answer or refuses the token, or the unit does not answer over TCP. | See [When the readings stop](#when-the-readings-stop) for each cause, and run `seeingmon hardware sqm` to try the settings. |
-| The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by the bind address. |
+| The UI answers `400` with `host_not_allowed`. | You opened it by a name that is not in `allowed_hosts`. | Add the name to `allowed_hosts` in `[web]`, or open the UI by an address (with `bind_address = "0.0.0.0"`, every IP address works, and so does the host name of the device). |
 | The heater stays on after a service stops. | `seeingmon heater-off` is missing or failed. | Read the `ExecStopPost` line in `systemctl status seeingmon-core`, and prefer a HAT with its own failsafe. |
 | Nothing runs after a reboot. | The units are not enabled. | `systemctl is-enabled seeingmon.target`, and run the installer again. |
 
 ## Security notes
 
 - Use ssh keys only. Set `PasswordAuthentication no` for sshd.
-- Reads of the API are open on the LAN by default, and commands need the bearer token. Reach the Pi from outside through a VPN (see [Reach the web UI through a VPN](#reach-the-web-ui-through-a-vpn)).
+- Reads of the API are open on the LAN by default, and commands need the bearer token. A wildcard `bind_address` answers on every interface of the device, so use it on networks that you trust. Reach the Pi from outside through a VPN (see [Reach the web UI](#reach-the-web-ui)).
 - The connection key, the token hash, the environment file, and the local configuration have the mode 0600 or live in a folder that only root and the service group enter. The installer checks the modes at every run. The units read the credentials through systemd. They hide `/home` from the services and mount the rest of the file system read-only. The exceptions are the data directory and `/var/lib/seeingmon` for `core`, the runtime directory `/run/seeingmon` for each service, and a private `/tmp`.
 - The repository never holds a host name, an address, a user name, a key, a token, or the SDK.
 

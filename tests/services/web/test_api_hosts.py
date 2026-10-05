@@ -20,6 +20,7 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.types import Message, Scope
 
 from seeingmon.config import load_config
+from seeingmon.services.web import config as web_config
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.core_client import FakeCoreClient
 from seeingmon.services.web.middleware import (
@@ -36,6 +37,8 @@ API = "/api/v1"
 STREAM = f"{API}/alignment/stream"
 LISTED = ["pi.example", "192.0.2.10", "2001:db8::10"]
 LOGGER = "seeingmon.services.web.middleware"
+MDNS_NAME = "my-pi.local"  # repo-check: allow
+MULTICAST_V6 = "ff02::1"  # repo-check: allow
 
 
 def host(name: str) -> dict[str, str]:
@@ -140,6 +143,67 @@ def test_another_host_is_refused(listed: TestClient, name: str) -> None:
     response = listed.get(f"{API}/status", headers=host(name))
     assert response.status_code == 400, name
     assert response.json()["error"]["code"] == "host_not_allowed"
+
+
+@pytest.fixture
+def everywhere(
+    served: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch
+) -> Callable[[], TestClient]:
+    """A client of a server that listens on every IPv4 interface, and lists one name."""
+    monkeypatch.setattr(web_config, "device_names", lambda: ("my-pi", MDNS_NAME))
+    return lambda: served(bind_address="0.0.0.0", allowed_hosts=["pi.example"])
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "192.0.2.77",
+        "192.0.2.77:8080",
+        "198.51.100.2",
+        "[2001:db8::77]:8080",
+        "localhost",
+        "pi.example",
+        "my-pi",
+        MDNS_NAME.upper() + ":8080",
+    ],
+)
+def test_a_wildcard_bind_passes_any_address_and_the_names_it_knows(
+    everywhere: Callable[[], TestClient], name: str
+) -> None:
+    assert everywhere().get(f"{API}/status", headers=host(name)).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "evil.example",
+        "other-pi",
+        "my-pi.evil.example",
+        "192.0.2.77.evil.example",
+        "0.0.0.0",
+        "0.0.0.0:8080",
+        "[::]",
+        "224.0.0.1",
+        f"[{MULTICAST_V6}]",
+        "127.1",
+    ],
+)
+def test_a_wildcard_bind_still_refuses_other_names_and_unusable_addresses(
+    everywhere: Callable[[], TestClient], name: str
+) -> None:
+    response = everywhere().get(f"{API}/status", headers=host(name))
+    assert response.status_code == 400, name
+    assert response.json()["error"]["code"] == "host_not_allowed"
+
+
+def test_a_wildcard_bind_checks_the_origin_of_a_websocket_like_the_host(
+    everywhere: Callable[[], TestClient],
+) -> None:
+    client = everywhere()
+    headers = {"host": "192.0.2.77:8080", "origin": "http://192.0.2.77:8080"}
+    with client.websocket_connect(STREAM, headers=headers):
+        pass
+    assert refused(client, host="192.0.2.77:8080", origin="http://evil.example").status_code == 403
 
 
 def test_the_empty_host_and_a_second_host_header_are_refused(listed: TestClient) -> None:

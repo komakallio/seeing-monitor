@@ -6,6 +6,7 @@ import pytest
 
 from seeingmon.services.web.hosts import (
     LOOPBACK_NAMES,
+    HostRule,
     allowed_set,
     host_of_header,
     host_of_origin,
@@ -16,6 +17,8 @@ from seeingmon.services.web.hosts import (
 
 LONG_LABEL = "a" * 64
 LONG_NAME = ".".join(["a" * 60] * 5)
+MDNS_NAME = "my-pi.local"  # repo-check: allow
+MULTICAST_V6 = "ff02::1"  # repo-check: allow
 
 
 @pytest.mark.parametrize(
@@ -211,6 +214,44 @@ def test_the_set_of_a_localhost_bind_address_is_the_loopback_names() -> None:
 def test_an_entry_that_does_not_validate_fails_the_set() -> None:
     with pytest.raises(ValueError, match="wildcards"):
         allowed_set("127.0.0.1", (), ["*.example"])
+
+
+def test_an_address_bind_gives_an_exact_rule() -> None:
+    rule = allowed_set("192.0.2.5", (), (), own_names=("my-pi",))
+    assert rule.any_address is False
+    assert "192.0.2.5" in rule
+    assert "192.0.2.6" not in rule
+    assert "my-pi" not in rule  # the names of the device count only for a wildcard
+
+
+@pytest.mark.parametrize(("bind", "extra"), [("0.0.0.0", ()), ("::", ()), ("127.0.0.1", ("::",))])
+def test_a_wildcard_bind_admits_any_address_and_the_names_of_the_device(
+    bind: str, extra: tuple[str, ...]
+) -> None:
+    rule = allowed_set(bind, extra, ["Pi.Example."], own_names=("My-Pi", MDNS_NAME))
+    assert rule.any_address is True
+    assert set(rule) == {*LOOPBACK_NAMES, "pi.example", "my-pi", MDNS_NAME}
+    for host in ("192.0.2.77", "2001:db8::77", "198.51.100.3", "203.0.113.9"):
+        assert host in rule
+    for host in ("evil.example", "0.0.0.0", "::", "224.0.0.1", MULTICAST_V6, "127.1", ""):
+        assert host not in rule
+
+
+def test_a_wildcard_is_no_name_of_the_rule() -> None:
+    assert "0.0.0.0" not in set(allowed_set("0.0.0.0", (), ()))
+    assert "::" not in set(allowed_set("::", (), ()))
+
+
+def test_the_names_of_the_device_that_no_client_can_send_are_left_out() -> None:
+    rule = allowed_set("0.0.0.0", (), (), own_names=("two words", "bücher", "my-pi", "a" * 300))
+    assert set(rule) == {*LOOPBACK_NAMES, "my-pi"}
+
+
+def test_a_host_rule_with_no_wildcard_compares_like_a_plain_set() -> None:
+    assert HostRule(["a", "b"]) == frozenset({"a", "b"})
+    assert "a" in HostRule(["a"])
+    number: object = 5
+    assert number not in HostRule(["a"], any_address=True)  # the rule reads text only
 
 
 @pytest.mark.parametrize(

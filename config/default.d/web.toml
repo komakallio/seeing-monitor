@@ -7,15 +7,18 @@
 # [auth].
 
 [web]
-# The one interface that the process binds. Set the LAN address of this device in the local file.
-# The default is the loopback interface, so a fresh install is reachable from this device only. A
-# wildcard address (0.0.0.0 or ::) is an error.
+# The interface that the process binds. The default is the loopback interface, so a fresh install
+# is reachable from this device only. Set the address of one interface in the local file, or a
+# wildcard: "0.0.0.0" listens on every IPv4 interface, whatever address the device gets later (a
+# phone hotspot or a DHCP server hands out a new one). "::" is the same for IPv6.
 bind_address = "127.0.0.1"
 
-# More interfaces that the process binds, such as the address of a VPN interface of this device. It
-# listens on each address (and on bind_address) on the same port, from one event loop. Each entry
-# is one interface address, and a wildcard is an error. If an address cannot be bound, the process
-# exits and names it. The default is no extra address. Set the addresses in the local file.
+# More interfaces that the process binds, such as the address of a VPN interface of this device, or
+# "::" next to a bind_address of "0.0.0.0". It listens on each address (and on bind_address) on the
+# same port, from one event loop. Each entry is one interface address or a wildcard. A wildcard
+# covers the addresses of its family, so the process leaves those out. If an address cannot be
+# bound, the process exits and names it. The default is no extra address. Set the addresses in the
+# local file.
 extra_bind_addresses = []
 port = 8080
 
@@ -23,6 +26,8 @@ port = 8080
 # its Host header, and a browser sends the host of the page in the Origin header of a WebSocket.
 # The server answers a request only when its host is in this list, or is one of localhost,
 # 127.0.0.1, ::1, bind_address, and the entries of extra_bind_addresses, which are always allowed.
+# A wildcard bind also admits any IP address and the names of this device (its host name, and the
+# same name under .local), because a wildcard cannot list the addresses that the device will have.
 # Any other host gets an error, so a page from another site cannot reach the server through the
 # browser of a visitor. An entry is an IPv4 address, an IPv6 address, or a DNS name, compared
 # without case and without a trailing dot, and a wildcard is an error. This rule does not change

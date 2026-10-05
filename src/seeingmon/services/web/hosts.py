@@ -11,6 +11,14 @@ wildcard is an error, because a wildcard would void the rule. The functions comp
 lowercase, without a trailing dot, and without the brackets of an IPv6 literal. They compare an IPv6
 address in its canonical form, so `2001:DB8:0::5` equals `2001:db8::5`.
 
+**A wildcard bind.** When the process listens on a wildcard address (`0.0.0.0` or `::`), it answers
+on every address that the device has, and the settings cannot list them: a phone hotspot hands out
+a new one at each connection. The rule then admits any IP address in the header, except an
+unspecified or a multicast one. That keeps the purpose of the rule, which is to stop DNS rebinding:
+a name of the attacker resolves to the device, and the browser sends that name in `Host`. A request
+that names an address cannot come from rebinding. The names stay exact: the loopback names, the
+names of this device, and the entries of `allowed_hosts`.
+
 **Headers.** `host_of_header` reads a `Host` value: `name`, `name:port`, `192.0.2.5:8080`, or
 `[2001:db8::5]:8080`. Starlette's `TrustedHostMiddleware` splits at the first colon, which breaks on
 an IPv6 literal, so this module reads the brackets itself. The port never counts.
@@ -22,6 +30,8 @@ import ipaddress
 import re
 from collections.abc import Iterable
 from urllib.parse import urlsplit
+
+from seeingmon.services.web.netaddr import is_wildcard
 
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
 SECURE_SCHEMES = ("https", "wss")
@@ -157,15 +167,65 @@ def is_trustworthy_origin(host: str | None, scheme: str) -> bool:
         return False
 
 
+def _names_a_device(host: str) -> bool:
+    """Whether `host` is an IP address that a client could use to reach a device."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not (address.is_unspecified or address.is_multicast)
+
+
+class HostRule(frozenset[str]):
+    """The hosts that a request may name: a set of exact names and addresses.
+
+    The set holds the names. With `any_address`, the rule also admits every IP address in canonical
+    form, except an unspecified or a multicast one (see "A wildcard bind" in the module text).
+    `in` applies the whole rule, and equality compares the names only.
+    """
+
+    any_address: bool
+
+    def __new__(cls, names: Iterable[str] = (), *, any_address: bool = False) -> HostRule:
+        rule = super().__new__(cls, names)
+        rule.any_address = any_address
+        return rule
+
+    def __contains__(self, host: object) -> bool:
+        if super().__contains__(host):
+            return True
+        return self.any_address and isinstance(host, str) and _names_a_device(host)
+
+
+def _own_entries(names: Iterable[str]) -> list[str]:
+    """The names of this device that a client can send. A name that is not valid is left out."""
+    entries: list[str] = []
+    for name in names:
+        try:
+            entries.append(normalize_entry(name))
+        except ValueError:
+            continue
+    return entries
+
+
 def allowed_set(
-    bind_address: str, extra_bind_addresses: Iterable[str], allowed_hosts: Iterable[str]
-) -> frozenset[str]:
-    """The hosts that a request may name: the list, the loopback names, and the bind addresses."""
-    return frozenset(
-        (
-            *LOOPBACK_NAMES,
-            normalize_entry(bind_address),
-            *(normalize_entry(address) for address in extra_bind_addresses),
-            *(normalize_entry(host) for host in allowed_hosts),
-        )
-    )
+    bind_address: str,
+    extra_bind_addresses: Iterable[str],
+    allowed_hosts: Iterable[str],
+    own_names: Iterable[str] = (),
+) -> HostRule:
+    """The hosts that a request may name: the list, the loopback names, and the bind addresses.
+
+    A wildcard bind address adds no name. It makes the rule admit any IP address, and it adds
+    `own_names`, the names of this device, which no other site can make a browser send.
+    """
+    bound = (bind_address, *extra_bind_addresses)
+    wildcard = any(is_wildcard(address) for address in bound)
+    names = [
+        *LOOPBACK_NAMES,
+        *(normalize_entry(address) for address in bound if not is_wildcard(address)),
+        *(normalize_entry(host) for host in allowed_hosts),
+    ]
+    if wildcard:
+        names.extend(_own_entries(own_names))
+    return HostRule(names, any_address=wildcard)
