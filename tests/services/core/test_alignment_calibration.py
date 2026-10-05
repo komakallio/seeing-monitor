@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ from seeingmon.services.core.alignment.preview import (
 )
 from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.dark import DarkLibrary
-from seeingmon.survey.flat_library import FlatLibrary
+from seeingmon.survey.flat_library import FlatLibrary, FlatLibraryError
 from seeingmon.survey.sky import SkyError, UnitFlat, load_flat
 
 from .previewfx import (
@@ -661,33 +662,38 @@ class TestTheFlatLibrary:
             add_flat(library, sensitivity(dust=None), 1),
             add_flat(library, np.ones(SHAPE, dtype=np.float32), 2),
         ]
-        stop = threading.Event()
         errors: list[BaseException] = []
-        counts: list[int] = []
+        barrier = threading.Barrier(5)  # the four previewing threads and this one
 
         def work() -> None:
-            made = 0
             try:
-                while not stop.is_set():
+                barrier.wait(30.0)
+                for _ in range(30):
                     step = calibrator.for_frame(frame)
                     assert step is not None
                     image = step(frame.data, block_mean(frame.data, FACTOR), FACTOR)
                     assert np.isfinite(image).all()
-                    made += 1
             except BaseException as error:
                 errors.append(error)
-            counts.append(made)
 
         threads = [threading.Thread(target=work) for _ in range(4)]
         for thread in threads:
             thread.start()
-        for turn in range(20):
-            library.activate(versions[turn % 2], now_utc_ns=SET_TIME_NS + (10 + turn) * NS_PER_S)
-        stop.set()
+        barrier.wait(30.0)
+        for turn in range(20):  # the pointer moves while the threads preview
+            for _attempt in range(100):
+                try:
+                    when = SET_TIME_NS + (10 + turn) * NS_PER_S
+                    library.activate(versions[turn % 2], now_utc_ns=when)
+                    break
+                except FlatLibraryError:  # Windows will not replace a file that a reader has open
+                    time.sleep(0.002)
+            else:
+                raise AssertionError("the flat could not be activated")
         for thread in threads:
-            thread.join(30.0)
+            thread.join(60.0)
+        assert not any(thread.is_alive() for thread in threads)  # nothing deadlocked
         assert not errors
-        assert all(count > 0 for count in counts)
 
 
 class TestThreads:
