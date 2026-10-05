@@ -41,7 +41,13 @@ from seeingmon.drivers.base import (
 )
 from seeingmon.frames import ActiveStream, Frame, FrameData, Roi, StreamConfig, StreamKind
 from seeingmon.profile import load_profile
-from seeingmon.records import EventRecord, Record, SeeingWindowRecord, SkyQualityRecord
+from seeingmon.records import (
+    EventRecord,
+    PointingRecord,
+    Record,
+    SeeingWindowRecord,
+    SkyQualityRecord,
+)
 from seeingmon.scheduler import CommissionResult, Scheduler, SchedulerConfig, SiteConfig
 from seeingmon.scheduler.config import FastConfig, LoopConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
@@ -173,8 +179,10 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
     """The fake survey analysis, driven by the script.
 
     A long exposure reports the cloud fraction of the script, and it solves unless clouds cover the
-    field or the script forbids it. A short exposure cannot tell the cloud fraction, and it does
-    not solve. A solved result gives the pointing provider the true position.
+    field or the script forbids it. It always gets a pointing record, unsolved when it does not
+    solve. A short exposure cannot tell the cloud fraction, and it does not solve. It gets no
+    pointing record, as the 1 ms frame of a real survey step gets none. A solved result gives the
+    pointing provider the true position.
     """
 
     def __init__(self, world: World, polls_until_ready: int = 0) -> None:
@@ -195,7 +203,7 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
         for output in super().poll():
             if output.solved:
                 self._world.solve(output.t_utc_ns)
-            if output.cloud_fraction is not None:  # a long frame also yields a sky quality record
+            if output.cloud_fraction is not None:  # a long frame also yields two more records
                 quality = SkyQualityRecord(
                     station_id="test",
                     t_utc_ns=output.t_utc_ns,
@@ -204,7 +212,17 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
                     n_stars_used=0,
                     cloud_fraction=output.cloud_fraction,
                 )
-                output = replace(output, records=(*output.records, quality))
+                pointing = PointingRecord(
+                    station_id="test",
+                    t_utc_ns=output.t_utc_ns,
+                    profile_id=PROFILE.id,
+                    provenance={"algo": "fake"},
+                    n_matched=20 if output.solved else 0,
+                    readout_mode="bin2",
+                    solver="fake" if output.solved else "none",
+                    flags=[] if output.solved else ["unsolved"],
+                )
+                output = replace(output, records=(*output.records, quality, pointing))
             outputs.append(output)
         return tuple(outputs)
 

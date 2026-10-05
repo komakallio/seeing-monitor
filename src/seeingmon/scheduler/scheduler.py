@@ -55,7 +55,7 @@ from seeingmon.config import Config
 from seeingmon.drivers.base import CameraDriver, CameraError, CameraStateError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, PixelFormat, Roi, StreamConfig, StreamKind
 from seeingmon.profile import Profile
-from seeingmon.records import EventRecord, Record, SeeingWindowRecord, field_specs
+from seeingmon.records import EventRecord, PointingRecord, Record, SeeingWindowRecord, field_specs
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.commands import (
     MAX_FLAT_FRAMES,
@@ -1896,7 +1896,7 @@ class Scheduler:
 
     def _handle_survey_output(self, output: SurveyOutput) -> None:
         self._counters.survey_results += 1
-        if not output.solved:
+        if any(isinstance(r, PointingRecord) and "unsolved" in r.flags for r in output.records):
             self._counters.survey_unsolved += 1
         flags = self._survey_flags(output)
         for record in output.records:

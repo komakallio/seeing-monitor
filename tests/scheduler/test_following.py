@@ -275,7 +275,9 @@ class TestNoPointingSolution:
         assert all(gap == pytest.approx(90.0, abs=3.0) for gap in gaps)
         assert 35 <= len(shorts) <= 42
         assert world.scheduler.state.value == "auto"
-        assert world.scheduler.status().counters.survey_unsolved >= 2 * (len(shorts) - 1)
+        # An attempt leaves one unsolved result, its 30 s frame. The 1 ms frame is no failed solve.
+        unsolved = world.scheduler.status().counters.survey_unsolved
+        assert len(shorts) - 1 <= unsolved <= len(shorts)
         world.close()
 
     def test_the_scheduler_recovers_when_a_solution_finally_arrives(self) -> None:

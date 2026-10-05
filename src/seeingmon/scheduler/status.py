@@ -101,7 +101,7 @@ class Counters:
     survey_steps: int = 0
     survey_frames: int = 0
     survey_results: int = 0
-    survey_unsolved: int = 0
+    survey_unsolved: int = 0  # results with an unsolved pointing record (a 1 ms frame has none)
     survey_skipped: int = 0
     watch_frames: int = 0
     faults: int = 0
