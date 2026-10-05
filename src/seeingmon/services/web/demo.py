@@ -35,6 +35,13 @@ sources, so that you can look at the UI on a laptop:
   noisy sky, through the real stretch and PNG encoder of `core`), and it serves a rolling seeing
   value that varies slowly around the seeing of the demo night (`demo_live_seeing`). Pause the
   fake scheduler or start the alignment, and the video goes quiet.
+  While the alignment runs, the rapid focus mode works (`POST /alignment/rapid-focus/start`): the
+  fake `core` offers it after five alignment frames, and once it runs, the video comes back with
+  a star whose width follows a person who turns the focuser through focus. The state of each
+  frame carries the readings of that width and their best value (see `demo_rapid`). The
+  alignment stream sends no frame then. The mode ends on a stop, with the alignment, or after
+  two minutes in which nobody has used it and nobody watches the live view. A start with a long
+  exposure makes the star saturate.
 - **A clock.** `DemoClock` stands still in UTC at `DEMO_NOW_NS`, so the newest record is always
   fresh, and it runs in monotonic time, so the rate limits, the timeouts, and the live view work.
 
@@ -68,8 +75,14 @@ from seeingmon.frames import Roi
 from seeingmon.records.base import Record
 from seeingmon.records.samples import sample_record
 from seeingmon.scheduler import activity as words
+from seeingmon.scheduler.commands import (
+    Command,
+    CommandResult,
+    StartRapidFocus,
+    StopRapidFocus,
+)
 from seeingmon.services.core.polaris import FrameSlot, PolarisRenderer
-from seeingmon.services.web import demo_activity
+from seeingmon.services.web import demo_activity, demo_rapid
 from seeingmon.services.web.auth import ScryptParams, hash_token
 from seeingmon.services.web.config import WebSettings
 from seeingmon.services.web.contract import (
@@ -88,6 +101,8 @@ from seeingmon.services.web.contract import (
     LiveSeeingView,
     OffsetView,
     PolarisFrame,
+    RapidFocusView,
+    RapidLocatedBy,
     ReticleView,
     SaturationView,
     SkyView,
@@ -944,6 +959,45 @@ class StarField:
 
 _ERF = np.vectorize(math.erf, otypes=[np.float64])
 FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
+POLARIS_EXPOSURE_US = 2000
+
+
+def _central_share(sigma_px: float) -> float:
+    """The share of the light of a star centered on a pixel that falls into that pixel."""
+    return float(_ERF(np.array([0.5 / (sigma_px * math.sqrt(2.0))]))[0]) ** 2
+
+
+# The light of the star of the video in counts, at the exposure and the gain of the video.
+STAR_FLUX_DN = STAR_PEAK_DN / _central_share(STAR_SIGMA_PX)
+
+
+def rapid_sigma_px(width_arcsec: float) -> float:
+    """The sigma of the star in pixels for a width that the rapid mode reads, in arcseconds.
+
+    The pixels integrate the star, which adds 1/12 to the variance, as in `demo_live_seeing`.
+    """
+    scale = FAST_PLATE_SCALE_ARCSEC_PX
+    variance = (width_arcsec / (FWHM_PER_SIGMA * scale)) ** 2 - 1.0 / 12.0
+    return math.sqrt(max(variance, 0.05))
+
+
+def rapid_brightness(exposure_us: int, gain: int) -> float:
+    """How much brighter the star is than at the exposure and gain of the video.
+
+    The signal grows with the exposure, and 200 units of gain (a unit is a tenth of a decibel)
+    multiply it by ten.
+    """
+    return exposure_us / POLARIS_EXPOSURE_US * math.pow(10.0, gain / 200.0)
+
+
+def rapid_star(width_arcsec: float, exposure_us: int, gain: int) -> tuple[float, bool]:
+    """The share of full scale that the brightest pixel of a star reaches, and whether it saturates.
+
+    The star has the width `width_arcsec`, and the camera runs at `exposure_us` and `gain`.
+    """
+    light = rapid_brightness(exposure_us, gain) * STAR_FLUX_DN
+    peak_dn = SKY_DN + light * _central_share(rapid_sigma_px(width_arcsec))
+    return min(peak_dn, FULL_SCALE_DN) / FULL_SCALE_DN, peak_dn >= FULL_SCALE_DN
 
 
 def _smooth_seeing_arcsec(t_s: float) -> float:
@@ -1026,16 +1080,28 @@ class PolarisSky:
         self._tilt = self._rng.standard_normal(2)
         self._scintillation = float(self._rng.standard_normal())
         self._edges = np.arange(POLARIS_SIZE + 1, dtype=np.float64) - 0.5
-        peak_share = float(_ERF(np.array([0.5 / (STAR_SIGMA_PX * math.sqrt(2.0))]))[0]) ** 2
-        self._flux_dn = STAR_PEAK_DN / peak_share  # the flux that gives the peak at a pixel center
+        self._flux_dn = STAR_FLUX_DN  # the flux that gives the peak at a pixel center
 
     def _weights(self, center: float, sigma: float) -> npt.NDArray[np.float64]:
         scaled = (self._edges - center) / (sigma * math.sqrt(2.0))
         weights: npt.NDArray[np.float64] = np.diff(0.5 * (1.0 + _ERF(scaled)))
         return weights
 
-    def next_frame(self) -> tuple[FrameSlot, float]:
-        """The next frame of the video, and its time in seconds."""
+    def next_frame(
+        self,
+        *,
+        sigma_px: float | None = None,
+        brightness_scale: float = 1.0,
+        exposure_us: int = POLARIS_EXPOSURE_US,
+        gain: int = 0,
+        rapid: bool = False,
+    ) -> tuple[FrameSlot, float]:
+        """The next frame of the video, and its time in seconds.
+
+        The rapid focus mode passes the sigma of the star (`sigma_px`, which replaces the slow
+        wobble of the width), the brightness that its exposure and gain give (`brightness_scale`),
+        the settings of the stream, and `rapid`, which marks the frame as one of that mode.
+        """
         t_s = self._offset_s + self._index * self._period_s
         rng = self._rng
         tilt_memory = math.exp(-self._period_s / TILT_TAU_S)
@@ -1056,9 +1122,13 @@ class PolarisSky:
             + SCINTILLATION_RMS * self._scintillation
             + 0.03 * math.sin(2.0 * math.pi * t_s / 31.0),
         )
-        sigma = STAR_SIGMA_PX * (1.0 + 0.08 * math.sin(2.0 * math.pi * t_s / 37.0))
+        sigma = (
+            STAR_SIGMA_PX * (1.0 + 0.08 * math.sin(2.0 * math.pi * t_s / 37.0))
+            if sigma_px is None
+            else sigma_px
+        )
         shape = np.outer(self._weights(y, sigma), self._weights(x, sigma))
-        star = brightness * self._flux_dn * shape
+        star = brightness * brightness_scale * self._flux_dn * shape
         electrons = (SKY_DN + star) / DN_PER_ADU * E_PER_ADU
         noisy = rng.poisson(electrons) + rng.normal(0.0, READ_NOISE_E, electrons.shape)
         adu = np.clip(np.rint(noisy / E_PER_ADU), 0, 4095)
@@ -1077,12 +1147,13 @@ class PolarisSky:
             stream_id=1,
             t_utc_ns=DEMO_NOW_NS + round(count / CAMERA_FPS * NS_PER_S),
             mode="bin1",
-            exposure_us=2000,
-            gain=0,
+            exposure_us=exposure_us,
+            gain=gain,
             adc_bits=12,
             roi=roi,
             star=found,
             count=count,
+            rapid=rapid,
         )
         self._index += 1
         return slot, t_s
@@ -1178,22 +1249,41 @@ class DemoCore(FakeCoreClient):
         self._seq = 0
         self._latest: AlignmentState | None = None
         self._since_mono = self._clock.monotonic_ns()  # when the fake scheduler entered its state
+        self._rapid = demo_rapid.RapidDemo(
+            self._clock,
+            mode="bin1",
+            roi=POLARIS_ROI,
+            scale_arcsec_px=FAST_PLATE_SCALE_ARCSEC_PX,
+            star=rapid_star,
+        )
+        # The center of the ROI that `core` would choose: the middle of the ROI of the video.
+        self.rapid_center = (POLARIS_ROI.x + POLARIS_SIZE / 2.0, POLARIS_ROI.y + POLARIS_SIZE / 2.0)
+        self._rapid_used_mono = 0  # when somebody last used the mode
+        self._align_seq0 = 0  # the sequence number of the stream when the alignment began
 
     def alignment_reset_focus(self) -> None:
         """Restart the best focus value at the frame that the stream sends next."""
         super().alignment_reset_focus()
         self._field.reset_focus(self._seq + 1)
+        self._rapid.reset_best()
 
     # --- The activity ---
 
     def _transition(self, state: str, reason: str = "a fake transition") -> None:
+        if state != "align" and self.rapid_running:
+            self._rapid.end(
+                "you paused the scheduler" if state == "paused" else "the alignment ended"
+            )
         super()._transition(state, reason)
         self._since_mono = self._clock.monotonic_ns()
+        if state == "align":
+            self._align_seq0 = self._seq
 
     def _settle_dark(self) -> None:
         super()._settle_dark()
         if self._state == "safe" and self._elapsed_s() >= demo_activity.GATE_OPEN_S:
             self._transition("auto", "the sky is dark enough")  # the demo sky is dark
+        self._settle_rapid()
 
     def _elapsed_s(self) -> float:
         """The seconds that the fake scheduler has spent in its state."""
@@ -1211,6 +1301,8 @@ class DemoCore(FakeCoreClient):
         if self._state == "safe":
             return demo_activity.safe_activity(elapsed, now_ns, reason)
         if self._state == "align":
+            if self._rapid.active:
+                return demo_activity.rapid_activity(self._rapid.elapsed_s(), now_ns)
             return demo_activity.align_activity(elapsed, now_ns, reason)
         if self._state == "commission":
             flat = self.flat.task()
@@ -1231,22 +1323,94 @@ class DemoCore(FakeCoreClient):
             return FaultView()
         return demo_activity.auto_fault(self._elapsed_s(), now_ns)
 
+    # --- The rapid focus mode ---
+
+    def _align_frames(self) -> int:
+        """The alignment frames that the quick solve has seen since the alignment began.
+
+        The count follows the clock, so that a client that polls the state and watches no stream
+        still sees the offer come, and it follows the frames that the stream has sent, so that a
+        stream that runs faster than its period does not wait.
+        """
+        by_clock = int(self._elapsed_s() / self._period_s) if self._period_s > 0 else 0
+        return max(by_clock, self._seq - self._align_seq0)
+
+    def _offer_view(self) -> RapidFocusView:
+        """The state of the mode while it does not run: the offer, and why the last run ended."""
+        seq = max(1, self._seq)
+        values = [demo_fwhm_px(number) for number in range(max(1, seq - 4), seq + 1)]
+        coarse = statistics.median(values) * PLATE_SCALE_ARCSEC_PX
+        located: RapidLocatedBy = (
+            "last solution" if solution_lost(seq * FRAME_PERIOD_S) else "current solution"
+        )
+        return demo_rapid.offer_view(
+            frames=self._align_frames(),
+            coarse_fwhm_arcsec=coarse,
+            located_by=located,
+            ended=self._rapid.ended,
+        )
+
+    def _rapid_view(self) -> RapidFocusView:
+        """The state of the mode: the readings while it runs, and else the offer."""
+        return self._rapid.view() or self._offer_view()
+
+    def _settle_rapid(self) -> None:
+        """End the mode when nobody has used it for its idle time. The caller holds the lock.
+
+        A start counts as use, and so does a viewer of the live view, as it does in `core`.
+        """
+        if not self.rapid_running:
+            return
+        now = self._clock.monotonic_ns()
+        if self.streams_opened > self.streams_closed:
+            self._rapid_used_mono = now
+        elif (now - self._rapid_used_mono) / NS_PER_S >= demo_activity.RAPID_TIMEOUT_S:
+            timeout = words.duration_text(demo_activity.RAPID_TIMEOUT_S)
+            self._rapid.end(f"nobody used it for {timeout}")
+            self.rapid_running = False
+
+    def rapid_focus_start(
+        self, exposure_us: int | None = None, gain: int | None = None
+    ) -> CommandResult:
+        self.rapid_offer = demo_rapid.offer_problem(self._align_frames())
+        return super().rapid_focus_start(exposure_us, gain)
+
+    def _apply(self, command: Command) -> CommandResult:
+        running = self.rapid_running
+        result = super()._apply(command)
+        if result.accepted and isinstance(command, StartRapidFocus):
+            exposure_us, gain = self._rapid.settings if running else (POLARIS_EXPOSURE_US, 0)
+            exposure_us = exposure_us if command.exposure_us is None else command.exposure_us
+            gain = gain if command.gain is None else command.gain
+            if running:
+                self._rapid.configure(exposure_us, gain)
+            else:
+                self._rapid.begin(exposure_us, gain)
+            self._rapid_used_mono = self._clock.monotonic_ns()
+        elif result.accepted and isinstance(command, StopRapidFocus) and running:
+            self._rapid.end("you stopped rapid focus")
+        return result
+
     async def _stream(self) -> AsyncIterator[AlignmentFrame]:
         while True:
-            if self.state != "align":
+            if self.state != "align" or self.rapid_running:  # the mode sends no alignment frame
                 await asyncio.sleep(IDLE_POLL_S)
                 continue
             self._seq += 1
             frame = await asyncio.to_thread(self._field.frame, self._seq)
-            self._latest = frame.state
-            yield frame
+            state = frame.state.model_copy(update={"rapid_focus": self._offer_view()})
+            self._latest = state
+            yield AlignmentFrame(state, frame.jpeg)
             await asyncio.sleep(self._period_s)
 
     def alignment_state(self) -> AlignmentState:
         self._check()
+        with self._lock:
+            self._settle_rapid()
         if self.state != "align":
             return AlignmentState(active=False)
-        return self._latest or AlignmentState(active=True)
+        state = self._latest or AlignmentState(active=True)
+        return state.model_copy(update={"rapid_focus": self._rapid_view()})
 
     def _video_time_s(self) -> float:
         """The seconds since this fake core started, which is the time of the video."""
@@ -1257,16 +1421,40 @@ class DemoCore(FakeCoreClient):
         slot, t_s = sky.next_frame()
         return renderer.render(slot, demo_live_seeing(t_s))
 
+    def _video_mode(self) -> str | None:
+        """What the video shows: `rapid` in the rapid focus mode, `fast` in `auto` and `safe`."""
+        with self._lock:
+            self._settle_rapid()
+            if self._state == "align" and self.rapid_running:
+                return "rapid"
+            return "fast" if self._state in ("auto", "safe") else None
+
+    def _rapid_frame(self, sky: PolarisSky, renderer: PolarisRenderer) -> PolarisFrame:
+        """The next frame of the rapid focus mode: the star at the width of the curve."""
+        exposure_us, gain = self._rapid.settings
+        slot, _ = sky.next_frame(
+            sigma_px=rapid_sigma_px(self._rapid.width_arcsec()),
+            brightness_scale=rapid_brightness(exposure_us, gain),
+            exposure_us=exposure_us,
+            gain=gain,
+            rapid=True,
+        )
+        return renderer.render(slot, None, self._rapid.view())
+
     async def _polaris_stream(self) -> AsyncIterator[PolarisFrame]:
         sky = PolarisSky(time_offset_s=self._video_time_s())
         renderer = PolarisRenderer(scale_for=lambda mode: FAST_PLATE_SCALE_ARCSEC_PX)
         due = time.monotonic()
         while True:
-            if self.state not in ("auto", "safe"):  # the camera shows no fast stream otherwise
+            mode = self._video_mode()
+            if mode is None:  # the camera shows no fast stream otherwise
                 await asyncio.sleep(IDLE_POLL_S)
                 due = time.monotonic()
                 continue
-            yield await asyncio.to_thread(self._polaris_frame, sky, renderer)
+            if mode == "rapid":
+                yield await asyncio.to_thread(self._rapid_frame, sky, renderer)
+            else:
+                yield await asyncio.to_thread(self._polaris_frame, sky, renderer)
             due = max(due + self._polaris_period_s, time.monotonic())  # keep the rate, never burst
             await asyncio.sleep(max(0.0, due - time.monotonic()))
 
