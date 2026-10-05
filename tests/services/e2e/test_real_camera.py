@@ -1,10 +1,10 @@
 """The plan of `seeingmon dev --driver asi` on real processes, with the fake SDK and no camera.
 
 `acquire` runs the `asi` driver on `FakeAsiSdk` (the option `fake_sdk` of the factory), `core` runs
-on the system clock with the full-sensor profile, and the fast stream takes the 2 ms of the
-profile. The tests check that the processes come up with that plan, that the frames of the camera
-reach the store, and that the clock runs in real time. They never touch a real camera, and the
-vendor library is not needed.
+on the system clock with the full-sensor profile, and the fast stream takes at most the 2 ms of
+`[scheduler.fast] exposure_us`. The tests check that the processes come up with that plan, that
+the frames of the camera reach the store, and that the clock runs in real time. They never touch a
+real camera, and the vendor library is not needed.
 
 The module carries the `slow` marker, because the processes need a minute, and the clock runs in
 real time. Run it with `--slow`.
@@ -77,8 +77,10 @@ class TestTheRealCameraSetup:
     def test_the_fast_stream_takes_the_exposure_of_the_profile(self, system: System) -> None:
         """The fake SDK shows no star, so the stream searches, and no seeing window closes.
 
-        The search bursts read the fast readout mode at the exposure of the profile. The Sun gates
-        nothing, so the bursts run at any hour, above the search limit as probes.
+        The search bursts read the fast readout mode at the 2 ms of `[scheduler.fast] exposure_us`:
+        the frames of the fake SDK stay below the target background, so the adaptive exposure keeps
+        the longest. The Sun gates nothing, so the bursts run at any hour, above the search limit as
+        probes.
         """
 
         def a_burst_of_2_ms_frames() -> bool:

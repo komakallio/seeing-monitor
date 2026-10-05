@@ -24,7 +24,7 @@ pytest.importorskip("seeingmon.drivers.sim", reason="the simulator needs SciPy (
 from seeingmon.analysis import FastContext
 from seeingmon.clock import VirtualClock
 from seeingmon.drivers.sim import FrameTruth, SimFaults, SimTruth, sim_camera
-from seeingmon.fastpath import FastPathAnalyzer, FastPathConfig, create_fast_analyzer
+from seeingmon.fastpath import FastPathAnalyzer, FastPathConfig, create_fast_analyzer, models
 from seeingmon.frames import PixelFormat, Roi, StreamConfig
 from seeingmon.profile import Profile
 from seeingmon.records import SeeingWindowRecord
@@ -53,6 +53,7 @@ def run_sim(
     roi_size: int = 64,
     faults: SimFaults | None = None,
     min_frames: int = 0,
+    exposure_us: int = 2000,
 ) -> SimRun:
     """Drive the simulated camera and the analyzer until `windows` windows have closed."""
     clock = VirtualClock()
@@ -73,7 +74,7 @@ def run_sim(
     half = roi_size // 2
     roi = Roi(int(stars.x[brightest]) - half, int(stars.y[brightest]) - half, roi_size, roi_size)
     stream = driver.configure(
-        StreamConfig("bin1", 2000, 0, roi=roi, pixel_format=PixelFormat.RAW16)
+        StreamConfig("bin1", exposure_us, 0, roi=roi, pixel_format=PixelFormat.RAW16)
     )
     driver.start()
     analyzer = create_fast_analyzer(
@@ -168,6 +169,28 @@ class TestKernel:
         assert run.rows["seq"].tolist() == list(range(len(run.rows)))
         assert len(run.rows) == len(run.frames)
         assert (np.diff(run.rows["t_utc_ns"]) > 0).all()
+
+
+class TestExposure:
+    def test_each_window_is_corrected_for_the_exposure_of_its_stream(
+        self, profile: Profile, run: SimRun
+    ) -> None:
+        """The adaptive exposure of the scheduler changes the exposure between windows.
+
+        The analyzer derives the exposure correction from the stream of each window, so a window
+        of 1 ms gets the correction of 1 ms, and its `r0` agrees with the truth as at 2 ms.
+        """
+        short = run_sim(profile, r0_m=0.10, seed=5, windows=2, window_s=6.0, exposure_us=1000)
+        spectrum = models.tilt_spectrum(profile.optics.aperture_mm * 1e-3, 20.0, 10.0)
+        for window, exposure_s in [(w, 0.001) for w in short.windows] + [
+            (w, 0.002) for w in run.windows
+        ]:
+            assert window.exposure_us == round(exposure_s * 1e6)
+            assert window.exposure_correction_factor == pytest.approx(
+                1.0 / spectrum.exposure_variance_ratio(exposure_s), rel=1e-9
+            )
+        truth = short.truth.r0_zenith_m() * 100.0
+        assert mean([w.r0_cm for w in short.windows]) == pytest.approx(truth, rel=0.10)
 
 
 class TestScintillation:

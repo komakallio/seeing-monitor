@@ -39,6 +39,13 @@ burst every `probe_interval_s` runs, and a probe that detects Polaris is confirm
 interval. The events `polaris.visible` and `polaris.hidden` mark every start and every end of
 measure. The Sun's elevation gates nothing else: the daylight gate reads the measured sky alone.
 
+**The adaptive exposure.** Each fast period and each search burst starts with the exposure that
+puts the sky background at `[scheduler.fast] target_background_fraction` of saturation, from the
+background of the previous window or burst, and never longer than `[scheduler.fast] exposure_us`
+(see `seeingmon.scheduler.exposure`). The first period or burst after an entry into `auto` takes
+the background from the brightness frame, because an older fast background may come from another
+sky. The exposure changes only where a stream starts, so a window never mixes two exposures.
+
 **Rapid focus.** The alignment session has a second mode for focusing by hand. `StartRapidFocus`
 switches the stream of the session from the survey readout mode over the whole frame to the fast
 readout mode over a small ROI around Polaris, and the scheduler reads its frames at the camera rate
@@ -122,6 +129,7 @@ from seeingmon.scheduler.config import (
 )
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
 from seeingmon.scheduler.events import DARK_PHASE_EVENT, FLAT_PHASE_EVENT
+from seeingmon.scheduler.exposure import adapted_exposure_us, background_fraction
 from seeingmon.scheduler.faults import FaultCause, FaultPlan, FaultTracker, classify, reason_text
 from seeingmon.scheduler.gates import (
     REASON_BRIGHT_SKY,
@@ -130,6 +138,7 @@ from seeingmon.scheduler.gates import (
     DaylightDecision,
     DaylightGate,
     SkyReading,
+    median_dn,
     read_sky,
 )
 from seeingmon.scheduler.levels import DESTRUCTIVE_STEPS, EscalationLevel, step_name
@@ -240,8 +249,19 @@ class _Burst:
     read_timeout_s: float
     probe: bool  # the Sun is above the search limit
     predicted: tuple[float, float]  # where the solution puts Polaris, in fast-mode pixels
+    exposure_us: int  # as the camera applied it
+    saturation_dn: float  # the saturation level of the frames, in their counts
     snrs: list[float] = field(default_factory=list)  # per frame; 0 without a star near the place
     offsets_px: list[float] = field(default_factory=list)  # of each star from the prediction
+    backgrounds_dn: list[float] = field(default_factory=list)  # the median of each frame
+
+
+@dataclass(frozen=True, slots=True)
+class _Background:
+    """The sky background that the fast stream saw: the exposure, and the share of saturation."""
+
+    exposure_us: float
+    fraction: float
 
 
 @dataclass(slots=True)
@@ -426,6 +446,9 @@ class Scheduler:
         self._activity_error_reported = False
         self._background_fraction: float | None = None  # the gate fraction of the last reading
         self._sky: SkyReading | None = None  # what the last brightness frame said
+        # The background of the last fast window or burst in this episode of `auto`, from which the
+        # next period or burst takes its exposure.
+        self._fast_background: _Background | None = None
         self._search = _Search(next_burst_mono=now_mono, next_probe_mono=now_mono)
         self._last_temperature_c: float | None = None
         self._last_context: FastContext | None = None
@@ -1426,10 +1449,16 @@ class Scheduler:
         """Start a fresh cycle. The first period begins at once, and it searches.
 
         The search starts again from no detection, and its first burst comes at once. The probe
-        timer stays, so a stop in another state does not run a probe more often.
+        timer stays, so a stop in another state does not run a probe more often. The first burst
+        takes its exposure from the last brightness frame, not from a fast background of an
+        earlier episode, because the sky may have changed while the scheduler was out of `auto`.
+        An entry from `safe` follows a fresh brightness frame. A session that starts at once and
+        cuts a fast period short leaves a brightness frame a cycle older than the last window,
+        and the next burst corrects the exposure.
         """
         self._end_measure("state_change")  # a measure that no step saw end, if any
         self._fast_run = None
+        self._fast_background = None
         now = self._clock.monotonic_ns()
         self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
         search = self._search
@@ -1667,9 +1696,17 @@ class Scheduler:
         self._activity = None
 
     def _write_windows(self, windows: tuple[SeeingWindowRecord, ...]) -> None:
+        """Write windows. The background of a window of the fast stream sets the next exposure."""
         for window in windows:
             self._records.write(window)
             self._counters.windows += 1
+            if self._activity is Purpose.FAST and window.background_mean_dn is not None:
+                saturation = self._saturation_dn(
+                    window.readout_mode, window.gain, self._fast_format
+                )
+                self._fast_background = _Background(
+                    window.exposure_us, background_fraction(window.background_mean_dn, saturation)
+                )
 
     def _drain_metrics(self, stream_id: int) -> None:
         rows = self._fast.drain_metrics()
@@ -2030,12 +2067,41 @@ class Scheduler:
         if forced:
             cycle.slot_start_mono = now
 
+    def _fast_exposure_us(self) -> int:
+        """The exposure of the next fast period or search burst.
+
+        It puts the sky background at `target_background_fraction` of saturation, from the
+        background of the last fast window or burst, or else from the brightness frame, which
+        gives the background at the profile's shortest exposure (see
+        `seeingmon.scheduler.exposure`).
+        """
+        fast = self._config.fast
+        if fast.target_background_fraction <= 0.0:
+            return fast.exposure_us
+        shortest = min(self._profile.limits.exposure_us_range[0], fast.exposure_us)
+        sample = self._fast_background
+        if sample is None:
+            sky = self._sky
+            if sky is None:
+                return fast.exposure_us
+            sample = _Background(self._profile.limits.exposure_us_range[0], sky.fast_fraction)
+        return adapted_exposure_us(
+            sample.exposure_us,
+            sample.fraction,
+            target=fast.target_background_fraction,
+            shortest_us=shortest,
+            longest_us=fast.exposure_us,
+        )
+
     def _fast_config(self, position: tuple[float, float]) -> StreamConfig:
-        """The stream of the fast period and of a search burst: a ROI centered on `position`."""
+        """The stream of the fast period and of a search burst: a ROI centered on `position`.
+
+        The exposure is the adaptive one, so call it where a period or a burst starts.
+        """
         fast = self._config.fast
         return StreamConfig(
             mode=self._fast_mode,
-            exposure_us=fast.exposure_us,
+            exposure_us=self._fast_exposure_us(),
             gain=fast.gain,
             pixel_format=self._fast_format,
             roi=roi_centered_on(self._profile, self._fast_mode, position, fast.roi_arcmin),
@@ -2049,7 +2115,8 @@ class Scheduler:
         """Start a fast period on its slot, or, with `until_mono`, the rest of a search period.
 
         A fast period that a search hands over keeps the slot of the search period and ends with
-        it, so the survey step and every later slot stay on the grid of the cadence.
+        it, so the survey step and every later slot stay on the grid of the cadence. The period
+        takes the adaptive exposure, from the last window or burst, and keeps it to its end.
         """
         fast = self._config.fast
         cycle = self._cycle
@@ -2281,12 +2348,15 @@ class Scheduler:
         if probe and search.detections == 0:  # the probe that may start a chain of detections
             search.next_probe_mono = now + round(config.probe_interval_s * NS_PER_S)
         search.next_burst_mono = now + round(config.interval_s * NS_PER_S)
+        applied = active.config
         search.burst = _Burst(
             stream_id=active.stream_id,
             started_mono=now,
             read_timeout_s=self._timeout_s(active),
             probe=probe,
             predicted=position,
+            exposure_us=applied.exposure_us,
+            saturation_dn=self._saturation_for(applied),
         )
         self._counters.search_bursts += 1
         if probe:
@@ -2297,7 +2367,8 @@ class Scheduler:
         """Read one frame of a burst and measure the star where the solution predicts it.
 
         The prediction of the start of the burst serves all its frames: Polaris moves 0.16 arcsec
-        a second, a few hundredths of a pixel in a burst.
+        a second, a few hundredths of a pixel in a burst. The median of each frame gives the sky
+        background, for the exposure of the next burst or period.
         """
         config = self._config.search
         try:
@@ -2306,6 +2377,7 @@ class Scheduler:
             return self._camera_error(error, "reading a search frame")
         self._note_frame(frame)
         self._counters.search_frames += 1
+        burst.backgrounds_dn.append(median_dn(frame))
         predicted = burst.predicted
         star = self._fast.measure(frame, predicted)
         snr = 0.0
@@ -2327,11 +2399,17 @@ class Scheduler:
         prediction, and with 0 otherwise, so the median also says that the star sat where the
         solution puts it in at least half of the frames. Measure needs a centroid in every frame,
         and the median frame stands for them, which the SNR of the summed frames would not.
+
+        The median background of the frames sets the exposure of the next burst or period.
         """
         self._end_stream("burst_end")
         search = self._search
         config = self._config.search
         search.burst_ns = self._mono() - burst.started_mono
+        self._fast_background = _Background(
+            burst.exposure_us,
+            background_fraction(statistics.median(burst.backgrounds_dn), burst.saturation_dn),
+        )
         snr = statistics.median(burst.snrs)
         search.last_snr = round(snr, 2)
         search.last_offset_px = (
@@ -3050,9 +3128,13 @@ class Scheduler:
 
     def _saturation_for(self, config: StreamConfig) -> float:
         """The saturation level, in the counts that frames of this stream carry."""
-        if config.pixel_format is PixelFormat.RAW8:
+        return self._saturation_dn(config.mode, config.gain, config.pixel_format)
+
+    def _saturation_dn(self, mode: str, gain: int, pixel_format: PixelFormat) -> float:
+        """The saturation level of a readout mode and gain, in the counts of a pixel format."""
+        if pixel_format is PixelFormat.RAW8:
             return 255.0
-        return self._profile.saturation(config.mode, config.gain).container_dn
+        return self._profile.saturation(mode, gain).container_dn
 
     # --- Setup -----------------------------------------------------------------------------
 

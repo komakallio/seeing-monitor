@@ -14,17 +14,15 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import pytest
 
-from seeingmon.clock import NS_PER_S, Clock, VirtualClock, iso_to_utc_ns
+from seeingmon.clock import NS_PER_S, VirtualClock, iso_to_utc_ns
 from seeingmon.drivers.base import RecoveryLevel
-from seeingmon.frames import ActiveStream, Frame, StreamConfig
-from seeingmon.profile import Profile, parse_profile
+from seeingmon.frames import StreamConfig
 from seeingmon.records import EventRecord, SeeingWindowRecord
-from seeingmon.scheduler import Scheduler, SchedulerConfig, SiteConfig
+from seeingmon.scheduler import Scheduler, SchedulerConfig
 from seeingmon.scheduler.config import (
     CloudConfig,
     FastConfig,
@@ -33,8 +31,7 @@ from seeingmon.scheduler.config import (
     SurveyConfig,
 )
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
-from seeingmon.testing import FakeFastAnalyzer, FakeSurveyAnalyzer, ListRecordWriter
-from tests.profile.builders import reference_data
+from seeingmon.testing import FakeFastAnalyzer, ListRecordWriter
 
 try:
     import seeingmon.drivers.sim as sim
@@ -43,70 +40,9 @@ except ImportError:  # the simulator needs SciPy, which belongs to the `fast` ex
 if not hasattr(sim, "create"):  # the simulator lands in another lane
     pytest.skip("the sim driver has no factory yet", allow_module_level=True)
 
-# The synthetic site of the simulator and of the scheduler: 55 degrees north on the prime meridian.
-SITE = SiteConfig(latitude_deg=55.0, longitude_deg=0.0)
+from tests.scheduler.simworld import SITE, LoggingSim, SimPointing, SimSurvey, small_profile
+
 START = iso_to_utc_ns("2026-01-01T16:10:00Z")  # the Sun is 3.9 degrees below the horizon
-
-
-def small_profile() -> Profile:
-    """The reference camera with one eighth of the width and height. The optics stay the same."""
-    data = reference_data()
-    data["id"] = "asi294mm-gs250-small"
-    for mode in data["readout_modes"]:
-        mode["width_px"] = mode["width_px"] // 8
-        mode["height_px"] = mode["height_px"] // 8
-    return parse_profile(data)
-
-
-class LoggingSim(sim.SimDriver):
-    """The simulator, with the time of every `configure` call, and the purpose of each stream.
-
-    The purpose comes from the scheduler (`scheduler`, set after both exist) when the stream
-    starts, so that a search burst and a fast stream with the same settings tell apart.
-    """
-
-    def __init__(self, profile: Profile, clock: Clock, options: Any) -> None:
-        super().__init__(sim.SimParams.modes_from_profile(profile), clock, options)
-        self.configure_log: list[tuple[int, StreamConfig]] = []
-        self.purposes: dict[int, str] = {}  # the index in `configure_log` to the purpose
-        self.scheduler: Scheduler | None = None
-
-    def configure(self, config: StreamConfig) -> ActiveStream:
-        self.configure_log.append((self.clock.utc_ns(), config))
-        return super().configure(config)
-
-    def start(self) -> None:
-        super().start()
-        stream = None if self.scheduler is None else self.scheduler.stream
-        if stream is not None:
-            self.purposes.setdefault(len(self.configure_log) - 1, stream.purpose)
-
-
-class SimPointing:
-    """The Polaris position from the simulator's truth: its brightest star, projected to pixels."""
-
-    def __init__(self, truth: Any) -> None:
-        self._truth = truth
-
-    def polaris_position(self, t_utc_ns: int, mode: str) -> tuple[float, float] | None:
-        stars = self._truth.star_positions(t_utc_ns, mode)
-        brightest = int(np.argmin(stars.mag))
-        return float(stars.x[brightest]), float(stars.y[brightest])
-
-
-class SimSurvey(FakeSurveyAnalyzer):
-    """A survey analysis that reads the cloud fraction from the simulator's transparency."""
-
-    def __init__(self, truth: Any, profile_id: str) -> None:
-        super().__init__(station_id="test", profile_id=profile_id)
-        self._truth = truth
-
-    def submit(self, frame: Frame) -> None:
-        long_exposure = frame.exposure_us >= 1_000_000
-        transparency = float(self._truth.transparency(frame.t_utc_ns))
-        self.cloud_fraction = 1.0 - transparency if long_exposure else None
-        self.solved = long_exposure and transparency > 0.15
-        super().submit(frame)
 
 
 @dataclass(frozen=True)

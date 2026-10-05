@@ -25,11 +25,12 @@ run also shortens the dark session to a few frames of each kind.
 the web UI (the Dark page, the Align page) on the hardware. `acquire` runs the `asi` driver on the
 full sensor (`asi294mm-gs250`, so `--sensor` does not apply), and all three processes run in real
 time on the system clock: `--speed` must be 1, and `--start` does not apply. The fast stream takes
-the exposure of the profile (2 ms), and the simulator gets no option. The vendor library comes from
-`--asi-library`, or from `SEEINGMON_ASI__LIBRARY_PATH` in your environment, and never from a file.
-The launcher gives it to `acquire` alone, through the environment of that child, and prints no
-path. `acquire` raises the priority of its capture thread on the real camera, and on Windows it
-also asks for a 1 ms system timer (the simulator never does, because it renders inside the read).
+at most the 2 ms of `[scheduler.fast] exposure_us`, which the adaptive exposure shortens in a bright
+scene, and the simulator gets no option. The vendor library comes from `--asi-library`, or from
+`SEEINGMON_ASI__LIBRARY_PATH` in your environment, and never from a file. The launcher gives it to
+`acquire` alone, through the environment of that child, and prints no path. `acquire` raises the
+priority of its capture thread on the real camera, and on Windows it also asks for a 1 ms system
+timer (the simulator never does, because it renders inside the read).
 `--no-raise-priority` turns both off, so that you can compare two runs: the health line of
 `acquire` in its log shows the priority, the timer, and the share of late and lost frames.
 On Windows the launcher also holds a power request for the whole run (`KeepAwake`), so that the
@@ -513,7 +514,7 @@ def build_plan(
         "window_s": options.window_s * (REAL_FAST_WINDOWS if real else DEV_FAST_WINDOWS),
     }
     if not real:
-        fast_table["exposure_us"] = options.fast_exposure_us  # the real one keeps its 2 ms
+        fast_table["exposure_us"] = options.fast_exposure_us  # the real one keeps its limit of 2 ms
     core_settings = _merge(
         _merge(
             shared,

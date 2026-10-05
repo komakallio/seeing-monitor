@@ -53,6 +53,9 @@ class FastConfig(SectionModel):
     whole windows."""
 
     exposure_us: PositiveInt = 2000
+    """The longest fast exposure, in microseconds. In a bright sky the adaptive exposure (see
+    `target_background_fraction`) shortens it."""
+
     gain: NonNegativeInt = 0
     high_speed: bool = False
     """Read the fast stream in the high-speed mode of the camera. The frames come faster and the
@@ -74,6 +77,18 @@ class FastConfig(SectionModel):
     The survey step of the cycle follows, the fast stream returns to search, and no solve is
     requested, because a hidden star says nothing about the mount. The same count ends the rapid
     focus mode."""
+
+    target_background_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.3
+    """The sky background that the adaptive exposure aims for, as a share of saturation.
+
+    Before each fast period and each search burst, the scheduler takes the background of the
+    previous window or burst over the profile's saturation level, and scales the exposure so that
+    the background would sit at this share, between the profile's shortest exposure and
+    `exposure_us`. The profile has no black level, so the camera's offset counts as sky (see
+    `seeingmon.scheduler.exposure`). The first period or burst after `auto` begins takes the
+    background from the brightness frame. 0 turns the adaptation off, and every period and burst
+    takes `exposure_us`.
+    """
 
     @model_validator(mode="after")
     def _window_holds_an_analysis_window(self) -> Self:

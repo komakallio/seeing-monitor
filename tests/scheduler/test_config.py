@@ -80,6 +80,11 @@ def test_the_search_defaults_follow_the_visibility_design() -> None:
     assert search.limited
 
 
+def test_the_adaptive_exposure_follows_the_visibility_design() -> None:
+    """`docs/visibility.md`, "Settings": the background of a fast frame aims for 0.3."""
+    assert SchedulerConfig().fast.target_background_fraction == 0.3
+
+
 @pytest.mark.parametrize(("limit", "limited"), [(12.0, True), (89.9, True), (90.0, False)])
 def test_a_search_limit_of_90_degrees_or_more_means_no_limit(limit: float, limited: bool) -> None:
     """TOML has no null, so the defaults file writes "no limit" as a number."""
@@ -159,6 +164,9 @@ def test_the_local_file_and_the_environment_turn_the_high_speed_mode_on(tmp_path
         {"fast": {"window_s": 0}},
         {"fast": {"exposure_us": 0}},
         {"fast": {"gain": -1}},
+        {"fast": {"target_background_fraction": -0.1}},
+        {"fast": {"target_background_fraction": 1.5}},
+        {"fast": {"target_background_fraction": float("nan")}},
         {"fast": {"unknown_key": 1}},
         {"cloud": {"threshold": 0.3, "clear_threshold": 0.4}},
         {"cloud": {"threshold": 1.5}},

@@ -58,10 +58,11 @@ def sky_background_fraction(frame: Frame, profile: Profile) -> float:
     A large frame is measured on a regular stride of at most about 65,000 pixels, because the
     gate needs a robust level and not every pixel.
     """
-    return _median(frame) / saturation_level_dn(frame, profile)
+    return median_dn(frame) / saturation_level_dn(frame, profile)
 
 
-def _median(frame: Frame) -> float:
+def median_dn(frame: Frame) -> float:
+    """The median of a frame in its own counts, on a stride of at most about 65,000 pixels."""
     data = frame.data
     stride = max(1, math.isqrt(data.size // _MAX_SAMPLE_PIXELS))
     return float(np.median(data[::stride, ::stride]))
@@ -123,7 +124,7 @@ def read_sky(
     with the simulator's offset, 0.03% of saturation for the reference profile, a 1 ms brightness
     frame, and 32 us.
     """
-    median = _median(frame)
+    median = median_dn(frame)
     frame_fraction = median / saturation_level_dn(frame, profile)
     brightness = profile.mode(frame.mode)
     fast = profile.mode(fast_mode)

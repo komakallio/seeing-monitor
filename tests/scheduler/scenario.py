@@ -26,7 +26,10 @@ describes the world as functions of time, and the frame factory of the fake came
 
 The scenario uses a small bin2 frame and a slow, small fast stream (one frame in 2 s on a
 32-pixel ROI), because the point is the scheduling and not the pixels. That keeps a 12 hour
-night to a few seconds of real time.
+night to a few seconds of real time. The slow stream stands for the real one of 2 ms, so the
+world cannot render a shorter exposure of it, and the adaptive exposure is off
+(`target_background_fraction = 0`). `test_exposure.py` tests the adaptive exposure on the
+simulator's sky.
 """
 
 from __future__ import annotations
@@ -116,6 +119,7 @@ TEST_CONFIG = SchedulerConfig(
         roi_arcmin=1.0,  # 32 pixels in bin1
         roi_edge_margin_px=4.0,
         missing_star_frames=10,
+        target_background_fraction=0.0,  # the slow stream keeps its exposure (see above)
     ),
     # A burst of 3 frames of 2 s takes 6 s, which fits the interval of 15 s.
     search=SearchConfig(burst_frames=3),

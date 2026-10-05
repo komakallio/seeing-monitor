@@ -178,6 +178,7 @@ class TestMissingStar:
                 roi_arcmin=1.0,
                 roi_edge_margin_px=4.0,
                 missing_star_frames=450,
+                target_background_fraction=0.0,  # every frame takes 100 ms
             ),
             loop=LoopConfig(max_sleep_s=5.0),
         )
@@ -303,6 +304,7 @@ class TestEdgeDrift:
                 roi_arcmin=1.0,
                 roi_edge_margin_px=15.0,
                 missing_star_frames=10,
+                target_background_fraction=0.0,  # the slow stream of the scenario
             ),
             search=TEST_CONFIG.search,
             loop=LoopConfig(max_sleep_s=5.0),
