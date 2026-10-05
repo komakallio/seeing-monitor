@@ -68,10 +68,10 @@ class StartRapidFocus(Command):
     The camera streams the fast readout mode on a small ROI around `(center_x_px, center_y_px)`,
     which are pixels of that mode, and the scheduler hands each frame to the focus consumer
     instead of the alignment consumer. The ROI follows the star as the fast stream does. Leave
-    `exposure_us` or `gain` `None` to take the value of the fast stream. The command works only
-    while the alignment runs. Send it again while the mode runs to restart its idle timer: the
-    mode then keeps its ROI, and it restarts the stream only when the exposure or the gain
-    changes.
+    `exposure_us` or `gain` `None` to take the value of the fast stream, or to keep the value
+    that runs while the mode runs. The command works only while the alignment runs. Send it
+    again while the mode runs to restart its idle timer: the mode then keeps its ROI, and it
+    restarts the stream only when the exposure or the gain changes.
     """
 
     center_x_px: float

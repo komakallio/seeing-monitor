@@ -1011,8 +1011,15 @@ class Scheduler:
                 "the camera has a fault that the scheduler recovers from; try again when it works",
             )
         fast = self._config.fast
-        exposure_us = fast.exposure_us if command.exposure_us is None else command.exposure_us
-        gain = fast.gain if command.gain is None else command.gain
+        plan = session.rapid
+        # A field that the command leaves out keeps the value that runs, and without a running
+        # mode it takes the value of the fast stream.
+        exposure_us = command.exposure_us
+        if exposure_us is None:
+            exposure_us = fast.exposure_us if plan is None else plan.exposure_us
+        gain = command.gain
+        if gain is None:
+            gain = fast.gain if plan is None else plan.gain
         problem = self._check_exposure_and_gain(exposure_us, gain)
         if problem is not None:
             return self._reject(RejectReason.INVALID, problem)
@@ -1032,7 +1039,6 @@ class Scheduler:
         roi = roi_centered_on(self._profile, self._fast_mode, (x, y), fast.roi_arcmin)
         now = self._clock.monotonic_ns()
         session.last_activity_mono = now
-        plan = session.rapid
         if plan is None:
             session.rapid = _RapidPlan(roi, exposure_us, gain, now)
             session.dirty = True

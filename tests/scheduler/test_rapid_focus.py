@@ -383,6 +383,32 @@ class TestAlreadyRunning:
         assert activity.since_utc_ns == pytest.approx(world.t(20), abs=NS_PER_S)  # the first start
         world.close()
 
+    def test_a_start_without_settings_keeps_the_settings_that_run(self) -> None:
+        world, _ = rapid_world()
+        submit_at(world, 40.0, rapid_at(world, 40.0, exposure_us=1000, gain=30))
+        again = submit_at(world, 80.0, rapid_at(world, 80.0))
+        world.run_until(100)
+        (result,) = again
+        assert result.accepted
+        assert "already runs" in result.message
+        configs = rapid_configures(world)
+        assert len(configs) == 2  # the keep-alive did not restart the stream
+        assert (configs[-1].exposure_us, configs[-1].gain) == (1000, 30)
+        assert {f.exposure_us for f in world.focus.frames if world.seconds(f.t_utc_ns) > 82} == {
+            1000
+        }
+        world.close()
+
+    def test_a_start_with_one_setting_changes_only_that_one(self) -> None:
+        world, _ = rapid_world()
+        submit_at(world, 40.0, rapid_at(world, 40.0, exposure_us=1000, gain=30))
+        x, y = world.star_position(world.t(80.0))
+        submit_at(world, 80.0, StartRapidFocus(x, y, gain=60))
+        world.run_until(100)
+        configs = rapid_configures(world)
+        assert [(c.exposure_us, c.gain) for c in configs] == [(2000, 0), (1000, 30), (1000, 60)]
+        world.close()
+
     def test_a_start_of_the_alignment_does_not_end_the_mode(self) -> None:
         world, _ = rapid_world()
         submit_at(world, 40.0, StartAlignment())
