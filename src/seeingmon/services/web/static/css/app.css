@@ -1453,10 +1453,12 @@ label {
 
   .tabs {
     padding: 0 4px;
+    overflow-x: auto; /* six tabs scroll sideways instead of overlapping on a very narrow screen */
   }
 
   .tabs a {
-    padding: 8px 2px;
+    flex: 1 0 auto;
+    padding: 8px 6px;
     font-size: 0.95rem;
   }
 
