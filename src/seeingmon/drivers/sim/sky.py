@@ -74,10 +74,37 @@ def airmass(zenith_angle_deg: float) -> float:
     return 1.0 / (math.cos(math.radians(z)) + 0.50572 * math.pow(96.07995 - z, -1.6364))
 
 
-# Sky brightening by the sun, in magnitudes per square arcsecond, against the altitude of the
-# sun. A dark sky needs a sun below -18 degrees. The values follow typical twilight curves.
-_TWILIGHT_ALTITUDE_DEG = (-18.0, -15.0, -12.0, -9.0, -6.0, -3.0, 0.0, 10.0)
-_TWILIGHT_BRIGHTENING_MAG = (0.0, 0.5, 2.5, 5.5, 8.5, 11.5, 14.5, 16.5)
+DAYLIGHT_SKY_MAG_ARCSEC2 = 4.2
+"""The daylight sky near the celestial pole, in V mag/arcsec^2.
+
+It is the median of the V-band sky that Nickel and Calderwood (2021, JAAVSO 49, 269, Figure 2)
+measured 66 to 96 degrees from the sun with the sun 10 to 52 degrees high. The pole is always 66.6
+to 113.4 degrees from the sun. `docs/research-notes.md` ("Polaris in a bright sky") has the source
+and what the model leaves out.
+"""
+
+_DEFAULT_DARK_SKY_MAG_ARCSEC2 = 20.5
+
+# The sky near the pole with the default dark sky, in magnitudes per square arcsecond, against
+# the altitude of the sun. A dark sky needs a sun below -18 degrees. Up to 0 degrees, the values
+# follow typical twilight curves, as a brightening of the default dark sky by 0, 0.5, 2.5, 5.5,
+# 8.5, 11.5, and 14.5 mag. From +10 degrees up, the sky is the daylight sky near the pole.
+_TWILIGHT_ALTITUDE_DEG = (-18.0, -15.0, -12.0, -9.0, -6.0, -3.0, 0.0, 10.0, 90.0)
+_TWILIGHT_SKY_MAG_ARCSEC2 = (
+    20.5,
+    20.0,
+    18.0,
+    15.0,
+    12.0,
+    9.0,
+    6.0,
+    DAYLIGHT_SKY_MAG_ARCSEC2,
+    DAYLIGHT_SKY_MAG_ARCSEC2,
+)
+
+
+def _flux(mag: float | FloatArray) -> FloatArray:
+    return np.asarray(np.power(10.0, -0.4 * np.asarray(mag, dtype=np.float64)))
 
 
 def sky_brightness_mag_arcsec2(
@@ -85,8 +112,11 @@ def sky_brightness_mag_arcsec2(
 ) -> float | FloatArray:
     """The surface brightness of the sky for a dark-sky value and the altitude of the sun.
 
-    The result is in mag/arcsec^2, so a smaller number means a brighter sky. With
-    `twilight=False`, the sky stays at its dark value at every time.
+    The result is in mag/arcsec^2, so a smaller number means a brighter sky. The sky is the dark
+    sky of the site plus the sunlight that the air scatters, and the scattered light depends on
+    the altitude of the sun alone: it is the table above less the default dark sky of 20.5. A
+    site with another dark sky therefore has the same daylight sky, `DAYLIGHT_SKY_MAG_ARCSEC2`.
+    With `twilight=False`, the sky stays at its dark value at every time.
     """
     if not twilight:
         return (
@@ -94,8 +124,9 @@ def sky_brightness_mag_arcsec2(
             if np.isscalar(sun_altitude)
             else np.full_like(np.asarray(sun_altitude, dtype=np.float64), dark_sky_mag_arcsec2)
         )
-    brightening = np.interp(sun_altitude, _TWILIGHT_ALTITUDE_DEG, _TWILIGHT_BRIGHTENING_MAG)
-    result = dark_sky_mag_arcsec2 - brightening
+    table = np.interp(sun_altitude, _TWILIGHT_ALTITUDE_DEG, _TWILIGHT_SKY_MAG_ARCSEC2)
+    sunlight = np.maximum(_flux(table) - _flux(_DEFAULT_DARK_SKY_MAG_ARCSEC2), 0.0)
+    result = -2.5 * np.log10(_flux(dark_sky_mag_arcsec2) + sunlight)
     return float(result) if np.ndim(result) == 0 else np.asarray(result, dtype=np.float64)
 
 

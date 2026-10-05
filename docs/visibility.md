@@ -48,7 +48,7 @@ The fast stream replaces the Sun's elevation as the gate. It runs in one of two 
 
 The scheduler writes the event `polaris.visible` when the stream switches to measure and `polaris.hidden` when it switches back, each with the Sun's elevation. These events give the visibility statistics.
 
-**When to search.** Search runs only where Polaris can appear: while the Sun is below `search.max_sun_elevation_deg`, and at night under clouds. The default is +3°, a placeholder. The detection estimate (see "Open questions") replaces it with the elevation where Polaris first becomes detectable plus a margin of a few degrees. If the estimate says that Polaris is detectable in full daylight, the limit goes away, and the system measures instead of searching. A rough estimate already suggests that Polaris is detectable at +3°: with the simulator's sky of about 6 mag/arcsec² at that elevation, a 2 ms frame gives an SNR of about 20. Above the limit, one burst every `search.probe_interval_s` (600 s) checks that the limit is not too low, so that the statistics are not cut off by the system's own setting. When a probe burst finds Polaris, the system measures, and it writes a warning event that the limit is too low.
+**When to search.** Search runs only where Polaris can appear: while the Sun is below `search.max_sun_elevation_deg`, and at night under clouds. The default is +12°. The detection estimate (`docs/research-notes.md`, "Polaris in a bright sky") finds that the SNR of Polaris in the median frame of a burst falls to 10 when the Sun climbs to +8.9°, and the default adds a margin of 3°. In the estimate's daylight sky near the pole (4.2 mag/arcsec² in V), the median frame has an SNR of 8.3, so Polaris is not detectable frame by frame in full daylight. Across the daylight skies that were measured near the pole, though, the SNR ranges from 3 to 13, and an aperture matched to the star image would raise it about four times. A value of 90 or more means no limit. At +3°, the simulator's sky is 5.5 mag/arcsec², and a 2 ms frame gives an SNR of about 20. Above the limit, one burst every `search.probe_interval_s` (600 s) checks that the limit is not too low, so that the statistics are not cut off by the system's own setting. When a probe burst finds Polaris, the system measures, and it writes a warning event that the limit is too low.
 
 **The detection.** The fast analyzer already reports whether it found the star. Search adds the signal-to-noise ratio (SNR) of the star in each burst, from the aperture flux and the background noise. A burst counts as a detection at `search.detect_snr` (10) or more within `search.radius_px` of the prediction.
 
@@ -115,7 +115,7 @@ All values are provisional.
 | `scheduler.search.detect_snr` | 10.0 | The SNR of a detection |
 | `scheduler.search.radius_px` | 20.0 | How far from the prediction a detection may lie, in fast-mode pixels |
 | `scheduler.search.confirm_bursts` | 2 | Bursts with a detection in a row that start measure |
-| `scheduler.search.max_sun_elevation_deg` | 3.0 (placeholder) | Search runs while the Sun is below this. None means always. The detection estimate replaces the placeholder. |
+| `scheduler.search.max_sun_elevation_deg` | 12.0 | Search runs while the Sun is below this: the detection estimate's +8.9° plus a margin of 3°. 90 or more means always. |
 | `scheduler.search.probe_interval_s` | 600.0 | The time between check bursts above the limit |
 | `scheduler.fast.target_background_fraction` | 0.3 | The background that the fast exposure aims for |
 | `scheduler.fast.max_noise_bias` | 0.05 | The seeing bias that sets `noisy` |
@@ -130,7 +130,7 @@ All values are provisional.
 
 ## Open questions
 
-- **How bright a sky still shows Polaris?** The lane computes the SNR of Polaris in a fast frame against the Sun's elevation, from +60° to −18°. The simulator's twilight model (`src/seeingmon/drivers/sim/sky.py`) stops at +10°, so the lane extends it with a published daylight sky brightness near the pole and cites the source in `docs/research-notes.md`. The real sky decides in phase 3.
+- **How bright a sky still shows Polaris?** The lane computed the SNR of Polaris in a fast frame against the Sun's elevation, from +60° to −18°, and extended the simulator's sky above +10° with a measured daylight sky near the pole (`docs/research-notes.md`, "Polaris in a bright sky"). In the model, the median frame reaches an SNR of 10 while the Sun is below +8.9°, and it gives 8.3 in full daylight. The measured daylight sky scatters by 1.5 mag, and the model leaves out how the sky near the pole darkens as the Sun sinks toward +10°, so the real sky decides in phase 3.
 - **The cost of measuring in daylight.** Searching costs little. If Polaris is visible in daylight, though, the system measures all day: the camera and the CPU work continuously, and the sensor warms in the sun. The lane measures the CPU load, the memory, and the sensor temperature of a day of measuring against the performance budgets. A warmer sensor also affects the dark library.
 - **Where the seeing is measured.** The readings describe the line of sight to Polaris, corrected to the zenith. A planet low in the south looks through more air. The architecture already reports the zenith value, and the History page should say so.
 

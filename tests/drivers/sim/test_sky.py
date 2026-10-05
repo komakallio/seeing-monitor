@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S
+from seeingmon.drivers.sim.options import SimOptions
 from seeingmon.drivers.sim.sky import (
+    DAYLIGHT_SKY_MAG_ARCSEC2,
     SYNTHETIC_SITE,
     CloudEvent,
     Clouds,
@@ -57,10 +59,35 @@ def test_the_sky_brightens_through_twilight() -> None:
     assert sky[1] == pytest.approx(dark)
     assert np.all(np.diff(sky) <= 0)  # smaller magnitudes are brighter
     assert sky[3] < dark - 7  # at -6 degrees, the sky is many magnitudes brighter
-    assert sky[-1] < 5  # daylight
+    assert sky[-1] < 5  # daylight near the pole is 4.2 mag/arcsec^2
     assert float(sky_brightness_mag_arcsec2(dark, -5.0, twilight=False)) == dark
     flat = np.asarray(sky_brightness_mag_arcsec2(dark, altitudes, twilight=False))
     assert np.all(flat == dark)
+
+
+def test_the_daylight_sky_near_the_pole_is_the_measured_value() -> None:
+    # Nickel and Calderwood (2021), Figure 2: the median V sky 66 to 96 degrees from the sun, with
+    # the sun 10 to 52 degrees high, is 4.2 mag/arcsec^2 (docs/research-notes.md).
+    dark = SimOptions().sky_mag_arcsec2
+    assert pytest.approx(4.2) == DAYLIGHT_SKY_MAG_ARCSEC2
+    daylight = np.asarray(
+        sky_brightness_mag_arcsec2(dark, np.array([10.0, 20.0, 35.0, 58.4, 90.0]))
+    )
+    assert daylight == pytest.approx(np.full(5, 4.2), abs=1e-9)
+    # From sunset to +10 degrees, the sky brightens linearly from the twilight table's 6.0.
+    assert float(sky_brightness_mag_arcsec2(dark, 0.0)) == pytest.approx(6.0, abs=1e-9)
+    assert float(sky_brightness_mag_arcsec2(dark, 3.0)) == pytest.approx(5.46, abs=1e-9)
+    # The sun adds its light to the dark sky, so every site has the same day, and a darker site
+    # keeps its darker night.
+    for site_dark in (18.0, 21.0, 22.0):
+        day = float(sky_brightness_mag_arcsec2(site_dark, 30.0))
+        assert day == pytest.approx(DAYLIGHT_SKY_MAG_ARCSEC2, abs=1e-4)  # mag/arcsec^2
+        night = float(sky_brightness_mag_arcsec2(site_dark, -20.0))
+        assert night == pytest.approx(site_dark, abs=1e-9)
+    # In twilight, the sunlight of the default site (its sky is 20.0 at -15 degrees) adds to a
+    # darker sky: -2.5 log10(10^(-0.4 * 22) + 10^(-0.4 * 20.0) - 10^(-0.4 * 20.5)) is 20.69.
+    twilight = float(sky_brightness_mag_arcsec2(22.0, -15.0))
+    assert twilight == pytest.approx(20.69, abs=0.005)  # mag/arcsec^2
 
 
 def test_airmass() -> None:
