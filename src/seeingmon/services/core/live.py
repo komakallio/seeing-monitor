@@ -19,6 +19,13 @@ bursts never pass through it.
 - It never blocks and never raises into the scheduler. An error switches the video off for
   `disable_s` seconds and logs one line with the traceback.
 
+**The rapid focus mode.** The scheduler hands the frames of that mode to the rapid focus helper,
+which measures them and offers each one here with `rapid=True` (see
+`seeingmon.services.core.alignment.rapid`). They take the same path as the frames of the fast
+stream, so the page shows one video for both. The thread of the stream asks `rapid` for the state of
+the mode when it renders such a frame, and the state carries it (`PolarisState.rapid_focus`). A
+frame of the mode carries no rolling seeing value.
+
 **The stream thread.** A thread takes the newest slot and renders it (`PolarisRenderer`: the
 stretch, the width, the PNG, and the state), and sends `pack_polaris_frame(state, image)` to every
 open stream. A stream with no room in its window skips the frame, because a slow consumer must never
@@ -48,7 +55,7 @@ from seeingmon.services.core.polaris import FrameSlot, PolarisRenderer
 from seeingmon.services.core.settings import PolarisSettings
 from seeingmon.services.ipc.errors import IpcError
 from seeingmon.services.ipc.stream import StreamSender
-from seeingmon.services.web.contract import LiveSeeingView, pack_polaris_frame
+from seeingmon.services.web.contract import LiveSeeingView, RapidFocusView, pack_polaris_frame
 
 _log = logging.getLogger(__name__)
 
@@ -75,11 +82,13 @@ class PolarisStream:
         clock: Clock,
         renderer: PolarisRenderer,
         live: Callable[[], LiveSeeingView | None] | None = None,
+        rapid: Callable[[], RapidFocusView | None] | None = None,
     ) -> None:
         self._settings = settings
         self._clock = clock
         self._renderer = renderer
         self._live = live
+        self._rapid = rapid
         self._interval_ns = max(1, round(NS_PER_S / settings.max_fps))
 
         self._lock = threading.Lock()
@@ -110,16 +119,19 @@ class PolarisStream:
 
     # --- The scheduler's side --------------------------------------------------------------
 
-    def offer(self, frame: Frame, update: FastUpdate) -> None:
-        """Take a frame of the fast stream. Called on the scheduler thread, returns at once."""
+    def offer(self, frame: Frame, update: FastUpdate, rapid: bool = False) -> None:
+        """Take a frame of the fast stream. Called on the scheduler thread, returns at once.
+
+        `rapid` says that the frame comes from the rapid focus mode.
+        """
         if not self._active:
             return
         try:
-            self._keep(frame, update)
+            self._keep(frame, update, rapid)
         except Exception:
             self._fail()
 
-    def _keep(self, frame: Frame, update: FastUpdate) -> None:
+    def _keep(self, frame: Frame, update: FastUpdate, rapid: bool) -> None:
         t_ns = frame.t_utc_ns
         self._count += 1 + frame.dropped_before
         previous = self._last_seen_ns
@@ -144,6 +156,7 @@ class PolarisStream:
             frame.roi,
             update.star,
             self._count,
+            rapid,
         )
         with self._wake:
             if self._slot is not None:
@@ -196,7 +209,12 @@ class PolarisStream:
     def process(self, slot: FrameSlot) -> bytes:
         """Render a frame and send it to the open streams. Returns the payload that went out."""
         started = self._clock.monotonic_ns()
-        frame = self._renderer.render(slot, self.current_live())
+        if slot.rapid:  # the rapid focus mode: its state, and no rolling seeing value
+            frame = self._renderer.render(
+                slot, None, None if self._rapid is None else self._rapid()
+            )
+        else:
+            frame = self._renderer.render(slot, self.current_live())
         payload = pack_polaris_frame(frame.state, frame.image)
         self.frames_encoded += 1
         self._publish(payload)

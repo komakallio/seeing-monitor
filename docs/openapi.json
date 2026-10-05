@@ -320,7 +320,7 @@
         "type": "object"
       },
       "AlignmentState": {
-        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `reticle` is the fixed circle of the first layer, and it\nexists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the\norbit of Polaris, and the camera model of the latest current solution. It exists whether or not\na target is set. `timing` says how old the frame and the solution are. `aim_ring` is where\nPolaris belongs on the circle of the reticle, and it exists while the state has no current\nsolution, when it comes from `last_solution`.",
+        "description": "What the Align page shows next to the live view. The answer of `alignment_state`.\n\nEvery part is `null` when `core` does not know it yet, and `quality` says why. `t_utc` is an\nISO 8601 UTC time. Positions are in pixels of the frame in `frame`, so the UI scales them to\nthe size of the image that it shows. `reticle` is the fixed circle of the first layer, and it\nexists without a solution. `sky` is the layer that is fixed to the stars: the pole, the aim, the\norbit of Polaris, and the camera model of the latest current solution. It exists whether or not\na target is set. `timing` says how old the frame and the solution are. `aim_ring` is where\nPolaris belongs on the circle of the reticle, and it exists while the state has no current\nsolution, when it comes from `last_solution`. `rapid_focus` says whether the rapid focus mode\nis offered, and what it measures while it runs.",
         "properties": {
           "active": {
             "default": false,
@@ -396,6 +396,17 @@
             "maxProperties": 32,
             "title": "Quality",
             "type": "object"
+          },
+          "rapid_focus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RapidFocusView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the rapid focus mode is offered, and what it measures while it runs. It is `null` outside the alignment. While the mode runs, the camera streams the fast readout mode, so no new live-view frame arrives, and the readings travel with the video of Polaris (`polaris` channel)."
           },
           "reticle": {
             "anyOf": [
@@ -4221,7 +4232,7 @@
         "type": "object"
       },
       "PolarisState": {
-        "description": "What a page shows next to one frame of the live video of Polaris.\n\n`seq` is the number that the hub of `web` gives the frame (`core` sends 0), and a client that\npolls passes the newest one as `after`. `t_utc` and `t_utc_ns` are the time of the frame, and\n`stream_id`, `mode`, `exposure_us`, and `gain` name the stream that it belongs to. `roi` is the\nrectangle of the sensor that the image shows, in pixels of the readout mode, and\n`scale_arcsec_px` is the plate scale of that mode. `fast_fps` is the frame rate of the camera,\nwhich is higher than the rate of the video.\n\nThe image has the type `image_type` and the size `image_width` by `image_height`, which is the\nsize of the ROI: the page magnifies it. The video is lossless (a PNG), so that the page can\nmagnify it with nearest-neighbor scaling and show the pixels of the star. `stretch` holds the\nlevels of the stretch of the image, `star` the star of this frame, and `live_seeing` the newest\nrolling seeing value, or `null` while `core` has none. A value that `core` cannot give is\n`null`, and `quality` says why.",
+        "description": "What a page shows next to one frame of the live video of Polaris.\n\n`seq` is the number that the hub of `web` gives the frame (`core` sends 0), and a client that\npolls passes the newest one as `after`. `t_utc` and `t_utc_ns` are the time of the frame, and\n`stream_id`, `mode`, `exposure_us`, and `gain` name the stream that it belongs to. `roi` is the\nrectangle of the sensor that the image shows, in pixels of the readout mode, and\n`scale_arcsec_px` is the plate scale of that mode. `fast_fps` is the frame rate of the camera,\nwhich is higher than the rate of the video.\n\nThe image has the type `image_type` and the size `image_width` by `image_height`, which is the\nsize of the ROI: the page magnifies it. The video is lossless (a PNG), so that the page can\nmagnify it with nearest-neighbor scaling and show the pixels of the star. `stretch` holds the\nlevels of the stretch of the image, `star` the star of this frame, and `live_seeing` the newest\nrolling seeing value, or `null` while `core` has none. A value that `core` cannot give is\n`null`, and `quality` says why.\n\nWhile the rapid focus mode runs, the frames come from that mode (`stream_id` is the stream of\nthe mode), `live_seeing` is `null` (the mode makes no seeing value), and `rapid_focus` holds the\nreadings of the star width, so the page draws the video and the curve from one message.\n`rapid_focus` is `null` in every other frame.",
         "properties": {
           "exposure_us": {
             "minimum": 0,
@@ -4285,6 +4296,17 @@
             "maxProperties": 32,
             "title": "Quality",
             "type": "object"
+          },
+          "rapid_focus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RapidFocusView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "roi": {
             "$ref": "#/components/schemas/RoiView"
@@ -4468,6 +4490,349 @@
         },
         "description": "The reason that a value is missing or uncertain, as a map from the field name to a short reason, or `null` when every field is present and trusted. A client reads a `null` value together with this map, which gives the reason as a short code, such as `too_few_frames`.",
         "title": "Quality",
+        "type": "object"
+      },
+      "RapidFocusView": {
+        "description": "The rapid focus mode: whether it is offered, and, while it runs, what it measures.\n\nIn the rapid focus mode the camera streams the fast readout mode on a small ROI around Polaris\n(128 by 128 pixels in bin1, 1.91 arcseconds per pixel) at the camera rate, and `core` reports\nthe width of the star in arcseconds 20 times a second, with the live video of the star on the\n`polaris` channel. Only one star counts: Polaris.\n\n**Offered.** `available` is `true` while the alignment runs, the coarse focus is good enough\n(the stars of the normal view are at most `max_fwhm_arcsec` wide), and `core` knows where\nPolaris is (`located_by` says how). Otherwise `reason` says in words what is missing. While the\nmode runs, `available` stays `true`, because a start request then restarts its idle timer.\n`POST /alignment/rapid-focus/start` takes no position: `core` places the ROI by itself.\n\n**Running.** `active` is `true` from the start to the end of the mode. `since_utc` is the\nstart, and `mode`, `exposure_us`, `gain`, `roi`, and `scale_arcsec_px` describe the stream. The\nvalue of the newest reading is `fwhm_arcsec`, and `best_fwhm_arcsec` is the lowest smoothed\nvalue of the session (the lowest median of ten to twenty consecutive readings that are not\nspikes and not saturated). `n_stars` is 1 while the star shows in the frames, and 0 while it\ndoes not. `readings` holds the history. A mode that ended on its own says why in\n`ended_reason` until the next session starts.",
+        "properties": {
+          "active": {
+            "default": false,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "best_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The best value of the session.",
+            "title": "Best Fwhm Arcsec"
+          },
+          "coarse_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The coarse focus: the median of the last five focus values of the normal view, in arcseconds.",
+            "title": "Coarse Fwhm Arcsec"
+          },
+          "ended_reason": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Why the last session ended on its own.",
+            "title": "Ended Reason"
+          },
+          "exposure_us": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exposure Us"
+          },
+          "fwhm_arcsec": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The newest reading.",
+            "title": "Fwhm Arcsec"
+          },
+          "gain": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gain"
+          },
+          "located_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "current solution",
+                  "last solution",
+                  "brightest star"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What tells `core` where Polaris is. It is `null` while it does not know.",
+            "title": "Located By"
+          },
+          "max_fwhm_arcsec": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The widest coarse focus that offers the mode, in arcseconds.",
+            "title": "Max Fwhm Arcsec"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mode"
+          },
+          "n_stars": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The number of stars that count.",
+            "title": "N Stars"
+          },
+          "peak_fraction": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The peak of the newest reading.",
+            "title": "Peak Fraction"
+          },
+          "quality": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 32,
+            "title": "Quality",
+            "type": "object"
+          },
+          "readings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RapidReadingsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The last 600 readings. `null` while the mode does not run."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What is missing, in words, or `null`.",
+            "title": "Reason"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoiView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "saturated": {
+            "default": false,
+            "description": "`true` when the newest reading rests on a saturated star.",
+            "title": "Saturated",
+            "type": "boolean"
+          },
+          "scale_arcsec_px": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scale Arcsec Px"
+          },
+          "since_utc": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "When the session started.",
+            "title": "Since Utc"
+          },
+          "spike": {
+            "default": false,
+            "description": "`true` when the newest reading is a spike.",
+            "title": "Spike",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "RapidFocusView",
+        "type": "object"
+      },
+      "RapidReadingsView": {
+        "description": "The last readings of the rapid focus mode, oldest first, as parallel lists of one length.\n\nA reading is the median width of the star over the frames of an interval of 50 milliseconds\n(about four frames at 82 frames a second), so there are 20 readings a second. `core` keeps the\nlast 600 of them, which is 30 seconds. One rule serves every message: if `reset` is `true`,\nthrow away the readings that you hold, then append the readings of the message, then keep the\nnewest 600. `web` sends the whole history in the first message of a viewer (`reset` is `true`),\nand after that only the readings that this viewer lacks (`reset` is `false`). `session`\nchanges when a new rapid focus session starts, and `index` counts the readings of a session\nfrom 1, so a reader can tell new readings from old ones.",
+        "properties": {
+          "fwhm_arcsec": {
+            "description": "The width of the star in arcseconds: the median over the frames of the interval of the mean of the two second-moment widths, times 2.355, through the plate scale of the readout mode (1.91 arcseconds per pixel in bin1). It is the width that the stored windows call `width_fwhm_arcsec`.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 600,
+            "title": "Fwhm Arcsec",
+            "type": "array"
+          },
+          "index": {
+            "description": "The number of each reading in its session, from 1. It grows by one for each reading and never repeats.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 600,
+            "title": "Index",
+            "type": "array"
+          },
+          "n_frames": {
+            "description": "The number of frames that the reading rests on.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 600,
+            "title": "N Frames",
+            "type": "array"
+          },
+          "peak_fraction": {
+            "description": "The brightest pixel of the star in the interval, as a share of the full scale of the ADC.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 600,
+            "title": "Peak Fraction",
+            "type": "array"
+          },
+          "reset": {
+            "default": true,
+            "description": "`true`: discard the readings that you hold, then append these. `false`: append these to the readings that you hold.",
+            "title": "Reset",
+            "type": "boolean"
+          },
+          "saturated": {
+            "description": "`true` when the star reached the saturation level in a frame of the interval. A saturated star reads too narrow, so such a reading never sets the best value.",
+            "items": {
+              "type": "boolean"
+            },
+            "maxItems": 600,
+            "title": "Saturated",
+            "type": "array"
+          },
+          "session": {
+            "description": "Changes when a new rapid focus session starts, with an empty history.",
+            "minimum": 0,
+            "title": "Session",
+            "type": "integer"
+          },
+          "spike": {
+            "description": "`true` for a reading that exceeds twice the median of the preceding ten readings, such as the moment after you touch the telescope. A page leaves a spike out of its scale, and a spike never sets the best value.",
+            "items": {
+              "type": "boolean"
+            },
+            "maxItems": 600,
+            "title": "Spike",
+            "type": "array"
+          },
+          "t_utc_ms": {
+            "description": "The middle of the interval that the reading covers, in milliseconds since the Unix epoch (UTC), in the time of the frames.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 600,
+            "title": "T Utc Ms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "title": "RapidReadingsView",
         "type": "object"
       },
       "RecordTime": {

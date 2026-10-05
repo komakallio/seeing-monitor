@@ -54,6 +54,7 @@ from seeingmon.services.web.contract import (
     PolarisStar,
     PolarisState,
     PolarisStretch,
+    RapidFocusView,
     RoiView,
 )
 
@@ -75,7 +76,8 @@ class FrameSlot:
     `data` is a copy of the ROI, because the camera may reuse the buffer of the frame. `star` is the
     star as the fast analysis saw it in this frame. `count` is the number of camera frames of the
     stream up to this one, the lost frames included, so that the difference of two counts over
-    the difference of two times is the frame rate of the camera.
+    the difference of two times is the frame rate of the camera. `rapid` says that the frame comes
+    from the rapid focus mode, which makes no seeing value, and whose state travels with the frame.
     """
 
     data: FrameData
@@ -88,6 +90,7 @@ class FrameSlot:
     roi: Roi
     star: StarState
     count: int
+    rapid: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,8 +265,17 @@ class PolarisRenderer:
         self._previous = slot
         return self._fps
 
-    def render(self, slot: FrameSlot, live: LiveSeeingView | None = None) -> PolarisFrame:
-        """Stretch and encode a frame, and build its state. `live` is the rolling seeing value."""
+    def render(
+        self,
+        slot: FrameSlot,
+        live: LiveSeeingView | None = None,
+        rapid: RapidFocusView | None = None,
+    ) -> PolarisFrame:
+        """Stretch and encode a frame, and build its state.
+
+        `live` is the rolling seeing value, and `rapid` is the state of the rapid focus mode, which
+        goes into the state of a frame that comes from that mode.
+        """
         fps = self._follow_rate(slot)
         stretched = self._stretch.apply(slot.data, slot.t_utc_ns)
         scale = self._scale_for(slot.mode)
@@ -298,7 +310,11 @@ class PolarisRenderer:
         if fps is None:
             quality["fast_fps"] = "the frame rate needs two frames of the stream"
         if live is None:
-            quality["live_seeing"] = "core has no rolling seeing value yet"
+            quality["live_seeing"] = (
+                "the rapid focus mode makes no rolling seeing value"
+                if slot.rapid
+                else "core has no rolling seeing value yet"
+            )
         height, width = slot.data.shape
         state = PolarisState(
             seq=0,
@@ -319,6 +335,7 @@ class PolarisRenderer:
                 black_dn=round(stretched.black_dn, 1), white_dn=round(stretched.white_dn, 1)
             ),
             live_seeing=live,
+            rapid_focus=rapid,
             quality=quality,
         )
         return PolarisFrame(state, encode_png(stretched.image))

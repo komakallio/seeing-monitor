@@ -642,8 +642,10 @@ def test_the_json_of_a_polaris_state_has_the_documented_fields_in_every_message(
         "star",
         "stretch",
         "live_seeing",
+        "rapid_focus",
         "quality",
     ]
+    assert body["rapid_focus"] is None  # only the frames of the rapid focus mode carry it
     assert body["image_type"] == "image/png"
     assert body["image_width"] == body["roi"]["width"]
     assert body["image_height"] == body["roi"]["height"]

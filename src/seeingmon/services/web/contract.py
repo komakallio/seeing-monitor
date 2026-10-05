@@ -143,6 +143,7 @@ JPEG_MAGIC = b"\xff\xd8\xff"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 POLARIS_IMAGE_TYPE = "image/png"
 MAX_LIST_ITEMS = 256
+MAX_RAPID_READINGS = 600
 MAX_TEXT_CHARS = 4000
 MAX_FLAT_JPEG_BYTES = 600_000
 
@@ -966,6 +967,155 @@ class TimingView(_View):
     )
 
 
+class RapidReadingsView(_View):
+    """The last readings of the rapid focus mode, oldest first, as parallel lists of one length.
+
+    A reading is the median width of the star over the frames of an interval of 50 milliseconds
+    (about four frames at 82 frames a second), so there are 20 readings a second. `core` keeps the
+    last 600 of them, which is 30 seconds. One rule serves every message: if `reset` is `true`,
+    throw away the readings that you hold, then append the readings of the message, then keep the
+    newest 600. `web` sends the whole history in the first message of a viewer (`reset` is `true`),
+    and after that only the readings that this viewer lacks (`reset` is `false`). `session`
+    changes when a new rapid focus session starts, and `index` counts the readings of a session
+    from 1, so a reader can tell new readings from old ones.
+    """
+
+    session: int = Field(
+        ge=0, description="Changes when a new rapid focus session starts, with an empty history."
+    )
+    reset: bool = Field(
+        True,
+        description="`true`: discard the readings that you hold, then append these. `false`: "
+        "append these to the readings that you hold.",
+    )
+    index: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="The number of each reading in its session, from 1. It grows by one for each "
+        "reading and never repeats.",
+    )
+    t_utc_ms: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="The middle of the interval that the reading covers, in milliseconds since "
+        "the Unix epoch (UTC), in the time of the frames.",
+    )
+    fwhm_arcsec: list[float] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="The width of the star in arcseconds: the median over the frames of the "
+        "interval of the mean of the two second-moment widths, times 2.355, through the plate "
+        "scale of the readout mode (1.91 arcseconds per pixel in bin1). It is the width that "
+        "the stored windows call `width_fwhm_arcsec`.",
+    )
+    peak_fraction: list[float] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="The brightest pixel of the star in the interval, as a share of the full "
+        "scale of the ADC.",
+    )
+    n_frames: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="The number of frames that the reading rests on.",
+    )
+    spike: list[bool] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="`true` for a reading that exceeds twice the median of the preceding ten "
+        "readings, such as the moment after you touch the telescope. A page leaves a spike out "
+        "of its scale, and a spike never sets the best value.",
+    )
+    saturated: list[bool] = Field(
+        default_factory=list,
+        max_length=MAX_RAPID_READINGS,
+        description="`true` when the star reached the saturation level in a frame of the "
+        "interval. A saturated star reads too narrow, so such a reading never sets the best "
+        "value.",
+    )
+
+    @model_validator(mode="after")
+    def _lists_have_one_length(self) -> RapidReadingsView:
+        lengths = {
+            len(self.index),
+            len(self.t_utc_ms),
+            len(self.fwhm_arcsec),
+            len(self.peak_fraction),
+            len(self.n_frames),
+            len(self.spike),
+            len(self.saturated),
+        }
+        if len(lengths) != 1:
+            raise ValueError("the lists of the rapid focus readings differ in length")
+        return self
+
+
+RapidLocatedBy = Literal["current solution", "last solution", "brightest star"]
+
+
+class RapidFocusView(_View):
+    """The rapid focus mode: whether it is offered, and, while it runs, what it measures.
+
+    In the rapid focus mode the camera streams the fast readout mode on a small ROI around Polaris
+    (128 by 128 pixels in bin1, 1.91 arcseconds per pixel) at the camera rate, and `core` reports
+    the width of the star in arcseconds 20 times a second, with the live video of the star on the
+    `polaris` channel. Only one star counts: Polaris.
+
+    **Offered.** `available` is `true` while the alignment runs, the coarse focus is good enough
+    (the stars of the normal view are at most `max_fwhm_arcsec` wide), and `core` knows where
+    Polaris is (`located_by` says how). Otherwise `reason` says in words what is missing. While the
+    mode runs, `available` stays `true`, because a start request then restarts its idle timer.
+    `POST /alignment/rapid-focus/start` takes no position: `core` places the ROI by itself.
+
+    **Running.** `active` is `true` from the start to the end of the mode. `since_utc` is the
+    start, and `mode`, `exposure_us`, `gain`, `roi`, and `scale_arcsec_px` describe the stream. The
+    value of the newest reading is `fwhm_arcsec`, and `best_fwhm_arcsec` is the lowest smoothed
+    value of the session (the lowest median of ten to twenty consecutive readings that are not
+    spikes and not saturated). `n_stars` is 1 while the star shows in the frames, and 0 while it
+    does not. `readings` holds the history. A mode that ended on its own says why in
+    `ended_reason` until the next session starts.
+    """
+
+    available: bool
+    reason: str | None = Field(
+        None, max_length=MAX_TEXT_CHARS, description="What is missing, in words, or `null`."
+    )
+    located_by: RapidLocatedBy | None = Field(
+        None, description="What tells `core` where Polaris is. It is `null` while it does not know."
+    )
+    coarse_fwhm_arcsec: float | None = Field(
+        None,
+        ge=0,
+        description="The coarse focus: the median of the last five focus values of the normal "
+        "view, in arcseconds.",
+    )
+    max_fwhm_arcsec: float | None = Field(
+        None, gt=0, description="The widest coarse focus that offers the mode, in arcseconds."
+    )
+    active: bool = False
+    ended_reason: str | None = Field(
+        None, max_length=MAX_TEXT_CHARS, description="Why the last session ended on its own."
+    )
+    since_utc: str | None = Field(None, max_length=40, description="When the session started.")
+    mode: str | None = Field(None, max_length=64)
+    exposure_us: int | None = Field(None, ge=0)
+    gain: int | None = Field(None, ge=0)
+    roi: RoiView | None = None
+    scale_arcsec_px: float | None = Field(None, gt=0)
+    n_stars: int | None = Field(None, ge=0, description="The number of stars that count.")
+    fwhm_arcsec: float | None = Field(None, ge=0, description="The newest reading.")
+    best_fwhm_arcsec: float | None = Field(None, ge=0, description="The best value of the session.")
+    peak_fraction: float | None = Field(None, ge=0, description="The peak of the newest reading.")
+    spike: bool = Field(False, description="`true` when the newest reading is a spike.")
+    saturated: bool = Field(
+        False, description="`true` when the newest reading rests on a saturated star."
+    )
+    readings: RapidReadingsView | None = Field(
+        None, description="The last 600 readings. `null` while the mode does not run."
+    )
+    quality: dict[str, str] = Field(default_factory=dict, max_length=32)
+
+
 class AlignmentState(_View):
     """What the Align page shows next to the live view. The answer of `alignment_state`.
 
@@ -976,7 +1126,8 @@ class AlignmentState(_View):
     orbit of Polaris, and the camera model of the latest current solution. It exists whether or not
     a target is set. `timing` says how old the frame and the solution are. `aim_ring` is where
     Polaris belongs on the circle of the reticle, and it exists while the state has no current
-    solution, when it comes from `last_solution`.
+    solution, when it comes from `last_solution`. `rapid_focus` says whether the rapid focus mode
+    is offered, and what it measures while it runs.
     """
 
     active: bool = False
@@ -1005,6 +1156,13 @@ class AlignmentState(_View):
         None,
         description="The age of the frame, and the frame and the time of the quick solve. It is "
         "`null` until a frame has arrived.",
+    )
+    rapid_focus: RapidFocusView | None = Field(
+        None,
+        description="Whether the rapid focus mode is offered, and what it measures while it runs. "
+        "It is `null` outside the alignment. While the mode runs, the camera streams the fast "
+        "readout mode, so no new live-view frame arrives, and the readings travel with the video "
+        "of Polaris (`polaris` channel).",
     )
     quality: dict[str, str] = Field(default_factory=dict, max_length=32)
 
@@ -1159,6 +1317,11 @@ class PolarisState(_View):
     levels of the stretch of the image, `star` the star of this frame, and `live_seeing` the newest
     rolling seeing value, or `null` while `core` has none. A value that `core` cannot give is
     `null`, and `quality` says why.
+
+    While the rapid focus mode runs, the frames come from that mode (`stream_id` is the stream of
+    the mode), `live_seeing` is `null` (the mode makes no seeing value), and `rapid_focus` holds the
+    readings of the star width, so the page draws the video and the curve from one message.
+    `rapid_focus` is `null` in every other frame.
     """
 
     seq: int = Field(0, ge=0)
@@ -1177,6 +1340,7 @@ class PolarisState(_View):
     star: PolarisStar
     stretch: PolarisStretch
     live_seeing: LiveSeeingView | None = None
+    rapid_focus: RapidFocusView | None = None
     quality: dict[str, str] = Field(default_factory=dict, max_length=32)
 
 
