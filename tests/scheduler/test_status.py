@@ -158,6 +158,7 @@ def test_the_activity_has_a_phase_for_every_state_of_the_scheduler_and_the_fault
         "idle",
         "watch",
         "align",
+        "rapid_focus",
         "commission",
         "paused",
         "camera_fault",
