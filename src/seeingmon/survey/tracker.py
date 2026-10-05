@@ -82,6 +82,7 @@ class PointingTracker:
         self._validity_ns = None if validity_s == 0 else round(validity_s * NS_PER_S)
         self._lock = threading.Lock()
         self._solution: PointingSolution | None = None
+        self._timed = True  # whether the clock timed the frame of the solution
         self._reference = reference
 
     # --- State ---------------------------------------------------------------------------
@@ -101,18 +102,37 @@ class PointingTracker:
         with self._lock:
             self._reference = reference
 
-    def update(self, solution: PointingSolution) -> bool:
+    @property
+    def untimed(self) -> bool:
+        """Whether the solution comes from a frame that the clock did not time (`time_invalid`)."""
+        with self._lock:
+            return self._solution is not None and not self._timed
+
+    def update(self, solution: PointingSolution, *, timed: bool = True) -> bool:
         """Adopt a solution, unless it is older than the one that the tracker holds.
 
         Returns whether the tracker adopted it. Results can arrive out of order when a worker
         process finishes frames late, and an old frame must not replace a newer solution.
+
+        Pass `timed=False` for a solution from a frame that the clock did not time. Such a
+        solution can lie in the future, so the order of time cannot judge it against a timed one.
+        It fills a tracker that holds no solution or another untimed one, and it never replaces a
+        timed one. A timed solution replaces an untimed one, whatever their times. Until then,
+        the untimed solution places Polaris right, because the error of the clock cancels between
+        the solve and the prediction, as long as the error stays the same.
         """
         with self._lock:
             current = self._solution
-            if current is not None and solution.t_utc_ns < current.t_utc_ns:
-                return False
-            self._solution = solution
-            return True
+            if current is None:
+                adopt = True
+            elif timed != self._timed:
+                adopt = timed  # a timed solution replaces an untimed one, and never the reverse
+            else:
+                adopt = solution.t_utc_ns >= current.t_utc_ns
+            if adopt:
+                self._solution = solution
+                self._timed = timed
+            return adopt
 
     def clear(self) -> None:
         """Forget the solution.
@@ -122,6 +142,7 @@ class PointingTracker:
         """
         with self._lock:
             self._solution = None
+            self._timed = True
 
     def age_s(self, t_utc_ns: int) -> float | None:
         """The seconds from the latest solution to `t_utc_ns`, or `None` without a solution."""

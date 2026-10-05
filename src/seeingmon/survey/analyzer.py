@@ -28,11 +28,13 @@ boundary holds here too.
 tracker, so `tracker.polaris_position` (a `PointingProvider`) always reflects the latest
 accepted solution. Only a solve that succeeds replaces the solution: an unsolved frame and a
 failed job leave it alone. A result with too few stars or a large residual does not update the
-tracker, and neither does the result of a frame that the clock did not time (`time_invalid`). The
-tracker refuses a solution older than the one it holds, and the solution has no age limit, so one
-solution from a clock that ran ahead would block every later one. Each `submit` hands the worker
-the solution at that moment, so a frame that follows quickly uses the previous solution even if
-the earlier result has not come back.
+tracker. The tracker refuses a solution older than the one it holds, and the solution has no age
+limit, so a solution from a clock that ran ahead must never block a timed one. The result of a
+frame that the clock did not time (`time_invalid`) therefore fills only a tracker that holds no
+solution or another untimed one, and the first timed solve replaces it, whatever its time
+(`PointingTracker.update`). A station that starts without a synchronized clock still measures that
+way. Each `submit` hands the worker the solution at that moment, so a frame that follows quickly
+uses the previous solution even if the earlier result has not come back.
 
 **Sky quality.** Each result carries a `sky_quality` record. The transparency needs a reference
 zero point from the clearest conditions of the recent past, and that history lives here, not in
@@ -379,14 +381,15 @@ class SurveyPipelineAnalyzer:
             return self._failure_output(job, f"analysis error: {type(error).__name__}")
         self._log_frame(info, records, solution, notes, attempts, timings)
         if solution is not None and self._trusted(solution):
+            adopted = self._tracker.update(solution, timed=not info.time_invalid)
             if info.time_invalid:
                 log.info(
-                    "survey frame %s: the clock was not synchronized, so the tracker keeps its "
-                    "solution",
+                    "survey frame %s: the clock was not synchronized, so %s",
                     utc_ns_to_iso(info.t_utc_ns, digits=0),
+                    "the tracker holds this solution until a solve with a valid time replaces it"
+                    if adopted
+                    else "the tracker keeps its solution",
                 )
-            else:
-                self._tracker.update(solution)
         records = records + self._remember(records, info.t_utc_ns, epoch_stars)
         return SurveyOutput(
             t_utc_ns=info.t_utc_ns,

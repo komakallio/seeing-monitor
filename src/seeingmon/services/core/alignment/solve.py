@@ -349,21 +349,23 @@ def adopt(
 
     Only a solve that succeeds can replace the solution of the tracker: a frame that was not
     solved leaves it alone. So does a solution with fewer matched stars than `min_stars` or a
-    residual above `max_rms_px` pixels, and its note says so. A frame that the clock did not time
-    (`time_invalid`) leaves the tracker alone too, because its solution may lie in the future, and
-    the tracker would then refuse every later one. The live view still shows that frame's solution.
+    residual above `max_rms_px` pixels, and its note says so. The solution of a frame that the
+    clock did not time (`time_invalid`) may lie in the future, so it fills only a tracker that holds
+    no solution or another untimed one, and the first timed solve replaces it, whatever its time
+    (`PointingTracker.update`). When the tracker refuses it, its note says so, and the live view
+    still shows that frame's solution.
     """
     pointing = analysis.pointing
     if pointing is None:
         return analysis.solution
-    if time_invalid:
+    if not is_trusted(pointing, min_stars=min_stars, max_rms_px=max_rms_px):
+        note = analysis.solution.note or "the fit is too weak to move the tracker"
+        return replace(analysis.solution, note=note)
+    adopted = tracker.update(pointing, timed=not time_invalid)
+    if time_invalid and not adopted:
         note = "the clock is not synchronized, so the solution does not move the tracker"
         return replace(analysis.solution, note=note)
-    if is_trusted(pointing, min_stars=min_stars, max_rms_px=max_rms_px):
-        tracker.update(pointing)
-        return analysis.solution
-    note = analysis.solution.note or "the fit is too weak to move the tracker"
-    return replace(analysis.solution, note=note)
+    return analysis.solution
 
 
 class QuickSolver:

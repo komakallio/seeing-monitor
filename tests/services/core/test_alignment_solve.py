@@ -75,6 +75,11 @@ def quick_solver(
     return QuickSolver(pipeline, tracker, VirtualClock(synth.NIGHT_UTC_NS)), queue
 
 
+def holds_untimed(solver: QuickSolver) -> bool:
+    """Whether the tracker holds an untimed solution (a function, so mypy does not narrow it)."""
+    return solver.tracker.untimed
+
+
 class TestSolving:
     def test_the_first_frame_goes_to_the_solver_and_starts_the_tracker(self, scene: Scene) -> None:
         solver, queue = quick_solver(scene)
@@ -185,19 +190,26 @@ class TestSolving:
         assert solver.tracker.solution is good
         assert (solver.solves, solver.failures) == (1, 1)
 
-    def test_a_frame_without_a_valid_time_does_not_move_the_tracker(self, scene: Scene) -> None:
-        """Its solution could lie in the future, and the tracker would refuse every later one."""
-        solver, queue = quick_solver(scene)
+    def test_a_frame_without_a_valid_time_fills_an_empty_tracker_and_never_replaces_a_timed_one(
+        self, scene: Scene
+    ) -> None:
+        """Its solution could lie in the future, so only a timed solution can replace it."""
+        solver, _ = quick_solver(scene)
         untimed = replace(scene.first[0], t_quality=TimeQuality.INVALID)
+        solution = solver.solve(untimed)
+        assert solution.solved
+        assert solution.note == ""
+        assert holds_untimed(solver)
+        assert solver.solve(scene.first[0]).solved  # the same frame with a valid time
+        timed = solver.tracker.solution
+        assert timed is not None
+        assert not holds_untimed(solver)
         solution = solver.solve(untimed)
         assert solution.solved  # the live view still shows where Polaris is
         assert solution.note == (
             "the clock is not synchronized, so the solution does not move the tracker"
         )
-        assert solver.tracker.solution is None
-        queue.add(synth.truth_solve_result(scene.first[1], scene.catalog))
-        assert solver.solve(scene.first[0]).solved  # the same frame with a valid time
-        assert solver.tracker.solution is not None
+        assert solver.tracker.solution is timed
 
     def test_an_alignment_frame_never_asks_for_the_sky_quality(self, scene: Scene) -> None:
         asked: list[object] = []

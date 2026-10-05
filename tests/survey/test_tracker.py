@@ -54,6 +54,11 @@ def solution_from_truth(truth: synth.SynthTruth, *, shift_px: float = 0.0) -> pt
     )  # fmt: skip
 
 
+def holds_untimed(tracker: PointingTracker) -> bool:
+    """Whether the tracker holds an untimed solution (a function, so mypy does not narrow it)."""
+    return tracker.untimed
+
+
 def test_the_tracker_is_a_pointing_provider() -> None:
     assert isinstance(PointingTracker(PROFILE), PointingProvider)
 
@@ -157,6 +162,56 @@ def test_an_older_solution_does_not_replace_a_newer_one() -> None:
     after_clear = tracker.solution
     assert after_clear is None
     assert tracker.update(older)
+
+
+def test_a_solution_without_a_valid_time_holds_until_a_timed_one_replaces_it() -> None:
+    """The solve of a frame that a clock stamped 6 hours ahead, as after a boot without time.
+
+    The error of the clock cancels between the solve and the prediction, so the untimed solution
+    places Polaris right at the times of the same clock. It lies in the future, so the order of
+    time cannot judge it against a timed one.
+    """
+    ahead_ns = 6 * 3600 * NS_PER_S
+    truth0, catalog = truth_at(T0)
+    timed = solution_from_truth(truth0)
+    attitude = CameraAttitude(
+        truth0.rotation_cirs, truth0.scale_arcsec_px / ARCSEC_PER_RAD, truth0.parity,
+        truth0.center_px,
+    )  # fmt: skip
+    untimed = pt.PointingSolution.from_attitude(
+        attitude, apparent.epoch_from_utc_ns(T0 + ahead_ns), mode="bin2", width_px=4144,
+        height_px=2822, n_matched=100, solver="test",
+    )  # fmt: skip
+    tracker = PointingTracker(PROFILE)
+    assert tracker.update(untimed, timed=False)  # an empty tracker takes it
+    assert holds_untimed(tracker)
+    polaris_row = int(np.argmin(catalog.g_mag))
+    truth, _ = truth_at(T0 + 600 * NS_PER_S, catalog=catalog)
+    (where,) = np.flatnonzero(truth.rows == polaris_row)
+    true_xy = (float(truth.x[where]), float(truth.y[where]))
+    predicted = tracker.polaris_position(T0 + ahead_ns + 600 * NS_PER_S, "bin2")
+    # The apparent places of the two epochs, 6 hours apart, differ by 0.02 pixel (0.08 arcsec).
+    assert predicted == pytest.approx(true_xy, abs=0.05)  # pixels
+    # After the clock steps back to the true time, the untimed solution points far off.
+    stale = tracker.polaris_position(T0 + 600 * NS_PER_S, "bin2")
+    assert stale is not None
+    assert np.hypot(stale[0] - true_xy[0], stale[1] - true_xy[1]) > 100.0
+    # Among untimed solutions, the order of time holds.
+    assert not tracker.update(replace(untimed, t_utc_ns=untimed.t_utc_ns - NS_PER_S), timed=False)
+    later = replace(untimed, t_utc_ns=untimed.t_utc_ns + NS_PER_S)
+    assert tracker.update(later, timed=False)
+    # A timed solution replaces it, although it is 6 hours older.
+    assert tracker.update(timed)
+    assert not holds_untimed(tracker)
+    assert tracker.solution is timed
+    # An untimed solution never replaces a timed one, whatever its time, and timed ones keep the
+    # order of time.
+    assert not tracker.update(later, timed=False)
+    assert not tracker.update(replace(timed, t_utc_ns=T0 - NS_PER_S))
+    assert tracker.solution is timed
+    tracker.clear()  # a cleared tracker takes an untimed solution again
+    assert not holds_untimed(tracker)
+    assert tracker.update(later, timed=False)
 
 
 def test_the_tracker_gives_the_trail_model_of_an_exposure() -> None:

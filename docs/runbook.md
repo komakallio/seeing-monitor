@@ -311,7 +311,7 @@ sudo systemctl start seeingmon-core.service
 
 ## Time sync
 
-The Pi 4 has no real-time clock, so the clock starts wrong after a boot until chrony synchronizes it. Every record carries `time_invalid` until then, and the absolute time error of a frame includes the error bound of chrony.
+The Pi 4 has no real-time clock, so the clock starts wrong after a boot until chrony synchronizes it. Every record carries `time_invalid` until then, and the absolute time error of a frame includes the error bound of chrony. Until then, `core` also starts without a pointing solution, because a stored one would place Polaris wrong by the error of the clock, and the first survey frame that solves places Polaris. The error of the clock cancels between that solve and its predictions, so the system measures seeing. When chrony steps the clock, that solution points wrong, so the fast stream can miss Polaris until the next survey step solves with a valid time and replaces it.
 
 ```bash
 chronyc tracking          # "Leap status: Normal" and a small "System time" offset mean a good lock

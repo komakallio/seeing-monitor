@@ -39,7 +39,16 @@ from seeingmon.drivers.base import (
     CameraTimeoutError,
     RecoveryLevel,
 )
-from seeingmon.frames import ActiveStream, Frame, FrameData, Roi, StreamConfig, StreamKind
+from seeingmon.frames import (
+    ActiveStream,
+    Frame,
+    FrameData,
+    FrameFlag,
+    Roi,
+    StreamConfig,
+    StreamKind,
+    TimeQuality,
+)
 from seeingmon.profile import load_profile
 from seeingmon.records import (
     EventRecord,
@@ -100,7 +109,11 @@ class ConfigureCall:
 
 
 class ScenarioCamera(FakeCameraDriver):
-    """The fake camera, plus scripted faults and a log of every `configure`."""
+    """The fake camera, plus scripted faults and a log of every `configure`.
+
+    While the clock is not synchronized, a frame carries `TimeQuality.INVALID` and
+    `FrameFlag.TIME_INVALID`, as `acquire` marks it.
+    """
 
     def __init__(self, clock: Clock, world: World) -> None:
         super().__init__(
@@ -155,7 +168,14 @@ class ScenarioCamera(FakeCameraDriver):
             self.calls.append(("read_frame", timeout_s))
             self._clock.sleep(timeout_s)
             raise CameraTimeoutError("scripted fault")
-        return super().read_frame(timeout_s)
+        frame = super().read_frame(timeout_s)
+        if self._clock.status().synchronized is False:  # `acquire` marks such a frame
+            frame = replace(
+                frame,
+                t_quality=TimeQuality.INVALID,
+                flags=frame.flags | FrameFlag.TIME_INVALID,
+            )
+        return frame
 
     def recover(self, level: RecoveryLevel) -> None:
         if self.gone_active():

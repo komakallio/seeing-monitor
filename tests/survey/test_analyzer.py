@@ -148,6 +148,11 @@ def held(analyzer: SurveyPipelineAnalyzer) -> pt.PointingSolution | None:
     return analyzer.tracker.solution
 
 
+def held_untimed(analyzer: SurveyPipelineAnalyzer) -> bool:
+    """Whether the tracker holds a solution from a frame without a valid time (a function too)."""
+    return analyzer.tracker.untimed
+
+
 def held_time(analyzer: SurveyPipelineAnalyzer) -> int | None:
     """The time of the solution that the tracker holds, which a copy keeps across the worker."""
     solution = analyzer.tracker.solution
@@ -369,6 +374,45 @@ def test_the_solution_of_a_frame_without_a_valid_time_does_not_replace_the_solut
     analyzer.submit(small_frame(20 * NS))
     analyzer.poll()
     assert held_time(analyzer) == later.t_utc_ns  # a timed solve after the clock came back
+
+
+def test_a_frame_without_a_valid_time_fills_an_empty_tracker_until_a_timed_solve_replaces_it(
+    profile: Profile, catalog: CapCatalog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """After a boot without a time source, `core` starts empty, and the station must still measure.
+
+    Here the clock runs a day ahead, so the untimed solutions lie in the future. The first timed
+    solve replaces them, although its time is earlier.
+    """
+    from seeingmon.frames import FrameFlag, TimeQuality
+
+    analyzer, pipeline = scripted(profile, catalog, executor=InlineExecutor())
+    ahead = 86_400 * NS
+    for index in range(2):
+        t = ahead + (index + 1) * 10 * NS
+        pipeline.solution_for[index] = solution_with(300, 0.1, t_utc_ns=t)
+        analyzer.submit(replace(small_frame(t), t_quality=TimeQuality.INVALID))
+    with caplog.at_level("INFO", logger="seeingmon.survey"):
+        outputs = analyzer.poll()
+    assert [output.solved for output in outputs] == [True, True]
+    assert held_time(analyzer) == ahead + 20 * NS  # the newer untimed solution
+    assert held_untimed(analyzer)
+    assert analyzer.tracker.polaris_position(ahead + 30 * NS, "bin2") is not None
+    assert (
+        "survey frame 1970-01-02T00:00:10Z: the clock was not synchronized, so the tracker holds "
+        "this solution until a solve with a valid time replaces it"
+    ) in survey_log(caplog)
+    # chrony steps the clock back a day, and the next frame has a valid time.
+    pipeline.solution_for[2] = solution_with(300, 0.1, t_utc_ns=40 * NS)
+    analyzer.submit(small_frame(40 * NS))
+    analyzer.poll()
+    assert held_time(analyzer) == 40 * NS
+    assert not held_untimed(analyzer)
+    # An untimed solve no longer replaces it, even one with a later time.
+    pipeline.solution_for[3] = solution_with(300, 0.1, t_utc_ns=ahead + 50 * NS)
+    analyzer.submit(replace(small_frame(ahead + 50 * NS), flags=FrameFlag.TIME_INVALID))
+    analyzer.poll()
+    assert held_time(analyzer) == 40 * NS
 
 
 def survey_log(caplog: pytest.LogCaptureFixture) -> list[str]:
