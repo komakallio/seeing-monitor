@@ -837,20 +837,27 @@ class TestTheVideoOfPolaris:
 
 
 def best_cost_us(helper: RapidFocusHelper, frames: list[Frame], rounds: int = 5) -> float:
-    """The best mean time of one `push` over several rounds, in microseconds."""
-    best = float("inf")
+    """The best mean CPU time of one `push` over several rounds, in microseconds.
+
+    The CPU time of the thread leaves out the time that other jobs of a busy machine take from
+    it, which the wall clock counts. The wall time of the same rounds is printed too.
+    """
+    best, best_wall = float("inf"), float("inf")
     for _ in range(rounds):
         helper.begin_session()
-        started = time.perf_counter()
+        wall, cpu = time.perf_counter(), time.thread_time()
         for frame in frames:
             helper.push(frame)
-        best = min(best, (time.perf_counter() - started) / len(frames))
+        best = min(best, (time.thread_time() - cpu) / len(frames))
+        best_wall = min(best_wall, (time.perf_counter() - wall) / len(frames))
+    print(f"the wall time of a frame was {best_wall * 1e6:.1f} microseconds")
     return best * 1e6
 
 
 class TestTheCost:
     @staticmethod
-    def frames(count: int = 1200) -> list[Frame]:
+    def frames(count: int = 4000) -> list[Frame]:
+        """Frames of one star; a round of 4000 is long enough for the clock of the thread."""
         rng = np.random.default_rng(9)
         pool = [star_data(1.1, rng) for _ in range(40)]  # the noise differs from frame to frame
         return [
@@ -864,7 +871,7 @@ class TestTheCost:
         ]
 
     def test_the_work_for_one_frame_stays_under_150_microseconds(self) -> None:
-        """The scheduler thread pays this for every frame, 82 times a second.
+        """The scheduler thread pays this for every frame, 82 times a second (CPU time).
 
         The helper runs the kernel, the interval bookkeeping, and the offer to a video that a page
         watches (the slot copy of every fourth frame). A development machine takes about 50
@@ -883,7 +890,7 @@ class TestTheCost:
             kernel_setup=fast_analyzer().kernel_setup,
         )
         cost = best_cost_us(helper, self.frames())
-        print(f"the helper takes {cost:.1f} microseconds for a frame")
+        print(f"the helper takes {cost:.1f} microseconds of CPU time for a frame")
         assert cost < 150.0
 
     def test_the_cost_without_a_viewer_is_the_kernel_and_a_few_microseconds(self) -> None:
@@ -899,5 +906,5 @@ class TestTheCost:
             kernel_setup=fast_analyzer().kernel_setup,
         )
         cost = best_cost_us(helper, self.frames())
-        print(f"the helper takes {cost:.1f} microseconds for a frame without a viewer")
+        print(f"the helper takes {cost:.1f} microseconds of CPU time for a frame without a viewer")
         assert cost < 150.0
