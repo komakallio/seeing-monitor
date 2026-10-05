@@ -1,6 +1,6 @@
 # Visibility lane brief
 
-Status: on hold. The owner approved [`visibility.md`](visibility.md) on October 5, 2026, and asked not to start yet. Start only when the owner says so.
+Status: in progress. The owner approved [`visibility.md`](visibility.md) on October 5, 2026, and said to start the same day. The owner also approved five fixes to the design, listed under "Fixes approved at the start".
 
 You are the visibility lane. You make the system measure seeing whenever Polaris is visible: pointing without an age limit, the search and measure modes of the fast stream, the adaptive exposures, the darkness and clear-sky events, and the visibility summary that `docs/visibility.md` describes. That file is the design for this lane. Where it and `docs/architecture.md` disagree, the visibility design wins for this feature, and you update the architecture to match.
 
@@ -39,6 +39,20 @@ Each step ends with tests that pass and a push.
 9. **The cost.** Measure the CPU load, the memory, and the sensor temperature of a simulated day of measuring, and of a cloudy night of searching, with the performance harness, and add budget lines to `docs/performance.md`.
    Done when: the budget tests pass on the dev machine.
 10. **The documentation.** Move the built design into `docs/architecture.md` (the "Scheduler", "Pointing", and "Transparency and clouds" sections, and the decisions table), leave `docs/visibility.md` as background with a pointer, and add a visibility check to the commissioning steps in `docs/runbook.md`.
+
+## Fixes approved at the start
+
+A read of the code before step 1 found five gaps in the design. The owner approved these fixes on October 5, 2026:
+
+1. **A moved mount solves again.** Without an age limit, the solvers always get the hint of 2° around the prediction and never the hint of 15° around the pole, so a mount that moved more than about 2° never solves again. When the hinted solvers fail on a frame with enough stars, the pipeline tries again with the pole hint (step 1).
+2. **The daylight gate measures the fast stream.** The gate reads a 1 ms bin2 frame, which saturates long before the fast stream does at its shortest exposure. The gate decides from the background that the fast stream would have at its shortest exposure (step 3).
+3. **The brightness frame stays when the survey skips.** In `auto`, only the 1 ms frame of the survey step updates the background. When the survey skips its long exposure in daylight, it still takes the 1 ms frame, so the gate keeps working (step 6).
+4. **`polaris.hidden` at every end of measure.** The scheduler writes `polaris.hidden` whenever measure ends, also when it ends because the state changes, such as a move to `safe` (step 3).
+5. **The open details.**
+   - The SNR of a burst is the SNR of the sum of its frames.
+   - A check burst above the limit needs `search.confirm_bursts` detections in a row, as a search does.
+   - The warning that the limit is too low is the event `polaris.search_limit_low`.
+   - TOML has no null, so the default file cannot write `None` for `search.max_sun_elevation_deg`. A value of 90 or more means no limit.
 
 ## Out of scope
 
