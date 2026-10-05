@@ -16,8 +16,9 @@ right order. The parts, and where they come from:
   and it writes the previews and the FITS files (`seeingmon.services.core.survey_frames`).
 - **Preview calibration:** one `PreviewCalibrator` takes the dark level, the vignetting, and the
   dust shadows out of the previews of the survey frames and out of the live view of the alignment
-  helper (`seeingmon.services.core.alignment.calibration`). It reads `[survey] flat_file` and the
-  dark library of the survey analysis.
+  helper (`seeingmon.services.core.alignment.calibration`). It reads the active flat of the flat
+  library (or else `[survey] flat_file`) and the dark library of the survey analysis, so a flat
+  that you activate on the Flat page reaches the next preview with no restart.
 - **Scheduler:** `build_scheduler(...)`, with the store as the record writer and the segment writer
   as the metrics writer.
 - **Heater, SQM-LE, power:** the sections `[heater]`, `[sqm]`, and `[power]`. Each stays off until
@@ -92,7 +93,10 @@ from seeingmon.scheduler import (
 )
 from seeingmon.scheduler.status import SchedulerStatus
 from seeingmon.services.config import ServicesConfig
-from seeingmon.services.core.alignment.calibration import PreviewCalibrator
+from seeingmon.services.core.alignment.calibration import (
+    LibraryFlatProvider,
+    PreviewCalibrator,
+)
 from seeingmon.services.core.alignment.helper import AlignmentHelper, Solver
 from seeingmon.services.core.alignment.solve import QuickSolver
 from seeingmon.services.core.alignment.worker import ProcessQuickSolver
@@ -402,8 +406,14 @@ class CoreApp:
         self._build_dark()
         # The previews of the survey frames and the live view share one calibrator, so that they
         # share the flat and the dark model that it caches.
+        flats = LibraryFlatProvider(self.survey_config)
         self.preview_calibrator = PreviewCalibrator(
-            self.survey_config, self.profile, library=self.dark_library, clock=self.clock
+            self.survey_config,
+            self.profile,
+            flat_provider=flats,
+            flat_configured=flats.configured,
+            library=self.dark_library,
+            clock=self.clock,
         )
         self._build_flat()
         transparency = QualityOptions.from_config(self.survey_config).transparency

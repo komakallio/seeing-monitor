@@ -24,7 +24,11 @@ from seeingmon.clock import NS_PER_S, VirtualClock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile, load_profile
 from seeingmon.services.core.alignment import calibration
-from seeingmon.services.core.alignment.calibration import FileFlatProvider, PreviewCalibrator
+from seeingmon.services.core.alignment.calibration import (
+    FileFlatProvider,
+    LibraryFlatProvider,
+    PreviewCalibrator,
+)
 from seeingmon.services.core.alignment.preview import (
     block_mean,
     encode_jpeg,
@@ -34,11 +38,13 @@ from seeingmon.services.core.alignment.preview import (
 )
 from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.dark import DarkLibrary
+from seeingmon.survey.flat_library import FlatLibrary
 from seeingmon.survey.sky import SkyError, UnitFlat, load_flat
 
 from .previewfx import (
     DUST,
     HOT,
+    SET_TIME_NS,
     SHAPE,
     SKY_DN,
     ListedFlat,
@@ -452,6 +458,236 @@ class TestTheFlatFile:
         os.utime(path, ns=(stamp, stamp))
         assert provider().version.startswith("flat-")
         assert len(loads) == 2
+
+
+def flat_library_of(config: SurveyConfig) -> FlatLibrary:
+    return FlatLibrary(Path(config.calibration_dir) / "flats")
+
+
+def add_flat(
+    library: FlatLibrary, sens: np.ndarray[Any, Any], number: int, *, activate: bool = False
+) -> str:
+    """Add a flat to the library of flats, and make it the active one when `activate` is true."""
+    when = SET_TIME_NS + number * NS_PER_S
+    entry = library.add(np.asarray(sens, dtype=np.float32), {"t_utc_ns": when, "mode": "bin2"})
+    if activate:
+        library.activate(entry.version, now_utc_ns=when)
+    return entry.version
+
+
+class TestTheFlatLibrary:
+    """The previews follow the flat library: the active flat wins over `flat_file`."""
+
+    def calibrator(self, config: SurveyConfig, profile: Profile, **parts: Any) -> PreviewCalibrator:
+        provider = LibraryFlatProvider(config)
+        return PreviewCalibrator(
+            config, profile, flat_provider=provider, flat_configured=provider.configured, **parts
+        )
+
+    def test_without_a_flat_in_the_library_the_flat_file_serves(
+        self, sensor: Sensor, profile: Profile
+    ) -> None:
+        calibrator = self.calibrator(sensor.config, profile)
+        _, calibrated = shrunk_and_calibrated(make_survey_frame(), calibrator)
+        assert abs(corner_to_center(calibrated) - 1.0) < 0.03
+
+    def test_a_flat_that_you_activate_reaches_the_next_preview_and_a_pending_flat_does_not(
+        self, sensor: Sensor, profile: Profile
+    ) -> None:
+        calibrator = self.calibrator(sensor.config, profile)
+        library = flat_library_of(sensor.config)
+        frame = make_survey_frame()
+        _, with_the_file = shrunk_and_calibrated(frame, calibrator)
+        no_dust = add_flat(library, sensitivity(dust=None), 1)  # pending
+        _, pending = shrunk_and_calibrated(frame, calibrator)
+        assert np.array_equal(pending, with_the_file)
+        library.activate(no_dust, now_utc_ns=SET_TIME_NS + 2 * NS_PER_S)
+        _, no_dust_flat = shrunk_and_calibrated(frame, calibrator)
+        assert abs(corner_to_center(no_dust_flat) - 1.0) < 0.03  # the vignetting still goes
+        shadow = patch(no_dust_flat, block_of(DUST[0], DUST[1])) / np.median(no_dust_flat)
+        assert shadow < 0.95  # the flat of the library has no dust, so the shadow stays
+        assert not np.array_equal(no_dust_flat, with_the_file)
+        add_flat(library, np.ones(SHAPE, dtype=np.float32), 3, activate=True)
+        _, flat_of_ones = shrunk_and_calibrated(frame, calibrator)
+        assert abs(corner_to_center(flat_of_ones) - 1.0) > 0.20  # this flat takes nothing out
+
+    def test_the_flat_file_serves_again_when_the_pointer_goes(
+        self, sensor: Sensor, profile: Profile
+    ) -> None:
+        calibrator = self.calibrator(sensor.config, profile)
+        library = flat_library_of(sensor.config)
+        frame = make_survey_frame()
+        _, with_the_file = shrunk_and_calibrated(frame, calibrator)
+        add_flat(library, np.ones(SHAPE, dtype=np.float32), 1, activate=True)
+        _, with_the_library = shrunk_and_calibrated(frame, calibrator)
+        assert not np.array_equal(with_the_library, with_the_file)
+        (library.directory / "current.json").unlink()
+        _, back = shrunk_and_calibrated(frame, calibrator)
+        assert np.array_equal(back, with_the_file)
+
+    def test_a_flat_waits_for_a_dark_set_and_the_note_follows_the_library(
+        self, tmp_path: Path, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        config = SurveyConfig(calibration_dir=str(tmp_path / "calibration"))  # no flat file
+        calibrator = self.calibrator(config, profile)
+        frame = make_survey_frame()
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            assert calibrator.for_frame(frame) is None
+            assert [r for r in caplog.records if r.name == LOGGER] == []  # no flat, nothing to say
+            add_flat(flat_library_of(config), sensitivity(), 1, activate=True)
+            assert calibrator.for_frame(frame) is None  # the flat needs the dark level
+        (note,) = [r for r in caplog.records if r.name == LOGGER]
+        assert note.levelno == logging.INFO
+        assert "no set for the readout mode bin2 at gain 120" in note.getMessage()
+        add_dark_set(DarkLibrary(Path(config.calibration_dir) / "darks"))
+        raw, calibrated = shrunk_and_calibrated(frame, calibrator)
+        assert abs(corner_to_center(raw) - corner_to_center(calibrated)) > 0.2
+
+    def test_the_provider_says_whether_a_flat_is_configured(
+        self, tmp_path: Path, sensor: Sensor
+    ) -> None:
+        config = SurveyConfig(calibration_dir=str(tmp_path / "calibration"))
+        provider = LibraryFlatProvider(config)
+        assert provider.configured() is False
+        assert isinstance(provider(), UnitFlat)
+        version = add_flat(flat_library_of(config), sensitivity(), 1, activate=True)
+        assert provider.configured() is True
+        assert provider().version == version
+        assert LibraryFlatProvider(sensor.config).configured() is True  # a flat file counts
+
+    def test_the_flat_file_is_read_again_when_it_changes_until_the_library_takes_over(
+        self, sensor: Sensor, profile: Profile, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loads: list[str] = []
+
+        def counting(path: str | Path) -> Any:
+            loads.append(str(path))
+            return load_flat(path)
+
+        monkeypatch.setattr(f"{LOGGER}.load_flat", counting)
+        calibrator = self.calibrator(sensor.config, profile)
+        frame = make_survey_frame()
+        shrunk_and_calibrated(frame, calibrator)
+        shrunk_and_calibrated(frame, calibrator)
+        assert len(loads) == 1
+        stamp = sensor.flat_path.stat().st_mtime_ns + 5 * NS_PER_S
+        write_flat(sensor.flat_path, np.ones(SHAPE, dtype=np.float32))
+        os.utime(sensor.flat_path, ns=(stamp, stamp))
+        _, changed = shrunk_and_calibrated(frame, calibrator)
+        assert len(loads) == 2
+        assert abs(corner_to_center(changed) - 1.0) > 0.20  # the new file takes nothing out
+        add_flat(flat_library_of(sensor.config), sensitivity(), 1, activate=True)
+        _, library = shrunk_and_calibrated(frame, calibrator)
+        assert abs(corner_to_center(library) - 1.0) < 0.03
+        write_flat(sensor.flat_path, sensitivity(dust=None))
+        later = stamp + 5 * NS_PER_S
+        os.utime(sensor.flat_path, ns=(later, later))
+        shrunk_and_calibrated(frame, calibrator)
+        assert len(loads) == 2  # the library's flat wins, so nothing reads the file
+
+    def test_a_call_costs_one_stat_of_the_pointer_and_one_of_the_file_without_a_library_flat(
+        self, sensor: Sensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = LibraryFlatProvider(sensor.config)
+        provider()  # reads the flat file
+        calls: list[str] = []
+        real = os.stat
+
+        def counting(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            calls.append(Path(os.fspath(path)).name)
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", counting)
+        for _ in range(3):
+            provider()
+        assert sorted(calls) == ["current.json"] * 3 + ["flat.npy"] * 3
+        add_flat(flat_library_of(sensor.config), sensitivity(), 1, activate=True)
+        provider()  # loads the library's flat
+        calls.clear()
+        for _ in range(3):
+            provider()
+        assert (
+            calls == ["current.json"] * 3
+        )  # the flat of the library alone, with no stat of the file
+
+    def test_a_library_flat_that_cannot_be_read_leaves_the_flat_in_place(
+        self, sensor: Sensor, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        calibrator = self.calibrator(sensor.config, profile)
+        library = flat_library_of(sensor.config)
+        frame = make_survey_frame()
+        first = add_flat(library, sensitivity(dust=None), 1, activate=True)
+        _, in_use = shrunk_and_calibrated(frame, calibrator)
+        second = add_flat(library, np.ones(SHAPE, dtype=np.float32), 2, activate=True)
+        (library.directory / f"{second}.npy").write_bytes(b"broken")
+        with caplog.at_level(logging.WARNING):
+            _, after = shrunk_and_calibrated(frame, calibrator)
+            shrunk_and_calibrated(frame, calibrator)
+        assert np.array_equal(after, in_use)  # the preview still divides by the first flat
+        assert first != second
+        assert len([r for r in caplog.records if "cannot be used" in r.getMessage()]) == 1
+
+    def test_a_broken_flat_in_the_library_at_the_start_falls_back_to_the_flat_file(
+        self, sensor: Sensor, profile: Profile
+    ) -> None:
+        library = flat_library_of(sensor.config)
+        version = add_flat(library, np.ones(SHAPE, dtype=np.float32), 1, activate=True)
+        (library.directory / f"{version}.npy").unlink()
+        calibrator = self.calibrator(sensor.config, profile)
+        _, calibrated = shrunk_and_calibrated(make_survey_frame(), calibrator)
+        assert abs(corner_to_center(calibrated) - 1.0) < 0.03  # the flat file serves
+
+    def test_a_flat_file_that_cannot_be_read_does_not_break_the_preview(
+        self, sensor: Sensor, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        os.remove(sensor.flat_path)
+        calibrator = self.calibrator(sensor.config, profile)
+        frame = make_survey_frame()
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            assert [calibrator.for_frame(frame) for _ in range(3)] == [None] * 3
+        (record,) = [r for r in caplog.records if r.levelno >= logging.WARNING and r.name == LOGGER]
+        assert "cannot read the flat file" in record.getMessage()
+        add_flat(flat_library_of(sensor.config), sensitivity(), 1, activate=True)
+        _, calibrated = shrunk_and_calibrated(frame, calibrator)  # the library's flat serves
+        assert abs(corner_to_center(calibrated) - 1.0) < 0.03
+
+    def test_threads_that_preview_while_a_flat_is_activated_never_fail(
+        self, sensor: Sensor, profile: Profile
+    ) -> None:
+        calibrator = self.calibrator(sensor.config, profile)
+        library = flat_library_of(sensor.config)
+        frame = make_survey_frame()
+        versions = [
+            add_flat(library, sensitivity(dust=None), 1),
+            add_flat(library, np.ones(SHAPE, dtype=np.float32), 2),
+        ]
+        stop = threading.Event()
+        errors: list[BaseException] = []
+        counts: list[int] = []
+
+        def work() -> None:
+            made = 0
+            try:
+                while not stop.is_set():
+                    step = calibrator.for_frame(frame)
+                    assert step is not None
+                    image = step(frame.data, block_mean(frame.data, FACTOR), FACTOR)
+                    assert np.isfinite(image).all()
+                    made += 1
+            except BaseException as error:
+                errors.append(error)
+            counts.append(made)
+
+        threads = [threading.Thread(target=work) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for turn in range(20):
+            library.activate(versions[turn % 2], now_utc_ns=SET_TIME_NS + (10 + turn) * NS_PER_S)
+        stop.set()
+        for thread in threads:
+            thread.join(30.0)
+        assert not errors
+        assert all(count > 0 for count in counts)
 
 
 class TestThreads:

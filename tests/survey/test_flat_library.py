@@ -708,6 +708,90 @@ class TestTheRuleOfTheSurvey:
         assert len(calls) == 5
         assert all(call.endswith("current.json") for call in calls)
 
+    def test_the_library_flat_is_the_active_flat_alone(self, tmp_path: Path) -> None:
+        pinned = write_npy(tmp_path / "pinned.npy", tiny_flat(5))
+        library = fl.FlatLibrary(tmp_path / "calibration" / "flats")
+        entry = library.add(tiny_flat(1), report_for(1))
+        source = fl.ActiveFlat.from_config(survey_config(tmp_path, flat_file=str(pinned)))
+        assert source.library_flat() is None  # a pending flat is not in use
+        assert source.current().version == ArrayFlat(tiny_flat(5)).version  # flat_file serves
+        library.activate(entry.version, now_utc_ns=NOW)
+        found = source.library_flat()
+        assert found is not None
+        assert found.version == entry.version
+        assert source.current().version == entry.version
+        (library.directory / "current.json").unlink()
+        assert source.library_flat() is None
+        assert source.current().version == ArrayFlat(tiny_flat(5)).version
+
+    def test_the_library_flat_needs_no_flat_file_and_no_calibration_folder(self) -> None:
+        assert fl.ActiveFlat.from_config(SurveyConfig()).library_flat() is None
+
+    def test_a_library_flat_that_cannot_be_read_leaves_the_flat_in_place(
+        self, tmp_path: Path
+    ) -> None:
+        library = fl.FlatLibrary(tmp_path / "calibration" / "flats")
+        first = library.add(tiny_flat(1), report_for(1))
+        second = library.add(tiny_flat(2), report_for(2))
+        library.activate(first.version, now_utc_ns=NOW)
+        source = fl.ActiveFlat.from_config(survey_config(tmp_path))
+        assert source.library_flat() is not None
+        library.activate(second.version, now_utc_ns=NOW + NS_PER_S)
+        (library.directory / f"{second.version}.npy").write_bytes(b"broken")
+        kept = source.library_flat()
+        assert kept is not None
+        assert kept.version == first.version  # the flat in use stays
+
+    def test_a_library_flat_that_cannot_be_read_at_the_start_is_none(self, tmp_path: Path) -> None:
+        library = fl.FlatLibrary(tmp_path / "calibration" / "flats")
+        entry = library.add(tiny_flat(1), report_for(1))
+        library.activate(entry.version, now_utc_ns=NOW)
+        (library.directory / f"{entry.version}.npy").unlink()
+        assert fl.ActiveFlat.from_config(survey_config(tmp_path)).library_flat() is None
+
+    def test_the_function_for_the_library_flat_shares_the_cache_of_active_flat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        library = fl.FlatLibrary(tmp_path / "calibration" / "flats")
+        entry = library.add(tiny_flat(1), report_for(1))
+        library.activate(entry.version, now_utc_ns=NOW)
+        config = survey_config(tmp_path)
+        loads: list[str] = []
+        original = fl.FlatLibrary.load
+
+        def counting(self: fl.FlatLibrary, version: str) -> ArrayFlat:
+            loads.append(version)
+            return original(self, version)
+
+        monkeypatch.setattr(fl.FlatLibrary, "load", counting)
+        found = fl.library_flat(config)
+        assert found is not None
+        assert found.version == entry.version
+        assert fl.active_flat(config) is found  # the same model, and no second read
+        assert fl.library_flat(config) is found
+        assert loads == [entry.version]
+
+    def test_a_check_of_the_library_flat_costs_one_stat_of_the_pointer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        library = fl.FlatLibrary(tmp_path / "calibration" / "flats")
+        entry = library.add(tiny_flat(1), report_for(1))
+        library.activate(entry.version, now_utc_ns=NOW)
+        config = survey_config(tmp_path)
+        assert fl.library_flat(config) is not None
+        calls: list[str] = []
+        real = os.stat
+
+        def counting(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            calls.append(os.fspath(path))
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", counting)
+        for _ in range(5):
+            assert fl.library_flat(config) is not None
+        assert len(calls) == 5
+        assert all(call.endswith("current.json") for call in calls)
+
     def test_taking_the_pointer_away_returns_to_flat_file(self, tmp_path: Path) -> None:
         pinned = write_npy(tmp_path / "pinned.npy", tiny_flat(5))
         library = fl.FlatLibrary(tmp_path / "calibration" / "flats")

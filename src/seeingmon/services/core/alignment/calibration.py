@@ -33,12 +33,19 @@ warning (and one more after an hour if the failure goes on) and leaves the previ
 preview never fails because of its calibration. A configured flat that waits for a dark set logs
 one line at the level `INFO`, so that a person who sees a raw preview finds the reason.
 
-**What the calibrator caches.** The flat comes from a provider that the calibrator calls for
-each frame. `FileFlatProvider` reads `[survey] flat_file` when the first frame arrives, and again
-when the file changes. The calibrator keeps the inverse of the shrunk flat for each flat, shrink
-factor, and frame window, the dark model and the sets of the library for each readout mode and gain
-(until the folder of the library changes), and the hot pixels of each set. A call that finds
-everything in the caches costs a stat of the flat file, a listing of the library folder, and the
+**Which flat.** The flat comes from a provider that the calibrator calls for each frame.
+`LibraryFlatProvider` follows the rule of the survey (`seeingmon.survey.flat_library`): the active
+flat of the flat library, which you choose on the Flat page, and without one `[survey] flat_file`,
+and without that a unit flat. A flat that you activate reaches the next preview with no restart.
+`FileFlatProvider` reads `[survey] flat_file` when the first frame arrives, and again when the
+file changes, so the previews pick up a new flat file too (the survey analysis waits for a
+restart). `core` uses the first, and a calibrator without a provider uses the second.
+
+**What the calibrator caches.** The calibrator keeps the inverse of the shrunk flat for each flat,
+shrink factor, and frame window, the dark model and the sets of the library for each readout mode
+and gain (until the folder of the library changes), and the hot pixels of each set. A call that
+finds everything in the caches costs a stat of the pointer of the flat library (and a stat of the
+flat file when the library has no active flat), a listing of the dark library folder, and the
 arithmetic on the shrunk image.
 
 **Threads.** The frame writer and the alignment helper call the calibrator from their own threads.
@@ -66,6 +73,7 @@ from seeingmon.profile import Profile
 from seeingmon.services.core.alignment.preview import PreviewCalibration
 from seeingmon.survey.config import SurveyConfig
 from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary, DarkModel, DarkSet, fit_dark_model
+from seeingmon.survey.flat_library import library_flat
 from seeingmon.survey.sky import FlatModel, SkyError, UnitFlat, load_flat
 
 _log = logging.getLogger(__name__)
@@ -124,6 +132,30 @@ class FileFlatProvider:
             return self._flat
 
 
+class LibraryFlatProvider:
+    """The flat of the previews of `core`: the library's active flat, or else the flat file.
+
+    The order is the one of `seeingmon.survey.flat_library.active_flat`: the active flat of the
+    flat library (`calibration_dir/flats/`), then `[survey] flat_file`, then a unit flat. A call
+    stats the pointer of the library, which costs one `os.stat`, and it reads the library's flat
+    only when the pointer changed. Without an active flat in the library, the call goes on to a
+    `FileFlatProvider`, which stats the flat file and reads it again when it changes. A flat file
+    that cannot be read raises `SkyError`, as the file provider does.
+    """
+
+    def __init__(self, config: SurveyConfig) -> None:
+        self._config = config
+        self._file = FileFlatProvider(config.flat_file)
+
+    def __call__(self) -> FlatModel:
+        flat = library_flat(self._config)
+        return flat if flat is not None else self._file()
+
+    def configured(self) -> bool:
+        """Whether the library has an active flat or the settings name a flat file."""
+        return bool(self._config.flat_file) or library_flat(self._config) is not None
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class _HotList:
     """The hot pixels of one dark set inside a frame window, hottest first.
@@ -173,10 +205,12 @@ class PreviewCalibrator:
     """Calibrates the previews of the survey readout mode. See the module text.
 
     `flat_provider` returns the flat to use for each frame. It defaults to `FileFlatProvider` on
-    `[survey] flat_file`. A provider that picks a flat from a library takes its place with one
-    argument. `library` is the dark library, and it defaults to the one in
-    `[survey] calibration_dir`. Without a library, no frame changes. `clock` times the repeats of
-    a warning.
+    `[survey] flat_file`, and `core` passes a `LibraryFlatProvider`. `flat_configured` tells
+    whether a flat is configured, for the note that says why a flat waits for a dark set. It
+    defaults to true when a provider is given or `flat_file` is set, and a provider whose flat
+    comes and goes (the library) passes its own answer. `library` is the dark library, and it
+    defaults to the one in `[survey] calibration_dir`. Without a library, no frame changes.
+    `clock` times the repeats of a warning.
 
     `for_frame` and the step that it returns never raise.
     """
@@ -187,6 +221,7 @@ class PreviewCalibrator:
         profile: Profile,
         *,
         flat_provider: FlatProvider | None = None,
+        flat_configured: Callable[[], bool] | None = None,
         library: DarkLibrary | None = None,
         clock: Clock | None = None,
     ) -> None:
@@ -196,7 +231,8 @@ class PreviewCalibrator:
         if library is None and config.calibration_dir:
             library = DarkLibrary(Path(config.calibration_dir) / DARKS_DIRNAME)
         self._library = library
-        self._flat_configured = flat_provider is not None or bool(config.flat_file)
+        configured = flat_provider is not None or bool(config.flat_file)
+        self._flat_configured: Callable[[], bool] = flat_configured or (lambda: configured)
         self._clock: Clock = clock or SystemClock()
         self._lock = threading.RLock()
         self._entries: dict[tuple[str, int], tuple[_Stamp, _Entry | None]] = {}
@@ -224,7 +260,7 @@ class PreviewCalibrator:
             return None
         entry = self._entry(frame.mode, frame.gain)
         if entry is None:
-            if self._flat_configured:
+            if self._flat_configured():
                 self._report(
                     logging.INFO,
                     f"the dark library has no set for the readout mode {frame.mode} at gain "

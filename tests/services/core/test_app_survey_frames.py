@@ -6,13 +6,14 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("sep", reason="the survey path needs the survey extra")
 pytest.importorskip("PIL", reason="the previews need Pillow")
 pytest.importorskip("astropy", reason="the FITS files need astropy")
 
-from seeingmon.clock import ScaledClock
+from seeingmon.clock import NS_PER_S, ScaledClock
 from seeingmon.frames import Frame
 from seeingmon.records import Record, SurveyFrameRecord
 from seeingmon.services.core.alignment.preview import make_preview
@@ -144,6 +145,40 @@ class TestThePreviewCalibration:
                 calibration=step,
             ).jpeg
             assert unpack_frame(rig.app.alignment.process_frame(frame)).jpeg == live_expected
+        finally:
+            rig.app.stop()
+
+    def test_a_flat_that_the_owner_activates_reaches_the_next_preview_and_the_live_view(
+        self, tmp_path: Path
+    ) -> None:
+        rig = self.rig(tmp_path, files=True)
+        try:
+
+            def at(seconds: int) -> Frame:  # the same sky a minute later, for a new file name
+                return previewfx.make_survey_frame(
+                    previewfx.sensitivity(self.SHAPE),
+                    t_utc_ns=NIGHT + seconds * NS_PER_S,
+                    exposure_s=30.0,
+                )
+
+            first = at(0)
+            before = self.written_preview(rig, first)
+            live_before = unpack_frame(rig.app.alignment.process_frame(first)).jpeg
+            # A flat of ones takes nothing out, so what it makes differs from what the file's does.
+            entry = rig.app.flat_library.add(
+                np.ones(self.SHAPE, dtype=np.float32), {"t_utc_ns": NIGHT, "mode": "bin2"}
+            )
+            assert self.written_preview(rig, at(60)) == before  # a pending flat changes nothing
+            # The reader of the RPC checks the flat against the full frame of the profile, and this
+            # rig takes small frames, so the library activates the flat as the reader would.
+            rig.app.flat_library.activate(entry.version, now_utc_ns=NIGHT)
+            later = at(120)
+            after = self.written_preview(rig, later)
+            live_after = unpack_frame(rig.app.alignment.process_frame(later)).jpeg
+            assert after != before
+            assert live_after != live_before
+            step = rig.app.preview_calibrator.for_frame(later)
+            assert getattr(step, "flat_version", None) == entry.version
         finally:
             rig.app.stop()
 

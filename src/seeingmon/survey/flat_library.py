@@ -22,7 +22,9 @@ newest `KEEP_FLATS` flats and never deletes the active one.
 and `active_flat(config)` is the same rule as one cheap call. The call looks at the pointer with
 one `stat`, and it reads the flat again only when the pointer changed, so the survey worker (and
 `core`, for the previews) pick up an activation without a restart. A flat file that cannot be read
-leaves the flat that the survey already uses in place.
+leaves the flat that the survey already uses in place. The previews read `flat_file` again when it
+changes, which the survey does not, so they ask `library_flat(config)` for the library's flat
+alone and keep the rest of the rule to themselves (see `PreviewCalibrator`).
 
 **The session folder.** A second set (with the source turned by 180 degrees) combines with the
 first set of the same session, so the folder `session/` keeps the frames of the first set (a SER
@@ -698,24 +700,38 @@ class ActiveFlat:
     def current(self) -> FlatModel:
         """The flat to use now. One `stat` of the pointer when nothing changed."""
         with self._lock:
-            stamp = None if self._library is None else self._library.pointer_stamp()
-            if self._model is not None and self._known and stamp == self._stamp:
-                return self._model
-            model = self._resolve(stamp)
-            self._stamp, self._known, self._model = stamp, True, model
-            return model
+            model = self._refresh()
+            return model if model is not None else self._pinned_flat()
 
-    def _resolve(self, stamp: tuple[int, int, int] | None) -> FlatModel:
-        if stamp is not None and self._library is not None:
-            version = self._library.active_version()
-            if version is not None:
-                try:
-                    return self._library.load(version)
-                except FlatLibraryError as error:
-                    log.warning("the active flat %s cannot be used: %s", version, error.message)
-                    if self._model is not None:
-                        return self._model
-        return self._pinned_flat()
+    def library_flat(self) -> FlatModel | None:
+        """The active flat of the library alone, or `None` when the library has none.
+
+        A caller that has a fallback of its own (the previews read `flat_file` again when it
+        changes) asks for this, and it costs what `current` costs: one `stat` of the pointer.
+        """
+        with self._lock:
+            return self._refresh()
+
+    def _refresh(self) -> FlatModel | None:
+        """The active flat of the library, read again only when the pointer changed."""
+        stamp = None if self._library is None else self._library.pointer_stamp()
+        if self._known and stamp == self._stamp:
+            return self._model
+        model = self._load_active(stamp)
+        self._stamp, self._known, self._model = stamp, True, model
+        return model
+
+    def _load_active(self, stamp: tuple[int, int, int] | None) -> FlatModel | None:
+        if stamp is None or self._library is None:
+            return None
+        version = self._library.active_version()
+        if version is None:
+            return None
+        try:
+            return self._library.load(version)
+        except FlatLibraryError as error:
+            log.warning("the active flat %s cannot be used: %s", version, error.message)
+            return self._model  # the flat in use stays, or the fallback serves when there is none
 
     def _pinned_flat(self) -> FlatModel:
         if self._pinned is None:
@@ -728,6 +744,18 @@ _SOURCES_LOCK = threading.Lock()
 _MAX_SOURCES = 8
 
 
+def _source(config: SurveyConfig) -> ActiveFlat:
+    """The `ActiveFlat` of a configuration, which every caller in the process shares."""
+    key = (config.calibration_dir, config.flat_file)
+    with _SOURCES_LOCK:
+        source = _SOURCES.get(key)
+        if source is None:
+            if len(_SOURCES) >= _MAX_SOURCES:
+                _SOURCES.clear()
+            source = _SOURCES[key] = ActiveFlat.from_config(config)
+        return source
+
+
 def active_flat(config: SurveyConfig) -> FlatModel:
     """The flat that the survey path divides by: the library's active flat, `flat_file`, or unit.
 
@@ -736,14 +764,17 @@ def active_flat(config: SurveyConfig) -> FlatModel:
     pair of `calibration_dir` and `flat_file`. Raises `SkyError` for a `flat_file` that cannot
     be read.
     """
-    key = (config.calibration_dir, config.flat_file)
-    with _SOURCES_LOCK:
-        source = _SOURCES.get(key)
-        if source is None:
-            if len(_SOURCES) >= _MAX_SOURCES:
-                _SOURCES.clear()
-            source = _SOURCES[key] = ActiveFlat.from_config(config)
-    return source.current()
+    return _source(config).current()
+
+
+def library_flat(config: SurveyConfig) -> FlatModel | None:
+    """The active flat of the flat library alone, or `None` when it has none.
+
+    It shares the cache of `active_flat`, so the call costs one `stat` of the pointer as well. A
+    caller that wants `flat_file` and the unit flat after it, but reads `flat_file` its own way,
+    uses this in place of `active_flat`.
+    """
+    return _source(config).library_flat()
 
 
 FlatSource = Callable[[], FlatModel]
