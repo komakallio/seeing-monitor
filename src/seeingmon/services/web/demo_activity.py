@@ -13,9 +13,10 @@ The fake `core` of the demo has no camera, so it plays what the real scheduler r
 
 A real cycle takes 3 minutes. The demo's takes 45 seconds, so that you see every phase within a
 few minutes, and the playlist takes about 3 minutes. The other states show their own activity: the
-brightness watch of `safe` (the gate opens after `GATE_OPEN_S`), the live view of `align`, the
-phases of the dark session and the flat session of `commission`, and `paused`. The words come from
-`seeingmon.scheduler.activity`, the same module that the real scheduler uses.
+brightness watch of `safe` (the gate opens after `GATE_OPEN_S`), the live view of `align` and its
+rapid focus mode, the phases of the dark session and the flat session of `commission`, and
+`paused`. The words come from `seeingmon.scheduler.activity`, the same module that the real
+scheduler uses.
 
 Every time of the activity is relative to the clock of the fake `core`: `since_utc_ns` is now minus
 the time that the phase has run, and `ends_utc_ns` is now plus the time that it has left. So the
@@ -56,6 +57,7 @@ WATCH_EXPOSURE_S = 0.001
 DAYLIGHT_RESUME_DEG = -4.0
 GATE_OPEN_S = 25.0  # how long the demo sky holds the gate in `safe`
 ALIGN_TIMEOUT_S = 1800.0  # [scheduler.align] idle_timeout_s
+RAPID_TIMEOUT_S = 120.0  # [scheduler.align] rapid_focus_idle_timeout_s
 
 # What a state means when the fake `core` holds no reason of its own for it.
 STATE_REASONS = {
@@ -256,6 +258,22 @@ def align_activity(elapsed_s: float, now_utc_ns: int, reason: str | None) -> Act
         next_utc_ns=ends,
         detail=words.align_detail(0.0, ALIGN_TIMEOUT_S),
         reason=reason,
+    )
+
+
+def rapid_activity(running_s: float, now_utc_ns: int) -> ActivityView:
+    """The rapid focus mode inside `align`, which ends after its own idle timeout."""
+    ends = _later(now_utc_ns, RAPID_TIMEOUT_S)
+    return ActivityView(
+        state="align",
+        phase=ActivityPhase.RAPID_FOCUS.value,
+        label=words.RAPID_FOCUS_LABEL,
+        since_utc_ns=_later(now_utc_ns, -running_s),
+        ends_utc_ns=ends,
+        next_label=words.RAPID_FOCUS_NEXT_LABEL,
+        next_utc_ns=ends,
+        detail=words.rapid_focus_detail(running_s, 0.0, RAPID_TIMEOUT_S),
+        reason=words.RAPID_FOCUS_REASON,
     )
 
 

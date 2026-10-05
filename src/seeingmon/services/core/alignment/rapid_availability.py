@@ -109,7 +109,7 @@ def _text(value: float) -> str:
     return f"{round(value, 1):g}"
 
 
-def _coarse_problem(
+def coarse_problem(
     coarse: CoarseFocus, scale_arcsec_px: float | None, limit_arcsec: float
 ) -> str | None:
     if coarse.count < COARSE_READINGS:
@@ -156,7 +156,7 @@ def rapid_availability(
     limit = settings.rapid_focus_max_fwhm_arcsec
     coarse = coarse_focus(focus, scale_arcsec_px)
     problems: list[str] = []
-    problem = _coarse_problem(coarse, scale_arcsec_px, limit)
+    problem = coarse_problem(coarse, scale_arcsec_px, limit)
     if problem is not None:
         problems.append(problem)
 
