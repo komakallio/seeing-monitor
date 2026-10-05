@@ -90,7 +90,12 @@ reference_file = ""
 timeout_s = 20.0
 scale_tolerance = 0.15
 hint_radius_deg = 2.0
-pole_hint_radius_deg = 15.0 # No pointing yet: the camera looks at Polaris, so search this far around the pole. 0 turns it off.
+# The search radius around the pole, where the camera looks: for the first solve, when no pointing
+# exists, and for the retry when every solver finds nothing near the prediction, as after a move of
+# the mount. 0 searches the whole sky for the first solve and skips the retry, so without an age
+# limit ([survey.pointing] validity_s 0) a mount that moved more than hint_radius_deg never solves
+# again. Provisional.
+pole_hint_radius_deg = 15.0
 max_stars = 1000            # The brightest stars go to the solver. An adapter may use fewer.
 cross_check_every = 0       # Every Nth solved frame also runs the second solver. 0 never does.
 cross_check_max_px = 1.5
