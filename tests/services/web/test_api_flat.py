@@ -132,7 +132,16 @@ def test_the_progress_of_a_session_shows_in_the_library(
         "setup",
         "Setting up the camera and the library.",
     )
-    clock.advance(2.2)  # the second try of the search for the exposure
+    clock.advance(1.2)  # the search for the exposure has begun, and no try has ended
+    start = flat_client.get(f"{API}/flat").json()["task"]
+    assert (start["phase"], start["step"], start["steps"]) == ("exposure", 0, 8)
+    assert start["message"] == "Finding the exposure that reaches 50 % of full scale."
+    assert start["level_fraction"] is None
+    clock.advance(1.0)  # the first try, which misses the target
+    first = flat_client.get(f"{API}/flat").json()["task"]
+    assert (first["phase"], first["step"]) == ("exposure", 1)
+    assert first["level_fraction"] == pytest.approx(0.256, abs=0.01)
+    clock.advance(0.6)  # the second try
     search = flat_client.get(f"{API}/flat").json()["task"]
     assert (search["phase"], search["step"], search["steps"]) == ("exposure", 2, 8)
     assert search["level_fraction"] == pytest.approx(0.5, abs=0.01)
