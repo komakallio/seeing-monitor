@@ -65,7 +65,9 @@ class FakeLive:
 
 @pytest.fixture
 def served(short_dir: Path, tmp_path: Path) -> Iterator[tuple[CoreRig, RpcCoreClient]]:
-    rig = build_rig(tmp_path, key=KEY, endpoint=native_endpoint(short_dir, "core"))
+    """The camera shows Polaris. The search bursts at 0 s and 15 s find it, and the fast stream
+    measures from about 16 s to the end of the period at 20 s, and in every later period."""
+    rig = build_rig(tmp_path, key=KEY, endpoint=native_endpoint(short_dir, "core"), polaris=True)
     rig.app.start()
     client = RpcCoreClient(rig.app.bound_endpoint, KEY, retry_interval_s=0.01, poll_s=0.05)  # type: ignore[arg-type]
     yield rig, client
@@ -231,7 +233,7 @@ class TestVideoThroughTheScheduler:
         try:
             assert wait_until(lambda: rig.app.polaris.viewers == 1)
             assert rig.app.polaris.active is True
-            rig.run_for(3.0)
+            rig.run_for(17.0)  # the fast stream starts once the search finds Polaris
             slot = rig.app.polaris._slot
             assert slot is not None
             rig.app.polaris.process(slot)
@@ -254,7 +256,7 @@ class TestVideoThroughTheScheduler:
         self, served: tuple[CoreRig, RpcCoreClient]
     ) -> None:
         rig, _ = served
-        rig.run_for(10.0)
+        rig.run_for(20.0)
         assert rig.fast.frames_pushed > 0
         assert rig.app.polaris.frames_kept == 0
         assert rig.app.polaris.frames_encoded == 0

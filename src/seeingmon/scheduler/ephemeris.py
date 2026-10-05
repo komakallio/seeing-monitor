@@ -1,4 +1,4 @@
-"""A low-precision ephemeris for the daylight gate and the twilight flag.
+"""A low-precision ephemeris for the search limit and the twilight flag.
 
 The Sun's position follows the NOAA solar calculator, which is the Meeus algorithm without
 the small terms. It agrees with a full ephemeris to about 0.01 degrees in elevation between the

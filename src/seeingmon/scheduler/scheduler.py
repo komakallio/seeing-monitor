@@ -25,6 +25,20 @@ the stream in use (flushing the fast analyzer's window and its metrics), calls
 `CameraDriver.configure`, and then `FastAnalyzer.begin_stream`. A window therefore never spans two
 streams, and the camera never serves two modes at once.
 
+**Search and measure.** In `auto` with a pointing solution, the fast stream searches for Polaris
+or measures it. These are modes inside `auto`, not states. A search period takes the slot of a
+fast period in the cycle: every `[scheduler.search] interval_s` it starts a burst of
+`burst_frames` fast frames on the ROI where the solution predicts Polaris, one frame per step, and
+the camera idles between bursts. The frames of a burst go to `FastAnalyzer.measure`, so they reach
+no seeing window, no metric row, and no live video. `confirm_bursts` detecting bursts in a row
+switch to measure, and the fast stream runs for the rest of the period. In measure, a star that
+stays missing for `[scheduler.fast] missing_star_frames` frames ends the period early and returns
+the stream to search. The search state lives on the scheduler, because a fault and every entry
+into `auto` replace the cycle. While the Sun is above `max_sun_elevation_deg`, only one probe
+burst every `probe_interval_s` runs, and a probe that detects Polaris is confirmed at the normal
+interval. The events `polaris.visible` and `polaris.hidden` mark every start and every end of
+measure. The Sun's elevation gates nothing else: the daylight gate reads the measured sky alone.
+
 **Rapid focus.** The alignment session has a second mode for focusing by hand. `StartRapidFocus`
 switches the stream of the session from the survey readout mode over the whole frame to the fast
 readout mode over a small ROI around Polaris, and the scheduler reads its frames at the camera rate
@@ -40,10 +54,11 @@ import contextlib
 import logging
 import math
 import re
+import statistics
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -110,11 +125,12 @@ from seeingmon.scheduler.events import DARK_PHASE_EVENT, FLAT_PHASE_EVENT
 from seeingmon.scheduler.faults import FaultCause, FaultPlan, FaultTracker, classify, reason_text
 from seeingmon.scheduler.gates import (
     REASON_BRIGHT_SKY,
-    REASON_DAYLIGHT,
     REASON_NO_MEASUREMENT,
     CloudTracker,
+    DaylightDecision,
     DaylightGate,
-    sky_background_fraction,
+    SkyReading,
+    read_sky,
 )
 from seeingmon.scheduler.levels import DESTRUCTIVE_STEPS, EscalationLevel, step_name
 from seeingmon.scheduler.machine import State, StateMachine
@@ -125,6 +141,7 @@ from seeingmon.scheduler.status import (
     Counters,
     FaultStatus,
     SchedulerStatus,
+    SearchStatus,
     StreamInfo,
 )
 
@@ -161,6 +178,7 @@ class Purpose(StrEnum):
     """What a stream serves. The status reports it."""
 
     FAST = "fast"
+    SEARCH = "search"  # one burst of the search for Polaris
     SURVEY = "survey"
     WATCH = "watch"
     ALIGN = "align"
@@ -172,6 +190,7 @@ class Phase(StrEnum):
     """Where `auto` stands in its cycle."""
 
     BEGIN = "begin"  # a cycle boundary: check the gates, run tasks, wait for the slot
+    SEARCH = "search"  # a search period runs in the slot of a fast period: bursts, then idle
     FAST = "fast"  # a fast period runs
     SURVEY = "survey"  # the survey step runs: a short exposure, then a long one
     SOLVE_WAIT = "solve_wait"  # the survey step ran, and the pointing solution has not arrived
@@ -188,6 +207,8 @@ class _Cycle:
     survey_forced: bool = False  # a solve is needed, so the next fast period starts at once
     solve_deadline_mono: int = 0
     since_mono: int = 0  # when the cycle entered its current phase, for the activity
+    period_end_mono: int = 0  # when the search period ends, and a measure that follows it
+    period_bursts: int = 0  # the bursts that the search period started
 
     def enter(self, phase: Phase, now_mono: int) -> None:
         """Move to another phase, and note when."""
@@ -208,6 +229,39 @@ class _FastRun:
     frames: int = 0
     edge_blocked: bool = False  # the ROI cannot center the star, so stop cutting windows for it
     windows_at_start: int = 0  # the count of written windows when the period began
+
+
+@dataclass(slots=True)
+class _Burst:
+    """The search burst that runs now: its stream, and what its frames showed."""
+
+    stream_id: int
+    started_mono: int
+    read_timeout_s: float
+    probe: bool  # the Sun is above the search limit
+    predicted: tuple[float, float]  # where the solution puts Polaris, in fast-mode pixels
+    snrs: list[float] = field(default_factory=list)  # per frame; 0 without a star near the place
+    offsets_px: list[float] = field(default_factory=list)  # of each star from the prediction
+
+
+@dataclass(slots=True)
+class _Search:
+    """Whether the fast stream searches or measures, and what the search knows.
+
+    It lives on the scheduler and not in the cycle, because a fault and every entry into `auto`
+    replace the cycle, and the probe timer must outlive both.
+    """
+
+    measuring: bool = False
+    since_mono: int = 0  # when measure began
+    detections: int = 0  # detecting bursts in a row
+    probing: bool = False  # the detections in a row began with a probe above the search limit
+    next_burst_mono: int = 0  # the earliest start of the next burst below the limit
+    next_probe_mono: int = 0  # the earliest start of the next probe above the limit
+    burst: _Burst | None = None
+    burst_ns: int = 0  # how long the last burst took, so that a burst fits before a period ends
+    last_snr: float | None = None  # the median SNR of the last burst
+    last_offset_px: float | None = None  # the median offset of the star in the last burst
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,8 +321,9 @@ class Scheduler:
             limits, and the saturation levels from it.
         station_id: The ID that tags every event.
         config: The `[scheduler]` table. The defaults apply when you leave it out.
-        site: The observing site for the Sun's elevation. Without it the scheduler relies on the
-            measured sky background and sets no `twilight` flag.
+        site: The observing site for the Sun's elevation, which sets the search limit and the
+            `twilight` flag. Without it the search has no limit, and no flag applies. The measured
+            sky gates `safe` either way.
         escalate: The supervisor's callback for the ladder steps above the driver's. It runs on the
             loop thread, so return when the step is done or has failed. Without it the ladder stops
             at the last driver step.
@@ -369,7 +424,9 @@ class Scheduler:
         self._pointing_known = False  # whether the pointing provider had a position at last look
         self._survey_overhead_s: float | None = None  # what a survey exposure cost beyond itself
         self._activity_error_reported = False
-        self._background_fraction: float | None = None
+        self._background_fraction: float | None = None  # the gate fraction of the last reading
+        self._sky: SkyReading | None = None  # what the last brightness frame said
+        self._search = _Search(next_burst_mono=now_mono, next_probe_mono=now_mono)
         self._last_temperature_c: float | None = None
         self._last_context: FastContext | None = None
         self._context_next_mono = now_mono
@@ -485,7 +542,31 @@ class Scheduler:
                     None if align is None else (now_mono - align.last_activity_mono) / NS_PER_S
                 ),
                 activity=self._status_activity(now_utc, now_mono, align, pending),
+                search=self._search_status(now_utc, now_mono),
             )
+
+    def _search_status(self, now_utc: int, now_mono: int) -> SearchStatus | None:
+        """Whether the fast stream searches or measures. The caller holds the lock.
+
+        As the activity, it reads the state of the loop as it finds it, so it can be one step old.
+        """
+        if self._machine.state is not State.AUTO or not self._pointing_known:
+            return None
+        search = self._search
+        if search.measuring:
+            return SearchStatus(
+                mode="measure",
+                snr=search.last_snr,
+                since_utc_ns=now_utc - (now_mono - search.since_mono),
+            )
+        due, probe = self._next_burst_estimate(now_mono)
+        return SearchStatus(
+            mode="search",
+            next_burst_utc_ns=now_utc - (now_mono - due),
+            probe=probe,
+            detections=search.detections,
+            snr=search.last_snr,
+        )
 
     def _fault_status(
         self, now_utc: int, now_mono: int, pending: _PendingFault | None
@@ -695,19 +776,21 @@ class Scheduler:
     def _safe_activity(self, at: Callable[[int], int], reason: str | None) -> ActivityStatus:
         """The camera is idle, and the brightness watch decides when the cycle may start."""
         daylight, watch = self._config.daylight, self._config.watch
-        decision = self._gate.evaluate(
-            sun_elevation_deg=self._sun_elevation(),
-            background_fraction=self._background_fraction,
-            running=False,
-        )
+        decision = self._gate_decision(running=False)
         detail = words.watch_detail(watch.exposure_us / 1e6, watch.interval_s)
-        if decision.reason == REASON_DAYLIGHT:
-            label = words.daylight_label(
-                daylight.sun_elevation_limit_deg - daylight.sun_resume_margin_deg
-            )
-        elif decision.reason == REASON_BRIGHT_SKY:
+        sky = self._sky
+        if decision.reason == REASON_BRIGHT_SKY:
             label = words.BRIGHT_SKY_LABEL
-            detail = words.bright_sky_detail(self._background_fraction, daylight.resume_saturation)
+            if sky is not None and (
+                sky.clipped or sky.frame_fraction >= daylight.brightness_resume_fraction
+            ):
+                detail = words.bright_frame_detail(
+                    sky.frame_fraction, daylight.brightness_resume_fraction, clipped=sky.clipped
+                )
+            else:
+                detail = words.bright_sky_detail(
+                    self._background_fraction, daylight.resume_saturation
+                )
         elif decision.reason == REASON_NO_MEASUREMENT:
             label = words.FIRST_FRAME_LABEL
         else:
@@ -734,13 +817,15 @@ class Scheduler:
     def _auto_activity(
         self, now_mono: int, at: Callable[[int], int], reason: str | None
     ) -> ActivityStatus:
-        """The cycle of `auto`: a fast period, a survey step, and the wait for the next slot."""
+        """The cycle of `auto`: a fast or search period, a survey step, and the wait for a slot."""
         cycle = self._cycle
         run = self._fast_run
+        search = self._search
         phase, stage, since_mono = cycle.phase, cycle.survey_stage, cycle.since_mono
         fast, survey = self._config.fast, self._config.survey
         cadence_ns = self._cadence_ns()
         step_label = words.survey_step_label(survey.short_exposure_s, survey.long_exposure_s)
+        period_label = words.FAST_LABEL if search.measuring else words.SEARCH_LABEL
 
         def make(**fields: Any) -> ActivityStatus:
             return ActivityStatus(
@@ -762,6 +847,35 @@ class Scheduler:
                 ),
             )
 
+        def search_period(started_mono: int, ends_mono: int) -> ActivityStatus:
+            config = self._config.search
+            due, probe = self._burst_due()
+            waits_for_probe = probe and search.detections == 0
+            next_mono = max(due, now_mono)
+            if next_mono + search.burst_ns <= ends_mono:
+                next_label, next_utc = words.burst_label(config.burst_frames), at(next_mono)
+            else:
+                next_label, next_utc = step_label, at(ends_mono)
+            return make(
+                phase=ActivityPhase.SEARCH.value,
+                label=words.PROBE_LABEL if waits_for_probe else words.SEARCH_LABEL,
+                since_utc_ns=at(started_mono),
+                ends_utc_ns=at(ends_mono),
+                next_label=next_label,
+                next_utc_ns=next_utc,
+                detail=(
+                    words.probe_detail(config.max_sun_elevation_deg, config.probe_interval_s)
+                    if waits_for_probe and search.burst is None
+                    else words.search_detail(
+                        config.burst_frames,
+                        config.interval_s,
+                        search.detections,
+                        config.confirm_bursts,
+                        bursting=search.burst is not None,
+                    )
+                ),
+            )
+
         def survey_frame(stage: int, started_mono: int) -> ActivityStatus:
             exposure_s = survey.short_exposure_s if stage == 0 else survey.long_exposure_s
             ends_mono = started_mono + round((exposure_s + self._survey_overhead()) * NS_PER_S)
@@ -779,10 +893,10 @@ class Scheduler:
             if not self._pointing_known:
                 next_label, next_utc = words.SOLVE_WAIT_LABEL, ends
             elif cycle.survey_forced:
-                next_label, next_utc = words.FAST_LABEL, ends
-            else:  # the cycle keeps its cadence, so the next fast period waits for its slot
+                next_label, next_utc = period_label, ends
+            else:  # the cycle keeps its cadence, so the next period waits for its slot
                 slot = cycle.slot_start_mono + cadence_ns
-                next_label, next_utc = words.FAST_LABEL, at(max(ends_mono, slot))
+                next_label, next_utc = period_label, at(max(ends_mono, slot))
             return make(
                 phase=ActivityPhase.SURVEY_LONG.value,
                 label=words.survey_frame_label(exposure_s),
@@ -796,6 +910,8 @@ class Scheduler:
         if phase is Phase.FAST and run is not None:
             closed = max(0, self._counters.windows - run.windows_at_start)
             return fast_period(run.started_mono, run.window_ns / NS_PER_S, closed)
+        if phase is Phase.SEARCH:
+            return search_period(since_mono, cycle.period_end_mono)
         if phase is Phase.SURVEY:
             return survey_frame(stage, since_mono)
         if phase is Phase.SOLVE_WAIT:
@@ -804,20 +920,23 @@ class Scheduler:
                 label=words.SOLVE_WAIT_LABEL,
                 since_utc_ns=at(since_mono),
                 ends_utc_ns=at(cycle.solve_deadline_mono),
-                next_label=words.FAST_LABEL,
+                next_label=period_label,
                 detail=words.solve_wait_detail(survey.solve_wait_s),
             )
         due = self._slot_due_mono(cycle, cadence_ns)
         if now_mono >= due:  # the next period or step starts now
             if self._pointing_known:
-                return fast_period(now_mono, self._cloud.fast_window_s(fast.window_s), 0)
+                window_ns = round(self._cloud.fast_window_s(fast.window_s) * NS_PER_S)
+                if not search.measuring:
+                    return search_period(now_mono, now_mono + window_ns)
+                return fast_period(now_mono, window_ns / NS_PER_S, 0)
             return survey_frame(0, now_mono)
         return make(
             phase=ActivityPhase.IDLE.value,
             label=words.IDLE_LABEL if self._pointing_known else words.RETRY_LABEL,
             since_utc_ns=at(since_mono),
             ends_utc_ns=at(due),
-            next_label=words.FAST_LABEL if self._pointing_known else step_label,
+            next_label=period_label if self._pointing_known else step_label,
             next_utc_ns=at(due),
             detail=(
                 words.idle_detail((due - since_mono) / NS_PER_S)
@@ -894,6 +1013,7 @@ class Scheduler:
                 return
             self._closed = True
         try:
+            self._end_measure("shutdown")
             self._end_stream("close")
             with contextlib.suppress(CameraError):
                 self._driver.close()
@@ -1303,15 +1423,29 @@ class Scheduler:
             return True
 
     def _enter_auto(self) -> None:
-        """Start a fresh cycle. The first fast period begins at once."""
+        """Start a fresh cycle. The first period begins at once, and it searches.
+
+        The search starts again from no detection, and its first burst comes at once. The probe
+        timer stays, so a stop in another state does not run a probe more often.
+        """
+        self._end_measure("state_change")  # a measure that no step saw end, if any
         self._fast_run = None
         now = self._clock.monotonic_ns()
         self._cycle = _Cycle(next_slot_mono=now, since_mono=now)
+        search = self._search
+        search.detections = 0
+        search.probing = False
+        search.burst = None
+        search.next_burst_mono = now
 
     def _enter_safe(self, reason: str, *, expect: State) -> bool:
-        """Leave `expect` for `safe`. The next brightness frame follows one interval later."""
+        """Leave `expect` for `safe`. The next brightness frame follows one interval later.
+
+        The loop thread calls it, so measure ends here, in the step that leaves `auto`.
+        """
         if not self._transition(reason, State.SAFE, expect=expect):
             return False
+        self._end_measure("state_change")
         self._next_watch_mono = self._clock.monotonic_ns() + round(
             self._config.watch.interval_s * NS_PER_S
         )
@@ -1450,8 +1584,15 @@ class Scheduler:
         )
 
     def _reconcile(self, state: State) -> bool:
-        """End a stream that does not belong to the state. Returns `True` when it did."""
-        if self._activity is Purpose.FAST and state is not State.AUTO:
+        """End a stream that does not belong to the state. Returns `True` when it did.
+
+        Measure belongs to `auto` too, so a state that left `auto` ends it, with `polaris.hidden`.
+        The loop's own moves out of `auto` end measure at once. This catches the moves that a
+        command makes on another thread (pause and align).
+        """
+        if state is not State.AUTO:
+            self._end_measure("state_change")
+        if self._activity in (Purpose.FAST, Purpose.SEARCH) and state is not State.AUTO:
             self._end_stream("state_change")
             return True
         if self._activity in (Purpose.ALIGN, Purpose.RAPID_FOCUS) and state is not State.ALIGN:
@@ -1502,8 +1643,12 @@ class Scheduler:
         self._stream_running = True
 
     def _end_stream(self, reason: str) -> None:
-        """End the stream in use: flush the open window, drain the metrics, and stop the camera."""
+        """End the stream in use: flush the open window, drain the metrics, and stop the camera.
+
+        A search burst that runs ends here too, without a result: its frames left no window.
+        """
         self._rapid_run = None
+        self._search.burst = None
         run, self._fast_run = self._fast_run, None
         if run is not None:
             self._write_windows(self._fast.flush(reason))
@@ -1564,8 +1709,20 @@ class Scheduler:
     # --- Faults ----------------------------------------------------------------------------
 
     def _camera_error(self, error: Exception, where: str) -> StepKind:
-        """End the activity, count the failure, and plan the recovery."""
+        """End the activity, count the failure, and plan the recovery.
+
+        A fault ends measure too, and the search starts again from no detection after it. A burst
+        that the fault cut short counts for nothing, so the next one may start after the recovery.
+        """
         now = self._mono()
+        self._end_measure("fault")
+        search = self._search
+        search.detections = 0
+        search.probing = False
+        if search.burst is not None:
+            search.next_burst_mono = now
+            if search.burst.probe:
+                search.next_probe_mono = now
         self._end_stream("fault")
         self._counters.faults += 1
         cause = classify(error)
@@ -1735,7 +1892,7 @@ class Scheduler:
         return self._watch_step()
 
     def _watch_step(self) -> StepKind:
-        """Take one brightness frame, and go to `auto` when the sky and the Sun allow it."""
+        """Take one brightness frame, and go to `auto` when the measured sky allows it."""
         started = self._mono()
         try:
             active = self._reconfigure(self._watch_config(), Purpose.WATCH)
@@ -1746,18 +1903,40 @@ class Scheduler:
         self._end_stream("snapshot_done")
         self._note_frame(frame)
         self._counters.watch_frames += 1
-        self._background_fraction = sky_background_fraction(frame, self._profile)
+        self._read_sky(frame)
         self._next_watch_mono = started + round(self._config.watch.interval_s * NS_PER_S)
-        decision = self._gate.evaluate(
-            sun_elevation_deg=self._sun_elevation(),
-            background_fraction=self._background_fraction,
-            running=False,
-        )
+        decision = self._gate_decision(running=False)
         if decision.allowed and self._transition(
             "the sky is dark enough", State.AUTO, expect=State.SAFE
         ):
             self._enter_auto()
         return StepKind.WORK
+
+    def _read_sky(self, frame: Frame) -> None:
+        """Take a brightness frame: derive the background of the fast stream for the gate.
+
+        The fast stream is the profile's fast readout mode at the profile's shortest exposure and
+        the gain of `[scheduler.fast]`, so the gate closes only when nothing can be measured.
+        """
+        sky = read_sky(
+            frame,
+            self._profile,
+            fast_mode=self._fast_mode,
+            fast_exposure_us=self._profile.limits.exposure_us_range[0],
+            fast_gain=self._config.fast.gain,
+            clip_fraction=self._config.daylight.brightness_clip_fraction,
+        )
+        self._sky = sky
+        self._background_fraction = sky.gate_fraction
+
+    def _gate_decision(self, *, running: bool) -> DaylightDecision:
+        """The daylight gate's verdict on the last brightness frame."""
+        sky = self._sky
+        return self._gate.evaluate(
+            background_fraction=self._background_fraction,
+            running=running,
+            frame_fraction=None if sky is None else sky.frame_fraction,
+        )
 
     # --- The `auto` state ------------------------------------------------------------------
 
@@ -1768,13 +1947,16 @@ class Scheduler:
             and self._immediate_task_waits()
             and self._enter_commission(State.AUTO, self._immediate_reason())
         ):
-            # The fast stream, if one runs, ends in `_reconcile` on the next step, with its window
-            # flushed. An exposure that was in progress has finished, because the step that reads
-            # it does not return before. What is left of the survey step is skipped, and the cycle
-            # starts again when commissioning is done.
+            # Measure ends at once, with `polaris.hidden`. The fast stream, if one runs, ends in
+            # `_reconcile` on the next step, with its window flushed. An exposure that was in
+            # progress has finished, because the step that reads it does not return before. What
+            # is left of the survey step is skipped, and the cycle starts again when commissioning
+            # is done.
             return StepKind.TRANSITION
         if phase is Phase.FAST:
             return self._fast_step()
+        if phase is Phase.SEARCH:
+            return self._search_step()
         if phase is Phase.SURVEY:
             return self._survey_step()
         if phase is Phase.SOLVE_WAIT:
@@ -1785,11 +1967,7 @@ class Scheduler:
         """A cycle boundary: check the gates, run waiting tasks, wait for the slot, and start."""
         now = self._mono()
         cycle = self._cycle
-        decision = self._gate.evaluate(
-            sun_elevation_deg=self._sun_elevation(),
-            background_fraction=self._background_fraction,
-            running=True,
-        )
+        decision = self._gate_decision(running=True)
         if not decision.allowed:
             reason = decision.reason or "the sky is too bright"
             self._enter_safe(reason, expect=State.AUTO)
@@ -1810,16 +1988,27 @@ class Scheduler:
         position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
         self._pointing_known = position is not None
         if position is None:
-            self._counters.solves_requested += 1
-            self._emit(
-                "warning",
-                "scheduler.solve_requested",
-                "No pointing solution exists, so the scheduler runs a survey step to solve.",
-                {"reason": "no_solution"},
-            )
-            self._begin_survey(forced=True)
-            return StepKind.TRANSITION
+            return self._request_solve()
+        if not self._search.measuring:
+            return self._start_search_period(now)
         return self._start_fast(position, now)
+
+    def _request_solve(self) -> StepKind:
+        """No pointing solution exists: a survey step runs now to solve, and nothing searches.
+
+        Without a solution the fast stream cannot run, so measure ends, with `polaris.hidden`.
+        After a solve, the stream searches again.
+        """
+        self._end_measure("no_solution")
+        self._counters.solves_requested += 1
+        self._emit(
+            "warning",
+            "scheduler.solve_requested",
+            "No pointing solution exists, so the scheduler runs a survey step to solve.",
+            {"reason": "no_solution"},
+        )
+        self._begin_survey(forced=True)
+        return StepKind.TRANSITION
 
     def _cadence_ns(self) -> int:
         """The length of the cycle in force: the survey cadence, or the shorter one under clouds."""
@@ -1841,32 +2030,46 @@ class Scheduler:
         if forced:
             cycle.slot_start_mono = now
 
-    def _start_fast(self, position: tuple[float, float], now: int) -> StepKind:
+    def _fast_config(self, position: tuple[float, float]) -> StreamConfig:
+        """The stream of the fast period and of a search burst: a ROI centered on `position`."""
         fast = self._config.fast
-        cycle = self._cycle
-        cycle.slot_start_mono = now
-        cycle.cadence_ns = self._cadence_ns()
-        roi = roi_centered_on(self._profile, self._fast_mode, position, fast.roi_arcmin)
-        config = StreamConfig(
+        return StreamConfig(
             mode=self._fast_mode,
             exposure_us=fast.exposure_us,
             gain=fast.gain,
             pixel_format=self._fast_format,
-            roi=roi,
+            roi=roi_centered_on(self._profile, self._fast_mode, position, fast.roi_arcmin),
             kind=StreamKind.VIDEO,
             high_speed=fast.high_speed,
         )
+
+    def _start_fast(
+        self, position: tuple[float, float], now: int, *, until_mono: int | None = None
+    ) -> StepKind:
+        """Start a fast period on its slot, or, with `until_mono`, the rest of a search period.
+
+        A fast period that a search hands over keeps the slot of the search period and ends with
+        it, so the survey step and every later slot stay on the grid of the cadence.
+        """
+        fast = self._config.fast
+        cycle = self._cycle
+        if until_mono is None:
+            cycle.slot_start_mono = now
+            cycle.cadence_ns = self._cadence_ns()
         try:
-            active = self._reconfigure(config, Purpose.FAST)
+            active = self._reconfigure(self._fast_config(position), Purpose.FAST)
             self._start_stream()
         except CameraError as error:
             return self._camera_error(error, "starting the fast stream")
-        window_s = self._cloud.fast_window_s(fast.window_s)
+        if until_mono is None:
+            window_ns = round(self._cloud.fast_window_s(fast.window_s) * NS_PER_S)
+        else:
+            window_ns = max(0, until_mono - now)
         cooldown_ns = round(fast.edge_cooldown_s * NS_PER_S)
         self._fast_run = _FastRun(
             stream_id=active.stream_id,
             started_mono=now,
-            window_ns=round(window_s * NS_PER_S),
+            window_ns=window_ns,
             read_timeout_s=self._timeout_s(active),
             last_recenter_mono=now - cooldown_ns,  # an immediate recenter is allowed
             windows_at_start=self._counters.windows,
@@ -1908,7 +2111,7 @@ class Scheduler:
         else:
             run.missing_frames += 1
             if run.missing_frames >= fast.missing_star_frames:
-                self._star_lost()
+                self._star_lost(run.missing_frames)
                 return StepKind.FRAME
         if now - run.started_mono >= run.window_ns:
             self._end_fast_period("window_end", forced=False)
@@ -1968,21 +2171,258 @@ class Scheduler:
         )
         return StepKind.FRAME
 
-    def _star_lost(self) -> None:
+    def _star_lost(self, frames: int) -> None:
         """The star was missing for the configured number of frames: end the fast period early.
 
-        A missing star starts no solve. Clouds and a bright sky hide Polaris often, and a hidden
-        star says nothing about the mount, whose solution has no age limit. The survey step of
-        the cycle follows at once, as at the end of any period, and the next fast period waits
-        for its slot, so the cadence holds and the cycle takes no extra survey step.
+        Measure ends, with `polaris.hidden`, and the stream returns to search. A missing star
+        starts no solve. Clouds and a bright sky hide Polaris often, and a hidden star says nothing
+        about the mount, whose solution has no age limit. The survey step of the cycle follows at
+        once, as at the end of any period, and the next period (a search) waits for its slot, so
+        the cadence holds and the cycle takes no extra survey step.
         """
         self._counters.early_window_ends += 1
+        self._end_measure("star_missing", {"frames": frames})
         self._end_fast_period("star_missing", forced=False)
 
     def _end_fast_period(self, reason: str, *, forced: bool) -> None:
         self._end_stream(reason)
         self._counters.fast_periods += 1
         self._begin_survey(forced=forced)
+
+    # --- Search and measure ----------------------------------------------------------------
+
+    def _search_allowed(self) -> bool:
+        """Whether the Sun lets the search run at its interval, rather than as probes.
+
+        An unknown Sun (no site, or a clock that is not synchronized) never limits the search, as
+        it limits nothing else.
+        """
+        config = self._config.search
+        if not config.limited:
+            return True
+        sun = self._sun_elevation()
+        return sun is None or sun < config.max_sun_elevation_deg
+
+    def _burst_due(self) -> tuple[int, bool]:
+        """When the next burst may start (monotonic), and whether the Sun makes it a probe.
+
+        Above the limit a probe comes every `probe_interval_s`. A probe that detected Polaris is
+        confirmed at the normal interval, so the bursts that follow it come at `interval_s`.
+        """
+        search = self._search
+        probe = not self._search_allowed()
+        if probe and search.detections == 0:
+            return search.next_probe_mono, True
+        return search.next_burst_mono, probe
+
+    def _next_burst_estimate(self, now_mono: int) -> tuple[int, bool]:
+        """When the next burst starts: at its due time, but not before the cycle's next slot."""
+        due, probe = self._burst_due()
+        cycle = self._cycle
+        if cycle.phase is Phase.SEARCH and max(due, now_mono) + self._search.burst_ns <= (
+            cycle.period_end_mono
+        ):
+            return max(due, now_mono), probe
+        if cycle.phase is Phase.BEGIN:
+            slot = self._slot_due_mono(cycle, self._cadence_ns())
+        else:  # a survey step or the wait for a solution: the slot of the next period
+            slot = cycle.slot_start_mono + self._cadence_ns()
+        return max(due, slot, now_mono), probe
+
+    def _start_search_period(self, now: int) -> StepKind:
+        """Begin a search period in the slot of a fast period, as long as one."""
+        cycle = self._cycle
+        cycle.slot_start_mono = now
+        cycle.cadence_ns = self._cadence_ns()
+        window_s = self._cloud.fast_window_s(self._config.fast.window_s)
+        cycle.period_end_mono = now + round(window_s * NS_PER_S)
+        cycle.period_bursts = 0
+        cycle.enter(Phase.SEARCH, now)
+        return StepKind.TRANSITION
+
+    def _search_step(self) -> StepKind:
+        """One step of a search period: a frame of the burst, a new burst, the end, or a sleep."""
+        search = self._search
+        cycle = self._cycle
+        burst = search.burst
+        if burst is not None:
+            return self._burst_step(burst)
+        now = self._mono()
+        if now >= cycle.period_end_mono:
+            self._counters.search_periods += 1
+            self._begin_survey(forced=False)
+            return StepKind.TRANSITION
+        position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
+        self._pointing_known = position is not None
+        if position is None:  # the solution went away: solve, as at a boundary
+            return self._request_solve()
+        if search.measuring:  # the last burst confirmed Polaris: measure for the rest of the period
+            return self._start_fast(position, now, until_mono=cycle.period_end_mono)
+        due, probe = self._burst_due()
+        if cycle.period_bursts and max(now, due) + search.burst_ns > cycle.period_end_mono:
+            # A burst that cannot finish before the period ends waits for the next period, so the
+            # survey step keeps its cadence. The first burst of a period always runs, so a burst
+            # that is longer than a whole period still searches.
+            return self._sleep_until(cycle.period_end_mono)
+        if now < due:
+            return self._sleep_until(min(due, cycle.period_end_mono))
+        cycle.period_bursts += 1
+        return self._start_burst(position, now, probe=probe)
+
+    def _start_burst(self, position: tuple[float, float], now: int, *, probe: bool) -> StepKind:
+        """Configure and start the stream of one burst on the ROI around the prediction."""
+        search = self._search
+        config = self._config.search
+        try:
+            active = self._reconfigure(self._fast_config(position), Purpose.SEARCH)
+            self._start_stream()
+        except CameraError as error:
+            return self._camera_error(error, "starting a search burst")
+        if probe and search.detections == 0:  # the probe that may start a chain of detections
+            search.next_probe_mono = now + round(config.probe_interval_s * NS_PER_S)
+        search.next_burst_mono = now + round(config.interval_s * NS_PER_S)
+        search.burst = _Burst(
+            stream_id=active.stream_id,
+            started_mono=now,
+            read_timeout_s=self._timeout_s(active),
+            probe=probe,
+            predicted=position,
+        )
+        self._counters.search_bursts += 1
+        if probe:
+            self._counters.probe_bursts += 1
+        return StepKind.WORK
+
+    def _burst_step(self, burst: _Burst) -> StepKind:
+        """Read one frame of a burst and measure the star where the solution predicts it.
+
+        The prediction of the start of the burst serves all its frames: Polaris moves 0.16 arcsec
+        a second, a few hundredths of a pixel in a burst.
+        """
+        config = self._config.search
+        try:
+            frame = self._read(burst.read_timeout_s)
+        except CameraError as error:
+            return self._camera_error(error, "reading a search frame")
+        self._note_frame(frame)
+        self._counters.search_frames += 1
+        predicted = burst.predicted
+        star = self._fast.measure(frame, predicted)
+        snr = 0.0
+        if star.found and star.x_px is not None and star.y_px is not None:
+            offset = math.hypot(star.x_px - predicted[0], star.y_px - predicted[1])
+            burst.offsets_px.append(offset)
+            if offset <= config.radius_px and star.snr is not None and math.isfinite(star.snr):
+                snr = star.snr
+        burst.snrs.append(snr)
+        if len(burst.snrs) >= config.burst_frames:
+            self._finish_burst(burst)
+        return StepKind.FRAME
+
+    def _finish_burst(self, burst: _Burst) -> None:
+        """End the stream of a burst, and decide whether it detected Polaris.
+
+        A burst detects Polaris when the median of the SNR of its frames reaches `detect_snr`. A
+        frame counts with the SNR of its star when the star lies within `radius_px` of the
+        prediction, and with 0 otherwise, so the median also says that the star sat where the
+        solution puts it in at least half of the frames. Measure needs a centroid in every frame,
+        and the median frame stands for them, which the SNR of the summed frames would not.
+        """
+        self._end_stream("burst_end")
+        search = self._search
+        config = self._config.search
+        search.burst_ns = self._mono() - burst.started_mono
+        snr = statistics.median(burst.snrs)
+        search.last_snr = round(snr, 2)
+        search.last_offset_px = (
+            round(statistics.median(burst.offsets_px), 2) if burst.offsets_px else None
+        )
+        if snr < config.detect_snr:
+            search.detections = 0
+            search.probing = False
+            return
+        self._counters.detections += 1
+        if search.detections == 0:
+            search.probing = burst.probe
+        search.detections += 1
+        if search.detections >= config.confirm_bursts:
+            self._begin_measure()
+
+    def _begin_measure(self) -> None:
+        """Bursts confirmed Polaris: write `polaris.visible`, and measure from the next step on.
+
+        When the detections began with a probe above the search limit, the limit is too low for
+        this sky, and `polaris.search_limit_low` says so.
+        """
+        search = self._search
+        config = self._config.search
+        probe = search.probing
+        search.measuring = True
+        search.since_mono = self._mono()
+        search.detections = 0
+        search.probing = False
+        self._counters.measure_starts += 1
+        sun = self._sun_elevation_detail()
+        self._emit(
+            "info",
+            "polaris.visible",
+            "Search bursts found Polaris, so the fast stream measures seeing.",
+            {
+                "sun_elevation_deg": sun,
+                "snr": search.last_snr,
+                "offset_px": search.last_offset_px,
+                "bursts": config.confirm_bursts,
+                "probe": probe,
+            },
+        )
+        if probe:
+            self._emit(
+                "warning",
+                "polaris.search_limit_low",
+                f"A probe found Polaris with the Sun above {config.max_sun_elevation_deg:g} "
+                "degrees, so the search limit is too low for this sky.",
+                {
+                    "sun_elevation_deg": sun,
+                    "max_sun_elevation_deg": config.max_sun_elevation_deg,
+                    "snr": search.last_snr,
+                },
+            )
+
+    def _end_measure(self, reason: str, extra: Mapping[str, Any] | None = None) -> None:
+        """End measure, if it runs, with `polaris.hidden`. The stream searches next.
+
+        `reason` is `star_missing`, `state_change` (with the new state and its reason), `fault`,
+        `no_solution`, or `shutdown`. The next search burst may start at once.
+        """
+        search = self._search
+        if not search.measuring:
+            return
+        now = self._mono()
+        search.measuring = False
+        search.detections = 0
+        search.probing = False
+        search.next_burst_mono = now
+        detail: dict[str, Any] = {
+            "sun_elevation_deg": self._sun_elevation_detail(),
+            "reason": reason,
+            "measured_s": round((now - search.since_mono) / NS_PER_S, 3),
+        }
+        if reason == "state_change":
+            with self._lock:
+                detail["state"] = self._machine.state.value
+                detail["state_reason"] = self._machine.reason
+        detail.update(extra or {})
+        self._emit(
+            "info",
+            "polaris.hidden",
+            f"Measure ended ({reason.replace('_', ' ')}), so the fast stream searches next.",
+            detail,
+        )
+
+    def _sun_elevation_detail(self) -> float | None:
+        """The Sun's elevation for an event, to 0.01 degree, or `None` when it is unknown."""
+        sun = self._sun_elevation()
+        return None if sun is None else round(sun, 2)
 
     def _survey_exposure(self, stage: int) -> tuple[int, int]:
         survey = self._config.survey
@@ -2027,12 +2467,8 @@ class Scheduler:
         self._survey_pending = self._survey.pending()
         self._counters.survey_frames += 1
         if cycle.survey_stage == 0:
-            self._background_fraction = sky_background_fraction(frame, self._profile)
-            decision = self._gate.evaluate(
-                sun_elevation_deg=self._sun_elevation(),
-                background_fraction=self._background_fraction,
-                running=True,
-            )
+            self._read_sky(frame)
+            decision = self._gate_decision(running=True)
             if not decision.allowed:  # skip the long exposure, because the sky is too bright
                 self._enter_safe(decision.reason or "the sky is too bright", expect=State.AUTO)
                 return StepKind.WORK
@@ -2399,8 +2835,10 @@ class Scheduler:
         return f"a {kinds[0] if kinds else 'dark'} session starts at once"
 
     def _enter_commission(self, from_state: State, reason: str = "a task is queued") -> bool:
+        """Leave `from_state` for `commission`. The loop thread calls it, so measure ends here."""
         if not self._transition(reason, State.COMMISSION, expect=from_state):
             return False
+        self._end_measure("state_change")
         self._return_state = from_state
         with self._lock:
             self._pause_after = None  # a request of an episode that a command cut short ends here

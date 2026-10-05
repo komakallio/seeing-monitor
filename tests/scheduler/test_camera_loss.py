@@ -432,6 +432,7 @@ class TestAStalledLoop:
         """A read that waits for its timeout is a call into the camera, and it is not a sleep."""
         config = SchedulerConfig(
             fast=TEST_CONFIG.fast,
+            search=TEST_CONFIG.search,
             loop=TEST_CONFIG.loop,
             faults=FaultConfig(backoff_initial_s=1.0, backoff_max_s=2.0),
             ladder=LadderConfig(attempts_per_level=1),

@@ -24,13 +24,14 @@ from seeingmon.frames import Roi
 class ActivityPhase(StrEnum):
     """What the scheduler does within its state. `ActivityStatus.phase` holds one of these.
 
-    The phases of `auto` are `fast`, `survey_short`, `survey_long`, `solve_wait`, and `idle`. The
-    other states have one phase each (`watch` for `safe`, then `align`, `commission`, and
-    `paused`), and `align` has a second one, `rapid_focus`, while the person focuses with the
+    The phases of `auto` are `search`, `fast`, `survey_short`, `survey_long`, `solve_wait`, and
+    `idle`. The other states have one phase each (`watch` for `safe`, then `align`, `commission`,
+    and `paused`), and `align` has a second one, `rapid_focus`, while the person focuses with the
     fast stream. `camera_fault` replaces the phase while the scheduler waits for a recovery step
     of the camera, in whatever state it was.
     """
 
+    SEARCH = "search"  # the fast stream looks for Polaris in short bursts
     FAST = "fast"  # the fast stream measures seeing, one analysis window after another
     SURVEY_SHORT = "survey_short"  # the short exposure of the survey step
     SURVEY_LONG = "survey_long"  # the long exposure of the survey step
@@ -77,7 +78,8 @@ class ActivityStatus:
 class StreamInfo:
     """The stream that the camera runs or ran last.
 
-    `purpose` is one of `fast`, `survey`, `watch`, `align`, `rapid_focus`, and `commission`.
+    `purpose` is one of `fast`, `search`, `survey`, `watch`, `align`, `rapid_focus`, and
+    `commission`. A `search` stream is one burst of the search for Polaris.
     """
 
     stream_id: int
@@ -116,6 +118,31 @@ class Counters:
     discarded_frames: int = 0  # frames of a sweep cell that a camera error cut short
     transitions: int = 0
     stalls: int = 0  # sleeps of the loop that returned much too late
+    search_periods: int = 0  # periods of the cycle that searched to their end
+    search_bursts: int = 0  # bursts that looked for Polaris, probes included
+    probe_bursts: int = 0  # bursts while the Sun was above the search limit
+    search_frames: int = 0  # frames of the bursts, which reach no window
+    detections: int = 0  # bursts that detected Polaris
+    measure_starts: int = 0  # switches from search to measure
+
+
+@dataclass(frozen=True, slots=True)
+class SearchStatus:
+    """Whether the fast stream of `auto` searches for Polaris or measures it.
+
+    `mode` is `search` or `measure`. While the stream searches, `next_burst_utc_ns` is when the
+    next burst may start (when the cycle reaches its fast slot, if that comes later), `probe` says
+    that the Sun is above the search limit so that the next burst is a probe, `detections` counts
+    the detecting bursts in a row, and `snr` is the median SNR of the star in the last burst.
+    While it measures, `since_utc_ns` is when measure began.
+    """
+
+    mode: str
+    next_burst_utc_ns: int | None = None
+    probe: bool = False
+    detections: int = 0
+    snr: float | None = None
+    since_utc_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +172,11 @@ class SchedulerStatus:
     `degraded` means that the camera failed repeatedly. The scheduler keeps retrying slowly, and
     the store and `web` stay up. `queued_tasks` counts the commissioning tasks that wait, and
     `survey_pending` counts the survey frames that await analysis. `activity` says what the
-    scheduler does now and what comes next.
+    scheduler does now and what comes next. `background_fraction` is the background that the
+    fast stream would have at its shortest exposure, as a share of saturation, from the last
+    brightness frame (1 when that frame clipped), which the daylight gate compares. `search` says
+    whether the fast stream searches or measures, in `auto` with a pointing solution, and is
+    `None` elsewhere.
     """
 
     t_utc_ns: int
@@ -167,6 +198,7 @@ class SchedulerStatus:
     survey_pending: int
     alignment_idle_s: float | None = None
     activity: ActivityStatus | None = None
+    search: SearchStatus | None = None
 
     @property
     def camera_component(self) -> str:

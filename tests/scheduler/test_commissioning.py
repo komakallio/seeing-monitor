@@ -106,11 +106,14 @@ class TestASweepAtTheBoundary:
     ) -> None:
         world = sweep_run.world
         changes = commission_changes(world)
-        # The cycle runs a fast period to 120 and a survey step to 150. The boundary is at 150.
-        assert [(round(t), a, b) for t, a, b in changes][:1] == [(150, "auto", "commission")]
+        # The cycle searches from 0 and measures from 21 to the frame that ends the period at
+        # 121, and a survey step runs to 151. The boundary is there.
+        ((at, before, after),) = changes[:1]
+        assert (before, after) == ("auto", "commission")
+        assert at == pytest.approx(150.0, abs=2.0)
         # The fast period and the survey step of that cycle completed before it.
         starts = [w for w in world.windows() if world.seconds(w.t_utc_ns) < 150]
-        assert sum(w.n_frames for w in starts) == 60
+        assert sum(w.n_frames for w in starts) == 50
         assert [f.exposure_us for f in world.survey.submitted[:2]] == [1000, 30_000_000]
 
     def test_the_scheduler_returns_to_auto_and_starts_a_new_cycle_at_once(
@@ -119,8 +122,8 @@ class TestASweepAtTheBoundary:
         world = sweep_run.world
         assert world.states_visited() == ["safe", "auto", "commission", "auto"]
         end = commission_changes(world)[1][0]
-        starts = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
-        after_sweep = [t for t in starts if t >= end - 0.01]
+        # The sweep ended measure, so the new cycle searches first, on the same slots.
+        after_sweep = [t for t in world.period_starts() if t >= end - 0.01]
         assert after_sweep[0] == pytest.approx(end, abs=0.5)
         assert after_sweep[1] - after_sweep[0] == pytest.approx(180.0, abs=0.05)
 
@@ -216,6 +219,7 @@ class TestTheQueue:
     def test_a_full_queue_refuses_another_task(self) -> None:
         config = SchedulerConfig(
             fast=TEST_CONFIG.fast,
+            search=TEST_CONFIG.search,
             loop=LoopConfig(max_sleep_s=5.0),
             commission=CommissionConfig(max_queued=2),
         )
@@ -291,7 +295,7 @@ class TestHandlers:
         assert [e.kind for e in world.events() if e.kind.endswith("_result")] == [
             "scheduler.burst_result"
         ]
-        assert commission_changes(world)[0][0] == pytest.approx(150.0, abs=1.0)
+        assert commission_changes(world)[0][0] == pytest.approx(150.0, abs=2.0)
         world.close()
 
     def test_the_burst_frames_count_as_frames_but_not_as_fast_analysis(self) -> None:
@@ -300,9 +304,11 @@ class TestHandlers:
         submit_at(world, 50, QueueBurst())
         world.run_until(400)
         counters = world.scheduler.status().counters
-        # Every frame is counted, and the fast analyzer saw only the frames of the fast stream.
+        # Every frame is counted, and the fast analyzer saw only the frames of the fast stream. The
+        # search bursts went to `measure`, which makes no window.
         others = counters.survey_frames + counters.watch_frames + 5  # survey, watch, and burst
-        assert counters.frames == world.fast.frames_pushed + others
+        assert counters.frames == world.fast.frames_pushed + counters.search_frames + others
+        assert counters.search_frames == world.fast.frames_measured
         world.close()
 
     def test_a_replay_handler_receives_the_options_of_the_command(self) -> None:
@@ -392,6 +398,7 @@ class TestHandlers:
     def test_the_scheduler_keeps_a_bounded_number_of_results(self) -> None:
         config = SchedulerConfig(
             fast=TEST_CONFIG.fast,
+            search=TEST_CONFIG.search,
             loop=LoopConfig(max_sleep_s=5.0),
             commission=CommissionConfig(max_results=2),
         )
@@ -488,9 +495,10 @@ class TestWhenTasksRun:
         (result,) = world.results
         short, long = result.data["cells"]  # 2 ms and 5 ms
         # The Sun is up. The sky fills 58% of the range in 2 ms, and it saturates the frame in 5 ms.
+        # The bright sky hides Polaris in 2 ms (an SNR of 5.4, below the 6 that finds a star).
         assert short["background_fraction"] == pytest.approx(0.58, abs=0.02)
         assert short["saturated_fraction"] == 0.0
-        assert short["star_found_fraction"] == 1.0
+        assert short["star_found_fraction"] == 0.0
         assert long["saturated_fraction"] == 1.0
         assert long["star_found_fraction"] == 0.0  # no contrast against a saturated sky
         # The brightness watch goes on afterwards.

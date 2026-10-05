@@ -492,10 +492,10 @@ class FaultView(_View):
 class ActivityView(_View):
     """What the scheduler does now, for how long, and what comes next (`ActivityStatus`).
 
-    `phase` is one of `fast`, `survey_short`, `survey_long`, `solve_wait`, `idle`, `watch`,
-    `align`, `rapid_focus`, `commission`, `paused`, and `camera_fault`. Times are nanoseconds
-    since the Unix epoch, in UTC. The text fields are plain words, and a value that the
-    scheduler does not know is `None`.
+    `phase` is one of `search`, `fast`, `survey_short`, `survey_long`, `solve_wait`, `idle`,
+    `watch`, `align`, `rapid_focus`, `commission`, `paused`, and `camera_fault`. Times are
+    nanoseconds since the Unix epoch, in UTC. The text fields are plain words, and a value that
+    the scheduler does not know is `None`.
     """
 
     state: str

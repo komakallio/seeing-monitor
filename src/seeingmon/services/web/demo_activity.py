@@ -54,7 +54,6 @@ DEGRADED_AFTER = 5  # [scheduler.faults] degraded_after
 SLOW_RETRY_S = 600.0  # [scheduler.faults] slow_retry_s
 WATCH_INTERVAL_S = 10.0  # [scheduler.watch] interval_s
 WATCH_EXPOSURE_S = 0.001
-DAYLIGHT_RESUME_DEG = -4.0
 GATE_OPEN_S = 25.0  # how long the demo sky holds the gate in `safe`
 ALIGN_TIMEOUT_S = 1800.0  # [scheduler.align] idle_timeout_s
 RAPID_TIMEOUT_S = 120.0  # [scheduler.align] rapid_focus_idle_timeout_s
@@ -236,7 +235,7 @@ def safe_activity(elapsed_s: float, now_utc_ns: int, reason: str | None) -> Acti
     return ActivityView(
         state="safe",
         phase=ActivityPhase.WATCH.value,
-        label=words.daylight_label(DAYLIGHT_RESUME_DEG),
+        label=words.BRIGHT_SKY_LABEL,
         since_utc_ns=_later(now_utc_ns, -elapsed_s),
         next_label=words.WATCH_NEXT_LABEL,
         next_utc_ns=_later(now_utc_ns, until_frame),

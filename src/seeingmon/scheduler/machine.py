@@ -1,8 +1,8 @@
 """The state machine of the scheduler: the states, the legal transitions, and the history.
 
-- `safe`: the camera is idle, with a brightness watch. The scheduler enters it at start, in
-  daylight, when the sky is too bright, after a persistent fault, and after `align`, `paused`,
-  or a commissioning task that interrupted `safe`.
+- `safe`: the camera is idle, with a brightness watch. The scheduler enters it at start, when
+  the measured sky is too bright, after a persistent fault, and after `align`, `paused`, or a
+  commissioning task that interrupted `safe`.
 - `auto`: the scheduler repeats a fast window and a survey step. It enters this state when the
   sky is dark enough and the camera works.
 - `align`: the alignment stream preempts everything. `StartAlignment` enters it, and it ends on

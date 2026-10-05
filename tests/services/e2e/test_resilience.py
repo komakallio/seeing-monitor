@@ -158,7 +158,8 @@ class TestAFullDisk:
         self, tmp_path: Path
     ) -> None:
         disk = FakeDisk(free_gb=300.0)
-        rig = build_rig(tmp_path, parts={"disk_usage": disk})
+        # The camera shows the star, so the search finds it and the fast stream makes windows.
+        rig = build_rig(tmp_path, parts={"disk_usage": disk}, polaris=True)
         rig.app.start()
         try:
             rig.run_for(20.0)
@@ -212,7 +213,7 @@ class TestAWrongClock:
     def test_windows_and_health_say_time_invalid_while_the_clock_is_not_synchronized(
         self, tmp_path: Path
     ) -> None:
-        rig = build_rig(tmp_path)
+        rig = build_rig(tmp_path, polaris=True)  # the search finds the star, and windows close
         rig.app.start()
         try:
             rig.run_for(45.0)
@@ -243,13 +244,14 @@ class TestAWrongClock:
     def test_a_step_of_the_utc_clock_never_makes_the_windows_go_back_in_time(
         self, tmp_path: Path
     ) -> None:
-        # The camera shows the star, so the fast period runs for 20 s, and the step comes in it.
+        # The camera shows the star. The search finds it, the fast stream runs from about 16 s to
+        # the end of the period at 20 s, and the step comes in it. The next period starts at 180 s.
         rig = build_rig(tmp_path, polaris=True)
         rig.app.start()
         try:
-            rig.run_for(5.0)
+            rig.run_for(17.0)
             rig.clock.step_utc_ns(-5 * NS_PER_S)  # the time source corrects the clock backward
-            rig.run_for(45.0)
+            rig.run_for(200.0)
             times = [w.t_utc_ns for w in rig.records("seeing_window")]
             assert len(times) >= 2
             # Windows come in the order of their start. A step leaves them in that order, or the

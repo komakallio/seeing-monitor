@@ -368,7 +368,7 @@ class TestTheIsolationOfTheRealSky:
         env = {
             "SEEINGMON_SINKS__INFLUX__TOKEN": "another-owner-secret",  # pragma: allowlist secret
             "SEEINGMON_SERVICES__CONNECTION_KEY": "another-owner-key",  # pragma: allowlist secret
-            "SEEINGMON_SCHEDULER__DAYLIGHT__SUN_ELEVATION_LIMIT_DEG": "90",
+            "SEEINGMON_SCHEDULER__SEARCH__MAX_SUN_ELEVATION_DEG": "90",
             "SEEINGMON_HEATER__ENABLED": "true",
             "SEEINGMON_STATION_ID": '"another-station"',
         }
@@ -379,9 +379,9 @@ class TestTheIsolationOfTheRealSky:
         for spec in plan.children:  # the names that the launcher does not set itself
             assert "SEEINGMON_SINKS__INFLUX__TOKEN" not in spec.env
             assert "SEEINGMON_HEATER__ENABLED" not in spec.env
-            assert "SEEINGMON_SCHEDULER__DAYLIGHT__SUN_ELEVATION_LIMIT_DEG" not in spec.env
+            assert "SEEINGMON_SCHEDULER__SEARCH__MAX_SUN_ELEVATION_DEG" not in spec.env
         scheduler = configuration(plan, "core", tmp_path).section("scheduler", SchedulerConfig)
-        assert scheduler.daylight.sun_elevation_limit_deg == -3.0  # the production gate
+        assert scheduler.search.max_sun_elevation_deg == 12.0  # the production search limit
 
     def test_no_value_of_the_tables_goes_on_a_command_line(self, tmp_path: Path) -> None:
         tables = working_tables(tmp_path, index_dir=str(tmp_path / "index-folder"))
@@ -649,8 +649,9 @@ class TestTheBanner:
         lines = banner(real_plan(tmp_path))
         (sun,) = [line for line in lines if "real Sun" in line]
         assert "at your site" in sun
-        assert "stays in safe while the Sun is above -3 degrees" in sun
-        assert "by day it takes no survey frame" in sun
+        assert "the measured sky" in sun
+        assert "While the Sun is above 12 degrees, one probe burst every 10 min" in sun
+        assert "2 search bursts in a row" in sun
         assert not [
             line for line in lines if "synthetic site" in line or "reports no stars" in line
         ]

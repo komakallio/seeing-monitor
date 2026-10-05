@@ -200,7 +200,7 @@ class TestSurveyFrameSettings:
         assert settings.fits_compression == "rice"
         assert settings.event_min_interval_s == 3600.0
         assert settings.event_cloud_fraction == 0.5  # the threshold of the scheduler
-        assert settings.event_background_fraction == 0.5  # the limit of the daylight gate
+        assert settings.event_background_fraction == 0.5  # half of the frame's saturation level
 
     def test_an_environment_variable_changes_a_key(self, tmp_path: Path) -> None:
         services = load(

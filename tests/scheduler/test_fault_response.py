@@ -27,6 +27,7 @@ def quick_config(**ladder: float | str) -> SchedulerConfig:
     """One attempt for each step, short waits, and degraded after three failures."""
     return SchedulerConfig(
         fast=TEST_CONFIG.fast,
+        search=TEST_CONFIG.search,
         loop=LoopConfig(max_sleep_s=5.0),
         faults=FaultConfig(
             backoff_initial_s=1.0,
@@ -48,9 +49,11 @@ def recover_levels(world: World) -> list[object]:
 def outage_world() -> World:
     """The camera is out from 1000 to 1010, and it works again by itself.
 
-    A read that starts at 1000 times out after 4.5 seconds. The scheduler waits 1 second, restarts
-    the capture, and the next read starts at 1005.5, which is still inside the outage. It waits
-    2 seconds, reopens the camera, and the read that starts at 1012 works.
+    A read of the fast stream that starts at 1000 times out after 4.5 seconds, which ends measure.
+    The scheduler waits 1 second, restarts the capture, and the first search burst of the new
+    cycle starts at 1006. Its read is still inside the outage. The scheduler waits 2 seconds,
+    reopens the camera, and the burst that starts at 1012 works. The burst at 1027 confirms the
+    star, and measure starts again at 1033.
     """
     world = World(start_utc_ns=NIGHT, config=quick_config())
     world.camera_fault(1000, 1010)
@@ -93,7 +96,18 @@ class TestAShortOutage:
         assert outage_world.seconds(first.t_utc_ns) == pytest.approx(1004.5, abs=0.1)
         assert outage_world.seconds(second.t_utc_ns) == pytest.approx(1010.0, abs=0.1)
         assert (first.detail or {})["where"] == "reading a fast frame"
+        assert (second.detail or {})["where"] == "reading a search frame"
         assert "scripted fault" in (first.detail or {})["error"]
+
+    def test_the_fault_ends_measure_and_the_search_finds_the_star_again(
+        self, outage_world: World
+    ) -> None:
+        hidden = outage_world.events("polaris.hidden")
+        fault = [e for e in hidden if (e.detail or {})["reason"] == "fault"]
+        assert [outage_world.seconds(e.t_utc_ns) for e in fault] == [pytest.approx(1004.5, abs=0.1)]
+        assert (fault[0].detail or {})["sun_elevation_deg"] < -18
+        visible = [t for t in outage_world.visible_times() if t > 1000]
+        assert visible == [pytest.approx(1033.0, abs=0.5)]
 
     def test_the_scheduler_recovers_and_the_stream_resumes_in_a_new_stream(
         self, outage_world: World
@@ -101,11 +115,10 @@ class TestAShortOutage:
         assert outage_world.states_visited() == ["safe", "auto"]  # it never left auto
         assert outage_world.scheduler.state.value == "auto"
         assert outage_world.scheduler.status().degraded is False
-        starts = [
-            outage_world.seconds(c.t_utc_ns)
-            for c in outage_world.configures(mode="bin1", video=True)
-        ]
-        assert [round(t) for t in starts if 1000 < t < 1100] == [1006, 1012]  # a stream per try
+        bursts = outage_world.burst_starts()
+        assert [round(t) for t in bursts if 1000 < t < 1100] == [1006, 1012, 1027]  # one per try
+        measure = [t for t in outage_world.fast_starts() if 1000 < t < 1100]
+        assert measure == [pytest.approx(1033.0, abs=0.5)]
         assert outage_world.windows()[-1].t_utc_ns > outage_world.t(1100)
 
     def test_the_failure_count_clears_after_enough_good_frames(self, outage_world: World) -> None:
@@ -208,6 +221,7 @@ class TestDestructiveSteps:
     def test_a_reboot_or_power_cycle_comes_at_most_once_per_interval(self) -> None:
         config = SchedulerConfig(
             fast=TEST_CONFIG.fast,
+            search=TEST_CONFIG.search,
             loop=LoopConfig(max_sleep_s=5.0),
             faults=FaultConfig(
                 backoff_initial_s=1.0, backoff_max_s=2.0, degraded_after=3, slow_retry_s=60.0

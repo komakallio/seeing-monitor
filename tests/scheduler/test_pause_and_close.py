@@ -113,8 +113,7 @@ class TestPause:
         (result,) = paused_run.resumed
         assert (result.accepted, result.state) == (True, "safe")
         world = paused_run.world
-        starts = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
-        after = [t for t in starts if t > 1190]
+        after = [t for t in world.period_starts() if t > 1190]
         assert after[0] == pytest.approx(1200.0, abs=1.0)
         assert after[1] - after[0] == pytest.approx(180.0, abs=0.05)
 

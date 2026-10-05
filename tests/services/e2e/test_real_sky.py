@@ -59,10 +59,6 @@ def system(tmp_path_factory: pytest.TempPathFactory) -> Iterator[System]:
         data_dir=directory / "data",
         log_level="info",  # what `seeingmon dev --real-sky` chooses
         acquire_overrides={"services": {"acquire": {"driver_options": {"fake_sdk": True}}}},
-        core_overrides={
-            # The Sun at the made-up site must not keep the scheduler in `safe` at noon.
-            "scheduler": {"daylight": {"sun_elevation_limit_deg": 90.0}},
-        },
     )
     built.start_all()
     yield built

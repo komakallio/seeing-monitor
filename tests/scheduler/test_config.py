@@ -71,6 +71,32 @@ def test_the_defaults_follow_the_architecture() -> None:
     assert config.ladder.max_level == "power_cycle"
 
 
+def test_the_search_defaults_follow_the_visibility_design() -> None:
+    """`docs/visibility.md`, "Settings": the detection estimate's +8.9 degrees plus 3 is +12."""
+    search = SchedulerConfig().search
+    assert (search.burst_frames, search.interval_s, search.confirm_bursts) == (50, 15.0, 2)
+    assert (search.detect_snr, search.radius_px) == (10.0, 20.0)
+    assert (search.max_sun_elevation_deg, search.probe_interval_s) == (12.0, 600.0)
+    assert search.limited
+
+
+@pytest.mark.parametrize(("limit", "limited"), [(12.0, True), (89.9, True), (90.0, False)])
+def test_a_search_limit_of_90_degrees_or_more_means_no_limit(limit: float, limited: bool) -> None:
+    """TOML has no null, so the defaults file writes "no limit" as a number."""
+    config = Config({"scheduler": {"search": {"max_sun_elevation_deg": limit}}})
+    assert config.section("scheduler", SchedulerConfig).search.limited is limited
+
+
+def test_the_daylight_gate_has_no_sun_limit() -> None:
+    assert set(SchedulerConfig().daylight.model_dump()) == {
+        "twilight_elevation_deg",
+        "saturation_limit",
+        "resume_saturation",
+        "brightness_clip_fraction",
+        "brightness_resume_fraction",
+    }
+
+
 def test_the_survey_exposures_fit_the_cadence_and_the_profile() -> None:
     """A survey step needs less than the time that the fast period leaves in a cycle."""
     config = SchedulerConfig()
@@ -137,7 +163,16 @@ def test_the_local_file_and_the_environment_turn_the_high_speed_mode_on(tmp_path
         {"cloud": {"threshold": 0.3, "clear_threshold": 0.4}},
         {"cloud": {"threshold": 1.5}},
         {"daylight": {"saturation_limit": 0.3, "resume_saturation": 0.4}},
-        {"daylight": {"sun_elevation_limit_deg": -20.0}},  # below the twilight limit
+        {"daylight": {"sun_elevation_limit_deg": -3.0}},  # the Sun gates nothing any more
+        {"daylight": {"sun_resume_margin_deg": 1.0}},
+        {"daylight": {"brightness_clip_fraction": 1.5}},
+        {"daylight": {"brightness_clip_fraction": 0.6, "brightness_resume_fraction": 0.7}},
+        {"search": {"burst_frames": 0}},
+        {"search": {"confirm_bursts": 0}},
+        {"search": {"detect_snr": 0.0}},
+        {"search": {"radius_px": -1.0}},
+        {"search": {"interval_s": 0.0}},
+        {"search": {"max_sun_elevation_deg": float("nan")}},
         {"faults": {"backoff_initial_s": 10.0, "backoff_max_s": 5.0}},
         {"faults": {"backoff_factor": 0.5}},
         {"ladder": {"max_level": "hammer"}},

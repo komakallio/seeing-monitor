@@ -9,7 +9,7 @@ See the "Scheduler" section of `docs/architecture.md`. The modules are:
 - `commission`: the task queue, the handler protocol, and the sweep.
 - `faults` and `levels`: the response to camera errors and the recovery ladder.
 - `gates`: the daylight gate, the twilight flag, and the cloud tracker.
-- `ephemeris`: the Sun's elevation, for the daylight gate and the twilight flag.
+- `ephemeris`: the Sun's elevation, for the search limit and the twilight flag.
 - `status`: the snapshot for `/status` and the `health` record, with the activity.
 - `activity`: the words of the activity: its labels, details, and reasons.
 - `events`: the codes of the events that the scheduler writes.

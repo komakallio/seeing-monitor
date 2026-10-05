@@ -111,9 +111,8 @@ class TestStartAndStop:
 
     def test_the_cycle_starts_again_from_the_end_of_the_alignment(self, run: Run) -> None:
         world = run.world
-        starts = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
-        after = [t for t in starts if t > 690]
-        # The brightness frame comes at once, and the fast stream follows it.
+        after = [t for t in world.period_starts() if t > 690]
+        # The brightness frame comes at once, and the first period (a search) follows it.
         assert after[0] == pytest.approx(700.0, abs=1.0)
         assert after[1] - after[0] == pytest.approx(180.0, abs=0.05)
 
@@ -223,8 +222,8 @@ class TestAlignmentPreempts:
     def test_alignment_starts_after_the_survey_exposure_in_progress(self) -> None:
         """A step takes a whole exposure, so a command that comes during one waits for its end.
 
-        The test harness can inject a command only between steps, so the command arrives at 150,
-        when the long exposure of the first cycle (120 to 150) ends. In a real run it arrives during
+        The test harness can inject a command only between steps, so the command arrives at 151,
+        when the long exposure of the first cycle (121 to 151) ends. In a real run it arrives during
         the exposure, the state changes at once, and the camera follows after the exposure.
         """
         world = World(start_utc_ns=NIGHT)
@@ -234,7 +233,7 @@ class TestAlignmentPreempts:
         long_frames = [f for f in world.survey.submitted if f.exposure_us == 30_000_000]
         assert len(long_frames) == 1  # the exposure in progress finished and went to analysis
         start = align_configures(world)[0][0]
-        assert 150.0 <= start <= 151.0
+        assert 150.0 <= start <= 152.0
         world.close()
 
     def test_a_pause_ends_the_alignment(self) -> None:

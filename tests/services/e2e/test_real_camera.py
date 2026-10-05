@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
-from typing import Any
 
 import pytest
 
@@ -39,10 +38,6 @@ def system(tmp_path_factory: pytest.TempPathFactory) -> Iterator[System]:
         acquire_driver="asi",
         log_level="info",  # the log of acquire says what priority its capture thread got
         acquire_overrides={"services": {"acquire": {"driver_options": {"fake_sdk": True}}}},
-        core_overrides={
-            # The Sun at the synthetic site must not keep the scheduler in `safe` at noon.
-            "scheduler": {"daylight": {"sun_elevation_limit_deg": 90.0}},
-        },
     )
     built.start_all()
     yield built
@@ -80,13 +75,21 @@ class TestTheRealCameraSetup:
         assert abs(newest - system.plan.origin_real_ns) < 300 * NS_PER_S
 
     def test_the_fast_stream_takes_the_exposure_of_the_profile(self, system: System) -> None:
-        def windows() -> list[Any]:
-            return [w for w in system.records("seeing_window") if w.exposure_us == 2000]
+        """The fake SDK shows no star, so the stream searches, and no seeing window closes.
 
-        system.wait_for(lambda: len(windows()) >= 1, "a fast window of 2 ms frames", timeout_s=180)
-        window = windows()[0]
-        assert window.readout_mode == "bin1"  # the fast mode of the real profile
+        The search bursts read the fast readout mode at the exposure of the profile. The Sun gates
+        nothing, so the bursts run at any hour, above the search limit as probes.
+        """
+
+        def a_burst_of_2_ms_frames() -> bool:
+            stream = decode_status(system.core_call("status")).scheduler.stream
+            return stream is not None and stream.purpose == "search" and stream.exposure_us == 2000
+
+        system.wait_for(a_burst_of_2_ms_frames, "a search burst of 2 ms frames", timeout_s=180)
         status = decode_status(system.core_call("status")).scheduler
-        assert status.state in ("auto", "safe", "commission")
+        assert status.stream is not None
+        assert status.stream.mode == "bin1"  # the fast mode of the real profile
+        assert status.state == "auto"
         assert status.counters["frames"] > 0  # frames from the fake SDK reached the scheduler
+        assert status.counters["search_frames"] > 0
         assert system.alive() == {"acquire": True, "core": True}

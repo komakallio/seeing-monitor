@@ -70,7 +70,7 @@
             "title": "Next Utc"
           },
           "phase": {
-            "description": "What the scheduler does within the state. `auto` has `fast` (the fast stream), `survey_short` and `survey_long` (the two exposures of the survey step), `solve_wait` (it waits for a pointing solution), and `idle` (the camera rests until the next slot of the cycle). The other states have `watch` (the brightness watch of `safe`), `align`, `rapid_focus` (the rapid focus mode inside the alignment), `commission`, and `paused`. `camera_fault` replaces the phase while the scheduler waits to try a recovery step of the camera.",
+            "description": "What the scheduler does within the state. `auto` has `search` (search bursts look for Polaris), `fast` (the fast stream measures seeing), `survey_short` and `survey_long` (the two exposures of the survey step), `solve_wait` (it waits for a pointing solution), and `idle` (the camera rests until the next slot of the cycle). The other states have `watch` (the brightness watch of `safe`), `align`, `rapid_focus` (the rapid focus mode inside the alignment), `commission`, and `paused`. `camera_fault` replaces the phase while the scheduler waits to try a recovery step of the camera.",
             "title": "Phase",
             "type": "string"
           },

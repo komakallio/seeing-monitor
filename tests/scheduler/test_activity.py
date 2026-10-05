@@ -44,6 +44,7 @@ from tests.scheduler.scenario import START, TEST_CONFIG, World
 NIGHT = iso_to_utc_ns("2026-01-01T22:00:00Z")
 STATES = {"safe", "auto", "align", "commission", "paused"}
 PHASES = {phase.value for phase in ActivityPhase}
+RESUME_FRACTION = TEST_CONFIG.daylight.brightness_resume_fraction
 # How far an announced time may differ from the time of what then happens. One fast frame takes 2
 # seconds in these scenarios, and the first survey exposure uses the default for its overhead.
 TOLERANCE_S = 2.5
@@ -86,8 +87,36 @@ class TestTheWords:
             "Windows of 1 min: 1 of 1 closed; clouds shorten the period"
         )
 
-    def test_the_daylight_gate_names_the_limit(self) -> None:
-        assert words.daylight_label(-4.0) == "Daylight gate: the Sun is above -4 degrees"
+    def test_the_search_names_its_bursts_and_its_progress(self) -> None:
+        assert words.burst_label(50) == "Search burst: 50 fast frames"
+        assert words.burst_label(1) == "Search burst: 1 fast frame"
+        assert words.search_detail(50, 15.0, 1, 2, bursting=False) == (
+            "A burst of 50 frames every 15 s; 1 of 2 detections in a row start the seeing windows"
+        )
+        assert words.search_detail(3, 15.0, 0, 2, bursting=True) == (
+            "A burst of 3 frames every 15 s; a burst runs now; "
+            "0 of 2 detections in a row start the seeing windows"
+        )
+        assert words.probe_detail(12.0, 600.0) == (
+            "The Sun is above 12 degrees, so one probe burst runs every 10 min"
+        )
+
+    def test_the_brightness_gate_says_what_the_fast_stream_would_see(self) -> None:
+        assert words.bright_sky_detail(0.6, 0.35) == (
+            "At its shortest exposure the fast stream would see 60% of saturation; "
+            "the cycle resumes below 35% of saturation"
+        )
+        assert words.bright_sky_detail(None, 0.35) == "The cycle resumes below 35% of saturation"
+
+    def test_the_brightness_gate_says_how_bright_the_brightness_frame_is(self) -> None:
+        assert words.bright_frame_detail(1.0, 0.6, clipped=True) == (
+            "The brightness frame saturates, so the sky is too bright to measure; "
+            "the cycle resumes below 60% of its saturation"
+        )
+        assert words.bright_frame_detail(0.744, 0.6, clipped=False) == (
+            "The brightness frame reads 74% of its saturation; "
+            "the cycle resumes below 60% of its saturation"
+        )
 
     def test_a_reason_that_is_a_code_reads_as_words(self) -> None:
         assert words.state_reason_text("startup") == (
@@ -196,15 +225,16 @@ def episodes(statuses: list[SchedulerStatus]) -> list[Episode]:
 def evening() -> tuple[World, list[SchedulerStatus]]:
     """An afternoon that turns into a night with every kind of activity.
 
-    The Sun sets, and the daylight gate opens at about 6000 s. The first survey step finds no
-    pointing and the analysis fails, so the scheduler waits and tries again. Clouds shorten the
-    cycle. Alignment runs from 8000 s to 8100 s, a sweep follows, a pause lasts from 9300 s to
-    9400 s, the camera fails from 10000 s to 10100 s, and a floodlight brightens the sky from
-    11000 s to 11400 s. A second alignment runs from 12000 s to 12200 s, with rapid focus from
-    12040 s to 12060 s.
+    The Sun sets, and the daylight gate opens at about 5280 s, when the brightness frame no longer
+    saturates. The first survey steps find no pointing and the analysis fails, so the scheduler
+    waits and tries again. Once a survey step solves, search bursts look for Polaris, and they
+    find it. Clouds shorten the cycle. Alignment runs from 8000 s to 8100 s, a sweep follows, a
+    pause lasts from 9300 s to 9400 s, the camera fails from 10000 s to 10100 s, and a floodlight
+    saturates the brightness frame from 11000 s to 11400 s. A second alignment runs from 12000 s
+    to 12200 s, with rapid focus from 12040 s to 12060 s.
     """
     world = World(start_utc_ns=START, solved_at_start=False, survey_polls=2)
-    world.no_solution(6000, 6400)
+    world.no_solution(5000, 6400)
     world.cloud(6600, 7400, 0.8)
     world.at(8000, send(StartAlignment()))
     world.at(8100, send(StopAlignment()))
@@ -212,7 +242,7 @@ def evening() -> tuple[World, list[SchedulerStatus]]:
     world.at(9300, send(Pause()))
     world.at(9400, send(Resume()))
     world.camera_fault(10000, 10100)
-    world.light(11000, 11400, 0.8)
+    world.light(11000, 11400, 1.0)
     world.at(12000, send(StartAlignment()))
     star_x, star_y = world.star_position(world.t(12040))
     world.at(12040, send(StartRapidFocus(star_x, star_y, exposure_us=2000)))
@@ -238,6 +268,7 @@ class TestEveryStateAndPhase:
             ("auto", "survey_long"),
             ("auto", "solve_wait"),
             ("auto", "idle"),
+            ("auto", "search"),
             ("auto", "fast"),
             ("align", "align"),
             ("align", "rapid_focus"),
@@ -275,7 +306,7 @@ class TestEveryStateAndPhase:
         self, evening: tuple[World, list[SchedulerStatus]]
     ) -> None:
         _, statuses = evening
-        cycle = {"fast", "survey_short", "survey_long", "solve_wait", "idle"}
+        cycle = {"search", "fast", "survey_short", "survey_long", "solve_wait", "idle"}
         for status in statuses:
             activity = status.activity
             assert activity is not None
@@ -294,35 +325,55 @@ class TestEveryStateAndPhase:
         assert cloudy
         fast = [a for a in cloudy if a.phase == "fast"]
         assert fast
+        lengths = set()
         for activity in fast:
             assert activity.ends_utc_ns is not None
-            assert (activity.ends_utc_ns - activity.since_utc_ns) / NS_PER_S == pytest.approx(60.0)
+            lengths.add(round((activity.ends_utc_ns - activity.since_utc_ns) / NS_PER_S, 3))
             assert activity.detail is not None
             assert "clouds shorten the period" in activity.detail
+        # A full period under clouds lasts 60 s. The fast stream that a search starts in the
+        # middle of a period has the rest of it.
+        assert 60.0 in lengths
+        assert max(lengths) == 60.0
+        search = [a for a in cloudy if a.phase == "search"]
+        assert search
+        for activity in search:
+            assert activity.ends_utc_ns is not None
+            assert (activity.ends_utc_ns - activity.since_utc_ns) / NS_PER_S == pytest.approx(60.0)
 
 
 class TestWhatTheScheduleAnnounces:
     """The end of a phase and the start of the next one match what the scheduler then does."""
 
-    # The phase that follows each phase of the cycle when nothing interrupts it.
+    # The phase that follows each phase of the cycle when nothing interrupts it. A search period
+    # that finds Polaris hands the rest of its time to the fast stream, which is no end of it.
     SUCCESSORS: ClassVar[dict[str, set[str]]] = {
+        "search": {"survey_short"},
         "fast": {"survey_short"},
         "survey_short": {"survey_long"},
-        "survey_long": {"idle", "fast", "solve_wait"},
-        "idle": {"fast", "survey_short"},
+        "survey_long": {"idle", "search", "fast", "solve_wait"},
+        "idle": {"search", "fast", "survey_short"},
     }
+
+    @staticmethod
+    def measure_ended(current: Episode, following: Episode) -> bool:
+        """Whether a fast period ended early because the star went missing and measure ended."""
+        search = following.first.search
+        return current.phase == "fast" and search is not None and search.mode == "search"
 
     @classmethod
     def uninterrupted(cls, runs: list[Episode]) -> list[tuple[Episode, Episode]]:
         """The pairs of neighbors in which one phase of the cycle gives way to its successor.
 
         A cloud result that arrives while the camera idles changes the cadence, a camera fault ends
-        a period early, and a command ends the cycle. None of them is a mistake of the activity, so
-        the pairs leave them out.
+        a period early, a star that clouds hide ends measure early, and a command ends the cycle.
+        None of them is a mistake of the activity, so the pairs leave them out.
         """
         pairs = []
         for current, following in itertools.pairwise(runs):
             if current.state != "auto" or current.phase not in cls.SUCCESSORS:
+                continue
+            if cls.measure_ended(current, following):
                 continue
             if (following.state, following.phase) not in {
                 ("auto", successor) for successor in cls.SUCCESSORS[current.phase]
@@ -344,7 +395,10 @@ class TestWhatTheScheduleAnnounces:
             gap = abs(following.began_ns - ends) / NS_PER_S
             assert gap <= TOLERANCE_S, (current.phase, gap)
             checked[current.phase] += 1
-        assert all(count >= 10 for count in checked.values()), checked
+        # Search periods run to their end only before Polaris shows and while clouds hide it.
+        assert all(count >= (5 if phase == "search" else 10) for phase, count in checked.items()), (
+            checked
+        )
 
     def test_the_wait_for_a_pointing_solution_ends_by_its_deadline(
         self, evening: tuple[World, list[SchedulerStatus]]
@@ -372,6 +426,7 @@ class TestWhatTheScheduleAnnounces:
             TEST_CONFIG.survey.short_exposure_s, TEST_CONFIG.survey.long_exposure_s
         )
         starts = {
+            words.SEARCH_LABEL: "search",
             words.FAST_LABEL: "fast",
             survey_step: "survey_short",
             words.survey_frame_label(TEST_CONFIG.survey.long_exposure_s): "survey_long",
@@ -396,6 +451,8 @@ class TestWhatTheScheduleAnnounces:
                 continue
             if following.first.activity.cadence_s != activity.cadence_s:  # type: ignore[union-attr]
                 continue  # a cloud result changed the cadence in the meantime
+            if self.measure_ended(current, runs[index + 1]):
+                continue  # clouds hid the star, which ended measure early
             assert abs(following.began_ns - activity.next_utc_ns) / NS_PER_S <= TOLERANCE_S, (
                 current.phase,
                 activity.next_label,
@@ -456,20 +513,21 @@ class TestWhatTheScheduleAnnounces:
 
 
 class TestTheStatesThatTheCommandsChange:
-    def test_the_daylight_gate_holds_the_scheduler_in_safe_at_the_start(
+    def test_the_brightness_gate_holds_the_scheduler_in_safe_at_the_start(
         self, evening: tuple[World, list[SchedulerStatus]]
     ) -> None:
+        """The first step takes a brightness frame, and the daylight sky saturates it."""
         _, statuses = evening
         first = statuses[0].activity
         assert first is not None
         assert (first.state, first.phase) == ("safe", "watch")
-        assert first.label == "Daylight gate: the Sun is above -4 degrees"
+        assert first.label == words.BRIGHT_SKY_LABEL
         assert first.reason == "the scheduler started, and it checks the sky first"
         assert first.ends_utc_ns is None
         assert first.next_label == words.WATCH_NEXT_LABEL
         assert first.next_utc_ns is not None
         assert first.since_utc_ns == START
-        assert first.detail == "The camera takes a 1 ms frame every 1 min"
+        assert first.detail == words.bright_frame_detail(1.0, RESUME_FRACTION, clipped=True)
 
     def test_the_next_brightness_frame_comes_when_the_watch_said(
         self, evening: tuple[World, list[SchedulerStatus]]
@@ -528,7 +586,8 @@ class TestTheStatesThatTheCommandsChange:
         assert activity.next_label == words.AFTER_TASK_AUTO
         assert activity.reason == "a commissioning task is queued"
         assert activity.ends_utc_ns is None
-        assert (runs[index + 1].state, runs[index + 1].phase) == ("auto", "fast")
+        # The task ended measure, so the new cycle searches first.
+        assert (runs[index + 1].state, runs[index + 1].phase) == ("auto", "search")
         assert runs[index + 1].first.activity.reason == "the commissioning tasks are done"  # type: ignore[union-attr]
 
     def test_a_pause_shows_why_and_what_resumes(
@@ -555,8 +614,20 @@ class TestTheStatesThatTheCommandsChange:
             and s.activity.label == words.BRIGHT_SKY_LABEL
         ]
         assert bright
-        assert bright[0].detail is not None
-        assert "of saturation; the cycle resumes below 35%" in bright[0].detail
+        details = {activity.detail for activity in bright}
+        # The frame saturates by day. In the evening it falls below the clip, and the gate holds
+        # until it falls below its resume level.
+        assert words.bright_frame_detail(1.0, RESUME_FRACTION, clipped=True) in details
+        dimming = details - {words.bright_frame_detail(1.0, RESUME_FRACTION, clipped=True)}
+        assert dimming
+        assert all(
+            detail is not None
+            and detail.startswith("The brightness frame reads ")
+            and detail.endswith("; the cycle resumes below 60% of its saturation")
+            for detail in dimming
+        )
+        # The floodlight in the night saturated the brightness frame too, and it went out.
+        assert any(world.t(11000) < a.since_utc_ns < world.t(11400) for a in bright)
         assert world.scheduler.status().state == "auto"  # the gate opened again
 
 
@@ -840,7 +911,10 @@ def test_a_status_read_from_another_thread_always_has_an_activity() -> None:
 
 def test_the_alignment_timeout_moves_when_someone_uses_the_helper() -> None:
     config = SchedulerConfig(
-        fast=TEST_CONFIG.fast, loop=TEST_CONFIG.loop, align=AlignConfig(idle_timeout_s=600.0)
+        fast=TEST_CONFIG.fast,
+        search=TEST_CONFIG.search,
+        loop=TEST_CONFIG.loop,
+        align=AlignConfig(idle_timeout_s=600.0),
     )
     world = World(start_utc_ns=NIGHT, config=config)
     world.run_until(100)

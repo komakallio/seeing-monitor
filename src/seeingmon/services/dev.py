@@ -373,9 +373,9 @@ def _endpoint_text(directory: Path, role: str, token: str) -> str:
 def default_start_utc_ns() -> int:
     """The default start: five minutes after the Sun passes 18 degrees below the horizon.
 
-    The scheduler waits for the Sun to sink below its gate, and the windows of an earlier hour carry
-    the `twilight` flag. Starting in the dark gives windows at once, without twilight flags. Pass
-    `--start` to see the evening instead.
+    The windows of an earlier hour carry the `twilight` flag, and in a bright evening sky the
+    scheduler waits in `safe` or searches for Polaris. Starting in the dark gives windows at once,
+    without twilight flags. Pass `--start` to see the evening instead.
     """
     from seeingmon.clock import NS_PER_S, iso_to_utc_ns
     from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
@@ -839,9 +839,6 @@ def _check_real_sky(options: DevOptions) -> None:
 
 def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str) -> list[str]:
     """The lines that the banner adds for a real sky: what is real, and what is not."""
-    from seeingmon.scheduler.config import DaylightConfig
-
-    limit = DaylightConfig().sun_elevation_limit_deg
     notes = []
     if options.sensor_given:
         notes.append("--sensor does not apply to the real camera, which has the full sensor.")
@@ -856,9 +853,8 @@ def _real_sky_notes(options: DevOptions, solvers: Sequence[str], log_folder: str
         "the newest solution in the store."
     )
     notes.append(
-        "The scheduler follows the real Sun at your site (by the clock of this machine). It stays "
-        f"in safe while the Sun is above {limit:g} degrees, so by day it takes no survey frame and "
-        "records no seeing window. The Align page and a dark session run in safe too."
+        "The scheduler follows the real Sun at your site (by the clock of this machine) and the "
+        f"measured sky. {_search_note()} The Align page and a dark session run at any time."
     )
     notes.append(
         "Of your local configuration, only [site], [survey], [alignment], [web], and [auth] reach "
@@ -887,12 +883,26 @@ def _real_notes(options: DevOptions) -> list[str]:
         "room or a dark reports no stars: the seeing windows and the sky quality stay empty."
     )
     notes.append(
-        "The scheduler stays in safe while the Sun is above -3 degrees at the synthetic site "
-        "(by the clock of this machine). A dark session and the alignment run in safe too."
+        "The scheduler follows the Sun at the synthetic site (by the clock of this machine) and "
+        f"the measured sky. {_search_note()} A dark session and the alignment run at any time."
     )
     notes.extend(_priority_notes(options))
     notes.append("Cover the camera by hand for a dark session.")
     return notes
+
+
+def _search_note() -> str:
+    """What the Sun does to the search for Polaris, with the default settings of the search."""
+    from seeingmon.scheduler.activity import duration_text
+    from seeingmon.scheduler.config import SearchConfig
+
+    search = SearchConfig()
+    return (
+        "It searches for Polaris whenever the sky is not too bright for the camera, and it "
+        f"records seeing windows once {search.confirm_bursts} search bursts in a row find the "
+        f"star. While the Sun is above {search.max_sun_elevation_deg:g} degrees, one probe burst "
+        f"every {duration_text(search.probe_interval_s)} looks instead."
+    )
 
 
 def _priority_notes(options: DevOptions) -> list[str]:

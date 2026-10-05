@@ -17,6 +17,12 @@ A kind that describes the sky or the camera rather than the scheduler has its ow
 `core` writes two kinds of the sky from the survey results that the scheduler polls, `sky.dark` and
 `sky.clear_verdict` (`seeingmon.services.core.darkness`), and the list names them too, so that it
 holds every kind that the survey results lead to.
+The `polaris.*` kinds follow the visibility of Polaris: `polaris.visible` when the fast stream
+switches from search to measure, and `polaris.hidden` whenever measure ends, for any reason (the
+star went missing, the state left `auto`, a camera fault, the pointing solution went away, or the
+shutdown). Both carry the Sun's elevation in `sun_elevation_deg`, which is `null` without a site
+or with a clock that is not synchronized. `polaris.search_limit_low` warns that a probe burst
+found Polaris while the Sun was above `[scheduler.search] max_sun_elevation_deg`.
 """
 
 from __future__ import annotations
@@ -40,6 +46,9 @@ EVENT_KINDS: Mapping[str, str] = {
     "scheduler.recovered": "Good frames in a row cleared a fault and the `degraded` status.",
     "scheduler.solve_requested": "No pointing solution exists, so a survey step runs to solve.",
     "pointing.moved": "A solve found the camera off its reference. It comes once for each move.",
+    "polaris.visible": "Search bursts found Polaris, so the fast stream measures seeing.",
+    "polaris.hidden": "Measure ended. The detail holds `reason` and the Sun's elevation.",
+    "polaris.search_limit_low": "A probe found Polaris above the search limit of the Sun.",
     "scheduler.roi_recentered": "The star neared the ROI edge, so the window ended early.",
     "scheduler.roi_at_limit": "The star is near the ROI edge, and the ROI cannot move closer.",
     "scheduler.cloud": "The cloud response started or ended. The detail holds `active`.",

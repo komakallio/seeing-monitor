@@ -7,6 +7,7 @@ import itertools
 import pytest
 
 from seeingmon.clock import NS_PER_S, VirtualClock
+from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.commands import (
     Pause,
     QueueDark,
@@ -193,7 +194,7 @@ class TestTheOtherStates:
         core.submit(Resume())
         view = activity(core)
         assert (view.state, view.phase) == ("safe", "watch")
-        assert view.label == "Daylight gate: the Sun is above -4 degrees"
+        assert view.label == words.BRIGHT_SKY_LABEL
         assert view.reason == "the scheduler checks the sky first"
         assert view.next_label == "Brightness frame: the cycle starts when the sky is dark enough"
         assert view.next_utc_ns is not None

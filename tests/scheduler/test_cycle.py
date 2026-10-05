@@ -3,6 +3,9 @@
 These scenarios start at night, so the scheduler enters `auto` at once. The fast stream runs one
 frame in 2 seconds here (a real one runs at about 90 frames a second), and the analysis window
 is 60 seconds, so one 120 second fast period holds 60 frames in two windows of 30 frames.
+
+The first period searches: a burst of three frames at 0 s and one at 15 s find Polaris, and the
+fast stream measures from 21 s to the end of that period at 120 s. Every later period measures.
 """
 
 from __future__ import annotations
@@ -20,8 +23,8 @@ CYCLE_S = 180.0
 
 
 def fast_starts(world: World) -> list[float]:
-    """When each fast period began: the times of the configure calls of the fast stream."""
-    return [world.seconds(call.t_utc_ns) for call in world.configures(mode="bin1", video=True)]
+    """When each fast period on its slot began: the fast streams after the first period."""
+    return [t for t in world.fast_starts() if t >= CYCLE_S]
 
 
 def survey_calls(world: World) -> list[tuple[float, int]]:
@@ -54,9 +57,27 @@ class TestCadence:
         deadline, so no error accumulates from one cycle to the next.
         """
         starts = fast_starts(steady_world)
-        assert len(starts) >= 59
+        assert len(starts) >= 58
         gaps = [later - earlier for earlier, later in itertools.pairwise(starts)]
         assert all(gap == pytest.approx(CYCLE_S, abs=0.01) for gap in gaps)
+        # The search period at the start held the same slot.
+        periods = steady_world.period_starts()
+        assert periods[0] == pytest.approx(0.0, abs=0.1)
+        assert periods[1:] == starts
+        assert starts[0] == pytest.approx(CYCLE_S, abs=0.1)
+
+    def test_the_first_period_searches_and_hands_its_rest_to_the_fast_stream(
+        self, steady_world: World
+    ) -> None:
+        bursts = steady_world.burst_starts()
+        assert bursts == [pytest.approx(0.0, abs=0.1), pytest.approx(15.0, abs=0.1)]
+        (visible,) = steady_world.events("polaris.visible")
+        assert steady_world.seconds(visible.t_utc_ns) == pytest.approx(21.0, abs=0.1)
+        assert steady_world.fast_starts()[0] == pytest.approx(21.0, abs=0.1)
+        assert steady_world.events("polaris.hidden") == []
+        status = steady_world.scheduler.status()
+        assert status.search is not None
+        assert status.search.mode == "measure"
 
     def test_each_cycle_runs_a_short_and_then_a_long_survey_exposure(
         self, steady_world: World
@@ -69,7 +90,7 @@ class TestCadence:
     def test_the_survey_step_follows_the_fast_period_and_fits_before_the_next_slot(
         self, steady_world: World
     ) -> None:
-        starts = fast_starts(steady_world)
+        starts = steady_world.period_starts()
         calls = survey_calls(steady_world)
         for index, start in enumerate(starts[:50]):
             short_at, _ = calls[2 * index]
@@ -87,8 +108,11 @@ class TestCadence:
         assert all(gap == pytest.approx(CYCLE_S, abs=2.0) for gap in gaps)
 
     def test_each_fast_period_makes_two_full_windows(self, steady_world: World) -> None:
-        windows = steady_world.windows()
-        assert len(windows) >= 2 * 59
+        # The fast stream of the first period runs 99 s: a full window and a shorter one.
+        first = [w for w in steady_world.windows() if steady_world.seconds(w.t_utc_ns) < CYCLE_S]
+        assert [w.n_frames for w in first] == [30, 20]
+        windows = [w for w in steady_world.windows() if steady_world.seconds(w.t_utc_ns) > CYCLE_S]
+        assert len(windows) >= 2 * 58
         for window in windows[:100]:
             assert window.n_frames == 30
             assert window.duration_s == pytest.approx(60.0)
@@ -107,6 +131,15 @@ class TestCadence:
         first_windows, second_windows = stream_ids[0::2][:50], stream_ids[1::2][:50]
         assert first_windows == second_windows  # the two windows of one period share a stream
         assert len(set(stream_ids)) >= 59
+
+    def test_the_bursts_wrote_no_window_and_reached_no_analysis_window(
+        self, steady_world: World
+    ) -> None:
+        counters = steady_world.scheduler.status().counters
+        assert (counters.search_bursts, counters.search_frames) == (2, 6)
+        assert steady_world.fast.frames_measured == 6
+        in_windows = sum(w.n_frames for w in steady_world.windows())
+        assert in_windows == steady_world.fast.frames_pushed
 
     def test_the_roi_is_centered_on_polaris_by_the_profile_helpers(
         self, steady_world: World

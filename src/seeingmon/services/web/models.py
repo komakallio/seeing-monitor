@@ -721,7 +721,8 @@ class ActivityResponse(_Response):
     state: str = Field(description="The state: `safe`, `auto`, `align`, `commission`, or `paused`.")
     phase: str = Field(
         description=(
-            "What the scheduler does within the state. `auto` has `fast` (the fast stream), "
+            "What the scheduler does within the state. `auto` has `search` (search bursts look "
+            "for Polaris), `fast` (the fast stream measures seeing), "
             "`survey_short` and `survey_long` (the two exposures of the survey step), "
             "`solve_wait` (it waits for a pointing solution), and `idle` (the camera rests "
             "until the next slot of the cycle). The other states have `watch` (the brightness "

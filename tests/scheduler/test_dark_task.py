@@ -286,7 +286,7 @@ class TestStartingAtOnce:
 
     def test_the_fast_window_ends_as_a_partial_one_and_no_frame_is_lost(self) -> None:
         world, _ = night_world()
-        submit_at(world, 20, QueueDark(pause_after=False))
+        submit_at(world, 40, QueueDark(pause_after=False))  # the first period measures from 21
         world.run_until(400)
         world.close()  # the window of the new cycle is still open, so close it
         queued = queued_at(world, "QueueDark")

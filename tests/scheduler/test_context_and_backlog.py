@@ -71,7 +71,7 @@ class TestTheSurveyBacklog:
     def test_the_fast_cycle_keeps_its_cadence_while_the_survey_is_skipped(self) -> None:
         world = World(start_utc_ns=NIGHT, survey_polls=10**9)
         world.run_until(2000)
-        starts = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
+        starts = world.period_starts()
         gaps = [later - earlier for earlier, later in itertools.pairwise(starts)]
         assert len(starts) >= 10
         assert all(gap == pytest.approx(180.0, abs=0.05) for gap in gaps[2:])
@@ -131,11 +131,11 @@ class TestTime:
         """An NTP step moves UTC, and the cycle does not notice."""
         world = World(start_utc_ns=NIGHT)
         world.run_until(200)
-        starts_before = len(world.configures(mode="bin1", video=True))
+        starts_before = len(world.period_starts())
         assert isinstance(world.clock, VirtualClock)
         world.clock.step_utc_ns(-3 * 3600 * NS_PER_S)
         world.run_for(400)
-        starts = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
+        starts = world.period_starts()
         # Two more periods began at the usual spacing, whatever UTC did.
         later = starts[starts_before:]
         assert len(later) >= 2

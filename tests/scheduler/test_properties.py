@@ -5,12 +5,13 @@ send any of the commands (valid or not), and inject clouds, a missing star, a bu
 floodlight, and camera faults. After every rule, the invariants hold:
 
 - The scheduler is in one of the five legal states.
-- The camera serves one mode at a time: a running stream matches the state (a fast stream in `auto`,
-  an alignment stream or a rapid focus stream in `align`), and a paused or safe scheduler has no
-  stream running.
+- The camera serves one mode at a time: a running stream matches the state (a fast stream or a
+  search burst in `auto`, an alignment stream or a rapid focus stream in `align`), and a paused or
+  safe scheduler has no stream running.
 - Every frame that the fast analyzer, the survey analyzer, the alignment consumer, or the focus
   consumer receives comes from the stream that the scheduler configured for that purpose, so no
-  frame crosses a reconfiguration.
+  frame crosses a reconfiguration. The frames of a search burst reach only `measure`.
+- `polaris.visible` and `polaris.hidden` alternate, and measure runs only in `auto`.
 - Every change of state has an event, and no event key repeats.
 
 When the run ends, no window is lost: every frame that the fast analyzer received is in a written
@@ -143,11 +144,15 @@ class SchedulerMachine(RuleBasedStateMachine):
             assert frame.stream_id == stream.stream_id, "a frame from another stream"
             assert stream.purpose in purposes, (stream.purpose, purposes)
 
-        push, submit = world.fast.push, world.survey.submit
+        push, submit, measure = world.fast.push, world.survey.submit, world.fast.measure
 
         def audited_push(frame: Frame) -> Any:
             check(frame, {"fast", "commission"})
             return push(frame)
+
+        def audited_measure(frame: Frame, at: tuple[float, float] | None = None) -> Any:
+            check(frame, {"search"})
+            return measure(frame, at)
 
         def audited_submit(frame: Frame) -> None:
             check(frame, {"survey"})
@@ -164,6 +169,7 @@ class SchedulerMachine(RuleBasedStateMachine):
             return focus_push(frame)
 
         world.fast.push = audited_push  # type: ignore[method-assign]
+        world.fast.measure = audited_measure  # type: ignore[method-assign]
         world.survey.submit = audited_submit  # type: ignore[method-assign]
         world.focus.push = audited_focus  # type: ignore[method-assign]
         scheduler._alignment_sink = audited_sink
@@ -226,12 +232,23 @@ class SchedulerMachine(RuleBasedStateMachine):
             assert stream is not None
             assert (stream.purpose, state.value) in {
                 ("fast", "auto"),
+                ("search", "auto"),
                 ("align", "align"),
                 ("rapid_focus", "align"),
             }, (
                 stream.purpose,
                 state.value,
             )
+
+    @invariant()
+    def visible_and_hidden_alternate_and_measure_belongs_to_auto(self) -> None:
+        events = [e for e in self.world.events() if e.kind in ("polaris.visible", "polaris.hidden")]
+        kinds = [e.kind for e in events]
+        assert kinds == ["polaris.visible", "polaris.hidden"] * (len(kinds) // 2) + (
+            ["polaris.visible"] if len(kinds) % 2 else []
+        )
+        if self.scheduler._search.measuring:  # the loop's own view, which the status hides
+            assert self.scheduler.state is State.AUTO
 
     @invariant()
     def every_change_of_state_has_an_event(self) -> None:

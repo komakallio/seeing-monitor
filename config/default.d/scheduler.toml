@@ -16,7 +16,7 @@ high_speed = false          # The camera's high-speed mode: faster frames, fewer
 roi_arcmin = 4.1            # The profile turns this angle into pixels.
 roi_edge_margin_px = 16.0   # A star nearer than this to the ROI edge ends the window.
 edge_cooldown_s = 5.0       # The shortest stream time between two edge recenters.
-missing_star_frames = 450   # Frames in a row without the star that end the period early. No solve.
+missing_star_frames = 450   # Frames in a row without the star: the period ends, and search returns.
 
 # The survey step. The readout mode is the profile's survey mode.
 [scheduler.survey]
@@ -36,13 +36,35 @@ gain = 0
 interval_s = 60.0
 roi_arcmin = 20.0           # A central ROI. Use 0 for the full frame.
 
-# The daylight gate: the Sun's elevation gates the attempt, and the measured sky overrides it.
+# The daylight gate: the measured sky alone. The Sun's elevation gates nothing. From the
+# brightness frame (the watch frame, or the short survey frame), the gate derives through the
+# profile the background that the fast stream would have at the profile's shortest exposure, and
+# it compares that share of saturation with the limits below. A 1 ms bin2 frame clips first: at
+# its saturation the fast stream would see 3.7% in 32 us, so a clipped frame counts as too bright,
+# and `auto` resumes only when the frame falls below brightness_resume_fraction of its saturation.
 [scheduler.daylight]
-sun_elevation_limit_deg = -3.0   # Above this, stay in `safe`.
-sun_resume_margin_deg = 1.0      # Hysteresis before `auto` resumes.
 twilight_elevation_deg = -18.0   # Above this, results carry `twilight`.
-saturation_limit = 0.5           # A background above this share of saturation forces `safe`.
+saturation_limit = 0.5           # A fast background above this share of saturation forces `safe`.
 resume_saturation = 0.35         # Hysteresis before `auto` resumes.
+brightness_clip_fraction = 0.9   # Provisional. A brightness frame this bright has clipped.
+brightness_resume_fraction = 0.6 # Provisional. Hysteresis of the clip before `auto` resumes.
+
+# The search mode of the fast stream, which looks for Polaris before it measures. A burst reads
+# burst_frames fast frames on the ROI where the pointing solution predicts Polaris, and it detects
+# Polaris when the median SNR of the star in its frames reaches detect_snr within radius_px of the
+# prediction. confirm_bursts detections in a row switch the stream to measure. All values are
+# provisional: phase 3 sets them from real skies.
+[scheduler.search]
+burst_frames = 50              # Provisional. About 0.6 s of bin1 frames, 4% of the time.
+interval_s = 15.0              # Provisional. From the start of one burst to the next.
+detect_snr = 10.0              # Provisional. The median SNR of a detection, per frame.
+radius_px = 20.0               # Provisional. The largest offset of a detection, in fast-mode px.
+confirm_bursts = 2             # Provisional. Detecting bursts in a row that start measure.
+# Provisional. The search runs while the Sun is below this. It is the detection estimate's +8.9
+# degrees (docs/research-notes.md, "Polaris in a bright sky") plus a margin of 3. Above it, one
+# probe burst every probe_interval_s looks. TOML has no null: 90 or more means no limit.
+max_sun_elevation_deg = 12.0
+probe_interval_s = 600.0       # Provisional. The time between probe bursts above the limit.
 
 # The response to clouds. The survey analysis reports the cloud fraction.
 [scheduler.cloud]

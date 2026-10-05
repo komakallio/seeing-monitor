@@ -23,6 +23,7 @@ from seeingmon.config import Config, SectionModel
 from seeingmon.scheduler.levels import STEP_NAMES
 
 Seconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegative = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Finite = Annotated[float, Field(allow_inf_nan=False)]
 Fraction = Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
@@ -70,8 +71,9 @@ class FastConfig(SectionModel):
     missing_star_frames: PositiveInt = 450
     """The number of frames in a row without a star that ends the fast period early.
 
-    The survey step of the cycle follows, and no solve is requested, because a hidden star says
-    nothing about the mount. The same count ends the rapid focus mode."""
+    The survey step of the cycle follows, the fast stream returns to search, and no solve is
+    requested, because a hidden star says nothing about the mount. The same count ends the rapid
+    focus mode."""
 
     @model_validator(mode="after")
     def _window_holds_an_analysis_window(self) -> Self:
@@ -120,30 +122,92 @@ class WatchConfig(SectionModel):
 
 
 class DaylightConfig(SectionModel):
-    """The daylight gate. The Sun's elevation gates the attempt, and the measured sky overrides."""
+    """The daylight gate: the measured sky, and the twilight flag. The Sun gates nothing.
 
-    sun_elevation_limit_deg: Finite = -3.0
-    """Above this elevation the scheduler stays in `safe`."""
-
-    sun_resume_margin_deg: NonNegative = 1.0
-    """After `safe`, the Sun must sink this far below the limit before `auto` resumes."""
+    The gate reads the brightness frame (the watch frame in `safe`, the short survey frame in
+    `auto`), and it derives through the profile the background that the fast stream would have
+    at the profile's shortest exposure. That background, as a share of saturation, decides.
+    """
 
     twilight_elevation_deg: Finite = -18.0
     """While the Sun is above this elevation, windows and survey results carry `twilight`."""
 
     saturation_limit: Fraction = 0.5
-    """A background above this share of saturation at the shortest exposure forces `safe`."""
+    """A fast background above this share of saturation at the shortest exposure forces `safe`."""
 
     resume_saturation: Fraction = 0.35
-    """After `safe`, the background must fall below this share before `auto` resumes."""
+    """After `safe`, the fast background must fall below this share before `auto` resumes."""
+
+    brightness_clip_fraction: Fraction = 0.9
+    """A brightness frame whose median reaches this share of its own saturation level has clipped.
+
+    It tells only that the sky is at least that bright, so the gate counts it as too bright."""
+
+    brightness_resume_fraction: Fraction = 0.6
+    """After `safe`, the brightness frame must fall below this share of its own saturation level
+    before `auto` resumes.
+
+    It is the hysteresis of the clip, as `resume_saturation` is of `saturation_limit`. A 1 ms bin2
+    frame clips while the fast stream would still see less than 4% of saturation, so the clip and
+    this level decide in practice."""
 
     @model_validator(mode="after")
     def _thresholds_are_ordered(self) -> Self:
         if self.resume_saturation >= self.saturation_limit:
             raise ValueError("resume_saturation must be below saturation_limit")
-        if self.twilight_elevation_deg >= self.sun_elevation_limit_deg:
-            raise ValueError("twilight_elevation_deg must be below sun_elevation_limit_deg")
+        if self.brightness_resume_fraction >= self.brightness_clip_fraction:
+            raise ValueError("brightness_resume_fraction must be below brightness_clip_fraction")
         return self
+
+
+NO_SUN_LIMIT_DEG = 90.0
+"""A `max_sun_elevation_deg` at or above this value means that the Sun never limits the search."""
+
+
+class SearchConfig(SectionModel):
+    """The search mode of the fast stream: short bursts that look for Polaris.
+
+    In `auto` with a pointing solution, the fast stream searches or measures. A search burst reads
+    `burst_frames` fast frames on the ROI where the solution predicts Polaris, one frame per step
+    of the loop, and the camera idles between bursts. A burst detects Polaris when the median SNR
+    of the star in its frames reaches `detect_snr` and the star lies within `radius_px` of the
+    prediction. `confirm_bursts` detecting bursts in a row switch to measure: the fast stream as it
+    runs at night, with seeing windows.
+    """
+
+    burst_frames: PositiveInt = 50
+    """The number of fast frames in one burst."""
+
+    interval_s: Seconds = 15.0
+    """The time from the start of one burst to the start of the next, in seconds."""
+
+    detect_snr: Positive = 10.0
+    """The median SNR of the star in the frames of a burst that counts as a detection.
+
+    The SNR of a frame is the aperture flux over the root of its photon noise and of the area
+    times the variance of one pixel, measured on the ROI border (see `docs/research-notes.md`,
+    "Polaris in a bright sky")."""
+
+    radius_px: Positive = 20.0
+    """How far from the prediction the star of a detection may lie, in fast-mode pixels."""
+
+    confirm_bursts: PositiveInt = 2
+    """The number of detecting bursts in a row that switch the stream to measure."""
+
+    max_sun_elevation_deg: Finite = 12.0
+    """The search runs while the Sun is below this elevation, in degrees.
+
+    Above it, one probe burst every `probe_interval_s` checks that the limit is not too low. A
+    value of 90 or more means no limit. Without a site, or with a clock that is not synchronized,
+    the Sun is unknown, and the search always runs."""
+
+    probe_interval_s: Seconds = 600.0
+    """The time between two probe bursts while the Sun is above the limit, in seconds."""
+
+    @property
+    def limited(self) -> bool:
+        """Whether the Sun's elevation limits the search at all."""
+        return self.max_sun_elevation_deg < NO_SUN_LIMIT_DEG
 
 
 class CloudConfig(SectionModel):
@@ -315,6 +379,7 @@ class SchedulerConfig(SectionModel):
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
     watch: WatchConfig = Field(default_factory=WatchConfig)
     daylight: DaylightConfig = Field(default_factory=DaylightConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     align: AlignConfig = Field(default_factory=AlignConfig)
     faults: FaultConfig = Field(default_factory=FaultConfig)

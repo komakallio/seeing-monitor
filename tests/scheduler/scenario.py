@@ -4,9 +4,16 @@
 describes the world as functions of time, and the frame factory of the fake camera renders it:
 
 - **Sky light.** The background follows the Sun's elevation at a synthetic site (latitude 55
-  degrees north, longitude 0, which is nobody's real site), through a smooth brightness curve that
-  crosses the daylight gate at about -3 degrees. `light` adds a floodlight on top.
+  degrees north, longitude 0, which is nobody's real site), through a brightness curve. The
+  default curve (`saturating_sky`) saturates the brightness frame by day, so the scheduler waits
+  in `safe` and enters `auto` at about -2.8 degrees. `pole_sky` is the simulator's sky near the
+  pole, which never saturates it, for a day in `auto`. `light` adds a floodlight on top.
+- **Polaris.** The fake fast analysis takes the SNR of the star from the truth of the world: the
+  formula of the detection estimate in `docs/research-notes.md` ("Polaris in a bright sky") for a
+  2 ms bin1 frame, with the sky of the curve and the transparency of the clouds. Polaris is
+  detectable (an SNR of 10) while the sky at 1 ms in bin2 stays below about 0.29 of saturation.
 - **Clouds.** `cloud` sets the cloud fraction that the survey analysis reports and dims the star.
+  A cloud of 0.8 leaves Polaris at an SNR of about 40 in a dark sky, so it stays detectable.
 - **The star.** Polaris sits near the middle of the bin1 sensor and drifts 0.087 pixels a second.
   `hide_star` removes it, and `jolt` shifts it, as a bumped mount would.
 - **Faults.** `camera_fault` makes every read time out. A recovery step of a given level, or an
@@ -25,6 +32,7 @@ night to a few seconds of real time.
 from __future__ import annotations
 
 import heapq
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
@@ -39,6 +47,8 @@ from seeingmon.drivers.base import (
     CameraTimeoutError,
     RecoveryLevel,
 )
+from seeingmon.drivers.sim.sky import DAYLIGHT_SKY_MAG_ARCSEC2, sky_brightness_mag_arcsec2
+from seeingmon.drivers.sim.stars import POLARIS_MAG
 from seeingmon.frames import (
     ActiveStream,
     Frame,
@@ -58,7 +68,7 @@ from seeingmon.records import (
     SkyQualityRecord,
 )
 from seeingmon.scheduler import CommissionResult, Scheduler, SchedulerConfig, SiteConfig
-from seeingmon.scheduler.config import FastConfig, LoopConfig
+from seeingmon.scheduler.config import FastConfig, LoopConfig, SearchConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
 from seeingmon.scheduler.levels import EscalationLevel
 from seeingmon.testing import (
@@ -89,6 +99,17 @@ REAL_FAST_EXPOSURE_MS = 2.0
 MAX_REAL_EXPOSURE_US = 100_000  # a longer fast exposure is the slow stream of the test
 SMALL_BIN2 = (640, 480)  # the full bin2 frame of the fake camera, much smaller than the real one
 
+# The SNR of Polaris in a fast frame: the inputs of the detection estimate in
+# `docs/research-notes.md` ("Polaris in a bright sky"), for bin1 at gain 0. The fast path's
+# aperture holds 97% of the star on 201 square pixels.
+APERTURE_FRACTION = 0.97
+APERTURE_PX2 = 201.0
+POLARIS_E_PER_MS = PROFILE.star_electron_rate_e_per_s(POLARIS_MAG) * 1e-3
+BIN1_PIXEL_VAR_E2 = PROFILE.read_noise_e("bin1", 0) ** 2 + PROFILE.e_per_adu("bin1", 0) ** 2 / 12
+BIN2_FULL_WELL_E = PROFILE.saturation("bin2", 0).full_well_e
+BIN1_PER_BIN2_AREA = (PROFILE.mode("bin1").pixel_size_um / PROFILE.mode("bin2").pixel_size_um) ** 2
+MIN_STAR_SNR = 6.0  # the fast path's `min_star_snr`: a weaker star counts as missing
+
 TEST_CONFIG = SchedulerConfig(
     fast=FastConfig(
         exposure_us=2_000_000,
@@ -96,16 +117,53 @@ TEST_CONFIG = SchedulerConfig(
         roi_edge_margin_px=4.0,
         missing_star_frames=10,
     ),
+    # A burst of 3 frames of 2 s takes 6 s, which fits the interval of 15 s.
+    search=SearchConfig(burst_frames=3),
     loop=LoopConfig(max_sleep_s=5.0),
 )
+
+SkyCurve = Callable[[float], float]
+"""The sky at 1 ms and gain 0 in bin2, as a share of saturation, against the Sun's elevation."""
+
+
+def saturating_sky(elevation: float) -> float:
+    """The default sky: 0.5 at -3 degrees, and 3 times brighter for each degree that the Sun rises.
+
+    The brightness frame clips (0.9 of saturation) at about -2.5 degrees, so by day the scheduler
+    waits in `safe`, and it falls below the resume level of the clip (0.6) at about -2.8 degrees,
+    where `auto` starts. Polaris becomes detectable below about -3.5 degrees.
+    """
+    return 0.5 * 10 ** (0.493 * (elevation + 3.0))
+
+
+def pole_sky(daylight: float = 0.21) -> SkyCurve:
+    """The simulator's sky near the pole, at `daylight` of saturation with the Sun at +10 degrees.
+
+    The curve follows `seeingmon.drivers.sim.sky` (6 mag/arcsec^2 at 0 degrees, and the daylight
+    sky from +10 degrees up), scaled so that the daylight sky reads `daylight` at 1 ms in bin2. The
+    default, 0.21, is the simulator's daylight sky. Polaris is detectable in a sky below about
+    0.29, so the default shows it all day.
+    """
+
+    def curve(elevation: float) -> float:
+        mag = float(sky_brightness_mag_arcsec2(20.5, elevation))
+        return daylight * 10 ** (-0.4 * (mag - DAYLIGHT_SKY_MAG_ARCSEC2))
+
+    return curve
 
 
 @dataclass(frozen=True, slots=True)
 class ConfigureCall:
-    """One call of `configure` on the scenario camera."""
+    """One call of `configure` on the scenario camera.
+
+    `purpose` is what the scheduler configured the stream for (`fast`, `search`, `survey`,
+    `watch`, `align`, `rapid_focus`, or `commission`), noted when the stream starts. It is `None`
+    for a stream that never started.
+    """
 
     t_utc_ns: int
     config: StreamConfig
+    purpose: str | None = None
 
 
 class ScenarioCamera(FakeCameraDriver):
@@ -162,6 +220,13 @@ class ScenarioCamera(FakeCameraDriver):
     def configure(self, config: StreamConfig) -> ActiveStream:
         self.configure_log.append(ConfigureCall(self._clock.utc_ns(), config))
         return super().configure(config)
+
+    def start(self) -> None:
+        super().start()
+        stream = self.world.scheduler.stream
+        last = self.configure_log[-1]
+        if stream is not None and last.purpose is None:
+            self.configure_log[-1] = replace(last, purpose=stream.purpose)
 
     def read_frame(self, timeout_s: float) -> Frame:
         if self.fault_active() or self.gone_active():
@@ -275,14 +340,20 @@ class World:
         survey_polls: int = 0,
         clock: Clock | None = None,
         context_provider: Callable[[int], FastContext] | None = None,
+        sky: SkyCurve = saturating_sky,
     ) -> None:
         self.start_utc_ns = start_utc_ns
         self.clock: Clock = clock or VirtualClock(start_utc_ns)
         self.writer = ListRecordWriter()
         self.camera = ScenarioCamera(self.clock, self)
         self.config = config or TEST_CONFIG
+        self.sky = sky
         self.fast = FakeFastAnalyzer(
-            station_id="test", profile_id=PROFILE.id, window_s=self.config.fast.analysis_window_s
+            station_id="test",
+            profile_id=PROFILE.id,
+            window_s=self.config.fast.analysis_window_s,
+            min_snr=MIN_STAR_SNR,
+            snr_model=self.frame_snr,
         )
         self.survey = ScenarioSurvey(self, survey_polls)
         self.pointing = FakePointingProvider()
@@ -387,12 +458,39 @@ class World:
     def sky_fraction_at_1ms(self, t_utc_ns: int) -> float:
         """The sky background at 1 ms and gain 0 in bin2, as a share of saturation.
 
-        It falls by a factor of 3 for each degree that the Sun sinks, from 0.5 at -3 degrees to the
-        brightness of a dark sky at -18 degrees.
+        The sky curve of the world gives it, with the brightness of a dark sky as its floor, and
+        a floodlight adds to it.
         """
-        elevation = self.sun_elevation(t_utc_ns)
-        base = max(NIGHT_SKY_FRACTION, 0.5 * 10 ** (0.493 * (elevation + 3.0)))
+        base = max(NIGHT_SKY_FRACTION, self.sky(self.sun_elevation(t_utc_ns)))
         return min(1.0, base + _interval_value(self._lights, t_utc_ns))
+
+    def snr(self, t_utc_ns: int, exposure_ms: float = REAL_FAST_EXPOSURE_MS) -> float:
+        """The SNR of Polaris in a bin1 frame at gain 0, from the truth of the world.
+
+        It is the formula of the detection estimate: the star's electrons in the aperture over
+        the root of their photon noise and of the aperture area times the variance of a pixel
+        (the sky, the read noise, and the rounding of the ADC). Clouds dim the star by their
+        transparency. A hidden star has an SNR of 0.
+        """
+        if not self.star_visible(t_utc_ns):
+            return 0.0
+        star = POLARIS_E_PER_MS * exposure_ms * APERTURE_FRACTION * self.transparency(t_utc_ns)
+        if star <= 0.0:
+            return 0.0
+        sky = self.sky_fraction_at_1ms(t_utc_ns) * BIN2_FULL_WELL_E * BIN1_PER_BIN2_AREA
+        variance = sky * exposure_ms + BIN1_PIXEL_VAR_E2
+        return star / math.sqrt(star + APERTURE_PX2 * variance)
+
+    def frame_snr(self, frame: Frame) -> float:
+        """The SNR model of the fake fast analysis: the SNR of the world at the frame's time."""
+        return self.snr(frame.t_utc_ns, self._real_exposure_ms(frame.exposure_us, frame.mode))
+
+    @staticmethod
+    def _real_exposure_ms(exposure_us: int, mode: str) -> float:
+        """The exposure that a frame stands for: the slow test stream stands for the real one."""
+        if exposure_us > MAX_REAL_EXPOSURE_US and mode == "bin1":
+            return REAL_FAST_EXPOSURE_MS
+        return exposure_us / 1000.0
 
     def cloud_fraction(self, t_utc_ns: int) -> float:
         return _interval_value(self._clouds, t_utc_ns)
@@ -530,11 +628,48 @@ class World:
         return ["safe", *(to for _, _, to in changes)]
 
     def configures(
-        self, *, mode: str | None = None, video: bool | None = None
+        self,
+        *,
+        mode: str | None = None,
+        video: bool | None = None,
+        purpose: str | None = None,
     ) -> list[ConfigureCall]:
         calls = self.camera.configure_log
         if mode is not None:
             calls = [call for call in calls if call.config.mode == mode]
         if video is not None:
             calls = [call for call in calls if (call.config.kind.value == "video") == video]
+        if purpose is not None:
+            calls = [call for call in calls if call.purpose == purpose]
         return calls
+
+    def fast_starts(self) -> list[float]:
+        """When each fast stream (measure) began, in seconds since the start. No burst counts."""
+        return [self.seconds(call.t_utc_ns) for call in self.configures(purpose="fast")]
+
+    def burst_starts(self) -> list[float]:
+        """When each search burst began, in seconds since the start."""
+        return [self.seconds(call.t_utc_ns) for call in self.configures(purpose="search")]
+
+    def period_starts(self) -> list[float]:
+        """When each period of the cycle began: its first burst, or its fast stream.
+
+        Within a period, bursts may follow each other, and a fast stream may follow them. Any
+        other stream before a burst or a fast stream, or a fast stream, ends a period. Two search
+        periods without a survey step between them (a skipped step) read as one.
+        """
+        starts: list[float] = []
+        previous: str | None = None
+        for call in self.camera.configure_log:
+            if call.purpose in ("fast", "search") and previous != "search":
+                starts.append(self.seconds(call.t_utc_ns))
+            previous = call.purpose
+        return starts
+
+    def visible_times(self) -> list[float]:
+        """When each `polaris.visible` came, in seconds since the start."""
+        return [self.seconds(e.t_utc_ns) for e in self.events("polaris.visible")]
+
+    def hidden_times(self) -> list[float]:
+        """When each `polaris.hidden` came, in seconds since the start."""
+        return [self.seconds(e.t_utc_ns) for e in self.events("polaris.hidden")]

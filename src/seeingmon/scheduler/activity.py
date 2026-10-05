@@ -44,6 +44,8 @@ def count_text(count: int, singular: str, plural: str | None = None) -> str:
 # --- The fast stream and the survey step ----------------------------------------------------
 
 FAST_LABEL = "Fast stream: seeing windows"
+SEARCH_LABEL = "Searching for Polaris"
+PROBE_LABEL = "Above the search limit: probing for Polaris"
 IDLE_LABEL = "Idle until the next cycle"
 RETRY_LABEL = "Pausing before the next try to find the pointing"
 SOLVE_WAIT_LABEL = "Waiting for a pointing solution"
@@ -69,6 +71,29 @@ def fast_detail(window_s: float, closed: int, total: int, *, clouds: bool) -> st
     """The progress of a fast period: `Windows of 20 s: 4 of 7 closed`."""
     text = f"Windows of {duration_text(window_s)}: {min(closed, total)} of {total} closed"
     return f"{text}; clouds shorten the period" if clouds else text
+
+
+def burst_label(frames: int) -> str:
+    """The name of one search burst: `Search burst: 50 fast frames`."""
+    return f"Search burst: {count_text(frames, 'fast frame')}"
+
+
+def search_detail(
+    frames: int, interval_s: float, detections: int, confirm: int, *, bursting: bool
+) -> str:
+    """How the search works and how far it got: `A burst of 50 frames every 15 s; ...`."""
+    text = f"A burst of {count_text(frames, 'frame')} every {duration_text(interval_s)}"
+    if bursting:
+        text += "; a burst runs now"
+    return f"{text}; {detections} of {confirm} detections in a row start the seeing windows"
+
+
+def probe_detail(limit_deg: float, probe_interval_s: float) -> str:
+    """Why the search waits in daylight: `The Sun is above 12 degrees, so a probe ...`."""
+    return (
+        f"The Sun is above {limit_deg:g} degrees, so one probe burst runs every "
+        f"{duration_text(probe_interval_s)}"
+    )
 
 
 def solve_wait_detail(give_up_s: float) -> str:
@@ -97,15 +122,6 @@ def recovering_text(good_frames: int, needed: int) -> str:
 # --- Safe -------------------------------------------------------------------------------------
 
 
-def daylight_label(resume_limit_deg: float) -> str:
-    """The label while the Sun holds the daylight gate.
-
-    The limit is the one that `auto` resumes below, which is a margin under the one that stops it,
-    so the label reads `Daylight gate: the Sun is above -4 degrees` with the default settings.
-    """
-    return f"Daylight gate: the Sun is above {resume_limit_deg:g} degrees"
-
-
 BRIGHT_SKY_LABEL = "Brightness gate: the sky is too bright"
 FIRST_FRAME_LABEL = "Brightness watch: waiting for the first frame"
 WATCH_LABEL = "Brightness watch: checking whether the sky is dark enough"
@@ -117,12 +133,24 @@ def watch_detail(exposure_s: float, interval_s: float) -> str:
     return f"The camera takes a {duration_text(exposure_s)} frame every {duration_text(interval_s)}"
 
 
+def bright_frame_detail(frame_fraction: float, resume_fraction: float, *, clipped: bool) -> str:
+    """The brightness frame holds the gate: it saturates, or it is still above its resume level."""
+    limit = f"the cycle resumes below {resume_fraction * 100:g}% of its saturation"
+    if clipped:
+        return f"The brightness frame saturates, so the sky is too bright to measure; {limit}"
+    return f"The brightness frame reads {frame_fraction * 100:.0f}% of its saturation; {limit}"
+
+
 def bright_sky_detail(background_fraction: float | None, resume_fraction: float) -> str:
-    """The measured brightness and the level that opens the gate."""
+    """The background of the fast stream at its shortest exposure, and the level that opens the
+    gate."""
     limit = f"the cycle resumes below {resume_fraction * 100:g}% of saturation"
     if background_fraction is None:
         return limit[0].upper() + limit[1:]
-    return f"The background is {background_fraction * 100:.0f}% of saturation; {limit}"
+    return (
+        f"At its shortest exposure the fast stream would see {background_fraction * 100:.0f}% "
+        f"of saturation; {limit}"
+    )
 
 
 # --- Align, commission, paused ----------------------------------------------------------------
@@ -257,7 +285,6 @@ def recovery_label(step_name: str) -> str:
 # does not name is already a phrase, such as `the sky is dark enough`.
 _STATE_REASONS = {
     "startup": "the scheduler started, and it checks the sky first",
-    "daylight": "the Sun is above the daylight gate",
     "bright_sky": "the sky is too bright for the camera",
     "no_measurement": "the sky brightness is not known yet",
     "fault": "the camera failed",

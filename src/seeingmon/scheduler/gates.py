@@ -1,10 +1,17 @@
 """The decisions about daylight, twilight, and clouds, as pure functions with hysteresis.
 
-**Daylight.** Two inputs gate the `auto` state. The Sun's elevation from the ephemeris gates the
-attempt: above `sun_elevation_limit_deg`, the scheduler does not try. The measured sky overrides
-it: a background above `saturation_limit` of the saturation level at the shortest exposure forces
-`safe`, whatever the ephemeris says. Each input has a stricter threshold for resuming than for
-stopping, so a value that hovers at the limit does not flip the state every minute.
+**Daylight.** The measured sky alone gates the `auto` state, and the Sun's elevation gates nothing:
+the celestial pole is always at least 66.5 degrees from the Sun, so the Sun never enters the
+field. The gate reads a brightness frame (the watch frame in `safe`, the short survey frame in
+`auto`), and `read_sky` derives through the profile the background that the fast stream would
+have at the profile's shortest exposure. A background above `saturation_limit` of saturation there
+forces `safe`, because nothing can be measured even at that exposure. A brightness frame that has
+clipped (its median reached `brightness_clip_fraction` of its own saturation level) shows only that
+the sky is at least that bright, so it counts as too bright. With a 1 ms bin2 brightness frame,
+the frame clips while the fast stream would still see less than 4% of saturation, so in practice
+the clip stops `auto`. Both rules have a stricter threshold for resuming than for stopping
+(`resume_saturation` for the fast background, `brightness_resume_fraction` for the brightness
+frame), so a sky that hovers at a limit does not flip the state every minute.
 
 **Twilight.** While the Sun is above `twilight_elevation_deg`, windows and survey results carry
 the `twilight` flag. At some latitudes the Sun stays above that elevation for weeks.
@@ -22,14 +29,13 @@ from dataclasses import dataclass
 import numpy as np
 
 from seeingmon.frames import Frame, PixelFormat
-from seeingmon.profile import Profile
+from seeingmon.profile import Profile, derived
 from seeingmon.scheduler.config import CloudConfig, DaylightConfig
 
 # A frame with this many pixels or fewer is measured whole. A larger one is measured on a stride.
 _MAX_SAMPLE_PIXELS = 65_536
 _RAW8_FULL_SCALE = 255.0
 
-REASON_DAYLIGHT = "daylight"
 REASON_BRIGHT_SKY = "bright_sky"
 REASON_NO_MEASUREMENT = "no_measurement"
 
@@ -52,10 +58,84 @@ def sky_background_fraction(frame: Frame, profile: Profile) -> float:
     A large frame is measured on a regular stride of at most about 65,000 pixels, because the
     gate needs a robust level and not every pixel.
     """
+    return _median(frame) / saturation_level_dn(frame, profile)
+
+
+def _median(frame: Frame) -> float:
     data = frame.data
     stride = max(1, math.isqrt(data.size // _MAX_SAMPLE_PIXELS))
-    median = float(np.median(data[::stride, ::stride]))
-    return median / saturation_level_dn(frame, profile)
+    return float(np.median(data[::stride, ::stride]))
+
+
+def _e_per_dn(frame: Frame, profile: Profile) -> float:
+    """The electrons of one count of a frame, in the container that the frame uses.
+
+    A 16-bit container holds the ADC value of the readout mode in its high bits, and an 8-bit one
+    its top 8 bits, as in the fast path.
+    """
+    readout = profile.mode(frame.mode)
+    container_bits = 8 if frame.pixel_format is PixelFormat.RAW8 else 16
+    return derived.e_per_adu(readout, frame.gain) * 2.0 ** (readout.adc_bits - container_bits)
+
+
+@dataclass(frozen=True, slots=True)
+class SkyReading:
+    """What one brightness frame says about the sky, for the daylight gate.
+
+    `frame_fraction` is the median of the brightness frame as a share of its own saturation level.
+    `fast_fraction` is the background that the fast stream would have at its shortest exposure:
+    the sky electrons of a fast-mode pixel over the full well at the fast gain. `clipped` says
+    that the brightness frame reached the clip level, so the sky is at least that bright, and
+    `fast_fraction` is only a lower bound.
+    """
+
+    frame_fraction: float
+    fast_fraction: float
+    clipped: bool
+
+    @property
+    def gate_fraction(self) -> float:
+        """The share of saturation that the gate compares: 1 for a clipped brightness frame."""
+        return 1.0 if self.clipped else self.fast_fraction
+
+
+def read_sky(
+    frame: Frame,
+    profile: Profile,
+    *,
+    fast_mode: str,
+    fast_exposure_us: float,
+    fast_gain: int,
+    clip_fraction: float,
+    offset_dn: float = 0.0,
+) -> SkyReading:
+    """Derive the background of the fast stream from a brightness frame, through the profile.
+
+    The median of the brightness frame above its offset (`offset_dn`, the black level in the
+    frame's own counts) gives the sky electrons of one of its pixels, through the conversion gain
+    of its readout mode and gain. Per pixel area and per microsecond of its exposure, that is the
+    sky rate on the sensor, and times the area of a fast-mode pixel and `fast_exposure_us` it is
+    the sky of one fast pixel. Its share of the full well of the fast mode at `fast_gain` is
+    `fast_fraction`.
+
+    The profile has no offset, because the camera reports it at run time, and the default of 0
+    counts it as sky. That errs toward a brighter sky by the offset scaled to the fast exposure:
+    with the simulator's offset, 0.03% of saturation for the reference profile, a 1 ms brightness
+    frame, and 32 us.
+    """
+    median = _median(frame)
+    frame_fraction = median / saturation_level_dn(frame, profile)
+    brightness = profile.mode(frame.mode)
+    fast = profile.mode(fast_mode)
+    sky_e = max(median - offset_dn, 0.0) * _e_per_dn(frame, profile)
+    area = (fast.pixel_size_um / brightness.pixel_size_um) ** 2
+    fast_e = sky_e * area * fast_exposure_us / frame.exposure_us
+    full_well = derived.saturation(fast, fast_gain).full_well_e
+    return SkyReading(
+        frame_fraction=frame_fraction,
+        fast_fraction=fast_e / full_well,
+        clipped=frame_fraction >= clip_fraction,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +144,10 @@ class DaylightDecision:
 
     allowed: bool
     reason: str | None
-    twilight: bool
 
 
 class DaylightGate:
-    """Decide whether the scheduler may run `auto`, from the Sun and the measured sky."""
+    """Decide whether the scheduler may run `auto`, from the measured sky."""
 
     def __init__(self, config: DaylightConfig) -> None:
         self._config = config
@@ -83,33 +162,34 @@ class DaylightGate:
     def evaluate(
         self,
         *,
-        sun_elevation_deg: float | None,
         background_fraction: float | None,
         running: bool,
+        frame_fraction: float | None = None,
     ) -> DaylightDecision:
-        """Apply both inputs.
+        """Decide from the background of the fast stream at its shortest exposure.
 
-        `running` says whether the scheduler is in `auto` now. A running scheduler stops at the
-        limits and a stopped one resumes only below the stricter resume values. A missing Sun
-        elevation (no site) leaves the decision to the measurement. A missing measurement keeps a
-        running scheduler running, and it stops a stopped one from starting.
+        `background_fraction` is `SkyReading.gate_fraction`, and `running` says whether the
+        scheduler is in `auto` now. A running scheduler stops at `saturation_limit` (a clipped
+        brightness frame reaches it), and a stopped one resumes only below the stricter
+        `resume_saturation`. `frame_fraction` is `SkyReading.frame_fraction`: a stopped scheduler
+        also needs it below `brightness_resume_fraction`, the hysteresis of the clip. A missing
+        measurement keeps a running scheduler running, and it stops a stopped one from starting.
         """
         config = self._config
-        twilight = self.is_twilight(sun_elevation_deg)
-        if sun_elevation_deg is not None:
-            limit = config.sun_elevation_limit_deg
-            if not running:
-                limit -= config.sun_resume_margin_deg
-            if sun_elevation_deg > limit:
-                return DaylightDecision(False, REASON_DAYLIGHT, twilight)
         if background_fraction is None:
             if running:
-                return DaylightDecision(True, None, twilight)
-            return DaylightDecision(False, REASON_NO_MEASUREMENT, twilight)
+                return DaylightDecision(True, None)
+            return DaylightDecision(False, REASON_NO_MEASUREMENT)
+        if (
+            not running
+            and frame_fraction is not None
+            and frame_fraction >= config.brightness_resume_fraction
+        ):
+            return DaylightDecision(False, REASON_BRIGHT_SKY)
         threshold = config.saturation_limit if running else config.resume_saturation
         if background_fraction >= threshold:
-            return DaylightDecision(False, REASON_BRIGHT_SKY, twilight)
-        return DaylightDecision(True, None, twilight)
+            return DaylightDecision(False, REASON_BRIGHT_SKY)
+        return DaylightDecision(True, None)
 
 
 class CloudTracker:

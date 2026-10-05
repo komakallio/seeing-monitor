@@ -15,6 +15,7 @@ from seeingmon.scheduler.status import (
     Counters,
     FaultStatus,
     SchedulerStatus,
+    SearchStatus,
     StreamInfo,
 )
 
@@ -151,6 +152,7 @@ def test_the_activity_converts_to_json_with_plain_values() -> None:
 
 def test_the_activity_has_a_phase_for_every_state_of_the_scheduler_and_the_fault() -> None:
     assert {phase.value for phase in ActivityPhase} == {
+        "search",
         "fast",
         "survey_short",
         "survey_long",
@@ -169,3 +171,21 @@ def test_the_activity_is_frozen() -> None:
     activity = ActivityStatus(state="safe", phase="watch", label="x", since_utc_ns=1)
     with pytest.raises(dataclasses.FrozenInstanceError):
         activity.label = "y"  # type: ignore[misc]
+
+
+def test_the_search_status_converts_to_json_and_is_absent_by_default() -> None:
+    assert make_status().search is None
+    search = SearchStatus(
+        mode="search", next_burst_utc_ns=2_000, probe=True, detections=1, snr=12.5
+    )
+    data = json.loads(
+        json.dumps(dataclasses.asdict(dataclasses.replace(make_status(), search=search)))
+    )
+    assert data["search"] == {
+        "mode": "search",
+        "next_burst_utc_ns": 2_000,
+        "probe": True,
+        "detections": 1,
+        "snr": 12.5,
+        "since_utc_ns": None,
+    }

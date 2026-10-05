@@ -297,7 +297,7 @@ Codes for `state`:
 
 | Code | Meaning |
 |---|---|
-| `safe` | Daylight, a sky too bright for any mode, or a persistent fault keeps the camera idle. |
+| `safe` | A sky too bright for any mode, or a persistent fault, keeps the camera idle. |
 | `auto` | The sky is dark enough and the system is healthy, so the scheduler runs its cycle. |
 | `align` | The alignment helper runs and preempts everything else. |
 | `commission` | A burst, a sweep, or a replay runs. |

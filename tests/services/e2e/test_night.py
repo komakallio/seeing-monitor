@@ -21,8 +21,9 @@ pytest.importorskip("sep", reason="the survey path needs the survey extra")
 pytest.importorskip("scipy", reason="the fast path needs the fast extra")
 
 from seeingmon.clock import NS_PER_S, iso_to_utc_ns
+from seeingmon.drivers.sim.detection import DetectionModel
+from seeingmon.drivers.sim.params import SimParams
 from seeingmon.records import RunRecord
-from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
 from seeingmon.store.db import StoreReader
 
 from ..core.rig import read_all
@@ -102,30 +103,41 @@ class TestTheFastPath:
 
 @pytest.mark.slow
 class TestTheDaylightGate:
-    def test_the_scheduler_stays_safe_until_the_sun_is_down_and_then_flags_the_twilight(
+    def test_the_search_runs_by_day_and_measures_from_where_polaris_shows(
         self, tmp_path: Path
     ) -> None:
+        """The Sun gates nothing. The simulator's sky at +6 degrees is far from saturating the
+        brightness frame, so `auto` starts at once and the search looks for Polaris.
+
+        The fast frames of these nights take 250 us, and at that exposure the detection estimate
+        (`seeingmon.drivers.sim.detection`) puts the median-frame SNR of 10 at -0.54 degrees. The
+        second detecting burst in a row starts measure, so `polaris.visible` comes there or a
+        little later. 1 degree is the tolerance of the brief, for the bursts that run only in the
+        fast slots of the cycle and the noise of the SNR of one burst.
+        """
         start = "2026-01-01T14:30:00Z"
         night = build_night(tmp_path, start=start)
         try:
-            assert night.app.scheduler.state.value == "safe"
             night.run_for(30 * 60.0)  # the Sun is still above the horizon
-            assert night.app.scheduler.state.value == "safe"
-            assert night.records("seeing_window") == []
+            status = night.app.scheduler.status()
+            assert status.state == "auto"
+            assert status.search is not None
+            assert status.search.mode == "search"
+            assert status.counters.search_bursts > 10
+            assert night.records("seeing_window") == []  # Polaris does not show in 250 us yet
             night.run_until(
                 lambda: night.records("seeing_window"), limit_s=3 * 3600.0, slice_s=60.0
             )
-            change = night.events("scheduler.state_change")
-            assert len(change) == 1
-            resume_utc_ns = next_sun_crossing_utc_ns(
-                iso_to_utc_ns(start), SIM_LATITUDE_DEG, 0.0, -4.0, rising=False
-            )
-            assert resume_utc_ns is not None
-            # The gate opens when the Sun passes the limit (-3) and the margin (1 degree below).
-            assert abs(change[0].t_utc_ns - resume_utc_ns) < 2 * 60 * NS_PER_S
+            (change,) = night.events("scheduler.state_change")
+            assert change.t_utc_ns - iso_to_utc_ns(start) < 60 * NS_PER_S  # the first frame
+            (visible,) = night.events("polaris.visible")
+            params = SimParams.from_profile(night.app.profile, night.app.profile.fast_mode.mode)
+            estimate = DetectionModel.for_simulator(params, max_exposure_us=250).crossing_deg()
+            assert estimate is not None
+            assert visible.detail["sun_elevation_deg"] == pytest.approx(estimate, abs=1.0)
             first = night.records("seeing_window")[0]
-            assert first.t_utc_ns >= resume_utc_ns - 60 * NS_PER_S
-            assert "twilight" in first.flags  # the Sun is 4 degrees below the horizon, not 18
+            assert first.t_utc_ns >= visible.t_utc_ns - NS_PER_S
+            assert "twilight" in first.flags  # the Sun is near the horizon, not 18 degrees down
         finally:
             night.app.stop()
 
@@ -154,9 +166,18 @@ class TestClouds:
             assert all(r.zero_point_mag is None for r in cloudy)  # no star, no zero point
             clear = [r for r in night.records("sky_quality") if "cloud" not in r.flags]
             assert clear
-            flagged = [w for w in night.records("seeing_window") if "cloud" in w.flags]
-            assert flagged  # the windows that closed in the cloud say so
-            assert all(w.r0_cm is None for w in flagged)  # and the star was gone
+            # The cloud hid the star: measure ended, and the stream searched until the cloud
+            # passed, so no window closed while the cloud response held.
+            (hidden,) = night.events("polaris.hidden")
+            assert hidden.detail["reason"] == "star_missing"
+            assert hidden.t_utc_ns < first.t_utc_ns
+            assert not [w for w in night.records("seeing_window") if "cloud" in w.flags]
+            lost = [w for w in night.records("seeing_window") if w.r0_cm is None]
+            assert lost  # the window that the missing star ended
+            assert all("partial" in w.flags for w in lost)
+            visible = night.events("polaris.visible")
+            assert len(visible) == 2
+            assert visible[1].t_utc_ns > second.t_utc_ns  # the search found the star again
             after = [w for w in windows_with_r0(night) if w.t_utc_ns > second.t_utc_ns]
             assert after
             assert statistics.median([w.r0_cm for w in after]) == pytest.approx(

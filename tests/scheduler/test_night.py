@@ -1,8 +1,9 @@
 """A whole night in virtual time: 12 hours, with everything that can happen to it.
 
 The scenario starts at 14:30 UTC on a winter day at a synthetic site (55 degrees north on the
-prime meridian), in daylight. The scheduler watches the sky, enters `auto` at dusk, and then the
-script disturbs the night, one thing at a time:
+prime meridian), in daylight. The scheduler watches the sky, enters `auto` at dusk when the
+brightness frame falls below the resume level of the clip, searches for Polaris until it shows,
+and then the script disturbs the night, one thing at a time:
 
 | Time (hours) | What happens |
 |---|---|
@@ -14,8 +15,9 @@ script disturbs the night, one thing at a time:
 | 9.0 | The camera times out for 10 seconds. |
 | 10.0 | The mount is bumped, and the star lands near the edge of the ROI. |
 
-The test checks the records and the flags that the night produces. It runs in a few seconds of real
-time, because the clock is virtual.
+Every disturbance but the clouds and the bump ends measure with `polaris.hidden`, and the search
+that follows finds Polaris again with `polaris.visible`. The test checks the records and the flags
+that the night produces. It runs in a few seconds of real time, because the clock is virtual.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from seeingmon.scheduler import (
 )
 from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns
 from seeingmon.scheduler.events import EVENT_KINDS
-from tests.scheduler.scenario import SITE, START, World
+from tests.scheduler.scenario import SITE, START, TEST_CONFIG, World
 
 HOUR = 3600.0
 NIGHT_LENGTH_S = 12 * HOUR
@@ -97,8 +99,14 @@ def crossing(elevation: float, *, rising: bool) -> float:
 
 
 def disturbed(world: World, t: float, margin: float = 400.0) -> bool:
-    """Whether a time lies close to something that the script did to the night."""
+    """Whether a time lies close to something that the script did to the night.
+
+    The first period that measures at dusk counts too, because the search hands it over in its
+    middle.
+    """
+    dusk = world.visible_times()[0]
     spans = [
+        (dusk, dusk),
         (SWEEP_AT, SWEEP_AT + 400),
         (PAUSE_AT, RESUME_AT),
         (HIDE_FROM, HIDE_TO + 200),
@@ -154,11 +162,12 @@ class TestTheShapeOfTheNight:
     def test_the_changes_come_at_the_scripted_times(self, night: Night) -> None:
         world = night.world
         times = [t for t, _, _ in world.state_changes()]
-        dusk = crossing(-4.0, rising=False)
-        # The change comes with the first brightness frame after the Sun passes -4 degrees.
+        dusk = crossing(-2.844, rising=False)
+        # The change comes with the first brightness frame below the resume level of the clip.
         assert dusk <= times[0] <= dusk + 61
         assert SWEEP_AT < times[1] < SWEEP_AT + 200  # the boundary of the cycle that was running
-        assert times[3] == pytest.approx(PAUSE_AT, abs=1.0)
+        # The test injects a command between steps, so a survey exposure in progress holds it.
+        assert PAUSE_AT <= times[3] <= PAUSE_AT + 31.0
         assert times[4] == pytest.approx(RESUME_AT, abs=1.0)
         assert times[6] == pytest.approx(ALIGN_FROM, abs=1.0)
         assert times[7] == pytest.approx(ALIGN_TO, abs=1.0)
@@ -218,7 +227,7 @@ class TestDaylightThenDusk:
 class TestTheCadence:
     def test_undisturbed_cycles_keep_the_cadence_exactly(self, night: Night) -> None:
         world = night.world
-        starts = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
+        starts = world.period_starts()
         checked = 0
         for earlier, later in itertools.pairwise(starts):
             if disturbed(world, earlier) or disturbed(world, later):
@@ -297,9 +306,9 @@ class TestTheDisturbances:
         ]
         (early,) = [t for t in shorts if HIDE_FROM < t < HIDE_TO]
         assert early == pytest.approx(ends[0], abs=2.5)
-        fast = [world.seconds(c.t_utc_ns) for c in world.configures(mode="bin1", video=True)]
-        before = max(t for t in fast if t < HIDE_FROM)
-        after = min(t for t in fast if t > HIDE_FROM)
+        periods = world.period_starts()
+        before = max(t for t in periods if t < HIDE_FROM)
+        after = min(t for t in periods if t > HIDE_FROM)
         assert after - before == pytest.approx(180.0, abs=0.05)
 
     def test_the_cloud_shortened_the_windows_and_the_cadence_and_set_the_flag(
@@ -312,14 +321,57 @@ class TestTheDisturbances:
         windows = [w for w in world.windows() if on + 5 < world.seconds(w.t_utc_ns) < off - 70]
         assert len(windows) > 10
         assert all("cloud" in w.flags for w in windows)
-        starts = [
-            world.seconds(c.t_utc_ns)
-            for c in world.configures(mode="bin1", video=True)
-            if on + 1 < world.seconds(c.t_utc_ns) < off
-        ]
+        starts = [t for t in world.period_starts() if on + 1 < t < off]
         assert [round(b - a) for a, b in itertools.pairwise(starts)] == [100] * (len(starts) - 1)
+        # A cloud of 0.8 in a dark sky leaves Polaris at an SNR of 40, so measure goes on.
+        assert not [t for t in world.hidden_times() if CLOUD_FROM < t < CLOUD_TO]
         calm = [w for w in world.windows() if world.seconds(w.t_utc_ns) < CLOUD_FROM - 200]
         assert all("cloud" not in w.flags for w in calm)
+
+    def test_every_end_of_measure_writes_hidden_and_every_return_writes_visible(
+        self, night: Night
+    ) -> None:
+        world = night.world
+        hidden = world.events("polaris.hidden")
+        found = [((e.detail or {})["reason"], (e.detail or {}).get("state")) for e in hidden]
+        assert found == [
+            ("state_change", "commission"),  # the sweep
+            ("state_change", "paused"),
+            ("star_missing", None),
+            ("state_change", "align"),
+            ("fault", None),
+            ("shutdown", None),  # the close at the end of the night
+        ]
+        times = world.hidden_times()
+        assert SWEEP_AT < times[0] < SWEEP_AT + 200
+        assert PAUSE_AT <= times[1] <= PAUSE_AT + 31.0  # after the exposure in progress
+        assert times[2] == pytest.approx(HIDE_FROM + 20.0, abs=2.5)
+        assert times[3] == pytest.approx(ALIGN_FROM, abs=1.0)
+        assert FAULT_FROM < times[4] < FAULT_TO
+        # Polaris showed at dusk, and after each of the first five ends of measure.
+        visible = world.visible_times()
+        assert len(visible) == 6
+        for end, back in zip(times[:5], visible[1:], strict=True):
+            assert end < back < end + 1000
+        for event in hidden:  # the Sun's elevation at the time, to 0.01 degree
+            sun = (event.detail or {})["sun_elevation_deg"]
+            assert sun == pytest.approx(world.sun_elevation(event.t_utc_ns), abs=0.05)
+
+    def test_polaris_shows_at_dusk_where_its_snr_reaches_the_threshold(self, night: Night) -> None:
+        """The scenario's Polaris reaches an SNR of 10 at -3.49 degrees, and two bursts in a row
+        confirm it within a period and a half of search."""
+        world = night.world
+        first = world.events("polaris.visible")[0]
+        detail = first.detail or {}
+        assert -4.1 < detail["sun_elevation_deg"] < -3.45
+        assert detail["snr"] >= TEST_CONFIG.search.detect_snr
+        assert detail["probe"] is False
+        assert world.events("polaris.search_limit_low") == []
+        # Search bursts ran from the move to auto until then, and no fast stream.
+        auto_at = world.state_changes()[0][0]
+        bursts = [t for t in world.burst_starts() if t < world.seconds(first.t_utc_ns)]
+        assert bursts[0] == pytest.approx(auto_at, abs=1.0)
+        assert not [t for t in world.fast_starts() if t < world.seconds(first.t_utc_ns) - 0.1]
 
     def test_the_alignment_streamed_frames_and_ended_in_safe(self, night: Night) -> None:
         world = night.world

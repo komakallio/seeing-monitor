@@ -154,9 +154,9 @@ class TestTheEventList:
         sources.append(src / "services" / "core" / "darkness.py")
         kinds: set[str] = set()
         for source in sources:
-            # The scheduler's own kinds, and the kinds of the sky and the camera.
+            # The scheduler's own kinds, and the kinds of the sky, the camera, and Polaris.
             text = source.read_text(encoding="utf-8")
-            kinds |= set(re.findall(r'"((?:scheduler|pointing|sky)\.[a-z_]+)"', text))
+            kinds |= set(re.findall(r'"((?:scheduler|pointing|sky|polaris)\.[a-z_]+)"', text))
         return kinds
 
     def test_every_kind_in_the_source_is_in_the_list(self) -> None:
@@ -175,6 +175,11 @@ class TestTheEventList:
         # written through `emit_event` by the dark and flat handlers
         handlers = {"scheduler.dark_phase", "scheduler.flat_phase"}
         assert set(EVENT_KINDS) - written == results | handlers
+
+    def test_the_list_names_the_events_of_the_visibility_of_polaris(self) -> None:
+        polaris = {kind for kind in EVENT_KINDS if kind.startswith("polaris.")}
+        assert polaris == {"polaris.visible", "polaris.hidden", "polaris.search_limit_low"}
+        assert polaris <= self.source_kinds()
 
     def test_the_kinds_and_their_descriptions_are_well_formed(self) -> None:
         for kind, description in EVENT_KINDS.items():

@@ -492,7 +492,7 @@ class TestTheRealCamera:
         assert lines[0] == "Seeing monitor, real camera (asi driver): real time, full sensor."
         assert any(line.startswith("Web UI: ") for line in lines)
         assert sum("reports no stars" in line for line in lines) == 1
-        assert sum("stays in safe while the Sun is above -3 degrees" in line for line in lines) == 1
+        assert sum("probe burst" in line and "synthetic site" in line for line in lines) == 1
         assert "Cover the camera by hand for a dark session." in lines
         assert not [line for line in lines if "simulated camera" in line]  # no cover file
         assert not [line for line in lines if "--sensor" in line]  # nobody chose a sensor

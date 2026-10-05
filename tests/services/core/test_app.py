@@ -143,10 +143,11 @@ class TestTheRecordFollowsTheScheduler:
     def test_a_failed_read_brings_a_record_that_says_why_within_seconds(
         self, tmp_path: Path
     ) -> None:
-        # The camera shows the star, so the fast stream reads frames for its whole period of 20 s.
+        # The camera shows the star. The search finds it with the bursts at 0 s and 15 s, and the
+        # fast stream reads frames from about 16 s to the end of its period at 20 s.
         rig = build_rig(tmp_path, polaris=True)
         try:
-            rig.run_for(5.0)
+            rig.run_for(17.0)
             before = rig.records("health")
             assert before[-1].components["camera"] == "ok"  # type: ignore[attr-defined]
             failed_at = rig.clock.utc_ns()
