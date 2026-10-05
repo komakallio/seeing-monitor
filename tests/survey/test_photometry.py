@@ -239,6 +239,100 @@ def test_isolation_of_nothing_is_empty() -> None:
     assert ph.isolated(empty, empty, empty, empty, empty, empty, empty).size == 0
 
 
+def test_a_neighbor_at_the_limit_counts_and_one_just_beyond_does_not() -> None:
+    # The limit is 5 (aperture) + 3 (margin) + 0.5 * 4 (trail) = 10 px.
+    x = np.array([100.0, 110.0, 300.0, 310.0 + 1e-9])
+    y = np.full(4, 100.0)
+    flux = np.full(4, 10_000.0)
+    trail = np.full(4, 4.0)
+    assert list(ph.isolated(x, y, flux, trail, x, y, flux)) == [False, False, True, True]
+
+
+def test_a_detection_within_a_quarter_pixel_is_the_star_itself() -> None:
+    star_x, star_y, flux = np.array([100.0]), np.array([100.0]), np.array([10_000.0])
+    all_y = np.array([100.0, 100.0])
+    all_flux = np.array([10_000.0, 90_000.0])
+    near = np.array([100.0, 100.2])  # the second detection is the star again, and it is brighter
+    assert ph.isolated(star_x, star_y, flux, np.zeros(1), near, all_y, all_flux).all()
+    apart = np.array([100.0, 100.3])  # beyond a quarter of a pixel it is another star
+    assert not ph.isolated(star_x, star_y, flux, np.zeros(1), apart, all_y, all_flux).any()
+
+
+def isolated_by_loops(
+    x: FloatArray,
+    y: FloatArray,
+    flux: FloatArray,
+    trail: FloatArray,
+    all_x: FloatArray,
+    all_y: FloatArray,
+    all_flux: FloatArray,
+    cfg: ph.PhotometryOptions,
+) -> npt.NDArray[np.bool_]:
+    """The test of `isolated`, written as the two loops that it once was: the specification."""
+    from seeingmon.survey import _scipy
+
+    result = np.ones(x.size, dtype=np.bool_)
+    reach = cfg.aperture_px + cfg.isolation_margin_px + 0.5 * float(np.max(trail))
+    near = _scipy.pairs_within(
+        np.column_stack([x, y]), np.column_stack([all_x, all_y]), reach + 0.5
+    )
+    for i, others in enumerate(near):
+        for j in others:
+            separation = float(np.hypot(all_x[j] - x[i], all_y[j] - y[i]))
+            if separation < 0.25:
+                continue
+            limit = cfg.aperture_px + cfg.isolation_margin_px + 0.5 * float(trail[i])
+            if separation <= limit and all_flux[j] > cfg.isolation_flux_ratio * max(flux[i], 1e-9):
+                result[i] = False
+                break
+    return result
+
+
+Scene = tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]
+
+
+def random_scene(seed: int) -> Scene:
+    """Stars, their trails, and all the detections around them, with a crowd or a sparse field."""
+    rng = np.random.default_rng(seed)
+    n_all = int(rng.integers(1, 300))
+    extent = float(rng.choice([30.0, 200.0, 1000.0]))
+    all_x, all_y = rng.uniform(0.0, extent, (2, n_all))
+    all_flux = np.exp(rng.normal(8.0, 1.5, n_all))
+    pick = rng.choice(n_all, int(rng.integers(1, n_all + 1)), replace=False)
+    x, y, flux = all_x[pick], all_y[pick], all_flux[pick]
+    # Neighbors that coincide with a star, and neighbors at exactly 8 px (the limit with no trail).
+    all_x = np.concatenate([all_x, x[:4], x[:4] + 8.0])
+    all_y = np.concatenate([all_y, y[:4], y[:4]])
+    all_flux = np.concatenate([all_flux, flux[:4] * 5.0, flux[:4] * 5.0])
+    trail = rng.choice([0.0, 0.0, 2.0, 7.5, 24.0], x.size)
+    return x, y, flux, trail, all_x, all_y, all_flux
+
+
+def random_options(seed: int) -> ph.PhotometryOptions:
+    rng = np.random.default_rng(1000 + seed)
+    return ph.PhotometryOptions(
+        aperture_px=float(rng.choice([5.0, 3.0, 12.0])),
+        isolation_margin_px=float(rng.choice([3.0, 0.0, 4.5])),
+        isolation_flux_ratio=float(rng.choice([0.02, 0.1, 1e-4])),
+        annulus_inner_px=20.0,
+        annulus_outer_px=30.0,
+        growth_aperture_px=15.0,
+    )
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_isolation_gives_what_the_two_loops_gave_for_every_star(seed: int) -> None:
+    scene, cfg = random_scene(seed), random_options(seed)
+    found = ph.isolated(*scene, cfg)
+    assert found.dtype == np.bool_
+    assert np.array_equal(found, isolated_by_loops(*scene, cfg))
+
+
+def test_the_random_scenes_hold_stars_of_both_kinds() -> None:
+    kinds = np.concatenate([ph.isolated(*random_scene(s), random_options(s)) for s in range(12)])
+    assert 0.2 < kinds.mean() < 0.9  # so the comparison above is not about one answer only
+
+
 # --- The matched stars of a detected frame -------------------------------------------------
 
 

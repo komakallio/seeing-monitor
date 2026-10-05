@@ -54,6 +54,19 @@ def pairs_within(first: FloatArray, second: FloatArray, radius: float) -> list[l
     return [list(map(int, row)) for row in found]
 
 
+def pair_indices(first: FloatArray, second: FloatArray, radius: float) -> tuple[IntArray, IntArray]:
+    """The pairs of a row of `first` and a row of `second` that lie within `radius`, as indices.
+
+    Pair `k` joins row `i[k]` of `first` with row `j[k]` of `second`, and the function returns
+    `(i, j)`. It finds the pairs that `pairs_within` finds, as two arrays and not as lists, and the
+    order of the pairs is not defined.
+    """
+    found = _spatial.cKDTree(first).sparse_distance_matrix(
+        _spatial.cKDTree(second), radius, output_type="ndarray"
+    )
+    return np.asarray(found["i"], dtype=np.intp), np.asarray(found["j"], dtype=np.intp)
+
+
 def close_pairs(points: FloatArray, radius: float) -> IntArray:
     """The pairs of rows of `points` that lie no farther apart than `radius`.
 

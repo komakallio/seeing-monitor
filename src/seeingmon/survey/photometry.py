@@ -233,18 +233,14 @@ def isolated(
     if x.size == 0 or all_x.size == 0:
         return result
     reach = cfg.aperture_px + cfg.isolation_margin_px + 0.5 * float(np.max(trail_length_px))
-    near = _scipy.pairs_within(
+    star, other = _scipy.pair_indices(
         np.column_stack([x, y]), np.column_stack([all_x, all_y]), reach + 0.5
     )
-    for i, others in enumerate(near):
-        for j in others:
-            separation = float(np.hypot(all_x[j] - x[i], all_y[j] - y[i]))
-            if separation < 0.25:  # the star itself
-                continue
-            limit = cfg.aperture_px + cfg.isolation_margin_px + 0.5 * float(trail_length_px[i])
-            if separation <= limit and all_flux[j] > cfg.isolation_flux_ratio * max(flux[i], 1e-9):
-                result[i] = False
-                break
+    separation = np.hypot(all_x[other] - x[star], all_y[other] - y[star])
+    limit = cfg.aperture_px + cfg.isolation_margin_px + 0.5 * trail_length_px[star]
+    bright = all_flux[other] > cfg.isolation_flux_ratio * np.maximum(flux[star], 1e-9)
+    # A separation under 0.25 pixel is the star itself.
+    result[star[(separation >= 0.25) & (separation <= limit) & bright]] = False
     return result
 
 
