@@ -82,7 +82,7 @@ Neither effect stops a reading. The flags let a user decide.
 
 These already exist on a solved survey frame: `n_detected` in `survey_frame`, and `cloud_fraction`, `limiting_mag`, and `sky_mag_arcsec2` in `sky_quality`. The cloud fraction takes its expected stars from the noise of the frame, so it already tells a bright sky from a cloudy one. The design adds:
 
-- **`n_expected` in `sky_quality`.** The number of catalog stars that the cloud fraction expects, to compare with `n_detected`.
+- **`n_expected` and `n_expected_found` in `sky_quality`.** The number of catalog stars that the cloud fraction expects, and the number of them that detection found. The cloud fraction is 1 minus their ratio. `n_detected` counts every detection, hot pixels and faint stars included, so it does not compare with `n_expected`.
 - **`sky.dark`.** An event when a line fitted to the sky brightness of the last `survey.darkness.frames` (5) solved frames changes by less than `survey.darkness.max_slope_mag_per_hour` (0.3 mag per hour). A rule per degree of Sun elevation would never fire, because near the Sun's lowest point the elevation barely changes. The rule per hour also works in summer, when the Sun never reaches −18°, and fires near the darkest time of the night.
 - **`sky.clear_verdict`.** An event once per evening, `survey.darkness.verdict_frames` (5) solved frames after `sky.dark`, with the share of frames at or below the cloud tracker's `clear_threshold`.
 

@@ -12,8 +12,8 @@ makes the `sky_quality` record and the stars for the nightly summary. The steps:
    rate (`seeingmon.survey.sky`). With the zero point, the rate gives the surface brightness
    in the camera band and the V equivalent.
 4. **Transparency and clouds.** The zero point against the reference from the clearest conditions
-   (`seeingmon.survey.transparency`), the cloud fraction that the pipeline measured, and the
-   limiting magnitude of the frame.
+   (`seeingmon.survey.transparency`), the cloud fraction that the pipeline measured with the
+   counts of the expected stars and of the ones found, and the limiting magnitude of the frame.
 5. **Flags and reasons.** The record carries `cloud`, `dark_due`, and `time_invalid` flags, and a
    `quality` map that says why any value is missing.
 
@@ -190,6 +190,21 @@ def _catalog_estimated(catalog: CapCatalog, rows: IntArray) -> BoolArray:
     return np.asarray((catalog.flags[rows] & FLAG_TYCHO_ONLY) != 0, dtype=np.bool_)
 
 
+def missing_count_reason(field: FieldStars | None, n_expected: int | None) -> str | None:
+    """Why the counts behind the cloud fraction are missing, or `None` when the frame has them.
+
+    The counts need the catalog stars of the field, which the solve places (or the stored pointing
+    when the frame does not solve), and a clear-sky signal for each star.
+    """
+    if field is None:
+        return "no pointing solution"
+    if field.rows.size == 0:
+        return "no catalog star lies in the frame"
+    if n_expected is None:
+        return "no clear-sky signal: no reference zero point and no photometric prior"
+    return None
+
+
 def select_zero_point_stars(
     photometry: StarPhotometry, catalog: CapCatalog, options: QualityOptions
 ) -> BoolArray:
@@ -243,6 +258,8 @@ def assess_frame(
     options: QualityOptions,
     provenance: dict[str, str],
     time_invalid: bool,
+    n_expected: int | None,
+    n_expected_found: int | None,
 ) -> SkyQualityResult:
     """Make the `sky_quality` record of a frame. See the module documentation.
 
@@ -252,6 +269,8 @@ def assess_frame(
     model of the frame, or `None` when the pointing failed. `hot_pixels` is a mask in the array
     of `data`, and `zp_reference` the reference zero point. While the history is short it is the
     provisional zero point (its `provisional` field is true), or `None` when even that is missing.
+    `n_expected` and `n_expected_found` are the counts behind `cloud_fraction`, which the record
+    keeps: the expected stars, and those of them that detection found.
     """
     reasons: dict[str, str] = {}
     exposure_s = frame.exposure_us / 1e6
@@ -371,10 +390,11 @@ def assess_frame(
         reasons["transparency"] = "no reference yet: the history holds too few clear zero points"
     else:
         transparency_value = transparency(fit.zero_point_mag, zp_reference)
+    count_reason = missing_count_reason(field, n_expected)
+    if count_reason is not None:
+        reasons["n_expected"] = reasons["n_expected_found"] = count_reason
     if cloud_fraction is None:
-        reasons["cloud_fraction"] = (
-            "no pointing solution" if attitude is None else "too few expected stars"
-        )
+        reasons["cloud_fraction"] = count_reason or f"too few expected stars ({n_expected})"
 
     limiting: LimitingMagnitude | None = None
     if field is None:
@@ -447,6 +467,8 @@ def assess_frame(
         sky_rate_e_per_s_arcsec2=_python_float(rate),
         dark_model_version=None if dark_model is None else dark_model.version,
         flags=flags,
+        n_expected=n_expected,
+        n_expected_found=n_expected_found,
     )
 
     # --- The stars for the nightly summary --------------------------------------------------

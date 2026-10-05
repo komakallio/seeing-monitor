@@ -26,12 +26,13 @@ import pytest
 from seeingmon.clock import NS_PER_S
 from seeingmon.frames import Frame, Roi
 from seeingmon.profile import Profile
-from seeingmon.records.survey import SkyQualityRecord
+from seeingmon.records.survey import SkyQualityRecord, SurveyFrameRecord
 from seeingmon.solvers.base import PlateSolver
 from seeingmon.survey.catalog import CapCatalog
 from seeingmon.survey.config import SkyConfig, SurveyConfig
 from seeingmon.survey.dark import DarkLibrary
 from seeingmon.survey.pipeline import FrameAnalysis, SurveyPipeline
+from seeingmon.survey.quality import FieldStars, missing_count_reason
 from seeingmon.survey.sky import ArrayFlat, FlatModel, g_minus_v
 from seeingmon.survey.transparency import ZeroPointReference
 from tests.survey import synth
@@ -318,6 +319,102 @@ def test_a_thick_cloud_raises_the_cloud_fraction_and_lowers_the_limit(
     assert 10.0 < cloud_record.limiting_mag < 12.5
     assert cloud_record.quality is None or "limiting_mag" not in cloud_record.quality
     assert cloud_record.limiting_mag < clear_record.limiting_mag - 4.0
+
+
+def test_the_record_keeps_the_counts_behind_the_cloud_fraction(
+    profile: Profile, catalog: CapCatalog, clear_analysis: FrameAnalysis, tmp_path: Path
+) -> None:
+    """The expected stars and the found ones give the fraction, and `n_detected` counts more."""
+    frame, truth = render(profile, catalog, transmission=0.01, seed=8)
+    library = dark_library(tmp_path)
+    cloudy = sky_record(
+        analyze(profile, catalog, frame, truth, library=library, reference=reference_at())
+    )
+    counts: dict[str, tuple[int, int]] = {}
+    for name, record in (("clear", sky_record(clear_analysis)), ("cloudy", cloudy)):
+        expected, found = record.n_expected, record.n_expected_found
+        assert expected is not None
+        assert found is not None
+        assert 0 <= found <= expected
+        assert record.cloud_fraction == pytest.approx(1.0 - found / expected, abs=1e-12)
+        assert record.quality is None or "n_expected" not in record.quality
+        counts[name] = (expected, found)
+    assert counts["clear"][1] == counts["clear"][0]  # a clear sky shows every expected star
+    assert counts["cloudy"][1] < counts["cloudy"][0]
+    (survey_frame,) = [r for r in clear_analysis.records if isinstance(r, SurveyFrameRecord)]
+    assert survey_frame.n_detected is not None
+    assert survey_frame.n_detected > counts["clear"][0]  # every detection, not the expected stars
+
+
+def test_too_few_expected_stars_keep_their_counts_and_say_so(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth], tmp_path: Path
+) -> None:
+    far_off = 15.0  # a reference so low that it expects hardly a star
+    record = sky_record(
+        analyze(
+            profile,
+            catalog,
+            *clear,
+            library=dark_library(tmp_path),
+            reference=reference_at(far_off),
+        )
+    )
+    assert record.cloud_fraction is None
+    assert record.n_expected is not None
+    assert record.n_expected < 8  # [survey.cloud] min_expected
+    assert record.n_expected_found is not None
+    assert record.quality is not None
+    assert record.quality["cloud_fraction"] == f"too few expected stars ({record.n_expected})"
+    assert "n_expected" not in record.quality
+
+
+def test_a_frame_without_a_pointing_has_no_counts_and_says_why(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth], tmp_path: Path
+) -> None:
+    record = sky_record(
+        analyze(profile, catalog, *clear, library=dark_library(tmp_path), solve=False)
+    )
+    assert record.n_expected is None
+    assert record.n_expected_found is None
+    assert record.cloud_fraction is None
+    assert record.quality is not None
+    for name in ("n_expected", "n_expected_found", "cloud_fraction"):
+        assert record.quality[name] == "no pointing solution"
+
+
+def test_without_a_clear_sky_signal_the_counts_are_missing_and_say_why(
+    profile: Profile, catalog: CapCatalog, clear: tuple[Frame, synth.SynthTruth], tmp_path: Path
+) -> None:
+    """Without a reference zero point or a photometric prior, no star has an expected signal."""
+    data = profile.model_dump(mode="python")
+    data["photometry"] = None
+    bare = Profile.model_validate(data)
+    analysis = analyze(bare, catalog, *clear, library=dark_library(tmp_path))
+    assert analysis.solved
+    record = sky_record(analysis)
+    assert record.n_expected is None
+    assert record.n_expected_found is None
+    assert record.cloud_fraction is None
+    assert record.quality is not None
+    reason = "no clear-sky signal: no reference zero point and no photometric prior"
+    for name in ("n_expected", "n_expected_found", "cloud_fraction"):
+        assert record.quality[name] == reason
+
+
+def test_a_field_without_catalog_stars_has_no_counts_and_says_why() -> None:
+    nothing = np.zeros(0)
+    empty = FieldStars(
+        rows=np.zeros(0, dtype=np.int64),
+        g_mag=nothing,
+        x=nothing,
+        y=nothing,
+        found=np.zeros(0, dtype=np.bool_),
+    )
+    assert missing_count_reason(empty, None) == "no catalog star lies in the frame"
+    assert missing_count_reason(None, None) == "no pointing solution"
+    one = replace(empty, rows=np.array([7]), g_mag=np.array([11.0]))
+    assert missing_count_reason(one, 0) is None  # counts of zero are counts
+    assert missing_count_reason(one, None) is not None
 
 
 def test_a_frame_too_cloudy_for_a_zero_point_still_gives_the_clouds_and_the_sky(

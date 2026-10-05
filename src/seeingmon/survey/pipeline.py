@@ -57,7 +57,8 @@ vanish. `SurveyPipelineAnalyzer` logs one line for each attempt in the process o
 **Cloud fraction.** The expected stars are the catalog stars in the field that the profile's
 photometric prior says a clear sky would show at a signal-to-noise ratio of
 `CloudConfig.expected_snr` or better. The cloud fraction is the share of them that no detection
-matches. Stars that a saturated star covers do not count.
+matches. Stars that a saturated star covers do not count. The `sky_quality` record keeps both
+counts (`n_expected` and `n_expected_found`), also when too few stars are expected for a fraction.
 """
 
 from __future__ import annotations
@@ -334,6 +335,22 @@ class _Solved:
     cross_check: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CloudCount:
+    """The expected stars of a frame and the cloud fraction that they give.
+
+    `n_expected` counts the catalog stars that a clear sky shows at `CloudConfig.expected_snr`,
+    and `n_found` those of them that detection found. Both are `None` when no catalog star of the
+    field lies in the frame (or the frame has no pointing) and when no clear-sky signal exists.
+    `fraction` is `None` then too, and also when fewer than `CloudConfig.min_expected` stars are
+    expected.
+    """
+
+    fraction: float | None = None
+    n_expected: int | None = None
+    n_found: int | None = None
+
+
 def frame_time_invalid(frame: Frame) -> bool:
     """Whether the clock was not synchronized when the frame was taken."""
     return bool(frame.flags & FrameFlag.TIME_INVALID) or frame.t_quality == TimeQuality.INVALID
@@ -520,7 +537,8 @@ class SurveyPipeline:
         # A provisional zero point is no clear-sky level, so the cloud fraction keeps the
         # photometric prior of the profile, as it does while no reference exists.
         cloud_reference = None if zp_reference is None or zp_reference.provisional else zp_reference
-        cloud = self._cloud_fraction(frame, detections, coverage, cloud_reference)
+        count = self._cloud_count(frame, detections, coverage, cloud_reference)
+        cloud = count.fraction
         focus = self._focus(detections)
         solution: PointingSolution | None = None
         if attitude is not None and fit is not None:
@@ -552,6 +570,8 @@ class SurveyPipeline:
                 field_vectors=field_vectors,
                 field=coverage,
                 cloud_fraction=cloud,
+                n_expected=count.n_expected,
+                n_expected_found=count.n_found,
                 dark_model=dark_model,
                 dark_status=status,
                 flat=self._flat,
@@ -953,14 +973,14 @@ class SurveyPipeline:
             return None
         return float(np.median(detections.fwhm_px[usable]))
 
-    def _cloud_fraction(
+    def _cloud_count(
         self,
         frame: Frame,
         detections: Detections,
         coverage: FieldStars | None,
         zp_reference: ZeroPointReference | None,
-    ) -> float | None:
-        """The share of expected catalog stars that detection missed, or `None`.
+    ) -> CloudCount:
+        """The expected catalog stars, how many detection found, and the share that it missed.
 
         The expected stars are those of the field that a clear sky would show at the signal-to-noise
         ratio of `CloudConfig.expected_snr`. The expected signal comes from the reference zero
@@ -968,7 +988,7 @@ class SurveyPipeline:
         """
         cfg = self._config.cloud
         if coverage is None or coverage.rows.size == 0:
-            return None
+            return CloudCount()
         exposure_s = frame.exposure_us / 1e6
         g_mag = coverage.g_mag
         if zp_reference is not None:
@@ -976,7 +996,7 @@ class SurveyPipeline:
         elif self._profile.photometry is not None:
             rate = np.array([self._profile.star_electron_rate_e_per_s(float(g)) for g in g_mag])
         else:
-            return None
+            return CloudCount()
         electrons = rate * exposure_s
         noise_e = detections.background_rms * self._profile.e_per_adu(frame.mode, frame.gain)
         reliable = detections.reliable()
@@ -986,9 +1006,11 @@ class SurveyPipeline:
         snr2 = cfg.expected_snr**2
         minimum = 0.5 * (snr2 + np.sqrt(snr2**2 + 4.0 * snr2 * aperture * noise_e**2))
         expected = (g_mag < cfg.mag_limit) & (electrons >= minimum)
-        if int(expected.sum()) < cfg.min_expected:
-            return None
-        return float(np.clip(1.0 - coverage.found[expected].mean(), 0.0, 1.0))
+        n_expected = int(expected.sum())
+        n_found = int(coverage.found[expected].sum())
+        if n_expected < cfg.min_expected:
+            return CloudCount(None, n_expected, n_found)
+        return CloudCount(1.0 - n_found / n_expected, n_expected, n_found)
 
     # --- Records -------------------------------------------------------------------------
 

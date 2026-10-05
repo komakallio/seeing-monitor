@@ -85,6 +85,8 @@ BASELINE: dict[str, tuple[tuple[str, str, bool, str | None], ...]] = {
         ("sky_rate_e_per_s_arcsec2", "float", True, "e-/s/arcsec^2"),
         ("dark_model_version", "str", True, None),
         ("flags", "list[str]", False, None),
+        ("n_expected", "int", True, None),
+        ("n_expected_found", "int", True, None),
     ),
     "pointing": (
         ("center_ra_deg", "float", True, "deg"),

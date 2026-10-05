@@ -844,6 +844,11 @@ def test_a_cloud_over_a_known_pointing_gives_a_full_cloud_fraction(
     assert not analysis.solved
     # The tracker still knows where the stars should be, and none of them shows.
     assert analysis.cloud_fraction == pytest.approx(1.0, abs=0.01)
+    sky = sky_of(analysis)
+    assert sky.cloud_fraction == analysis.cloud_fraction
+    assert sky.n_expected is not None
+    assert sky.n_expected >= 8  # [survey.cloud] min_expected
+    assert sky.n_expected_found == 0
 
 
 def test_an_unknown_readout_mode_gives_the_failure_records(

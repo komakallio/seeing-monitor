@@ -6292,6 +6292,24 @@
             ],
             "x-unit": "mag"
           },
+          "n_expected": {
+            "description": "The number of catalog stars that the cloud fraction expects in this frame: the stars brighter than G `[survey.cloud] mag_limit` that lie more than `[survey.cloud] edge_px` inside the frame and outside the blobs of saturated stars, and that a clear sky shows at a signal-to-noise ratio of at least `[survey.cloud] expected_snr` with the exposure and the background noise of this frame, placed by the solve or, when the frame does not solve, by the stored pointing.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "n_expected_found": {
+            "description": "The number of the expected stars (`n_expected`) that detection found, which means that a detection matched the star or lies within `[survey.cloud] match_radius_px` of its catalog place, so the cloud fraction is 1 minus this number over `n_expected`, whereas `n_detected` of the `survey_frame` counts every detection of the frame, hot pixels and stars fainter than the limit included.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "n_stars_used": {
             "description": "The number of matched stars in the zero-point fit.",
             "format": "int64",
@@ -6438,6 +6456,8 @@
           "sky_rate_e_per_s_arcsec2",
           "dark_model_version",
           "flags",
+          "n_expected",
+          "n_expected_found",
           "t_utc"
         ],
         "title": "SkyQuality",
@@ -6576,6 +6596,24 @@
               "null"
             ],
             "x-unit": "mag"
+          },
+          "n_expected": {
+            "description": "The number of catalog stars that the cloud fraction expects in this frame: the stars brighter than G `[survey.cloud] mag_limit` that lie more than `[survey.cloud] edge_px` inside the frame and outside the blobs of saturated stars, and that a clear sky shows at a signal-to-noise ratio of at least `[survey.cloud] expected_snr` with the exposure and the background noise of this frame, placed by the solve or, when the frame does not solve, by the stored pointing.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "n_expected_found": {
+            "description": "The number of the expected stars (`n_expected`) that detection found, which means that a detection matched the star or lies within `[survey.cloud] match_radius_px` of its catalog place, so the cloud fraction is 1 minus this number over `n_expected`, whereas `n_detected` of the `survey_frame` counts every detection of the frame, hot pixels and stars fainter than the limit included.",
+            "format": "double",
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "n_samples": {
             "description": "The number of records that this item combines. A raw item combines none.",

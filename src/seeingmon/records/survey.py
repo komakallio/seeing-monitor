@@ -182,6 +182,29 @@ class SkyQualityRecord(Record):
         codes=SKY_QUALITY_FLAGS,
         definition="The conditions that apply to the measurement, as documented codes.",
     )
+    n_expected: int | None = quantity(
+        ge=0,
+        default=None,
+        definition=(
+            "The number of catalog stars that the cloud fraction expects in this frame: the "
+            "stars brighter than G `[survey.cloud] mag_limit` that lie more than "
+            "`[survey.cloud] edge_px` inside the frame and outside the blobs of saturated stars, "
+            "and that a clear sky shows at a signal-to-noise ratio of at least "
+            "`[survey.cloud] expected_snr` with the exposure and the background noise of this "
+            "frame, placed by the solve or, when the frame does not solve, by the stored pointing."
+        ),
+    )
+    n_expected_found: int | None = quantity(
+        ge=0,
+        default=None,
+        definition=(
+            "The number of the expected stars (`n_expected`) that detection found, which means "
+            "that a detection matched the star or lies within `[survey.cloud] match_radius_px` of "
+            "its catalog place, so the cloud fraction is 1 minus this number over `n_expected`, "
+            "whereas `n_detected` of the `survey_frame` counts every detection of the frame, "
+            "hot pixels and stars fainter than the limit included."
+        ),
+    )
 
 
 class PointingRecord(Record):
