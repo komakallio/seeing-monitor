@@ -28,8 +28,8 @@ electrons and gives the saturation level. The kernel never rescales the pixels i
 a table of aperture weights for 16 x 16 sub-pixel positions of the aperture center. The table
 quantizes the aperture position to 1/16 pixel. Because the aperture follows the star, the
 quantization changes the centroid by less than 0.001 pixel (the leakage of the aperture, about 2%,
-times half a step). `measure_frame` takes about 30 microseconds for a 128 x 128 frame on a quiet
-desktop, 10 of them for the matched filter (`seeingmon.fastpath.benchmark` measures it), and
+times half a step). `measure_frame` takes about 35 microseconds for a 128 x 128 frame on a quiet
+desktop, 12 of them for the matched filter (`seeingmon.fastpath.benchmark` measures it), and
 `measure_stack` handles a 3-D stack with the same code, so the two agree exactly.
 
 **Noise.** `Measurement.noise_var_x` and `noise_var_y` hold the modeled variance of the centroid
@@ -45,26 +45,31 @@ that looks like a star. Both take `v`, the variance of one pixel in electrons sq
 larger of the modeled pixel noise (read noise and quantization) and the square of the measured
 sky noise, because the measured noise already holds the read noise.
 
-- `matched_snr` decides whether the star is there. It is the SNR of a filter matched to the image
-  of the star (`seeingmon.fastpath.matched`), at its best position within about 1.4 px of the
-  centroid. A star below `min_snr` counts as missing, so a bright sky does not make a star out of
-  its own noise. A frame whose centroid strays farther from the star, as the centroid of a faint
-  star in a bright sky can, counts as missing too, and its centroid would not be usable. The
-  filter needs `matched_fwhm_px`.
+- `matched_snr` is the SNR of a filter matched to the image of the star
+  (`seeingmon.fastpath.matched`). `measure_frame` takes the first filter of `matched_fwhms_px`,
+  at its best position within about 1.4 px of the centroid.
 - `snr` is the SNR of the centroid aperture, `F / sqrt(F + A v)`, where `A` is the area of the
   aperture and `F` the aperture sum above the trimmed mean. It describes the noise of the
   centroid, and the window reports its median as `star_snr`. On a sky that dominates the noise,
-  it is about a fifth of `matched_snr`, because the aperture adds the noise of about 200 pixels
-  of sky. Without `matched_fwhm_px`, it decides instead.
+  it is about a fifth of `matched_snr` for a star in focus, because the aperture adds the noise
+  of about 200 pixels of sky.
+
+A star counts as missing when both stay below `min_snr`, so a bright sky does not make a star out
+of its own noise. The matched filter keeps a faint star in a bright sky, where the aperture loses
+it, and the aperture keeps a bright star whose image is far wider than the filter, such as a
+defocused one in the rapid focus mode. A frame whose centroid strays more than about 1.4 px from a
+faint star, as the centroid of a faint star in a bright sky can, counts as missing, and its
+centroid would not be usable. Without `matched_fwhms_px`, the aperture decides alone.
 
 Both leave out the noise of the background level. For the aperture, that makes the SNR about 1.2
-times too high in a sky that dominates the noise. For the matched filter, it is about 1% of the
-variance.
+times too high in a sky that dominates the noise. For a matched filter, it is about 1% of the
+variance with the Airy FWHM, and 14% with 4 Airy FWHM, the widest filter of the search.
 
-**Search.** `search_frame` serves the search bursts: it finds the star with the matched filter
-within a radius of a predicted position (`seeingmon.fastpath.matched.search`), and it reports the
-position, `matched_snr`, and the SNR of the centroid aperture at that position, without the
-centroid loop.
+**Search.** `search_frame` serves the search bursts: it finds the star with each matched filter of
+`matched_fwhms_px` within a radius of a predicted position (`seeingmon.fastpath.matched.search`),
+keeps the filter with the highest SNR, so that the size of the image need not be known, and
+reports the position, that `matched_snr`, and the SNR of the centroid aperture at that position,
+without the centroid loop.
 """
 
 from __future__ import annotations
@@ -120,8 +125,10 @@ class KernelParams:
     `spike_ratio` enables the isolated-pixel test: when the neighbors of the brightest pixel of the
     aperture box stay below `spike_ratio` times its excess over the background, the frame carries
     the hot-pixel flag. Use `None` for a mode that undersamples the star, because a real star can
-    fill one pixel there. `matched_fwhm_px` is the FWHM of the matched filter, in pixels. With
-    `None`, the kernel uses no matched filter, and the SNR of the aperture decides instead.
+    fill one pixel there. `matched_fwhms_px` holds the FWHMs of the matched filters, in pixels.
+    `measure_frame` uses the first in its missing-star test, and `search_frame` tries them all and
+    keeps the best. Empty, the kernel uses no matched filter, and the SNR of the aperture decides
+    alone.
     """
 
     aperture_diameter_px: float = 16.0
@@ -131,7 +138,7 @@ class KernelParams:
     edge_margin_px: float = 1.0
     min_snr: float = 6.0
     spike_ratio: float | None = 0.03
-    matched_fwhm_px: float | None = None
+    matched_fwhms_px: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if not 3.0 <= self.aperture_diameter_px <= 60.0:
@@ -144,8 +151,8 @@ class KernelParams:
             raise ValueError("min_snr and edge_margin_px must not be negative")
         if self.spike_ratio is not None and not 0.0 < self.spike_ratio < 1.0:
             raise ValueError("spike_ratio must be between 0 and 1, or None")
-        if self.matched_fwhm_px is not None and not 0.3 <= self.matched_fwhm_px <= 20.0:
-            raise ValueError("matched_fwhm_px must be between 0.3 and 20, or None")
+        if not all(0.3 <= fwhm <= 20.0 for fwhm in self.matched_fwhms_px):
+            raise ValueError("each of matched_fwhms_px must be between 0.3 and 20")
 
     @property
     def radius_px(self) -> float:
@@ -261,9 +268,9 @@ class Measurement(NamedTuple):
     counts. `noise_var_x` and `noise_var_y` are the modeled centroid noise in square pixels, and
     `flags` holds the analysis flags (`FLAG_*`). `bg_sigma_dn` is the sky noise of the border in
     container counts, for every frame. `snr` is the signal-to-noise ratio of the star in the
-    centroid aperture, and `matched_snr` the one of the matched filter, which decides whether the
-    star is there. Both are `NaN` when `found` is false or when the calibration has no electron
-    scale, and `matched_snr` also without a matched filter.
+    centroid aperture, and `matched_snr` the one of the matched filter. Both are `NaN` when `found`
+    is false or when the calibration has no electron scale, and `matched_snr` also without a
+    matched filter.
     """
 
     found: bool
@@ -497,20 +504,18 @@ def _measure_at(
             return _not_found(data, background, sigma)
         pixel_var = _pixel_variance_e2(sigma, calibration)
         snr = detected_e / math.sqrt(detected_e + tables.area * pixel_var)
-        if params.matched_fwhm_px is not None:
+        if params.matched_fwhms_px:
             best = matched.near(
                 data,
                 round(gx),
                 round(gy),
-                matched.matched_filter(params.matched_fwhm_px),
+                matched.matched_filter(params.matched_fwhms_px[0]),
                 level,
                 calibration.e_per_dn,
                 pixel_var,
             )
             matched_snr = best.snr
-            if not matched_snr >= params.min_snr:
-                return _not_found(data, background, sigma)
-        elif snr < params.min_snr:
+        if not (snr >= params.min_snr or matched_snr >= params.min_snr):
             return _not_found(data, background, sigma)
     elif peak - background < params.min_snr:
         return _not_found(data, background, sigma)
@@ -552,17 +557,18 @@ def search_frame(
 ) -> Measurement:
     """Look for the star with the matched filter, for a frame of a search burst.
 
-    `at` is where the star should be, in sensor pixels, and the filter looks within `radius_px` of
-    it. Without `at` or `radius_px`, it looks over the whole frame. The star is found when the
-    matched filter reaches `min_snr` at its best position. The result holds that position,
-    `matched_snr`, the brightest pixel and the flux of the centroid aperture placed there with
-    the SNR of that aperture, and the saturation and edge flags. It has no widths and no centroid
-    noise, because the centroid loop does not run.
+    `at` is where the star should be, in sensor pixels, and each filter of `matched_fwhms_px` looks
+    within `radius_px` of it. Without `at` or `radius_px`, they look over the whole frame. The
+    filter with the highest SNR at its best position wins, and the star is found when that SNR
+    reaches `min_snr`. The result holds that position, that SNR as `matched_snr`, the brightest
+    pixel and the flux of the centroid aperture placed there with the SNR of that aperture, and
+    the saturation and edge flags. It has no widths and no centroid noise, because the centroid
+    loop does not run.
 
-    Without `matched_fwhm_px` or an electron scale, the result is that of `measure_frame` from
+    Without `matched_fwhms_px` or an electron scale, the result is that of `measure_frame` from
     `at`, which may lie anywhere in the frame.
     """
-    if params.matched_fwhm_px is None or not (
+    if not params.matched_fwhms_px or not (
         calibration.e_per_dn == calibration.e_per_dn
         and calibration.pixel_var_e2 == calibration.pixel_var_e2
     ):
@@ -578,16 +584,20 @@ def search_frame(
     else:
         cx, cy, radius = at[0] - roi_x, at[1] - roi_y, radius_px
     pixel_var = _pixel_variance_e2(sigma, calibration)
-    found = matched.search(
-        data,
-        cx,
-        cy,
-        radius,
-        matched.matched_filter(params.matched_fwhm_px),
-        level,
-        calibration.e_per_dn,
-        pixel_var,
-    )
+    found: matched.MatchedPeak | None = None
+    for fwhm in params.matched_fwhms_px:
+        candidate = matched.search(
+            data,
+            cx,
+            cy,
+            radius,
+            matched.matched_filter(fwhm),
+            level,
+            calibration.e_per_dn,
+            pixel_var,
+        )
+        if candidate is not None and (found is None or candidate.snr > found.snr):
+            found = candidate
     if found is None or not found.snr >= params.min_snr:
         return _not_found(data, background, sigma)
     gx, gy = found.x, found.y

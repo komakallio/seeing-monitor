@@ -58,7 +58,7 @@ brightness_resume_fraction = 0.6 # Provisional. Hysteresis of the clip before `a
 # The search mode of the fast stream, which looks for Polaris before it measures. A burst reads
 # burst_frames fast frames on the ROI where the pointing solution predicts Polaris, and it detects
 # Polaris when the median SNR of the star in its frames reaches detect_snr within radius_px of the
-# prediction. The SNR of a frame is the one of a filter matched to the star's image ([fastpath]
+# prediction. The SNR of a frame is the best of the filters matched to the star's image ([fastpath]
 # matched_fwhm_airy_widths). confirm_bursts detections in a row switch the stream to measure. All
 # values are provisional: phase 3 sets them from real skies.
 [scheduler.search]
@@ -72,6 +72,7 @@ confirm_bursts = 2             # Provisional. Detecting bursts in a row that sta
 # in the detection estimate (docs/research-notes.md, "Polaris in a bright sky"), the matched SNR
 # of Polaris in the median frame of a daylight sky is 41, and it falls to 10 only in a sky 1.7 mag
 # brighter than the model's daylight, so the SNR never crosses 10 between -18 and +90 degrees.
+# With the wider image of the owner's recordings, it is about 13, and the day's sky decides.
 max_sun_elevation_deg = 90.0
 probe_interval_s = 600.0       # Provisional. The time between probe bursts above the limit.
 

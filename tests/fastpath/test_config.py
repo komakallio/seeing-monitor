@@ -26,7 +26,9 @@ def test_the_defaults_file_and_the_model_agree(repo_root: Path) -> None:
     unknown = set(table) - set(FastPathConfig.model_fields)
     assert not unknown, f"keys that the model does not declare: {sorted(unknown)}"
     for key, value in table.items():
-        assert getattr(defaults, key) == value, key
+        default = getattr(defaults, key)
+        # A TOML array reads as a list, and the model keeps a tuple.
+        assert (list(default) if isinstance(default, tuple) else default) == value, key
 
 
 def test_every_field_has_a_line_in_the_defaults_file_except_the_derived_aperture(

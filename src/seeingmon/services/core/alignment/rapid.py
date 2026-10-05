@@ -13,6 +13,12 @@ fast analyzer uses for the stream. The helper hands the frame to the video of Po
 that it found, so the video and the star of each frame come from the code of the Now page. It never
 gives a frame to the fast analyzer, so no frame reaches a stored window.
 
+**A defocused star stays found.** The kernel counts the star as found when the matched filter of
+the Airy FWHM or the centroid aperture reaches `[fastpath] min_star_snr` (see the "Detection"
+part of `seeingmon.fastpath.kernel`). A defocused image is far wider than that filter, which sees
+little of it, but the aperture holds it, so the frames of a person who focuses from far out keep
+their star, as they did before the matched filter.
+
 **The background of the width.** The kernel takes the background from the median of the border of
 the ROI. The pixels are whole counts, and the noise of the camera at gain 0 (0.76 counts) dithers
 them only partly, so the median of the border can differ from the mean level of the sky by up to

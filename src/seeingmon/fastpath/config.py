@@ -46,9 +46,13 @@ class FastPathConfig(SectionModel):
     border_step: Annotated[int, Field(ge=1)] = 2
     edge_margin_px: NonNegative = 1.0
     saturation_fraction: Annotated[float, Field(gt=0, le=1)] = 0.98
-    min_star_snr: NonNegative = 6.0  # of the matched filter
+    min_star_snr: NonNegative = 6.0  # of the matched filter or the aperture
     hot_pixel_ratio: Annotated[float, Field(gt=0, lt=1)] = 0.03
-    matched_fwhm_airy_widths: Annotated[float, Field(ge=0.25, le=5)] = 1.0
+    # The matched filters, in Airy FWHM: the first serves the missing-star test, and a search
+    # frame keeps the best of all.
+    matched_fwhm_airy_widths: Annotated[
+        tuple[Annotated[float, Field(ge=0.25, le=8)], ...], Field(min_length=1, max_length=4)
+    ] = (1.0, 2.0, 4.0)
 
     # --- the seeing estimator ---
     outer_scale_m: Positive = 20.0

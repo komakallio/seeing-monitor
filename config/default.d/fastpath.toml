@@ -26,13 +26,15 @@ border_px = 4                    # Width of the ROI border that gives the backgr
 border_step = 2                  # Use the border pixels at every second row and column.
 edge_margin_px = 1.0             # A star within the aperture radius plus this of the ROI edge: edge.
 saturation_fraction = 0.98       # The share of the ADC full scale that flags saturation.
-min_star_snr = 6.0               # A matched-filter SNR below this is a missing star.
+min_star_snr = 6.0               # Below this SNR in the matched filter and the aperture: missing star.
 hot_pixel_ratio = 0.03           # An isolated brightest pixel (neighbors below this share): hot pixel.
-# Provisional. The FWHM of the Gaussian of the matched filter, in Airy FWHM of the readout mode
-# (1.33 px in bin1). The filter's SNR decides whether the star is there, in the search bursts and
-# in the missing-star test. In the simulator's image of Polaris, 1.0 to 1.2 give the highest SNR,
-# within 0.4% of each other (docs/research-notes.md, "Polaris in a bright sky").
-matched_fwhm_airy_widths = 1.0
+# Provisional. The FWHMs of the Gaussians of the matched filters, in Airy FWHM of the readout mode
+# (1.33 px in bin1). Their SNR decides whether the star is there. A frame of a search burst keeps
+# the best of them, so the size of the star's image need not be known: the simulator's image
+# (diffraction-limited) is best served by 1.0, and the image of the owner's recordings, 13 times
+# larger in area, by 2 to 4. The missing-star test of measure uses the first. See
+# docs/research-notes.md, "Polaris in a bright sky".
+matched_fwhm_airy_widths = [1.0, 2.0, 4.0]
 
 # --- the seeing estimator ---
 outer_scale_m = 20.0             # The assumed outer scale L0. It lowers a 50 mm aperture's variance by 21%.

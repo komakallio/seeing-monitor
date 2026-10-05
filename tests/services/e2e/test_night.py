@@ -135,7 +135,7 @@ class TestTheDaylightGate:
             sun = visible.detail["sun_elevation_deg"]
             assert sun > 5.0  # the first bursts, with the Sun near +6 degrees
             # The burst's median matched SNR against the median frame of the estimate. The run
-            # gave 23.0 against 22.5, at +5.9 degrees, after 2 bursts.
+            # gave 23.0 against 22.4, at +5.9 degrees, after 2 bursts.
             assert visible.detail["snr"] == pytest.approx(model.row(sun).snr_matched, rel=0.1)
             assert status.counters.search_bursts == 2
             first = night.records("seeing_window")[0]
@@ -170,9 +170,10 @@ class TestPolarisAtDusk:
             profile = night.app.profile
             mode = profile.fast_mode.mode
             fastpath = night.config.section("fastpath", FastPathConfig)
+            airy = profile.airy_fwhm_px(mode)
             model = DetectionModel.for_simulator(
                 SimParams.from_profile(profile, mode),
-                matched_fwhm_px=fastpath.matched_fwhm_airy_widths * profile.airy_fwhm_px(mode),
+                filter_fwhms_px=tuple(w * airy for w in fastpath.matched_fwhm_airy_widths),
             )
             assert night.app.scheduler.config.fast.target_background_fraction == pytest.approx(
                 model.target_background_fraction
@@ -197,7 +198,7 @@ class TestPolarisAtDusk:
                 assert visible_sun == pytest.approx(crossing, abs=1.0)
             assert visible.detail["probe"] is False  # no limit, so no probe
             # The burst that confirmed Polaris: its median matched SNR sits near the median frame
-            # of the estimate. The run gave 38.7 against 41.4, at +11.4 degrees, with an exposure
+            # of the estimate. The run gave 38.6 against 41.3, at +11.4 degrees, with an exposure
             # 2.4% short.
             assert visible.detail["snr"] == pytest.approx(
                 model.row(visible_sun).snr_matched, rel=0.1

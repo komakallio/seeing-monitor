@@ -13,35 +13,55 @@ own photon noise, which the filter concentrates on a few pixels, it is five time
 in the daylight sky of the detection estimate (`docs/research-notes.md`, "Polaris in a bright
 sky").
 
+**The size of the image.** The filter gives the best SNR when its width matches the image, and a
+filter that is too narrow loses much of it: a Gaussian filter of width `s_f` on a Gaussian image of
+width `s_i` keeps `2 s_f s_i / (s_f^2 + s_i^2)` of the best SNR on a sky that dominates the noise.
+The real image can be far wider than the diffraction limit: in the owner's recordings, `1 /
+sum(P^2)` is 13 times that of the simulator's image. The fast path therefore keeps a bank of
+widths (`[fastpath] matched_fwhm_airy_widths`), and a search frame keeps the one with the best SNR.
+
 **The filter.** The weights are a Gaussian of the FWHM that the caller gives (the fast path uses
-the Airy FWHM of the readout mode), integrated over each pixel and normalized to a total of 1 over
-the plane, on a stamp of `2 h + 1` pixels with `h = ceil(3 sigma + 0.5)`. The table holds the
-weights for 4 x 4 positions of the star within a pixel, a quarter of a pixel apart.
+1, 2, and 4 Airy FWHM of the readout mode), integrated over each pixel and normalized to a total
+of 1 over the plane, on a stamp of `2 h + 1` pixels with `h = ceil(3 sigma + 0.5)`. The table
+holds the weights for 4 x 4 positions of the star within a pixel, a quarter of a pixel apart.
 
-**The SNR.** For the weights `w` at one position, `S = sum(w (I - b))` in electrons, the flux of
-the star is `F = S / sum(w^2)`, and the variance of `S` is `sum(w^2 var_i)`, where `var_i` is the
-pixel variance `v` measured on the ROI border plus the star's own photon noise `F w_i`:
+**The SNR.** For the weights `w` at one position, `S = sum(w (I - b))` in electrons, and the
+variance of `S` is `sum(w^2 var_i)`, where `var_i` is the pixel variance `v` measured on the ROI
+border plus the star's own photon noise `F P_i`. The pixels measure that noise themselves, because
+`I_i - b` has the mean `F P_i`:
 
-    SNR = S / sqrt(v sum(w^2) + max(F, 0) sum(w^3))
+    SNR = S / sqrt(v sum(w^2) + max(sum(w^2 (I - b)), 0))
+
+This holds for any image, also one that the filter does not match. A form that assumes the match,
+`F sum(w^3)` with `F = S / sum(w^2)`, understates the photon noise of a filter wider than the
+image by up to a third, and would let a wide filter of the bank report more than the best
+weighting allows.
 
 The noise of the background level `b` (the trimmed mean of a few hundred border pixels) adds
-`1.1 sum(w)^2 v / n` to the variance, about 1% of it, and the SNR leaves it out. In a dark sky,
-where the star's photons dominate, the filter gives about `0.85 sqrt(F)` against the `sqrt(F)` of
-a wide aperture, which costs nothing at a detection threshold of 10.
+`1.1 sum(w)^2 v / n` to the variance, and the SNR leaves it out: about 1% of the variance for a
+filter of the Airy FWHM, and 14% for one of 4 Airy FWHM, whose SNR therefore reads up to 7% high
+in a bright sky. In a dark sky, where the star's photons dominate, a filter of the Airy FWHM gives
+about `0.83 sqrt(F)` against the `sqrt(F)` of a wide aperture, which costs nothing at a detection
+threshold of 10.
 
 **Where the SNR is taken.** `near` evaluates the filter on a grid of 12 x 12 positions a quarter
 of a pixel apart, the 3 x 3 pixels around a given pixel times the 16 positions within each pixel.
 It takes the grid point where `S / sqrt(sum(w^2))` peaks, refines the position between the grid
 points by a parabola, and returns the SNR of that grid point. `search` first finds the brightest
-pixel of the image that the centered filter makes, within a radius of a point, and then calls
-`near` there. The kernel uses `near` around the centroid for its missing-star test, and the
-search bursts use `search` around the predicted position.
+pixel of the image that the centered filter makes, within a radius of a point widened by the
+half width of the filter, and then calls `near` there. A position beyond the radius is no star.
+The kernel uses `near` with the first filter of the bank around the centroid for its missing-star
+test, and a frame of a search burst runs `search` with each filter of the bank around the
+predicted position and keeps the best.
 
-**Cost.** `near` reads one box of `2 h + 3` pixels, and one matrix product gives the 144 weighted
-sums. `search` filters only the square around the circle, as two matrix products with banded
-matrices, never the whole frame. On the desktop of `seeingmon.fastpath.benchmark`, `near` adds
-about 10 microseconds to a frame of the kernel (from 22 to 31), and a frame of a search burst
-within 20 pixels takes about 53 microseconds (`search_us`).
+**Cost.** `near` reads one box of `2 h + 3` pixels, one matrix product gives the 144 weighted
+sums, and one dot product gives the photon noise of the best one. `search` filters only the
+square around the circle, widened by `h`, as two matrix products with banded matrices, never the
+whole frame. On the dev desktop, `near` adds about 55% to a frame of the kernel (about 12
+microseconds on top of 22), and a frame of a search burst within 20 pixels takes about 0.2 ms
+with the three filters, 3.5 times as long as with one (`search_us` of
+`seeingmon.fastpath.benchmark`). `docs/research-notes.md` ("Polaris in a bright sky") scales them
+to a Pi 4.
 """
 
 from __future__ import annotations
@@ -77,8 +97,9 @@ class MatchedFilter:
     `(-1.375, -1.375)` pixels to `(1.375, 1.375)` around the center of the center pixel, fill
     column `k` of a matrix of the shape `(box * box, 144)`. `near_score_t` holds that matrix with
     each column divided by the root of its sum of squares, so that one product gives
-    `S / sqrt(sum(w^2))` at every grid point. `near_sum_w2` and `near_sum_w3` hold the sums of the
-    squares and of the cubes of each column.
+    `S / sqrt(sum(w^2))` at every grid point. `near_sum_w2` holds the sum of the squares of each
+    column, and row `k` of `near_w2` the squares of column `k`, which weight the star's photon
+    noise.
     """
 
     fwhm_px: float
@@ -87,7 +108,7 @@ class MatchedFilter:
     sum_w2: FloatArray
     near_score_t: FloatArray
     near_sum_w2: FloatArray
-    near_sum_w3: FloatArray
+    near_w2: FloatArray
 
     @property
     def stamp_px(self) -> int:
@@ -155,7 +176,7 @@ def matched_filter(fwhm_px: float) -> MatchedFilter:
         sum_w2=np.asarray(sum_w2, dtype=np.float64),
         near_score_t=np.ascontiguousarray((flat / np.sqrt(near_sum_w2)[:, None]).T),
         near_sum_w2=near_sum_w2,
-        near_sum_w3=(flat**3).sum(axis=1),
+        near_w2=np.ascontiguousarray(flat**2),
     )
 
 
@@ -211,9 +232,10 @@ def near(
         y += _vertex(float(score[best - _GRID]), top, float(score[best + _GRID])) / PHASES
     sum_w2 = float(matched.near_sum_w2[best])
     signal_e = top * math.sqrt(sum_w2) * e_per_dn
-    flux_e = signal_e / sum_w2
-    variance = pixel_var_e2 * sum_w2 + max(flux_e, 0.0) * float(matched.near_sum_w3[best])
-    return MatchedPeak(x, y, signal_e / math.sqrt(variance), flux_e)
+    # The star's photon noise, `sum(w^2 F P)`, from the pixels themselves: `sum(w^2 (I - b))`.
+    photon_e2 = float(excess.reshape(-1) @ matched.near_w2[best]) * e_per_dn
+    variance = pixel_var_e2 * sum_w2 + max(photon_e2, 0.0)
+    return MatchedPeak(x, y, signal_e / math.sqrt(variance), signal_e / sum_w2)
 
 
 def _vertex(low: float, middle: float, high: float) -> float:
@@ -245,15 +267,19 @@ def search(
     e_per_dn: float,
     pixel_var_e2: float,
 ) -> MatchedPeak | None:
-    """The star near `(cx, cy)`: the brightest pixel of the filtered image within `radius_px`.
+    """The star near `(cx, cy)`: the brightest place of the filtered image within `radius_px`.
 
-    The image that the centered filter makes, over the pixels whose centers lie within
-    `radius_px` of `(cx, cy)` (in the pixels of the frame), gives the brightest pixel, and `near`
-    finds the best position around it. The result is `None` when no pixel of the frame lies in
-    the circle. The arguments are those of `near`.
+    The image that the centered filter makes gives the brightest pixel, and `near` finds the best
+    position around it. The filtered image covers the circle of `radius_px` around `(cx, cy)` (in
+    the pixels of the frame) widened by the half width of the filter, because a star just beyond
+    the circle brightens the filtered image inside it: a wide filter would otherwise report such a
+    star at the edge of the circle. The result is `None` when that position lies beyond
+    `radius_px`, or when no pixel of the frame lies in the widened circle. The arguments are those
+    of `near`.
     """
     height, width = data.shape
-    reach = math.ceil(radius_px)
+    margin = matched.half  # how far the light of a star reaches into the filtered image
+    reach = math.ceil(radius_px) + margin
     x_lo = max(round(cx) - reach, 0)
     x_hi = min(round(cx) + reach, width - 1)
     y_lo = max(round(cy) - reach, 0)
@@ -267,8 +293,12 @@ def search(
     filtered = _band(rows, matched.fwhm_px).T @ excess @ _band(columns, matched.fwhm_px)
     dx = np.arange(x_lo, x_hi + 1, dtype=np.float64) - cx
     dy = np.arange(y_lo, y_hi + 1, dtype=np.float64) - cy
-    outside = dy[:, None] ** 2 + dx[None, :] ** 2 > radius_px * radius_px
+    outer = radius_px + margin
+    outside = dy[:, None] ** 2 + dx[None, :] ** 2 > outer * outer
     if outside.all():
         return None
     row, column = divmod(int(np.argmax(np.where(outside, -np.inf, filtered))), columns)
-    return near(data, x_lo + column, y_lo + row, matched, level_dn, e_per_dn, pixel_var_e2)
+    peak = near(data, x_lo + column, y_lo + row, matched, level_dn, e_per_dn, pixel_var_e2)
+    if (peak.x - cx) ** 2 + (peak.y - cy) ** 2 > radius_px * radius_px:
+        return None
+    return peak

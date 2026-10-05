@@ -12,14 +12,19 @@ simulator's own photon budget and sky model, so the estimate and a simulated day
   at or below `target_background_fraction` of the full well, and never shorter than
   `min_exposure_us`.
 - **The image.** The simulator's Gaussian-mixture image of Polaris at the `r0` of the line of
-  sight, at 8 x 8 positions within a pixel.
-- **The matched filter.** The filter of the fast path: a Gaussian of `matched_fwhm_px`, evaluated
-  on the grid of positions a quarter of a pixel apart that the kernel uses, at the grid point
-  where the noise-free image gives the highest `S / sqrt(sum(w^2))`. For a star of flux `F`, the
-  weighted sum is `S = F sum(w P)`, and the SNR is the kernel's
-  `S / sqrt(v sum(w^2) + (S / sum(w^2)) sum(w^3))`, where `v` is the variance of one pixel: the
-  sky and dark photons, the read noise, and the rounding of the ADC (`e_per_adu^2 / 12`). It is
-  averaged over the positions within a pixel.
+  sight, at 8 x 8 positions within a pixel. `blur_fwhm_arcsec` widens it by a Gaussian, for a
+  real image that defocus or the color of the optics makes wider than the simulator's.
+- **The best weighting.** The highest SNR that any weighting of the pixels reaches, with the
+  weights `P / (v + F P)` for the pixel shares `P` of the image: `sqrt(sum((F P)^2 / (v + F P)))`,
+  where `F` is the star's flux and `v` the variance of one pixel of sky: the sky and dark
+  photons, the read noise, and the rounding of the ADC (`e_per_adu^2 / 12`). It is the physical
+  limit, a property of the star, the sky, and the image.
+- **The matched filters.** The filters of the fast path: Gaussians of `filter_fwhms_px`, each
+  evaluated on the grid of positions a quarter of a pixel apart that the kernel uses, at the grid
+  point where the noise-free image gives the highest `S / sqrt(sum(w^2))`. For a star of flux
+  `F`, the weighted sum is `S = F sum(w P)`, and the SNR is the kernel's
+  `S / sqrt(v sum(w^2) + F sum(w^2 P))`, averaged over the positions within a pixel. A search
+  frame keeps the best filter, so the estimate takes the highest of their SNRs.
 - **The centroid aperture.** The fast path's soft-edged disk, whose centroid gives the seeing: a
   pixel at distance `r` from the center has the weight `clip(R + 0.5 - r, 0, 1)`, as in
   `seeingmon.fastpath.kernel`. Its SNR is `F f / sqrt(F f + A v)` for the share `f` of the star
@@ -29,12 +34,13 @@ simulator's own photon budget and sky model, so the estimate and a simulated day
   which is `exp(-sigma^2 / 2)` times the mean. The search takes the median of a burst, so the
   median frame decides.
 
-Both SNRs leave out the noise of the background level (the trimmed mean of the ROI border), as
-the kernel does.
+The SNRs leave out the noise of the background level (the trimmed mean of the ROI border), as the
+kernel does.
 
-`DetectionModel.row` gives one Sun elevation, and `crossing_deg` finds the elevation where the
-matched SNR of the median frame falls to a threshold. The section "Polaris in a bright sky" of
-`docs/research-notes.md` holds the table, and a test reproduces it.
+`DetectionModel.row` gives one Sun elevation, `crossing_deg` finds the elevation where the matched
+SNR of the median frame falls to a threshold, and `crossing_sky_mag_arcsec2` finds the sky where
+it does. The section "Polaris in a bright sky" of `docs/research-notes.md` holds the tables, and a
+test reproduces them.
 """
 
 from __future__ import annotations
@@ -48,7 +54,7 @@ import numpy.typing as npt
 
 from seeingmon.drivers.sim.optics import MixturePsf, PsfConfig
 from seeingmon.drivers.sim.options import SimOptions
-from seeingmon.drivers.sim.params import SimParams
+from seeingmon.drivers.sim.params import ARCSEC_PER_RAD, SimParams
 from seeingmon.drivers.sim.sky import (
     SYNTHETIC_SITE,
     ScintillationConfig,
@@ -58,6 +64,7 @@ from seeingmon.drivers.sim.sky import (
 )
 from seeingmon.drivers.sim.stars import POLARIS_MAG
 from seeingmon.drivers.sim.turbulence import TurbulenceConfig, r0_at_zenith_angle
+from seeingmon.fastpath.config import FastPathConfig
 from seeingmon.fastpath.matched import matched_filter
 from seeingmon.profile.derived import AIRY_FWHM_FACTOR
 
@@ -67,6 +74,7 @@ DETECTION_SNR = 10.0
 """The SNR of a detection, the design value of `scheduler.search.detect_snr`."""
 
 _PHASES = 8  # positions of the star within a pixel, along each axis
+_FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,19 +94,19 @@ class Aperture:
 class MatchedResponse:
     """The matched filter on the image of Polaris, at each position of the star within a pixel.
 
-    For position `i`, `signal[i]` is `sum(w P)`, the weighted sum per electron of the star, and
-    `sum_w2[i]` and `sum_w3[i]` are the sums of the squares and of the cubes of the weights of the
-    grid point that the kernel picks.
+    For position `i`, `signal[i]` is `sum(w P)`, the weighted sum per electron of the star,
+    `sum_w2[i]` the sum of the squares of the weights of the grid point that the kernel picks,
+    and `sum_w2p[i]` the sum of their squares times the image, `sum(w^2 P)`.
     """
 
     signal: FloatArray
     sum_w2: FloatArray
-    sum_w3: FloatArray
+    sum_w2p: FloatArray
 
     def snr(self, star_e: float, pixel_var_e2: float) -> float:
         """The kernel's SNR of a star of `star_e` electrons, averaged over the positions."""
         signal = star_e * self.signal
-        variance = pixel_var_e2 * self.sum_w2 + (signal / self.sum_w2) * self.sum_w3
+        variance = pixel_var_e2 * self.sum_w2 + star_e * self.sum_w2p
         return float(np.mean(signal / np.sqrt(variance)))
 
     @property
@@ -114,9 +122,11 @@ class DetectionRow:
 
     `exposure_us` is the exposure that the background allows, `background_e` the sky and dark
     electrons in one pixel, and `background_fraction` that over the full well. `star_e` is the
-    mean flux of Polaris in the frame, all of it. `snr_matched` is the SNR of the matched filter
-    in the median frame, which decides the detection. `snr_centroid` is the SNR of the median
-    frame in the fast path's centroid aperture.
+    mean flux of Polaris in the frame, all of it. The SNRs are those of the median frame:
+    `snr_best` of the best weighting of the pixels (the physical limit), `snr_matched` of the best
+    of the fast path's matched filters (which decides the detection), `snr_centroid` of the fast
+    path's centroid aperture, and `snr_filters` of each matched filter, in the order of
+    `filter_fwhms_px`.
     """
 
     sun_elevation_deg: float
@@ -125,8 +135,10 @@ class DetectionRow:
     background_e: float
     background_fraction: float
     star_e: float
+    snr_best: float
     snr_matched: float
     snr_centroid: float
+    snr_filters: tuple[float, ...]
 
 
 def aperture_weights(radius_px: float, dx: float, dy: float, half: int) -> FloatArray:
@@ -149,13 +161,14 @@ class DetectionModel:
     """The photon budget of Polaris in a fast frame, and the sky it sits in.
 
     `params` is a readout mode of the simulator, normally from `SimParams.from_profile`.
-    `aperture_diameter_px` is the fast path's centroid aperture, and `matched_fwhm_px` the FWHM of
-    its matched filter (`None` takes the Airy FWHM of the mode, the default of `[fastpath]
-    matched_fwhm_airy_widths`). `dark_sky_mag_arcsec2` feeds the simulator's sky model, and
+    `aperture_diameter_px` is the fast path's centroid aperture, and `filter_fwhms_px` the FWHMs
+    of its matched filters (`None` takes the default `[fastpath] matched_fwhm_airy_widths` times
+    the Airy FWHM of the mode). `blur_fwhm_arcsec` widens the simulator's image of the star by a
+    Gaussian of that FWHM. `dark_sky_mag_arcsec2` feeds the simulator's sky model, and
     `temperature_c` its dark current. `r0_zenith_m` is the Fried parameter at 500 nm at the
     zenith, and `zenith_angle_deg` the zenith angle of the pole, which set the image of the star
-    and the scintillation. `centroid` is the centroid aperture on that image, and `matched` the
-    response of the matched filter.
+    and the scintillation. `centroid` is the centroid aperture on that image, `matched` the
+    response of each matched filter, and `images` the image at each position within a pixel.
     """
 
     params: SimParams
@@ -164,7 +177,8 @@ class DetectionModel:
     min_exposure_us: float = 32.0
     target_background_fraction: float = 0.3
     aperture_diameter_px: float = 16.0
-    matched_fwhm_px: float | None = None
+    filter_fwhms_px: tuple[float, ...] | None = None
+    blur_fwhm_arcsec: float = 0.0
     polaris_mag: float = POLARIS_MAG
     dark_sky_mag_arcsec2: float = 20.5
     temperature_c: float = 19.0
@@ -172,25 +186,44 @@ class DetectionModel:
     zenith_angle_deg: float = 35.0
     scintillation: ScintillationConfig = field(default_factory=ScintillationConfig)
     centroid: Aperture = field(init=False, repr=False)
-    matched: MatchedResponse = field(init=False, repr=False)
+    matched: tuple[MatchedResponse, ...] = field(init=False, repr=False)
+    images: FloatArray = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not 0 < self.min_exposure_us <= self.max_exposure_us:
             raise ValueError("the exposures must be positive, the shortest first")
         if not 0 < self.target_background_fraction <= 1:
             raise ValueError("target_background_fraction must be between 0 and 1")
+        if not self.blur_fwhm_arcsec >= 0:
+            raise ValueError("blur_fwhm_arcsec must not be negative")
+        if self.filter_fwhms_px is not None and not self.filter_fwhms_px:
+            raise ValueError("filter_fwhms_px needs at least one filter, or None")
         stamps, offsets = self._stamps()
         centroid = _aperture(self.aperture_diameter_px / 2.0, stamps, offsets)
+        matched = tuple(_matched_response(fwhm, stamps) for fwhm in self.filter_widths_px)
         object.__setattr__(self, "centroid", centroid)
-        object.__setattr__(self, "matched", _matched_response(self.filter_fwhm_px, stamps))
+        object.__setattr__(self, "matched", matched)
+        object.__setattr__(self, "images", stamps)
 
     @property
-    def filter_fwhm_px(self) -> float:
-        """The FWHM of the matched filter, in pixels."""
-        if self.matched_fwhm_px is not None:
-            return self.matched_fwhm_px
+    def airy_fwhm_px(self) -> float:
+        """The FWHM of the Airy pattern of the mode, in pixels."""
         params = self.params
         return AIRY_FWHM_FACTOR * params.wavelength_m / params.aperture_m / params.pixel_rad
+
+    @property
+    def filter_widths_px(self) -> tuple[float, ...]:
+        """The FWHMs of the matched filters, in pixels."""
+        if self.filter_fwhms_px is not None:
+            return self.filter_fwhms_px
+        airy = self.airy_fwhm_px
+        return tuple(widths * airy for widths in FastPathConfig().matched_fwhm_airy_widths)
+
+    @property
+    def image_area_px2(self) -> float:
+        """`1 / sum(P^2)` of the image, averaged over the positions within a pixel: the area of an
+        aperture with the same noise in a sky that dominates it, if it held the whole star."""
+        return float(np.mean(1.0 / np.sum(self.images**2, axis=(1, 2))))
 
     @classmethod
     def for_simulator(cls, params: SimParams, **values: Any) -> DetectionModel:
@@ -212,7 +245,8 @@ class DetectionModel:
         """Images of Polaris at `_PHASES` squared positions within a pixel, and the positions."""
         psf = MixturePsf(self.params, PsfConfig(mode="gaussian"))
         r0 = r0_at_zenith_angle(self.r0_zenith_m, self.zenith_angle_deg)
-        weights, sigmas = psf.components(r0)
+        blur_px = self.blur_fwhm_arcsec / (self.params.pixel_rad * ARCSEC_PER_RAD)
+        weights, sigmas = psf.components(r0, blur_px / _FWHM_PER_SIGMA)
         phase = (np.arange(_PHASES) + 0.5) / _PHASES - 0.5
         dx, dy = (a.ravel() for a in np.meshgrid(phase, phase))
         stamps = np.asarray(psf.stamps(dx, dy, weights, sigmas), dtype=np.float64)
@@ -238,6 +272,9 @@ class DetectionModel:
         rms = self.scintillation.index(exposure_s, airmass(self.zenith_angle_deg))
         median = float(flux_factor(rms, 0.0)) * star
         centroid = self.centroid
+        image = median * self.images
+        best = np.sqrt(np.sum(image**2 / (pixel_var + image), axis=(1, 2)))
+        filters = tuple(response.snr(median, pixel_var) for response in self.matched)
         return DetectionRow(
             sun_elevation_deg=sun_elevation_deg,
             sky_mag_arcsec2=sky_mag_arcsec2,
@@ -245,8 +282,10 @@ class DetectionModel:
             background_e=background,
             background_fraction=background / sensor.full_well_e,
             star_e=star,
-            snr_matched=self.matched.snr(median, pixel_var),
+            snr_best=float(np.mean(best)),
+            snr_matched=max(filters),
             snr_centroid=snr(median * centroid.flux_fraction, centroid.area_px, pixel_var),
+            snr_filters=filters,
         )
 
     def row(self, sun_elevation_deg: float) -> DetectionRow:
@@ -281,6 +320,34 @@ class DetectionModel:
                 high = middle
         return 0.5 * (low + high)
 
+    def crossing_sky_mag_arcsec2(
+        self,
+        threshold: float = DETECTION_SNR,
+        *,
+        brightest: float = -5.0,
+        darkest: float = 22.0,
+        tolerance: float = 1e-4,
+    ) -> float | None:
+        """The sky, in mag/arcsec², at which the matched SNR of the median frame falls to
+        `threshold`.
+
+        The SNR falls as the sky brightens, which is as its magnitude falls, so a bisection finds
+        it. The result is `None` when the SNR stays at or above the threshold even in the
+        `brightest` sky, and `darkest` when it is below the threshold already there.
+        """
+        if self.at_sky(brightest).snr_matched >= threshold:
+            return None
+        if self.at_sky(darkest).snr_matched < threshold:
+            return darkest
+        bright, dark = brightest, darkest
+        while dark - bright > tolerance:
+            middle = 0.5 * (bright + dark)
+            if self.at_sky(middle).snr_matched >= threshold:
+                dark = middle
+            else:
+                bright = middle
+        return 0.5 * (bright + dark)
+
 
 def _aperture(radius_px: float, stamps: FloatArray, offsets: FloatArray) -> Aperture:
     """The aperture of a radius, centered on the star, averaged over the star's positions."""
@@ -308,8 +375,10 @@ def _matched_response(fwhm_px: float, stamps: FloatArray) -> MatchedResponse:
     center = stamps.shape[-1] // 2
     reach = matched.half + 1
     box = stamps[:, center - reach : center + reach + 1, center - reach : center + reach + 1]
-    scores = box.reshape(len(box), -1) @ matched.near_score_t  # (images, grid points)
+    flat = box.reshape(len(box), -1)
+    scores = flat @ matched.near_score_t  # (images, grid points)
     best = np.argmax(scores, axis=1)
     sum_w2 = matched.near_sum_w2[best]
     signal = scores[np.arange(len(box)), best] * np.sqrt(sum_w2)
-    return MatchedResponse(signal, sum_w2, matched.near_sum_w3[best])
+    weights_sq = matched.near_score_t[:, best].T ** 2 * sum_w2[:, None]  # (images, pixels)
+    return MatchedResponse(signal, sum_w2, np.sum(weights_sq * flat, axis=1))

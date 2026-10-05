@@ -18,11 +18,14 @@ electron units and no noise model.
 **Tracking.** The kernel starts each frame at the centroid of the previous one. A lost star
 sends the next frame back to the brightest-patch search.
 
-**Search.** `measure` looks for the star in one frame of a search burst with the matched filter
+**Search.** `measure` looks for the star in one frame of a search burst with the matched filters
 (`seeingmon.fastpath.kernel.search_frame`), within a radius of the position that the scheduler
-predicts, and returns the star with its matched SNR, which decides the detection, and the SNR of
-the centroid aperture at that position. The frame reaches no window, no metric row, and no live
-value. In `push`, the matched SNR around the centroid decides whether the star is missing.
+predicts, and returns the star with the best matched SNR, which decides the detection, and the SNR
+of the centroid aperture at that position. The frames reach no window, no metric row, and no live
+value. The filters are Gaussians of `[fastpath] matched_fwhm_airy_widths` Airy FWHM of the mode,
+so a star in focus and a wider image both meet a filter of about their size. In `push`, the star
+is missing when neither the first filter around the centroid nor the centroid aperture reaches
+`min_star_snr`.
 
 **Cost.** `push` does the kernel, a few list appends, and the window bookkeeping, and it finishes
 in well under a frame period. The work of a window (the fits, the spectrum, the corrections)
@@ -280,10 +283,10 @@ class FastPathAnalyzer:
     ) -> StarState:
         """Look for the star in one frame without a window, a metric row, or a live value.
 
-        The matched filter looks within `radius_px` of `at` (sensor pixels), or over the whole
-        frame without one of them. The stream of `push`, its guess, and its star stay as they
-        were. For a readout mode that the profile does not know, the kernel measures the frame as
-        `push` does, from `at`.
+        The matched filters look within `radius_px` of `at` (sensor pixels), or over the whole
+        frame without one of them, and the best of them gives the star. The stream of `push`, its
+        guess, and its star stay as they were. For a readout mode that the profile does not know,
+        the kernel measures the frame as `push` does, from `at`.
         """
         data = frame.data
         container_bits = 8 if data.dtype.itemsize == 1 else 16
@@ -407,9 +410,11 @@ class FastPathAnalyzer:
             diameter = max(config.aperture_min_px, widths)
         # A real star fills a pixel only when the pixels undersample it.
         spike = config.hot_pixel_ratio if airy_px == airy_px and airy_px >= 1.0 else None
-        matched_fwhm = None
+        matched_fwhms: tuple[float, ...] = ()
         if airy_px == airy_px:
-            matched_fwhm = min(max(config.matched_fwhm_airy_widths * airy_px, 0.3), 20.0)
+            matched_fwhms = tuple(
+                min(max(widths * airy_px, 0.3), 20.0) for widths in config.matched_fwhm_airy_widths
+            )
         kernel = KernelParams(
             aperture_diameter_px=diameter,
             recenter_iterations=config.recenter_iterations,
@@ -418,7 +423,7 @@ class FastPathAnalyzer:
             edge_margin_px=config.edge_margin_px,
             min_snr=config.min_star_snr,
             spike_ratio=spike,
-            matched_fwhm_px=matched_fwhm,
+            matched_fwhms_px=matched_fwhms,
         )
         calibration = FrameCalibration.for_container(
             adc_bits=sat_adc,
