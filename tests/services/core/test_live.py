@@ -237,6 +237,21 @@ class TestDecorator:
         assert [pair[0] for pair in offered] == frames
         assert all(pair[1] is update for pair, update in zip(offered, updates, strict=True))
 
+    def test_a_frame_of_a_search_burst_stays_out_of_the_video(self) -> None:
+        offered: list[Frame] = []
+        inner = FakeFastAnalyzer()
+
+        class Recorder:
+            def offer(self, frame: Frame, update: FastUpdate) -> None:
+                offered.append(frame)
+
+        wrapper = LiveFastAnalyzer(inner, cast(PolarisStream, Recorder()))
+        star = wrapper.measure(fast_frame(0, data=star_frame()), None)
+        assert star.found
+        assert inner.frames_measured == 1
+        assert offered == []  # the video sees no burst frame
+        assert inner.frames_pushed == 0
+
     def test_other_attributes_of_the_analyzer_stay_reachable(self) -> None:
         inner = FakeFastAnalyzer()
         wrapper = LiveFastAnalyzer(inner, make_stream())

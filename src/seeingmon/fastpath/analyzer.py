@@ -18,6 +18,10 @@ electron units and no noise model.
 **Tracking.** The kernel starts each frame at the centroid of the previous one. A lost star
 sends the next frame back to the brightest-patch search.
 
+**Search.** `measure` runs the kernel on one frame of a search burst, from the position that the
+scheduler predicts, and returns the star with its SNR. The frame reaches no window, no metric row,
+and no live value.
+
 **Cost.** `push` does the kernel, a few list appends, and the window bookkeeping, and it finishes
 in well under a frame period. The work of a window (the fits, the spectrum, the corrections)
 runs once per window inside the `push` that closes it. It takes a few milliseconds.
@@ -54,13 +58,14 @@ from seeingmon.fastpath.kernel import (
     FLAG_SATURATED,
     FrameCalibration,
     KernelParams,
+    Measurement,
     measure_frame,
 )
 from seeingmon.fastpath.live import LiveEstimator, LiveSeeing, LiveStream
 from seeingmon.fastpath.scintillation import scintillation_index
 from seeingmon.fastpath.spectrum import MotionSpectrum, aliasing_expected, compute_spectrum
 from seeingmon.fastpath.windows import ClosedWindow, WindowAssembler, is_partial
-from seeingmon.frames import ActiveStream, Frame
+from seeingmon.frames import ActiveStream, Frame, Roi
 from seeingmon.profile import Profile, ProfileError, derived
 from seeingmon.records import SeeingWindowRecord
 from seeingmon.records.seeing import SEEING_WINDOW_FLAGS
@@ -124,6 +129,8 @@ class FastPathAnalyzer:
         self._frame_dtype = segment_dtype("frame")
         self.star = NO_STAR
         self.frames_pushed = 0
+        self.frames_measured = 0  # frames of `measure`, which reach no window
+        self._measure_streams: dict[tuple[object, ...], _Stream] = {}
         self.metrics_dropped = 0
         self._live = LiveEstimator(self._config) if self._config.live_enabled else None
         self.live: LiveSeeing | None = None
@@ -253,18 +260,37 @@ class FastPathAnalyzer:
         if found:
             x, y = measurement.x, measurement.y
             self._guess = (x, y)
-            self.star = StarState(
-                found=True,
-                x_px=x,
-                y_px=y,
-                peak_fraction=peak / stream.calibration.full_scale_dn,
-                edge_distance_px=roi.distance_to_edge(x, y),
-            )
+            self.star = _star_state(measurement, roi, stream)
         else:
             self._guess = None
             self.star = NO_STAR
         self.frames_pushed += 1
         return FastUpdate(star=self.star, windows=windows)
+
+    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
+        """Measure the star in one frame without a window, a metric row, or a live value.
+
+        The kernel starts at `at` (sensor pixels), and it falls back to the brightest patch of the
+        frame when it finds no star there, as in `push`. The stream of `push`, its guess, and its
+        star stay as they were.
+        """
+        data = frame.data
+        container_bits = 8 if data.dtype.itemsize == 1 else 16
+        key = _stream_key(frame.mode, frame.gain, frame.exposure_us, frame.adc_bits, container_bits)
+        stream = self._measure_streams.get(key)
+        if stream is None:
+            stream = self._build_stream(
+                frame.mode, frame.gain, frame.exposure_us, frame.adc_bits, container_bits
+            )
+            self._measure_streams[key] = stream
+            while len(self._measure_streams) > _KEPT_STREAMS:
+                del self._measure_streams[next(iter(self._measure_streams))]
+        roi = frame.roi
+        measurement = measure_frame(data, roi.x, roi.y, stream.kernel, stream.calibration, at)
+        self.frames_measured += 1
+        if not measurement.found:
+            return NO_STAR
+        return _star_state(measurement, roi, stream)
 
     def _estimate_live(self, live: LiveEstimator, frame: Frame, stream: _Stream) -> None:
         """Estimate the rolling seeing value. An error never reaches the caller of `push`."""
@@ -639,6 +665,19 @@ _ANALYSIS_FIELDS = (
     "motion_psd_y_arcsec2_per_hz",
     "vibration_lines_hz",
 )
+
+
+def _star_state(measurement: Measurement, roi: Roi, stream: _Stream) -> StarState:
+    """The state of a found star: its position, peak, distance to the ROI edge, and SNR."""
+    x, y = measurement.x, measurement.y
+    return StarState(
+        found=True,
+        x_px=x,
+        y_px=y,
+        peak_fraction=measurement.peak_dn / stream.calibration.full_scale_dn,
+        edge_distance_px=roi.distance_to_edge(x, y),
+        snr=_finite(measurement.snr),
+    )
 
 
 def _finite(value: float | None) -> float | None:

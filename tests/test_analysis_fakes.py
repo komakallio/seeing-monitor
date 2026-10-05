@@ -116,6 +116,38 @@ class TestFakeFastAnalyzer:
         analyzer.begin_stream(stream_of(driver))
         assert analyzer.push(driver.read_frame(5.0)).star == NO_STAR
 
+    def test_without_a_model_the_snr_is_the_contrast_over_the_noise_of_the_frame(
+        self, driver: FakeCameraDriver
+    ) -> None:
+        analyzer = FakeFastAnalyzer()
+        analyzer.begin_stream(stream_of(driver))
+        star = analyzer.push(driver.read_frame(5.0)).star
+        assert star.snr == 4900.0  # a frame without noise counts its noise as one count
+
+    def test_a_model_sets_the_snr_and_a_weak_star_counts_as_missing(
+        self, driver: FakeCameraDriver
+    ) -> None:
+        snr = [3.0]
+        analyzer = FakeFastAnalyzer(min_snr=6.0, snr_model=lambda frame: snr[0])
+        analyzer.begin_stream(stream_of(driver))
+        assert analyzer.push(driver.read_frame(5.0)).star == NO_STAR
+        snr[0] = 12.0
+        star = analyzer.push(driver.read_frame(5.0)).star
+        assert (star.found, star.snr) == (True, 12.0)
+
+    def test_measure_finds_the_star_without_a_window_or_a_metric_row(
+        self, driver: FakeCameraDriver
+    ) -> None:
+        analyzer = FakeFastAnalyzer()
+        stream_of(driver)
+        star = analyzer.measure(driver.read_frame(5.0), (ROI.x + 32.0, ROI.y + 32.0))
+        assert (star.found, star.x_px, star.y_px) == (True, ROI.x + 32, ROI.y + 32)
+        assert star.snr == 4900.0
+        assert (analyzer.frames_measured, analyzer.frames_pushed) == (1, 0)
+        assert analyzer.drain_metrics() is None
+        assert analyzer.flush() == ()
+        assert analyzer.star == NO_STAR
+
     def test_begin_stream_closes_the_open_window_as_partial(self, driver: FakeCameraDriver) -> None:
         analyzer = FakeFastAnalyzer()
         analyzer.begin_stream(stream_of(driver))

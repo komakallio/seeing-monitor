@@ -7,7 +7,7 @@ stands in for the consumer of the rapid focus frames.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,12 +37,20 @@ class _OpenWindow:
     temperature_count: int = 0
 
 
+SnrModel = Callable[[Frame], float]
+"""The SNR of the star in a frame, for a fake that knows the truth of a scripted world."""
+
+
 class FakeFastAnalyzer:
     """A `FastAnalyzer` that tracks the brightest pixel and closes a window every `window_s`.
 
-    A star counts as found when the brightest pixel exceeds the median by `min_contrast_dn`.
-    A window shorter than `partial_below` of `window_s` closes with the `partial` flag, and a
-    window with more than 5% dropped frames carries `degraded`.
+    A star counts as found when the brightest pixel exceeds the median by `min_contrast_dn`, and
+    its SNR reaches `min_snr`. The SNR comes from `snr_model` when a test gives one. Without it,
+    the SNR is the contrast of the brightest pixel over the robust standard deviation of the frame
+    (at least one count), so a frame without noise shows its star at the SNR of its contrast.
+    `min_snr` defaults to 0, which finds a star by its contrast alone. A window shorter than
+    `partial_below` of `window_s` closes with the `partial` flag, and a window with more than 5%
+    dropped frames carries `degraded`. `measure` finds the star the same way, without a window.
     """
 
     def __init__(
@@ -53,18 +61,23 @@ class FakeFastAnalyzer:
         window_s: float = 60.0,
         partial_below: float = 0.5,
         min_contrast_dn: float = 50.0,
+        min_snr: float = 0.0,
+        snr_model: SnrModel | None = None,
     ) -> None:
         self._station_id = station_id
         self._profile_id = profile_id
         self._window_ns = round(window_s * _NS_PER_S)
         self._partial_ns = round(window_s * partial_below * _NS_PER_S)
         self._min_contrast_dn = min_contrast_dn
+        self._min_snr = min_snr
+        self._snr_model = snr_model
         self._context = FastContext()
         self._stream_id: int | None = None
         self._window: _OpenWindow | None = None
         self._rows: list[tuple[Any, ...]] = []
         self.star = NO_STAR
         self.frames_pushed = 0
+        self.frames_measured = 0  # frames of `measure`, which reach no window
 
     def begin_stream(self, stream: ActiveStream) -> tuple[SeeingWindowRecord, ...]:
         closed = self._close_window(partial=True)
@@ -104,6 +117,14 @@ class FakeFastAnalyzer:
         self.frames_pushed += 1
         return FastUpdate(star=self.star, windows=closed)
 
+    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
+        """Find the brightest pixel as `push` does, without a window or a metric row.
+
+        The fake looks at the whole frame, so `at` changes nothing.
+        """
+        self.frames_measured += 1
+        return self._find(frame)[0]
+
     def flush(self, reason: str = "end") -> tuple[SeeingWindowRecord, ...]:
         return self._close_window(partial=True)
 
@@ -116,14 +137,35 @@ class FakeFastAnalyzer:
         self._rows.clear()
         return rows
 
-    def _track(self, frame: Frame) -> StarState:
+    def _find(self, frame: Frame) -> tuple[StarState, float, float, float, float]:
+        """The star, and the brightest pixel's position and value, and the median of the frame."""
         data = frame.data
         background = float(np.median(data))
         row, column = np.unravel_index(int(np.argmax(data)), data.shape)
         peak = float(data[row, column])
-        found = peak - background >= self._min_contrast_dn
         x = float(frame.roi.x + column)
         y = float(frame.roi.y + row)
+        contrast = peak - background
+        if self._snr_model is not None:
+            snr = float(self._snr_model(frame))
+        else:
+            spread = 1.4826 * float(np.median(np.abs(data.astype(np.float64) - background)))
+            snr = contrast / max(spread, 1.0)
+        if contrast < self._min_contrast_dn or snr < self._min_snr:
+            return NO_STAR, x, y, peak, background
+        star = StarState(
+            found=True,
+            x_px=x,
+            y_px=y,
+            peak_fraction=peak / float(np.iinfo(data.dtype).max),
+            edge_distance_px=frame.roi.distance_to_edge(x, y),
+            snr=snr,
+        )
+        return star, x, y, peak, background
+
+    def _track(self, frame: Frame) -> StarState:
+        star, x, y, peak, background = self._find(frame)
+        found = star.found
         self._rows.append(
             (
                 frame.t_utc_ns,
@@ -140,15 +182,7 @@ class FakeFastAnalyzer:
                 min(frame.dropped_before, _UINT16_MAX),
             )
         )
-        if not found:
-            return NO_STAR
-        return StarState(
-            found=True,
-            x_px=x,
-            y_px=y,
-            peak_fraction=peak / float(np.iinfo(data.dtype).max),
-            edge_distance_px=frame.roi.distance_to_edge(x, y),
-        )
+        return star
 
     def _close_window(self, *, partial: bool) -> tuple[SeeingWindowRecord, ...]:
         window, self._window = self._window, None

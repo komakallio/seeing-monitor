@@ -83,6 +83,55 @@ def test_the_analyzer_satisfies_the_protocol(profile: Profile) -> None:
     assert isinstance(create_fast_analyzer(profile), FastAnalyzer)
 
 
+class TestMeasure:
+    """`measure` serves the search bursts: the star and its SNR, and nothing else changes."""
+
+    def test_measure_finds_the_star_with_its_snr_and_leaves_no_trace(
+        self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
+    ) -> None:
+        stream_of(driver)
+        frames = read(driver, 5)
+        stars = [analyzer.measure(frame, (232.0, 332.0)) for frame in frames]
+        for star in stars:
+            assert star.found
+            assert star.x_px == pytest.approx(232.0, abs=0.01)
+            assert star.y_px == pytest.approx(332.0, abs=0.01)
+            assert star.snr is not None
+            assert star.snr > 50.0  # 30,000 e- at gain 120 on a dark sky
+        assert analyzer.frames_measured == 5
+        assert analyzer.frames_pushed == 0
+        assert analyzer.drain_metrics() is None  # no metric row
+        assert analyzer.flush() == ()  # no window
+        assert analyzer.star == NO_STAR  # the state of `push` stays
+        assert analyzer.live is None
+
+    def test_measure_of_a_frame_without_a_star_is_no_star(self, profile: Profile) -> None:
+        fake = FakeCameraDriver(VirtualClock(), frame_factory=flat)
+        fake.open()
+        stream_of(fake)
+        analyzer = FastPathAnalyzer(profile)
+        assert analyzer.measure(fake.read_frame(5.0), (232.0, 332.0)) == NO_STAR
+
+    def test_measure_between_pushes_changes_neither_the_window_nor_the_tracking(
+        self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
+    ) -> None:
+        analyzer.begin_stream(stream_of(driver))
+        first, probed, second = read(driver, 3)
+        found = analyzer.push(first).star
+        assert analyzer.measure(probed, None).found
+        assert analyzer.push(second).star == found  # the same star, tracked as before
+        (window,) = analyzer.flush()
+        assert window.n_frames == 2  # the measured frame is in no window
+
+    def test_push_reports_the_snr_of_a_found_star(
+        self, analyzer: FastPathAnalyzer, driver: FakeCameraDriver
+    ) -> None:
+        analyzer.begin_stream(stream_of(driver))
+        star = analyzer.push(driver.read_frame(5.0)).star
+        assert star.snr is not None
+        assert star.snr > 50.0
+
+
 class TestBehaviorOfTheFake:
     def test_closes_a_window_every_sixty_seconds_of_frame_time(
         self, profile: Profile, driver: FakeCameraDriver

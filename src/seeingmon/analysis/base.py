@@ -32,7 +32,11 @@ class StarState:
 
     Coordinates are sensor pixels of the readout mode (not ROI pixels), so they stay valid
     when the ROI moves. `edge_distance_px` is the distance from the star to the nearest ROI
-    edge, which the scheduler uses to recenter the ROI before the star leaves it.
+    edge, which the scheduler uses to recenter the ROI before the star leaves it. `snr` is the
+    signal-to-noise ratio of the star in the frame: its aperture flux over the root of its photon
+    noise and of the aperture area times the variance of one pixel, measured on the ROI border.
+    It is `None` when the analysis cannot tell, and the search of the scheduler then counts no
+    detection.
     """
 
     found: bool
@@ -40,6 +44,7 @@ class StarState:
     y_px: float | None = None
     peak_fraction: float | None = None  # brightest pixel as a share of the saturation level
     edge_distance_px: float | None = None
+    snr: float | None = None
 
 
 NO_STAR = StarState(found=False)
@@ -115,6 +120,16 @@ class FastAnalyzer(Protocol):
 
     def push(self, frame: Frame) -> FastUpdate:
         """Analyze one frame. A frame from a new stream starts that stream."""
+        ...
+
+    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
+        """Measure the star in one frame, outside the windows.
+
+        The search bursts of the scheduler use it. `at` is where the star should be, in sensor
+        pixels of the frame's readout mode, and the measurement starts there. The frame reaches
+        no window, no metric row, and no live value, and the state of `push` stays as it was. The
+        result carries the star's SNR.
+        """
         ...
 
     def flush(self, reason: str = "end") -> tuple[SeeingWindowRecord, ...]:

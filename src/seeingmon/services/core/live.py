@@ -47,7 +47,7 @@ from typing import Any
 
 import numpy.typing as npt
 
-from seeingmon.analysis.base import FastAnalyzer, FastContext, FastUpdate
+from seeingmon.analysis.base import FastAnalyzer, FastContext, FastUpdate, StarState
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.frames import ActiveStream, Frame
 from seeingmon.records import SeeingWindowRecord
@@ -352,6 +352,10 @@ class LiveFastAnalyzer:
         update = self._inner.push(frame)
         self._stream.offer(frame, update)
         return update
+
+    def measure(self, frame: Frame, at: tuple[float, float] | None = None) -> StarState:
+        # A frame of a search burst stays out of the video, as it stays out of the windows.
+        return self._inner.measure(frame, at)
 
     def flush(self, reason: str = "end") -> tuple[SeeingWindowRecord, ...]:
         return self._inner.flush(reason)

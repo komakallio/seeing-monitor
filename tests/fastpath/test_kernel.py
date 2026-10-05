@@ -165,6 +165,77 @@ class TestNoise:
         assert math.sqrt(float(np.mean(models))) == pytest.approx(float(np.std(xs)), rel=0.2)
 
 
+class TestDetectionInABrightSky:
+    """The sky noise of the border enters the SNR and the missing-star test.
+
+    The frames are of a 12-bit ADC at 3.5 e- per count, with 2.65 e- of read noise. The SNR of a
+    star is `F / sqrt(F + A v)` with `v` the variance of one pixel: the sky, the read noise, and
+    the rounding of the ADC (`3.5^2 / 12`), as in the detection estimate of
+    `docs/research-notes.md` ("Polaris in a bright sky").
+    """
+
+    PIXEL_VAR_E2 = 2.65**2 + 3.5**2 / 12
+
+    @pytest.mark.parametrize("sky_e", [1.0, 5.0, 30.0, 100.0, 1_000.0, 3_000.0])
+    def test_a_starless_sky_makes_no_star(self, sky_e: float) -> None:
+        """Without the sky noise, a bright sky made a star in about half of the frames. In a faint
+        sky the median of whole counts did, in up to 197 of 300 frames at 5 e-."""
+        rng = np.random.default_rng(11)
+        found = sum(
+            measure_frame(digitize(np.full(SHAPE, sky_e), rng=rng), 0, 0, PARAMS, CALIBRATION).found
+            for _ in range(200)
+        )
+        assert found == 0  # the threshold is 6 sigma, so even 1 in 200 would be a fault
+
+    @pytest.mark.parametrize("sky_e", [100.0, 1_000.0, 3_000.0])
+    def test_the_sky_noise_of_the_border_follows_the_sky(self, sky_e: float) -> None:
+        """In a dark frame the noise spans about one ADC step, and the percentiles of whole counts
+        read a step or half of one, so the modeled pixel noise is the floor there."""
+        rng = np.random.default_rng(12)
+        sigmas = []
+        for _ in range(50):
+            m = measure_frame(digitize(np.full(SHAPE, sky_e), rng=rng), 0, 0, PARAMS, CALIBRATION)
+            sigmas.append(m.bg_sigma_dn * CALIBRATION.e_per_dn)
+        expected = math.sqrt(sky_e + self.PIXEL_VAR_E2)
+        # 5%: the rounding of the percentiles to whole counts, at 100 e- of sky.
+        assert float(np.mean(sigmas)) == pytest.approx(expected, rel=0.05)
+
+    @pytest.mark.parametrize("sky_e", [0.0, 5.0, 1_000.0, 3_000.0])
+    def test_the_snr_of_polaris_follows_the_detection_estimate(self, sky_e: float) -> None:
+        """Polaris in 2 ms (14,000 e-): an SNR of 112 in a dark sky, 30 and 18 in daylight."""
+        rng = np.random.default_rng(13)
+        flux = POLARIS_ELECTRONS_2MS
+        mean = box_integrated_gaussian(SHAPE, 64.3, 63.8, 1.0, flux) + sky_e
+        snrs = []
+        for _ in range(100):
+            m = measure_frame(digitize(mean, rng=rng), 0, 0, PARAMS, CALIBRATION, guess=(64, 64))
+            assert m.found
+            snrs.append(m.snr)
+        expected = flux / math.sqrt(flux + PARAMS.area_px2 * (sky_e + self.PIXEL_VAR_E2))
+        # 5%: the photon noise of the star and the sampling of the border noise over 100 frames.
+        assert float(np.median(snrs)) == pytest.approx(expected, rel=0.05)
+
+    def test_a_frame_without_noise_keeps_the_modeled_noise_as_the_floor(self) -> None:
+        m = measure_frame(star(64.0, 64.0), 0, 0, PARAMS, CALIBRATION, guess=(64, 64))
+        assert m.bg_sigma_dn == 0.0
+        flux_e = m.flux_dn * CALIBRATION.e_per_dn
+        expected = flux_e / math.sqrt(flux_e + PARAMS.area_px2 * CALIBRATION.pixel_var_e2)
+        assert m.snr == pytest.approx(expected, rel=1e-9)
+
+    def test_a_missing_star_has_a_sky_noise_and_no_snr(self) -> None:
+        rng = np.random.default_rng(14)
+        m = measure_frame(digitize(np.full(SHAPE, 1_000.0), rng=rng), 0, 0, PARAMS, CALIBRATION)
+        assert not m.found
+        assert math.isnan(m.snr)
+        assert m.bg_sigma_dn * CALIBRATION.e_per_dn == pytest.approx(31.7, rel=0.1)
+
+    def test_a_mode_without_an_electron_scale_has_no_snr(self) -> None:
+        unknown = FrameCalibration.for_container(adc_bits=12, container_bits=16)
+        m = measure_frame(star(64.0, 64.0), 0, 0, PARAMS, unknown, guess=(64, 64))
+        assert m.found
+        assert math.isnan(m.snr)
+
+
 class TestGainAtTruncation:
     """A fixed aperture leaks light and responds with a gain below 1; a recentered one does not."""
 

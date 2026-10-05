@@ -3,7 +3,9 @@
 For each frame, the kernel works in four steps.
 
 1. **Background.** The median of the ROI border (a ring of `border_px` pixels) is the local
-   background. The median ignores the star, hot pixels, and a neighbor in a corner.
+   background. The median ignores the star, hot pixels, and a neighbor in a corner. Half the
+   spread between the 15.9th and the 84.1st percentile of the same pixels is the sky noise of
+   the frame, a robust standard deviation that holds the photon noise of a bright sky.
 2. **Centroid.** The kernel measures the intensity-weighted centroid of the background-subtracted
    pixels inside a circular aperture, and it recenters the aperture on the result
    `recenter_iterations` times (so it measures `recenter_iterations + 1` times). The aperture edge
@@ -34,7 +36,18 @@ the same code, so the two agree exactly.
 from photon noise and pixel noise, in square pixels: `sigma_x^2 / F + n^2 K / F^2`, where `F` is
 the flux in electrons, `n^2` the pixel noise variance in electrons squared, and `K` the sum of
 the aperture weights times the squared distance from the center along one axis. The estimator
-subtracts it from the motion variance.
+subtracts it from the motion variance. The model counts the read noise only, and not the sky.
+
+**Detection.** The signal-to-noise ratio of the star is `F / sqrt(F + A v)`, where `A` is the area
+of the aperture and `v` the variance of one pixel in electrons squared: the larger of the modeled
+pixel noise (read noise and quantization) and the square of the measured sky noise, because the
+measured noise already holds the read noise. Here `F` is the aperture sum above the trimmed mean
+of the border (its central 68%), which rounds far less than the median of whole counts: in a
+faint twilight sky the median can sit half an ADC step off, and over the aperture that looks like
+a star. A star below `min_snr` counts as missing, so a bright sky does not make a star out of its
+own noise. The SNR leaves out the noise of the background level, as the detection estimate in
+`docs/research-notes.md` does ("Polaris in a bright sky"), which makes it about 1.3 times too high
+in a sky that dominates the noise.
 """
 
 from __future__ import annotations
@@ -224,7 +237,9 @@ class Measurement(NamedTuple):
     of the aperture box (of the whole frame when no star is found), and `bg_dn` is the background,
     both in container counts. `flux_dn` is the aperture sum minus the background, in container
     counts. `noise_var_x` and `noise_var_y` are the modeled centroid noise in square pixels, and
-    `flags` holds the analysis flags (`FLAG_*`).
+    `flags` holds the analysis flags (`FLAG_*`). `bg_sigma_dn` is the sky noise of the border in
+    container counts, for every frame. `snr` is the signal-to-noise ratio of the star, `NaN` when
+    `found` is false or when the calibration has no electron scale.
     """
 
     found: bool
@@ -238,14 +253,34 @@ class Measurement(NamedTuple):
     noise_var_x: float
     noise_var_y: float
     flags: int
+    bg_sigma_dn: float = _NAN
+    snr: float = _NAN
 
 
 # --- helpers --------------------------------------------------------------------------------
 
 
+_SIGMA_LOW = 0.158655  # the share of a normal distribution below its mean minus one sigma
+
+
+@dataclass(frozen=True, slots=True)
+class _Border:
+    """The flat indices of the border ring, and the ranks of its median and its one-sigma points.
+
+    `ranks` holds every rank that one partition must place, in ascending order.
+    """
+
+    indices: IntArray
+    low: int
+    high: int
+    sigma_low: int
+    sigma_high: int
+    ranks: tuple[int, ...]
+
+
 @lru_cache(maxsize=16)
-def _border_indices(height: int, width: int, border: int, step: int) -> tuple[IntArray, int, int]:
-    """The flat indices of the border ring, and the two ranks that give the median."""
+def _border(height: int, width: int, border: int, step: int) -> _Border:
+    """The border ring of a frame size, with the ranks that give its median and its sky noise."""
     border = max(1, min(border, min(height, width) // 4))
     yy, xx = np.mgrid[0:height, 0:width]
     ring = ~((yy >= border) & (yy < height - border) & (xx >= border) & (xx < width - border))
@@ -253,16 +288,35 @@ def _border_indices(height: int, width: int, border: int, step: int) -> tuple[In
     if len(indices) == 0:
         indices = np.flatnonzero(ring).astype(np.intp)
     count = len(indices)
-    return indices, (count - 1) // 2, count // 2
+    low, high = (count - 1) // 2, count // 2
+    sigma_low = round(_SIGMA_LOW * (count - 1))
+    sigma_high = count - 1 - sigma_low
+    ranks = tuple(sorted({sigma_low, low, high, sigma_high}))
+    return _Border(indices, low, high, sigma_low, sigma_high, ranks)
 
 
-def _border_median(flat: FrameData, indices: IntArray, low: int, high: int) -> float:
-    values = flat[indices]
-    if low == high:
-        values.partition(low)
-        return float(values[low])
-    values.partition((low, high))
-    return 0.5 * (float(values[low]) + float(values[high]))
+def _border_indices(height: int, width: int, border: int, step: int) -> tuple[IntArray, int, int]:
+    """The flat indices of the border ring, and the two ranks that give the median."""
+    ring = _border(height, width, border, step)
+    return ring.indices, ring.low, ring.high
+
+
+def _border_level(flat: FrameData, border: _Border) -> tuple[float, float, float]:
+    """The median of the border ring, its robust standard deviation, and its trimmed mean.
+
+    All three are in container counts. One partition of a copy of the ring places the median and
+    the two one-sigma points, and the trimmed mean averages the values between those two points,
+    the central 68% of the ring. The median of whole counts can sit up to half an ADC step off the
+    sky when the noise spans a few steps, and over the area of the aperture that offset looks like
+    a star. The mean of the central values rounds far less, so the detection takes the sky from
+    it. A star in a corner or a hot pixel falls in the tails and changes neither.
+    """
+    values = flat[border.indices]
+    values.partition(border.ranks)
+    median = 0.5 * (float(values[border.low]) + float(values[border.high]))
+    sigma = 0.5 * (float(values[border.sigma_high]) - float(values[border.sigma_low]))
+    level = float(values[border.sigma_low : border.sigma_high + 1].mean())
+    return median, sigma, level
 
 
 def _locate(data: IntImage) -> tuple[float, float]:
@@ -325,16 +379,29 @@ def measure_frame(
     """
     height, width = data.shape
     flat = data.reshape(-1)
-    indices, low, high = _border_indices(height, width, params.border_px, params.border_step)
-    background = _border_median(flat, indices, low, high)
+    border = _border(height, width, params.border_px, params.border_step)
+    background, sigma, level = _border_level(flat, border)
+    sky = (background, sigma, level)
     if guess is not None:
         result = _measure_at(
-            data, roi_x, roi_y, params, calibration, background, guess[0] - roi_x, guess[1] - roi_y
+            data, roi_x, roi_y, params, calibration, sky, guess[0] - roi_x, guess[1] - roi_y
         )
         if result.found:
             return result
     gx, gy = _locate(data)
-    return _measure_at(data, roi_x, roi_y, params, calibration, background, gx, gy)
+    return _measure_at(data, roi_x, roi_y, params, calibration, sky, gx, gy)
+
+
+def _pixel_variance_e2(sigma_dn: float, calibration: FrameCalibration) -> float:
+    """The variance of one pixel in electrons squared: the measured sky or the modeled noise.
+
+    The measured sky noise holds the read noise and the quantization too, so the two do not add.
+    The model is the floor, because a frame without noise, or one whose quantized border hides
+    the noise, measures less than the read noise.
+    """
+    measured = (sigma_dn * calibration.e_per_dn) ** 2
+    modeled = calibration.pixel_var_e2
+    return measured if measured > modeled else modeled
 
 
 def _measure_at(
@@ -343,11 +410,17 @@ def _measure_at(
     roi_y: int,
     params: KernelParams,
     calibration: FrameCalibration,
-    background: float,
+    sky: tuple[float, float, float],
     gx: float,
     gy: float,
 ) -> Measurement:
-    """Measure the star near `(gx, gy)`, in ROI pixels, with the given background."""
+    """Measure the star near `(gx, gy)`, in ROI pixels.
+
+    `sky` holds the background (the median of the border), the sky noise, and the trimmed mean of
+    the border. The centroid, the widths, and the flux subtract the background. The detection
+    (the SNR and the missing-star test) subtracts the trimmed mean instead.
+    """
+    background, sigma, level = sky
     height, width = data.shape
     half = params.half_box_px
     box = 2 * half + 1
@@ -375,7 +448,7 @@ def _measure_at(
         sums = sums_list[ky][kx]
         s0 = raw[0] - background * sums[0]
         if not s0 > 0.0:
-            return _not_found(data, background)
+            return _not_found(data, background, sigma)
         su = raw[1] - background * sums[1]
         sv = raw[2] - background * sums[2]
         suu = raw[3] - background * sums[3]
@@ -387,16 +460,21 @@ def _measure_at(
     width_x_sq = max(suu / s0 - mean_u * mean_u, 0.0)
     width_y_sq = max(svv / s0 - mean_v * mean_v, 0.0)
     if not (-1.0 < gx < width and -1.0 < gy < height):
-        return _not_found(data, background)
+        return _not_found(data, background, sigma)
     peak_index = int(pixels.argmax())
     peak = float(pixels[peak_index])
     flux_e = s0 * calibration.e_per_dn
+    snr = _NAN
     if flux_e == flux_e and calibration.pixel_var_e2 == calibration.pixel_var_e2:
-        noise = flux_e + tables.area * calibration.pixel_var_e2
-        if flux_e < params.min_snr * math.sqrt(noise):
-            return _not_found(data, background)
+        detected_e = (s0 + (background - level) * sums[0]) * calibration.e_per_dn
+        if not detected_e > 0.0:
+            return _not_found(data, background, sigma)
+        noise_e2 = detected_e + tables.area * _pixel_variance_e2(sigma, calibration)
+        snr = detected_e / math.sqrt(noise_e2)
+        if snr < params.min_snr:
+            return _not_found(data, background, sigma)
     elif peak - background < params.min_snr:
-        return _not_found(data, background)
+        return _not_found(data, background, sigma)
     flags = 0
     if peak >= calibration.saturation_dn:
         flags |= FLAG_SATURATED
@@ -418,6 +496,8 @@ def _measure_at(
         _noise_variance(width_x_sq, flux_e, calibration, k_ap),
         _noise_variance(width_y_sq, flux_e, calibration, k_ap),
         flags,
+        sigma,
+        snr,
     )
 
 
@@ -440,9 +520,21 @@ def _is_spike(
     return (neighbors - background) < params.spike_ratio * (peak - background)
 
 
-def _not_found(data: FrameData, background: float) -> Measurement:
+def _not_found(data: FrameData, background: float, sigma: float) -> Measurement:
     return Measurement(
-        False, _NAN, _NAN, _NAN, _NAN, float(data.max()), _NAN, background, _NAN, _NAN, FLAG_NO_STAR
+        False,
+        _NAN,
+        _NAN,
+        _NAN,
+        _NAN,
+        float(data.max()),
+        _NAN,
+        background,
+        _NAN,
+        _NAN,
+        FLAG_NO_STAR,
+        sigma,
+        _NAN,
     )
 
 
@@ -464,6 +556,8 @@ class StackMeasurements:
     noise_var_x: FloatArray
     noise_var_y: FloatArray
     flags: npt.NDArray[np.int64]
+    bg_sigma_dn: FloatArray
+    snr: FloatArray
 
     def __len__(self) -> int:
         return int(self.found.shape[0])
@@ -482,6 +576,8 @@ class StackMeasurements:
             float(self.noise_var_x[index]),
             float(self.noise_var_y[index]),
             int(self.flags[index]),
+            float(self.bg_sigma_dn[index]),
+            float(self.snr[index]),
         )
 
 
@@ -506,14 +602,15 @@ def measure_stack(
     count = stack.shape[0]
     found = np.zeros(count, dtype=np.bool_)
     flags = np.zeros(count, dtype=np.int64)
-    columns = np.full((9, count), _NAN)  # x, y, width_x, width_y, peak, flux, bg, noise_x, noise_y
+    # x, y, width_x, width_y, peak, flux, bg, noise_x, noise_y, bg_sigma, snr
+    columns = np.full((11, count), _NAN)
     last = guess
     for index in range(count):
         m = measure_frame(stack[index], roi_x, roi_y, params, calibration, last)
         found[index] = m.found
         flags[index] = m.flags
         columns[:, index] = (m.x, m.y, m.width_x, m.width_y, m.peak_dn, m.flux_dn, m.bg_dn,
-                             m.noise_var_x, m.noise_var_y)  # fmt: skip
+                             m.noise_var_x, m.noise_var_y, m.bg_sigma_dn, m.snr)  # fmt: skip
         last = (m.x, m.y) if m.found else None
     return StackMeasurements(
         found,
@@ -527,4 +624,6 @@ def measure_stack(
         columns[7],
         columns[8],
         flags,
+        columns[9],
+        columns[10],
     )
