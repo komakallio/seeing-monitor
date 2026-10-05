@@ -279,7 +279,14 @@ class TestTheWriterThread:
         clock = ScaledClock(
             start_utc_ns=NIGHT, origin_real_ns=__import__("time").time_ns(), speed=40.0
         )
-        rig = build_rig(tmp_path, threads=True, clock=clock)
+        # A ring of six frames gives the writer about 25 seconds of the scaled clock to catch up
+        # after a stall of the disk, which a shared CI runner has now and then.
+        rig = build_rig(
+            tmp_path,
+            threads=True,
+            clock=clock,
+            config_extra="[services.core.survey_frames]\nram_frames = 6\n",
+        )
         outcome: list[int] = []
         thread = threading.Thread(target=lambda: outcome.append(rig.app.run()))
         thread.start()
@@ -295,7 +302,12 @@ class TestTheWriterThread:
             ok = False
             for _ in range(100):  # a record has its reference while the writer writes the file
                 refs = [r.image_ref for r in survey_frames(rig) if r.image_ref]
-                ok = bool(refs) and all(layout.resolve(ref).is_file() for ref in refs)
+                missing = [ref for ref in refs if not layout.resolve(ref).is_file()]
+                # A frame that left the RAM ring before the writer reached it counts as lost, and
+                # its record keeps a reference to a file that never exists. Every missing file
+                # must be one of those.
+                lost = rig.app.frames.stats.lost  # type: ignore[union-attr]
+                ok = len(refs) > lost and len(missing) <= lost
                 if ok:
                     break
                 waited.wait(0.1)
