@@ -504,8 +504,9 @@ def demo_events(now_ns: int) -> list[Record]:
             23.8,
             "info",
             "scheduler.state_change",
-            "The scheduler entered the safe state: the Sun is too high.",
-            state="safe",
+            "The scheduler moved from auto to safe: bright_sky.",
+            to="safe",
+            reason="bright_sky",
         ),
         _event(
             now_ns,
