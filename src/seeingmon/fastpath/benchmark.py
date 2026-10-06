@@ -13,6 +13,8 @@ cannot hide the cost of fresh pixels. The benchmark reports
   bookkeeping, and the star state to the kernel;
 - `search_us`: `search_frame`, the matched filter of a search burst within 20 pixels of the
   center of the ROI (the default `[scheduler.search] radius_px`);
+- `kernel_gaussian_us`: `measure_frame` with the Gaussian-weighted centroid (`[fastpath]
+  centroid = "gaussian"`, not the default);
 - `close_ms`: the time that `flush` takes to close one full window of frames (the fits, the
   spectrum, and the corrections). It runs inside the `push` that closes a window.
 
@@ -43,7 +45,7 @@ import numpy.typing as npt
 from seeingmon.clock import NS_PER_S, Clock
 from seeingmon.fastpath.analyzer import FastPathAnalyzer
 from seeingmon.fastpath.config import FastPathConfig
-from seeingmon.fastpath.kernel import measure_frame, measure_stack, search_frame
+from seeingmon.fastpath.kernel import KernelParams, measure_frame, measure_stack, search_frame
 from seeingmon.frames import (
     ActiveStream,
     Frame,
@@ -82,6 +84,7 @@ class CaseResult:
     push_best_us: float
     close_ms: float
     search_us: float
+    kernel_gaussian_us: float
 
 
 def star_frames(
@@ -175,12 +178,21 @@ def run_case(
         return analyzer
 
     params, calibration = new_analyzer().kernel_setup(mode, gain, exposure_us, adc_bits, 16)
+    weighted, _ = FastPathAnalyzer(profile, FastPathConfig(centroid="gaussian")).kernel_setup(
+        mode, gain, exposure_us, adc_bits, 16
+    )
 
-    def kernel() -> None:
+    def follow(kernel_params: KernelParams) -> None:
         guess: tuple[float, float] | None = None
         for data in arrays:
-            m = measure_frame(data, roi.x, roi.y, params, calibration, guess)
+            m = measure_frame(data, roi.x, roi.y, kernel_params, calibration, guess)
             guess = (m.x, m.y) if m.found else None
+
+    def kernel() -> None:
+        follow(params)
+
+    def kernel_gaussian() -> None:
+        follow(weighted)
 
     center = (roi.x + 0.5 * (shape[1] - 1), roi.y + 0.5 * (shape[0] - 1))
 
@@ -192,6 +204,7 @@ def run_case(
     stack_runs: list[float] = []
     push_runs: list[float] = []
     search_runs: list[float] = []
+    gaussian_runs: list[float] = []
     for _ in range(repeats):
         kernel_runs.append(_microseconds_per_frame(timer, frames, kernel))
         stack_runs.append(
@@ -208,6 +221,7 @@ def run_case(
 
         push_runs.append(_microseconds_per_frame(timer, frames, push))
         search_runs.append(_microseconds_per_frame(timer, frames, search))
+        gaussian_runs.append(_microseconds_per_frame(timer, frames, kernel_gaussian))
     # Fill a full window and time how long `flush` takes to close it.
     analyzer = new_analyzer()
     for i in range(max(1, round(close_window_s * NS_PER_S / period_ns))):
@@ -227,6 +241,7 @@ def run_case(
         push_best_us=min(push_runs),
         close_ms=close_ms,
         search_us=statistics.median(search_runs),
+        kernel_gaussian_us=statistics.median(gaussian_runs),
     )
 
 
@@ -265,7 +280,8 @@ def format_report(results: Sequence[CaseResult]) -> str:
     return "\n".join(
         f"{r.name}: kernel {r.kernel_us:.1f} us/frame (best {r.kernel_best_us:.1f}), "
         f"stack {r.stack_us:.1f}, push {r.push_us:.1f} (best {r.push_best_us:.1f}), "
-        f"close one window {r.close_ms:.1f} ms, search {r.search_us:.1f} us/frame"
+        f"close one window {r.close_ms:.1f} ms, search {r.search_us:.1f} us/frame, "
+        f"kernel with the Gaussian-weighted centroid {r.kernel_gaussian_us:.1f} us/frame"
         for r in results
     )
 

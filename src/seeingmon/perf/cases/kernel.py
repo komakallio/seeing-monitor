@@ -13,6 +13,10 @@ report compares that estimate with the measurement (`seeingmon perf report --bud
 The case also times `seeingmon.fastpath.kernel.search_frame`, the matched filter of one frame of
 a search burst, within 20 px of the center of the ROI (the default `[scheduler.search]
 radius_px`), as the figure `<mode>.search`. The bursts run while the search looks for Polaris.
+
+`<mode>.kernel_gaussian` times the kernel with the Gaussian-weighted centroid (`[fastpath]
+centroid = "gaussian"`), which is not the default, so that a run on the Pi shows its cost before
+the owner chooses the centroid. No budget reads it.
 """
 
 from __future__ import annotations
@@ -95,8 +99,10 @@ def time_kernel(ctx: CaseContext, profile: Profile, mode: FastMode) -> list[Meas
     from seeingmon.fastpath.analyzer import FastPathAnalyzer
     from seeingmon.fastpath.config import FastPathConfig
 
-    params, calibration = FastPathAnalyzer(profile, FastPathConfig()).kernel_setup(
-        mode.mode, mode.gain, mode.exposure_us, mode.adc_bits(profile), mode.container_bits
+    setup = (mode.mode, mode.gain, mode.exposure_us, mode.adc_bits(profile), mode.container_bits)
+    params, calibration = FastPathAnalyzer(profile, FastPathConfig()).kernel_setup(*setup)
+    weighted, _ = FastPathAnalyzer(profile, FastPathConfig(centroid="gaussian")).kernel_setup(
+        *setup
     )
     pool = pool_frames(profile, mode, ctx.smoke)
     height, width = mode.shape_for(ctx.smoke)
@@ -110,6 +116,7 @@ def time_kernel(ctx: CaseContext, profile: Profile, mode: FastMode) -> list[Meas
     for name, call in (
         ("kernel", Follower(pool, params, calibration)),
         ("search", Searcher(pool, params, calibration)),
+        ("kernel_gaussian", Follower(pool, weighted, calibration)),
     ):
         stats = ctx.timer(repeats=1500, warmup=200).measure(call).scaled(_US)
         figures.append(
@@ -137,7 +144,8 @@ def kernel(ctx: CaseContext) -> list[Measurement]:
     ctx.note(
         "Each sample is one call of the kernel on one frame, in microseconds. The kernel follows "
         "the star from frame to frame, as the analyzer does. The search figure is one frame of a "
-        "search burst, the matched filter within 20 px of the ROI center. The frames come from "
-        "seeingmon.fastpath.benchmark.star_frames."
+        "search burst, the matched filter within 20 px of the ROI center. The kernel_gaussian "
+        "figure is the kernel with the Gaussian-weighted centroid, which is not the default. The "
+        "frames come from seeingmon.fastpath.benchmark.star_frames."
     )
     return measurements
