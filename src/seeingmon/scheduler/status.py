@@ -178,7 +178,9 @@ class SchedulerStatus:
     exposure, as a share of saturation, the larger of the last brightness frame and, in `auto`,
     the last burst or window scaled to that exposure. When the frame that decides clipped, the
     value is only a lower bound. `search` says whether the fast stream searches or measures, in
-    `auto` with a pointing solution, and is `None` elsewhere.
+    `auto` with a pointing solution, and is `None` elsewhere. `twilight` says that the Sun is above
+    the twilight limit, in twilight or in daylight: the flags of the windows and the survey results
+    tell the two apart (`twilight` and `daylight`).
     """
 
     t_utc_ns: int

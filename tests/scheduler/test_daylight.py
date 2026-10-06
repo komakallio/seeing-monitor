@@ -117,6 +117,17 @@ class TestDaylight:
         assert status.twilight is False
         world.close()
 
+    def test_the_status_says_twilight_in_daylight_too(self) -> None:
+        """The status keeps its meaning from before the `daylight` flag: a Sun above the twilight
+        limit. The flags of the windows and the survey results tell daylight from twilight."""
+        world = World()  # the Sun is 6 degrees up
+        world.run_for(10)
+        status = world.scheduler.status()
+        assert status.sun_elevation_deg is not None
+        assert status.sun_elevation_deg > 0.0
+        assert status.twilight is True
+        world.close()
+
 
 class TestDusk:
     def test_the_scheduler_enters_auto_where_the_fast_stream_could_measure(self) -> None:

@@ -606,7 +606,9 @@ class Scheduler:
                 stream=self._stream,
                 cloud=self._cloud.active,
                 cloud_fraction=self._cloud.fraction,
-                twilight=self._gate.is_twilight(self._sun_elevation()),
+                # Twilight or daylight: the status keeps the meaning that it had before the
+                # `daylight` flag, a Sun above the twilight limit.
+                twilight=bool(self._gate.sun_flags(self._sun_elevation())),
                 sun_elevation_deg=self._sun_elevation(),
                 background_fraction=self._gate_fraction(self._machine.state is State.AUTO),
                 sensor_temperature_c=self._last_temperature_c,

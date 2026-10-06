@@ -19,8 +19,11 @@
   ];
   const STEP_NOTES = { raw: "one point for each window", "1m": "one point per minute", "10m": "one point per 10 minutes", "1h": "one point per hour" };
   const MAX_PAGES = 12;
-  const MARKS = { cloud: "--series-4", vibration: "--series-2", twilight: "--series-3" };
-  const MARK_TEXT = { cloud: "clouds", vibration: "vibration", twilight: "twilight" };
+  // A point gets the mark of its first flag in MARK_ORDER. `noisy` and `vibration` both say that
+  // the seeing can read high, and `daylight` and `twilight` both say that the Sun was up or near.
+  const MARKS = { cloud: "--series-4", vibration: "--series-2", noisy: "--series-2", daylight: "--series-3", twilight: "--series-3" };
+  const MARK_TEXT = { cloud: "clouds", vibration: "vibration", noisy: "noisy", daylight: "daylight", twilight: "twilight" };
+  const MARK_ORDER = ["cloud", "vibration", "noisy", "daylight", "twilight"];
 
   const state = { range: RANGES[1], step: "auto", level: "info", loadId: 0, eventCursor: null, eventCount: 0 };
   const plots = {};
@@ -56,7 +59,7 @@
   }
 
   function markOf(flags) {
-    for (const flag of ["cloud", "vibration", "twilight"]) {
+    for (const flag of MARK_ORDER) {
       if ((flags || []).includes(flag)) {
         return MARKS[flag];
       }
