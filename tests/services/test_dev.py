@@ -26,6 +26,7 @@ pytest.importorskip("fastapi", reason="the web settings come from the web extra"
 from seeingmon.cli import CliError, build_parser
 from seeingmon.clock import iso_to_utc_ns
 from seeingmon.config import load_config
+from seeingmon.config.layers import parse_env_value
 from seeingmon.fastpath import FastPathConfig
 from seeingmon.scheduler import SchedulerConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
@@ -1118,6 +1119,16 @@ class TestTheSettingsFormat:
     def test_a_value_of_another_type_is_refused(self) -> None:
         with pytest.raises(TypeError, match="cannot put"):
             render_env_value(object())
+
+    def test_an_array_of_tables_becomes_inline_tables_that_the_configuration_reads_back(
+        self,
+    ) -> None:
+        clouds = [{"start_s": 10.0, "duration_s": 60.0, "transmission": 0.0}, {"ramp_s": 1}]
+        text = render_env_value(clouds)
+        assert text == (
+            '[{"start_s" = 10.0, "duration_s" = 60.0, "transmission" = 0.0}, {"ramp_s" = 1}]'
+        )
+        assert parse_env_value(text) == clouds
 
     def test_nested_tables_become_double_underscore_names(self) -> None:
         flat = flatten_env({"a": {"b": 1, "c": {"d": "x"}}, "e": True}, "SEEINGMON_ROOT")

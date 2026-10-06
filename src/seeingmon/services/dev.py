@@ -280,7 +280,12 @@ class DevPlan:
 
 
 def render_env_value(value: Any) -> str:
-    """A configuration value as the text of an environment variable (a TOML scalar or array)."""
+    """A configuration value as the text of an environment variable (a TOML scalar or array).
+
+    A table inside an array becomes an inline table, such as the `clouds` of the simulator. The
+    configuration reads such an array back, and `flatten_env` gives every other table its own
+    variables.
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int | float):
@@ -289,6 +294,11 @@ def render_env_value(value: Any) -> str:
         return json.dumps(value)  # a TOML basic string
     if isinstance(value, list | tuple):
         return "[" + ", ".join(render_env_value(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        items = (
+            f"{json.dumps(str(key))} = {render_env_value(item)}" for key, item in value.items()
+        )
+        return "{" + ", ".join(items) + "}"
     raise TypeError(f"cannot put a {type(value).__name__} in an environment variable")
 
 
