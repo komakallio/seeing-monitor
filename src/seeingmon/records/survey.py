@@ -194,9 +194,12 @@ class SkyQualityRecord(Record):
             "The number of catalog stars that the cloud fraction expects in this frame: the "
             "stars brighter than G `[survey.cloud] mag_limit` that lie more than "
             "`[survey.cloud] edge_px` inside the frame and outside the blobs of saturated stars, "
-            "and that a clear sky shows at a signal-to-noise ratio of at least "
+            "that a clear sky shows at a signal-to-noise ratio of at least "
             "`[survey.cloud] expected_snr` with the exposure and the background noise of this "
-            "frame, placed by the solve or, when the frame does not solve, by the stored pointing."
+            "frame, and that the search that ran (`search` in the provenance: `full` or "
+            "`binned2`) finds with a chance of at least `[survey.cloud] min_completeness` by a "
+            "model of that search for the noise, the star image, and the trail of each star, "
+            "placed by the solve or, when the frame does not solve, by the stored pointing."
         ),
     )
     n_expected_found: int | None = quantity(
