@@ -298,6 +298,7 @@ class SurveyPipelineAnalyzer:
                 "window_days": zp_reference.window_days,
                 "quantile": zp_reference.quantile,
                 "provisional": zp_reference.provisional,
+                "history_samples": zp_reference.history_samples,
             },
         )
         self._submitted += 1

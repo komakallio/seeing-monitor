@@ -142,11 +142,11 @@ def test_the_reference_is_a_high_quantile_of_the_clear_zero_points() -> None:
     history = tr.MemoryHistory(sample(1.0 + i * 0.5, float(v)) for i, v in enumerate(values))
     reference = tr.reference_zero_point(history, NOW_NS)
     assert reference is not None
-    assert reference.zero_point_mag == pytest.approx(np.quantile(values, 0.9))
+    assert reference.zero_point_mag == pytest.approx(np.quantile(values, 0.95))
     assert reference.n_samples == 41
     assert reference.n_nights == 21  # two samples fall on one night (12 hours each side of noon)
-    assert reference.quantile == 0.9
-    assert reference.window_days == 60.0
+    assert reference.quantile == 0.95
+    assert reference.window_days == 365.0
 
 
 def test_a_short_history_gives_no_reference() -> None:
@@ -159,13 +159,26 @@ def test_a_short_history_gives_no_reference() -> None:
 def test_only_the_window_counts() -> None:
     old = [sample(70.0 + i, 20.0) for i in range(30)]  # a better zero point, but too old
     recent = [sample(1.0 + i, 19.0) for i in range(25)]
-    reference = tr.reference_zero_point(tr.MemoryHistory(old + recent), NOW_NS)
+    short = tr.TransparencyOptions(window_days=60.0)
+    reference = tr.reference_zero_point(tr.MemoryHistory(old + recent), NOW_NS, short)
     assert reference is not None
     assert reference.zero_point_mag == pytest.approx(19.0)
     longer = tr.TransparencyOptions(window_days=120.0)
     wide = tr.reference_zero_point(tr.MemoryHistory(old + recent), NOW_NS, longer)
     assert wide is not None
     assert wide.zero_point_mag > 19.0  # the old, better zero points count now
+    default = tr.reference_zero_point(tr.MemoryHistory(old + recent), NOW_NS)
+    assert default is not None
+    assert default.zero_point_mag > 19.0  # a year by default: weeks of haze cannot lower it
+
+
+def test_a_pinned_zero_point_is_the_reference_whatever_the_history_holds() -> None:
+    pinned = tr.TransparencyOptions(pinned_zero_point=19.05)
+    reference = tr.reference_zero_point(tr.MemoryHistory(), NOW_NS, pinned)
+    assert reference is not None
+    assert reference.zero_point_mag == 19.05
+    assert not reference.provisional
+    assert tr.transparency(18.8, reference) == pytest.approx(10 ** (-0.4 * 0.25))
 
 
 def test_cloudy_thin_and_scattered_zero_points_do_not_set_the_reference() -> None:

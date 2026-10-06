@@ -173,8 +173,8 @@ class SkyConfig(SectionModel):
 class TransparencyConfig(SectionModel):
     """The reference zero point, transparency, and the cloud flag (`survey.transparency`)."""
 
-    window_days: float = 60.0
-    quantile: float = 0.9  # the reference is this quantile of the clear zero points
+    window_days: float = 365.0  # a long window, so that weeks of haze cannot lower the reference
+    quantile: float = 0.95  # the reference is this quantile of the clear zero points
     min_samples: int = 20  # a shorter history gives no reference
     min_stars: int = 12
     max_rms_mag: float = 0.15
@@ -183,6 +183,9 @@ class TransparencyConfig(SectionModel):
     transparency_flag: float = 0.6
     # A frame without a zero point may use the median of this many hours; 0 turns it off.
     fallback_hours: float = 6.0
+    # A zero point (mag) that you trust as the clear-sky reference. It replaces the history. 0 turns
+    # the pin off.
+    pinned_zero_point: float = 0.0
 
 
 class StarEpochConfig(SectionModel):

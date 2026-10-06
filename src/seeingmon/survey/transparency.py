@@ -7,10 +7,12 @@ a reference from the clearest conditions that the station has seen:
     transparency = 10 ** (-0.4 * (ZP_ref - ZP))
 
 A frame as clear as the reference has transparency 1, and a frame that loses 0.75 mag to
-clouds has 0.5. The reference is a high quantile (the 90th by default) of the zero points of
-the usable frames of a rolling window (60 days by default). A frame is usable when its fit
-used enough stars, its scatter was small, and it was not cloudy. A quantile, not a maximum,
-keeps one lucky frame from setting the reference.
+clouds has 0.5. The reference is a high quantile (the 95th by default) of the zero points of
+the usable frames of a long window (a year by default), so that weeks of haze cannot lower it.
+A frame is usable when its fit used enough stars, its scatter was small, and it was not
+cloudy. A quantile, not a maximum, keeps one lucky frame from setting the reference. A
+station that knows its clear-sky zero point can pin it (`pinned_zero_point`), and the pin
+replaces the history.
 
 **The history protocol.** The reference needs past zero points, which live in the store as
 `sky_quality` records. `ZeroPointHistory` is the small interface that the store implements
@@ -142,8 +144,8 @@ class MemoryHistory:
 class TransparencyOptions:
     """The rules of the reference and of the cloud flag."""
 
-    window_days: float = 60.0
-    quantile: float = 0.9
+    window_days: float = 365.0
+    quantile: float = 0.95
     min_samples: int = 20
     min_stars: int = 12  # a zero point that rests on fewer stars is not a reference
     max_rms_mag: float = 0.15  # nor is one with a larger scatter
@@ -154,6 +156,8 @@ class TransparencyOptions:
     # A frame without a zero point may use the median of this many hours while no reference
     # exists (`provisional_zero_point`). 0 turns the fallback off.
     fallback_hours: float = 6.0
+    # A zero point (mag) that the owner trusts as the clear-sky reference. It replaces the history.
+    pinned_zero_point: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -161,6 +165,7 @@ class TransparencyOptions:
             or self.window_days <= 0
             or self.min_samples < 1
             or not 0.0 <= self.fallback_hours < math.inf
+            or (self.pinned_zero_point is not None and not math.isfinite(self.pinned_zero_point))
         ):
             raise ValueError("invalid transparency options")
 
@@ -179,6 +184,7 @@ class ZeroPointReference:
     window_days: float
     quantile: float
     provisional: bool = False
+    history_samples: int = 0  # the usable samples of the whole window, for "11 of 20" messages
 
 
 def usable_samples(
@@ -206,9 +212,18 @@ def reference_zero_point(
 ) -> ZeroPointReference | None:
     """The reference zero point at a time, or `None` while the history is too short.
 
-    The window ends just before `now_ns` and reaches `window_days` back.
+    The window ends just before `now_ns` and reaches `window_days` back. A pinned zero point
+    (`pinned_zero_point`) is the reference at once, whatever the history holds.
     """
     cfg = options or TransparencyOptions()
+    if cfg.pinned_zero_point is not None:
+        return ZeroPointReference(
+            zero_point_mag=float(cfg.pinned_zero_point),
+            n_samples=0,
+            n_nights=0,
+            window_days=0.0,
+            quantile=1.0,
+        )
     since = now_ns - round(cfg.window_days * SECONDS_PER_DAY * NS_PER_S)
     usable = usable_samples(history.zero_points(since, now_ns), cfg)
     if len(usable) < cfg.min_samples:
@@ -251,6 +266,7 @@ def provisional_zero_point(
         return None
     values = np.array([sample.zero_point_mag for sample in usable])
     nights = {night_label(sample.t_utc_ns, cfg.night_split_utc_hour) for sample in usable}
+    whole = now_ns - round(cfg.window_days * SECONDS_PER_DAY * NS_PER_S)
     return ZeroPointReference(
         zero_point_mag=float(np.median(values)),
         n_samples=len(usable),
@@ -258,6 +274,7 @@ def provisional_zero_point(
         window_days=cfg.fallback_hours / 24.0,
         quantile=0.5,
         provisional=True,
+        history_samples=len(usable_samples(history.zero_points(whole, now_ns), cfg)),
     )
 
 

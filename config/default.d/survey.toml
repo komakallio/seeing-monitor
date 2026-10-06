@@ -188,10 +188,14 @@ sqm_offset_mag = 0.0           # The offset that seeingmon.survey.sqm_fit gives 
 # which frames core counts as long (a preview, and the unsolved and cloud events). Provisional.
 min_exposure_s = 1.0
 
-# The reference zero point, transparency, and the cloud flag.
+# The reference zero point, transparency, and the cloud flag. The reference is a high quantile of
+# the clear zero points of a long window, so that weeks of haze cannot lower it. To pin it, set
+# pinned_zero_point (in mag) in the local file, from a night that you know was photometric. 0 turns
+# the pin off.
 [survey.transparency]
-window_days = 60.0
-quantile = 0.9
+window_days = 365.0
+quantile = 0.95
+pinned_zero_point = 0.0
 min_samples = 20
 min_stars = 12
 max_rms_mag = 0.15

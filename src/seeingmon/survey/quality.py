@@ -145,6 +145,7 @@ class QualityOptions:
                 transparency_flag=trans.transparency_flag,
                 night_split_utc_hour=config.night_split_utc_hour,
                 fallback_hours=trans.fallback_hours,
+                pinned_zero_point=trans.pinned_zero_point or None,
             ),
             min_snr=photo.min_snr,
             g_min=zp.g_min,
@@ -401,7 +402,9 @@ def assess_frame(
     elif fit is None:
         reasons["transparency"] = "no zero point"
     elif zp_reference is None or zp_reference.provisional:  # a median is no clear-sky level
-        reasons["transparency"] = "no reference yet: the history holds too few clear zero points"
+        have = 0 if zp_reference is None else zp_reference.history_samples
+        need = options.transparency.min_samples
+        reasons["transparency"] = f"no reference yet: {have} of {need} clear frames"
     else:
         transparency_value = transparency(fit.zero_point_mag, zp_reference)
     count_reason = SATURATED_REASON if saturated_sky else missing_count_reason(field, n_expected)

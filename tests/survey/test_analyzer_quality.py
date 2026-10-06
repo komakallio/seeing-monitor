@@ -240,7 +240,7 @@ def test_a_history_that_only_reads_works_as_well(profile: Profile, catalog: CapC
     analyzer, pipeline = scripted(profile, catalog, history=reader)
     analyzer.submit(small_frame(EVENING))
     analyzer.poll()
-    assert reader.calls == [(EVENING - 60 * 86400 * NS_PER_S, EVENING)]  # a 60 day window
+    assert reader.calls == [(EVENING - 365 * 86400 * NS_PER_S, EVENING)]  # a year of history
     assert pipeline.references[0] is not None
     assert pipeline.references[0].zero_point_mag == pytest.approx(19.1)
     analyzer.close()
@@ -283,13 +283,15 @@ def test_a_short_history_gives_the_worker_the_provisional_zero_point(
     assert reference is not None
     assert reference.provisional
     assert reference.n_samples == 6
-    assert reference.zero_point_mag == pytest.approx(18.80)  # the median, not the 90th percentile
+    assert reference.zero_point_mag == pytest.approx(18.80)  # the median, not the 95th percentile
     assert reference.quantile == 0.5
     assert reference.window_days == pytest.approx(0.25)
-    # The analyzer asks for the 60 days of the reference first, and then for the last 6 hours.
+    # The analyzer asks for the year of the reference first, then for the last 6 hours, and last for
+    # the count of the year that the message of the transparency names.
     assert history.calls == [
-        (EVENING - 60 * 86400 * NS_PER_S, EVENING),
+        (EVENING - 365 * 86400 * NS_PER_S, EVENING),
         (EVENING - 6 * 3600 * NS_PER_S, EVENING),
+        (EVENING - 365 * 86400 * NS_PER_S, EVENING),
     ]
     analyzer.close()
 
@@ -306,9 +308,9 @@ def test_the_reference_wins_over_the_provisional_zero_point(
     assert reference is not None
     assert not reference.provisional
     assert reference.n_samples == 25
-    assert reference.zero_point_mag == pytest.approx(float(np.quantile(values, 0.9)))
+    assert reference.zero_point_mag == pytest.approx(float(np.quantile(values, 0.95)))
     assert reference.zero_point_mag > float(np.median(values)) + 0.05  # not the stand-in
-    assert history.calls == [(EVENING - 60 * 86400 * NS_PER_S, EVENING)]  # no second question
+    assert history.calls == [(EVENING - 365 * 86400 * NS_PER_S, EVENING)]  # no second question
     analyzer.close()
 
 
@@ -343,7 +345,7 @@ def test_a_fallback_of_zero_hours_leaves_a_short_history_without_a_reference(
     analyzer.submit(small_frame(EVENING))
     assert len(analyzer.poll()) == 1
     assert pipeline.references == [None]
-    assert history.calls == [(EVENING - 60 * 86400 * NS_PER_S, EVENING)]  # the window is not read
+    assert history.calls == [(EVENING - 365 * 86400 * NS_PER_S, EVENING)]  # the window is not read
     analyzer.close()
 
 
