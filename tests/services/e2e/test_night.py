@@ -143,7 +143,8 @@ class TestTheDaylightGate:
             assert status.counters.search_bursts == 2
             first = night.records("seeing_window")[0]
             assert first.t_utc_ns >= visible.t_utc_ns - NS_PER_S
-            assert "twilight" in first.flags  # the Sun is up, not 18 degrees down
+            assert "daylight" in first.flags  # the Sun is up
+            assert "twilight" not in first.flags
         finally:
             night.app.stop()
 
@@ -164,8 +165,11 @@ class TestPolarisAtDusk:
         the brief, for the bursts that run once a cycle (one degree is 7 minutes here), the noise
         of the SNR of a burst, and the two detecting bursts in a row that measure needs.
 
-        The centroids of these windows come from the wide aperture and are noisy in daylight, so
-        the test checks no seeing value. Step 5 of the visibility lane measures that bias.
+        The centroids of these windows come from the wide aperture, whose noise is about four
+        times the image motion in daylight. The noise model holds the sky, and it reads about 5%
+        low there, so `r0` reads about 10% low, and the window carries `noisy`
+        (`docs/research-notes.md`, "The seeing in a bright sky"). The first light of this test,
+        before the sky term, read an `r0` of 3.4 cm against the injected 10 cm.
         """
         start = "2026-04-20T17:45:00Z"  # the Sun at +11.5 degrees on the synthetic site
         night = build_night(tmp_path, start=start, sensor="full", fast_exposure_us=2000)
@@ -218,7 +222,13 @@ class TestPolarisAtDusk:
             # one. The run gave 8.2 against 8.3 for the median frame of the estimate.
             assert first.star_snr is not None
             assert first.star_snr == pytest.approx(model.row(sun).snr_centroid, rel=0.1)
-            assert "twilight" in first.flags
+            assert "daylight" in first.flags
+            assert "twilight" not in first.flags
+            # The aperture's noise in daylight: `noisy`, and r0 within the bias and the scatter
+            # of the table (-11% and 7% for a window of 60 s). The run gave 9.2 cm for this
+            # partial window, and 11.0 and 11.1 cm for the two full windows after it.
+            assert "noisy" in first.flags
+            assert first.r0_cm == pytest.approx(night.r0_cm, rel=0.3)
             # At most 2 ms, Polaris does not saturate in any window of the run.
             for window in night.records("seeing_window"):
                 assert "saturated" not in window.flags

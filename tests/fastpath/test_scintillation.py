@@ -72,6 +72,65 @@ class TestIndex:
         assert extra.index == pytest.approx(0.15, rel=0.08)
 
 
+class TestTheBackgroundLevel:
+    """Each flux subtracts the area times a background level from a few hundred border pixels.
+
+    The level's noise reaches the flux `A^2` times. With the model's daylight (4,300 e- per pixel)
+    and the 496 border pixels of a ROI of 128 x 128, its variance is `(pi / 2) 4,300 / 496`, about
+    13.6 e^2, which adds 0.0069 to the variance of a flux of 14,000 e-.
+    """
+
+    AREA = 200.0
+    SKY_E = 4_300.0
+
+    def series(self, seed: int) -> tuple[FloatArray, FloatArray]:
+        """The flux with an index of 0.05, and the level, which brightens by 5% over the window."""
+        rng = np.random.default_rng(seed)
+        truth = lognormal_flux(0.05, seed + 10)
+        level_error = rng.normal(0.0, math.sqrt(0.5 * math.pi * self.SKY_E / 496.0), SAMPLES)
+        pixels = rng.normal(0.0, np.sqrt(truth + self.AREA * self.SKY_E))
+        flux = truth + pixels - self.AREA * level_error
+        level = self.SKY_E * (1.0 + 0.05 * np.linspace(0.0, 1.0, SAMPLES)) + level_error
+        return flux, level
+
+    def test_the_noise_of_the_level_is_subtracted(self) -> None:
+        """Four windows of 5,310 frames recover the index to 8%, as for a dark sky."""
+        values = []
+        for seed in range(4):
+            flux, level = self.series(seed)
+            result = scintillation_index(
+                flux, PERIOD_S, pixel_var_e2=self.SKY_E, area_px2=self.AREA, background_e=level
+            )
+            assert result is not None
+            values.append(result.index)
+        assert float(np.mean(values)) == pytest.approx(0.05, rel=0.08)
+
+    def test_without_the_level_its_noise_reads_as_scintillation(self) -> None:
+        flux, level = self.series(0)
+        with_level = scintillation_index(
+            flux, PERIOD_S, pixel_var_e2=self.SKY_E, area_px2=self.AREA, background_e=level
+        )
+        without = scintillation_index(flux, PERIOD_S, pixel_var_e2=self.SKY_E, area_px2=self.AREA)
+        assert with_level is not None
+        assert without is not None
+        # The floors differ by A^2 13.6 / F^2, which the detrended level measures to about 3%:
+        # the slow brightening of the sky is not noise.
+        added = self.AREA**2 * 0.5 * math.pi * self.SKY_E / 496.0 / MEAN_E**2
+        assert with_level.floor - without.floor == pytest.approx(added, rel=0.05)
+
+    def test_a_level_without_noise_adds_nothing(self) -> None:
+        flux = lognormal_flux(0.05, 1)
+        level = np.full(SAMPLES, self.SKY_E)
+        level[::7] = np.nan  # a missing level counts as no level
+        plain = scintillation_index(flux, PERIOD_S, pixel_var_e2=2.65**2, area_px2=self.AREA)
+        steady = scintillation_index(
+            flux, PERIOD_S, pixel_var_e2=2.65**2, area_px2=self.AREA, background_e=level
+        )
+        assert plain is not None
+        assert steady is not None
+        assert steady.floor == pytest.approx(plain.floor, rel=1e-12)
+
+
 class TestTrends:
     def test_a_slow_transparency_change_does_not_count(self) -> None:
         """A 20% swing at 0.05 Hz (a 20 s period) would add 0.02 to the plain variance."""

@@ -14,7 +14,7 @@ conversion gain) come from the profile, so none of them appears here.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -53,6 +53,10 @@ class FastPathConfig(SectionModel):
     matched_fwhm_airy_widths: Annotated[
         tuple[Annotated[float, Field(ge=0.25, le=8)], ...], Field(min_length=1, max_length=4)
     ] = (1.0, 2.0, 4.0)
+    # The centroid that gives the positions: "aperture" or "gaussian" (weighted by a Gaussian of
+    # centroid_fwhm_airy_widths Airy FWHM that follows the star).
+    centroid: Literal["aperture", "gaussian"] = "aperture"
+    centroid_fwhm_airy_widths: Annotated[float, Field(ge=0.5, le=8)] = 3.0
 
     # --- the seeing estimator ---
     outer_scale_m: Positive = 20.0
@@ -66,6 +70,8 @@ class FastPathConfig(SectionModel):
     structure_lag_min_s: Positive = 0.04
     structure_lag_max_s: Positive = 0.12
     min_samples: Annotated[int, Field(ge=10)] = 100
+    # The bias of r0 that the predicted error of the noise model may reach before `noisy` sets.
+    max_noise_bias: Annotated[float, Field(gt=0, lt=1)] = 0.05
 
     # --- the spectrum ---
     welch_segment_s: Positive = 2.0

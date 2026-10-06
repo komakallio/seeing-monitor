@@ -35,6 +35,20 @@ hot_pixel_ratio = 0.03           # An isolated brightest pixel (neighbors below 
 # larger in area, by 2 to 4. The missing-star test of measure uses the first. See
 # docs/research-notes.md, "Polaris in a bright sky".
 matched_fwhm_airy_widths = [1.0, 2.0, 4.0]
+# Provisional. The centroid that gives the positions of the seeing: "aperture", the centroid of the
+# aperture above, or "gaussian", a centroid weighted by a Gaussian of centroid_fwhm_airy_widths Airy
+# FWHM that follows the star. On a sky that dominates the noise, the aperture sums the noise of
+# about 200 pixels, and in the simulator's daylight its noise is about 4 times the variance of the
+# image motion at an r0 of 10 cm, so r0 reads about 10% low there. The weighted centroid's noise is
+# 0.05 times the motion, and it reads the truth there. On the owner's 8-bit bin2 recordings it reads
+# r0 about 10% below the aperture, so its gain needs a calibration on real frames. The owner
+# decides the default from docs/research-notes.md, "The seeing in a bright sky".
+centroid = "aperture"
+# Provisional. The weight of the Gaussian-weighted centroid, in Airy FWHM of the readout mode
+# (1.33 px in bin1). Below 3, the bin1 pixels sample the weight times the simulator's sharp image
+# too coarsely, and the centroid depends on where the star sits in a pixel. 3 also fits the image
+# of the owner's recordings best.
+centroid_fwhm_airy_widths = 3.0
 
 # --- the seeing estimator ---
 outer_scale_m = 20.0             # The assumed outer scale L0. It lowers a 50 mm aperture's variance by 21%.
@@ -48,6 +62,10 @@ apply_centroid_gain = true       # Divide the variance by the windowed-centroid 
 structure_lag_min_s = 0.04       # The structure-function cross-check uses lags from this ...
 structure_lag_max_s = 0.12       # ... to this, in seconds (at least one frame).
 min_samples = 100                # Usable frames that each axis needs for a seeing estimate.
+# Provisional. A window gets `noisy` when the error of the noise model, at the window's share of
+# noise in the variance, can bias r0 by more than this. See docs/research-notes.md, "The seeing in
+# a bright sky". The design named it scheduler.fast.max_noise_bias; the analyzer sets the flag.
+max_noise_bias = 0.05
 
 # --- the spectrum ---
 welch_segment_s = 2.0            # The length of a Welch segment, in seconds.

@@ -14,9 +14,9 @@ profile = "asi294mm-gs250"
 # The observing site. The values below are placeholders (0.0 is not your site). Enter your own
 # here, in the untracked file only. Latitude is north-positive, longitude is east-positive. The
 # scheduler reads the site to compute the Sun's elevation for the search limit
-# ([scheduler.search] max_sun_elevation_deg) and the twilight flag. Without a [site] table, the
-# search runs at any hour and no result carries `twilight`. The measured sky decides `safe` either
-# way.
+# ([scheduler.search] max_sun_elevation_deg) and the twilight and daylight flags. Without a [site]
+# table, the search runs at any hour and no result carries `twilight` or `daylight`. The measured
+# sky decides `safe` either way.
 # `seeingmon dev --driver asi --real-sky` needs all three values, and it refuses the placeholders.
 [site]
 latitude_deg = 0.0

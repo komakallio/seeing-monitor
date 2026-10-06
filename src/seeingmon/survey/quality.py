@@ -30,9 +30,9 @@ history is too short for a reference, the provisional zero point of the last few
 `quality` map and the `zp_ref_provisional` provenance key say so, and the provisional zero point
 sets no transparency.
 
-The `moon` and `twilight` flags need the position of the Sun and the Moon at the site. The survey
-path knows no site, so `core` sets them with the scheduler's ephemeris. The `dew` flag needs the
-dew point, which only the heater controller knows.
+The `moon`, `twilight`, and `daylight` flags need the position of the Sun and the Moon at the
+site. The survey path knows no site, so `core` sets them with the scheduler's ephemeris. The `dew`
+flag needs the dew point, which only the heater controller knows.
 """
 
 from __future__ import annotations

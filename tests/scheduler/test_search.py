@@ -141,14 +141,35 @@ class TestADayWithAVisiblePolaris:
         # Measure ends only when the run ends.
         assert [(e.detail or {})["reason"] for e in world.events("polaris.hidden")] == ["shutdown"]
 
-    def test_windows_come_all_day_and_carry_the_twilight_flag(self, clear_day: Day) -> None:
+    def test_windows_come_all_day_with_twilight_then_daylight(self, clear_day: Day) -> None:
+        """The Sun rises from -7.5 degrees: `twilight` up to the horizon, `daylight` above it."""
         world = clear_day.world
         windows = world.windows()
         hours = {int(world.seconds(w.t_utc_ns) // 3600) for w in windows}
         assert hours == set(range(12))  # every hour of the run
+        sunrise = world.t(crossing(world, 0.0, rising=True))
+        margin = 120 * NS_PER_S  # a window spans 60 s, and the context refreshes within it
+        before = [w for w in windows if w.t_utc_ns < sunrise - margin]
+        after = [w for w in windows if w.t_utc_ns > sunrise + margin]
+        assert before
+        assert after
+        assert all("twilight" in w.flags and "daylight" not in w.flags for w in before)
+        assert all("daylight" in w.flags and "twilight" not in w.flags for w in after)
         noon = [w for w in windows if abs(w.t_utc_ns - JUNE_NOON) < 600 * NS_PER_S]
         assert noon
-        assert all("twilight" in w.flags for w in noon)  # the Sun is above -18 degrees
+        assert all("daylight" in w.flags for w in noon)
+
+    def test_survey_results_carry_twilight_then_daylight_too(self, clear_day: Day) -> None:
+        world = clear_day.world
+        sunrise = world.t(crossing(world, 0.0, rising=True))
+        qualities = world.records("sky_quality")
+        before = [r for r in qualities if r.t_utc_ns < sunrise - 60 * NS_PER_S]
+        after = [r for r in qualities if r.t_utc_ns > sunrise + 60 * NS_PER_S]
+        assert before
+        assert after
+        assert all("twilight" in r.flags for r in before)  # type: ignore[attr-defined]
+        assert all("daylight" in r.flags for r in after)  # type: ignore[attr-defined]
+        assert not any("twilight" in r.flags for r in after)  # type: ignore[attr-defined]
 
     def test_a_measuring_stream_runs_no_burst_and_no_probe(self, clear_day: Day) -> None:
         world = clear_day.world

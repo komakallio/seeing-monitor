@@ -37,7 +37,9 @@ FLAT_PHASE_EVENT = "scheduler.flat_phase"
 
 EVENT_KINDS: Mapping[str, str] = {
     "scheduler.start": "The scheduler started in `safe`. The detail says whether a site is set.",
-    "scheduler.no_site": "No site is configured, so the Sun's elevation and `twilight` are off.",
+    "scheduler.no_site": (
+        "No site is configured, so the Sun's elevation, `twilight`, and `daylight` are off."
+    ),
     "scheduler.state_change": "The state changed. The detail holds `from`, `to`, and `reason`.",
     "scheduler.command": "A command arrived. The detail says whether the scheduler accepted it.",
     "scheduler.fault": "A camera error ended an activity. The detail holds `cause` and `reason`.",

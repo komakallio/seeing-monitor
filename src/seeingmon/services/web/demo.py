@@ -316,7 +316,9 @@ def _seeing_record(t_ns: int, now_ns: int, seeing: float, rng: random.Random) ->
     quality: dict[str, str] | None = None
     values: dict[str, Any] = {}
     frequencies = [round(0.5 * (80 / 0.5) ** (i / 23), 3) for i in range(24)]
-    if elevation > -18.0:
+    if elevation > 0.0:
+        flags.append("daylight")
+    elif elevation > -18.0:
         flags.append("twilight")
     if cover > 0.15:
         flags.append("cloud")
@@ -377,7 +379,9 @@ def _sky_record(t_ns: int, now_ns: int, rng: random.Random) -> Record:
     flags: list[str] = []
     if cover > 0.15:
         flags.append("cloud")
-    if elevation > -18.0:
+    if elevation > 0.0:
+        flags.append("daylight")
+    elif elevation > -18.0:
         flags.append("twilight")
     dark = 21.25 - 0.08 * math.sin(t_ns / HOUR_NS * 0.9)
     sky = dark - 6.5 * max(0.0, 1 + elevation / 18) - 0.9 * cover

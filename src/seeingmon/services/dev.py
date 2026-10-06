@@ -375,9 +375,9 @@ def _endpoint_text(directory: Path, role: str, token: str) -> str:
 def default_start_utc_ns() -> int:
     """The default start: five minutes after the Sun passes 18 degrees below the horizon.
 
-    The windows of an earlier hour carry the `twilight` flag, and in a bright evening sky the
-    scheduler waits in `safe` or searches for Polaris. Starting in the dark gives windows at once,
-    without twilight flags. Pass `--start` to see the evening instead.
+    The windows of an earlier hour carry the `twilight` or the `daylight` flag, and in a bright
+    evening sky the scheduler waits in `safe` or searches for Polaris. Starting in the dark gives
+    windows at once, without those flags. Pass `--start` to see the evening instead.
     """
     from seeingmon.clock import NS_PER_S, iso_to_utc_ns
     from seeingmon.scheduler.ephemeris import next_sun_crossing_utc_ns

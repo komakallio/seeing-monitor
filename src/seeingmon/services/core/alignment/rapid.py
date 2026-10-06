@@ -72,7 +72,7 @@ import statistics
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -483,6 +483,8 @@ class RapidFocusHelper:
         calibration: FrameCalibration
         if self._kernel_setup is not None:
             params, calibration = self._kernel_setup(*key)
+            # The aperture follows a defocused star, whose image a narrow Gaussian weight can miss.
+            params = replace(params, centroid_fwhm_px=None)
         else:
             params = KernelParams()
             calibration = FrameCalibration.for_container(

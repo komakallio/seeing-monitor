@@ -16,13 +16,21 @@ SEEING_WINDOW_FLAGS: dict[str, str] = {
     "degraded": "The system dropped more than 5% of the expected frames.",
     "cloud": "Clouds crossed the star during the window.",
     "twilight": (
-        "The Sun was less than 18 degrees below the horizon, so sky light can skew the data."
+        "The Sun was between 0 and 18 degrees below the horizon, so sky light can skew the data."
     ),
     "vibration": "The spectrum shows vibration lines, so the image motion can read high.",
     "saturated": "The star saturated in enough frames to bias the centroid and the width.",
     "partial": "The window ended early, for example because the star neared the edge of the ROI.",
     "time_invalid": "The clock was not synchronized, so `t_utc_ns` is not trustworthy.",
     "heater_on": "The dew heater was on, so heater plumes can add turbulence.",
+    "daylight": (
+        "The Sun was above the horizon, so a telescope that the Sun heats can add turbulence of "
+        "its own."
+    ),
+    "noisy": (
+        "The centroid noise was so large against the image motion that an error of its model "
+        "can bias the seeing by more than the configured limit (5% by default)."
+    ),
 }
 
 

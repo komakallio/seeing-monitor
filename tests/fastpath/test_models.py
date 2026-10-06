@@ -172,6 +172,45 @@ class TestCentroidGain:
             0.1
         ) == models.windowed_centroid_variance_ratio(2.0)
 
+    def test_the_gaussian_weight_of_3_airy_fwhm_reads_like_the_calibration(self) -> None:
+        """1.067 at 3 Airy FWHM in bin1 (3.09 lambda / D) and 1.053 at 4, as the simulation
+        showed (`docs/research-notes.md`, "The seeing in a bright sky"), to 0.002."""
+        airy = 1.029  # the Airy FWHM in lambda / D
+        assert models.gaussian_centroid_variance_ratio(3 * airy) == pytest.approx(1.067, abs=0.002)
+        assert models.gaussian_centroid_variance_ratio(4 * airy) == pytest.approx(1.053, abs=0.002)
+        assert models.gaussian_centroid_variance_ratio(0.5) == pytest.approx(1.105)  # clamped
+
     def test_spectrum_arguments_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="positive"):
             models.tilt_spectrum(D, 20.0, 0.0)
+
+
+class TestNoiseBias:
+    """The bias of `r0` that an error of the noise model gives at a share of noise."""
+
+    def test_no_noise_or_no_error_gives_no_bias(self) -> None:
+        assert models.noise_bias(0.0, 0.06) == 0.0
+        assert models.noise_bias(5.0, 0.0) == 0.0
+
+    def test_a_model_that_is_too_low_makes_r0_read_low(self) -> None:
+        """At a share of 4.2, a model 6% low keeps 25% too much motion: r0 reads 12.6% low."""
+        assert models.noise_bias(4.2, 0.06) == pytest.approx(1.0 - 1.252**-0.6, rel=1e-9)
+        assert models.noise_bias(4.2, 0.06) == pytest.approx(0.126, abs=0.001)
+
+    def test_the_aperture_crosses_five_percent_at_a_share_of_1_49(self) -> None:
+        error = models.noise_model_error("aperture")
+        assert error == 0.06
+        assert models.noise_bias(1.48, error) < 0.05 < models.noise_bias(1.50, error)
+
+    def test_the_weighted_centroid_crosses_five_percent_at_a_share_of_2_2(self) -> None:
+        """Its model errs by up to 3.4% in the table, so the flag takes 4%. Between the two
+        crossings, a share of 1.8 sets `noisy` for the aperture only."""
+        error = models.noise_model_error("gaussian")
+        assert error == 0.04
+        assert models.noise_bias(2.22, error) < 0.05 < models.noise_bias(2.25, error)
+        assert models.noise_bias(1.8, error) < 0.05 < models.noise_bias(1.8, 0.06)
+
+    def test_a_motion_below_the_noise_and_a_model_that_leaves_none(self) -> None:
+        assert models.noise_bias(math.inf, 0.06) == 1.0
+        assert models.noise_bias(25.0, -0.05) == math.inf
+        assert models.noise_bias(10.0, -0.05) == pytest.approx(0.5**-0.6 - 1.0)

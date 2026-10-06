@@ -264,13 +264,25 @@ class TestDaylightGate:
         assert (decision.allowed, decision.reason) == (False, REASON_NO_MEASUREMENT)
 
     @pytest.mark.parametrize(
-        ("elevation", "twilight"),
-        [(10.0, True), (-3.0, True), (-17.9, True), (-18.0, False), (-18.1, False), (None, False)],
+        ("elevation", "flags"),
+        [
+            (60.0, {"daylight"}),
+            (10.0, {"daylight"}),
+            (0.1, {"daylight"}),
+            (0.0, {"twilight"}),
+            (-3.0, {"twilight"}),
+            (-17.9, {"twilight"}),
+            (-18.0, set()),
+            (-18.1, set()),
+            (None, set()),
+        ],
     )
-    def test_the_twilight_flag_applies_above_the_twilight_limit(
-        self, elevation: float | None, twilight: bool
+    def test_daylight_above_the_horizon_and_twilight_from_there_to_the_twilight_limit(
+        self, elevation: float | None, flags: set[str]
     ) -> None:
-        assert self.gate.is_twilight(elevation) is twilight
+        assert self.gate.sun_flags(elevation) == flags
+        assert self.gate.is_daylight(elevation) is ("daylight" in flags)
+        assert self.gate.is_twilight(elevation) is ("twilight" in flags)
 
     @given(st.floats(0, 1))
     def test_a_stopped_scheduler_that_may_start_may_also_keep_running(

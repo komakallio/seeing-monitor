@@ -175,6 +175,8 @@ class TestSeeingWindowRecord:
             "partial",
             "time_invalid",
             "heater_on",
+            "daylight",
+            "noisy",
         }
         assert make_window(flags=sorted(SEEING_WINDOW_FLAGS)).flags == sorted(SEEING_WINDOW_FLAGS)
         with pytest.raises(ValidationError, match="unknown code"):

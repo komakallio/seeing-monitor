@@ -50,6 +50,11 @@ apart cancels both.
 **Zenith.** `r0` scales with `(cos z)^(3/5)`, so a measurement at zenith angle `z` converts to the
 zenith with `zenith_r0_factor`.
 
+**Noise.** The estimator subtracts the modeled centroid noise, so an error of the model stays in
+the motion, in proportion to the share of the noise in the variance. `noise_bias` gives the bias
+of `r0` that the measured error of each centroid's model (`NOISE_MODEL_ERROR`) gives at a share,
+and the fast path sets the window flag `noisy` from it.
+
 All spectra use a logarithmic grid and the trapezoid rule. The table of spectra is the only
 place that needs SciPy (the Bessel function `J1`), and `tilt_spectrum` caches it for each
 combination of aperture, outer scale, and wind speed.
@@ -145,6 +150,65 @@ def windowed_centroid_variance_ratio(radius_lambda_over_d: float) -> float:
     A radius below 2 is clamped, because the simulations do not reach it.
     """
     return 1.0 + CENTROID_EXCESS / max(radius_lambda_over_d, 2.0)
+
+
+GAUSSIAN_CENTROID_EXCESS = 0.21
+"""The fitted coefficient of `gaussian_centroid_variance_ratio`."""
+
+
+def gaussian_centroid_variance_ratio(fwhm_lambda_over_d: float) -> float:
+    """The variance of the Gaussian-weighted centroid over the variance of the G-tilt.
+
+    A weight that follows the star favors the bright core of the image still more than an aperture
+    does, so the weighted centroid moves more like the Zernike tilt (whose variance is 7% above the
+    G-tilt's, `docs/research-notes.md`, "Seeing theory") than like the centroid of the whole image.
+    The ratio is `1 + 0.21 / W`, where `W` is the FWHM of the weight in units of `lambda / D`. It
+    comes from wave-optics simulations of the dark sky through frozen-flow von Karman screens at
+    `r0` of 5, 10, and 15 cm, a 50 mm aperture, 2 ms exposures, and bin1 sampling, with two seeds
+    each, in which the variance of each frame's centroid against the injected G-tilt read 1.067 for
+    a weight of 3 Airy FWHM (`W` = 3.09) and 1.053 for 4 Airy FWHM, both within 0.2% of the fit at
+    every `r0`. Below 3 Airy FWHM, the bin1 pixels sample the product of the weight and the
+    simulator's sharp image too coarsely: the ratio then depends on the star's position within a
+    pixel (1.09 to 1.11 at 2 Airy FWHM, 1.10 to 1.22 at 1.5), so a width below `W` = 2 is clamped
+    there, and the fit does not hold below 3 Airy FWHM in bin1. A real image that is wider than
+    the simulator's, as the owner's recordings show, changes the ratio, and phase 3 measures it.
+    """
+    return 1.0 + GAUSSIAN_CENTROID_EXCESS / max(fwhm_lambda_over_d, 2.0)
+
+
+NOISE_MODEL_ERROR: dict[str, float] = {"aperture": 0.06, "gaussian": 0.04}
+"""The relative error of the modeled centroid noise, by centroid: the true noise is `1 + error`
+times the model.
+
+The values come from wave-optics simulations of bright skies (`docs/research-notes.md`, "The seeing
+in a bright sky"), in which the noise that the sky added to each frame's centroid, against the
+injected position, exceeded the model by 3.6 to 5.5% for the aperture at the exposures of the
+adaptive loop (7% at 1 ms and 11% at 0.5 ms) and by up to 3.4% for the Gaussian-weighted centroid.
+The aperture recenters on its own noisy centroid, which the model of a fixed aperture leaves out.
+"""
+
+
+def noise_model_error(centroid: str) -> float:
+    """The relative error of the modeled noise of a centroid: `aperture` or `gaussian`."""
+    return NOISE_MODEL_ERROR[centroid]
+
+
+def noise_bias(noise_share: float, model_error: float) -> float:
+    """The size of the bias of `r0` that an error of the noise model gives, as a fraction of `r0`.
+
+    `noise_share` is the modeled noise over the motion variance that the estimator kept, and
+    `model_error` the relative error of the model: the true noise is `1 + model_error` times the
+    model. The estimate then keeps `model_error * noise_share` of the motion too much, and `r0`
+    reads `(1 + model_error * noise_share)^(-3/5)` of the truth. The result is the size of the
+    difference from 1: 1 for an infinite share (the motion fell below the noise), and infinite when
+    a model that is too high leaves no motion.
+    """
+    if not noise_share < math.inf:
+        return 1.0
+    kept = 1.0 + model_error * noise_share
+    if not kept > 0.0:
+        return math.inf
+    return abs(math.pow(kept, -0.6) - 1.0)
 
 
 def zenith_r0_factor(zenith_angle_deg: float) -> float:

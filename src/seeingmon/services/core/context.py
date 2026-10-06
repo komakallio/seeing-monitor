@@ -2,8 +2,8 @@
 
 The scheduler asks a `context_provider` for a `FastContext` every few seconds, and it hands the
 result to the fast analyzer, which puts it on the windows that close. The scheduler adds the flags
-that it owns (`cloud` and `twilight`, from its own gates). The provider here adds what the scheduler
-cannot know:
+that it owns (`cloud`, and `twilight` or `daylight`, from its own gates). The provider here adds
+what the scheduler cannot know:
 
 - **The heater duty.** The share of the last analysis window that the dew heater was on, from the
   controller's log, and the `heater_on` flag while it is above zero. Heater plumes can add local

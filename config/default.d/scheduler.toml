@@ -56,7 +56,8 @@ roi_arcmin = 20.0           # A central ROI. Use 0 for the full frame.
 # to the shortest exposure. The 1 ms bin2 frame clips (brightness_clip_fraction) where the fast
 # stream at 32 us would see 3.3%.
 [scheduler.daylight]
-twilight_elevation_deg = -18.0   # Above this, results carry `twilight`.
+twilight_elevation_deg = -18.0   # Above this and up to daylight_elevation_deg, results carry `twilight`.
+daylight_elevation_deg = 0.0     # Provisional. Above this, results carry `daylight` instead of `twilight`.
 saturation_limit = 0.5           # A fast background above this share of saturation forces `safe`.
 resume_saturation = 0.35         # Hysteresis before `auto` resumes.
 # Provisional. A frame whose median reaches this share of its saturation has clipped, so its level

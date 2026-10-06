@@ -137,7 +137,9 @@ class TestNoise:
         """Photon and read noise of Polaris at 2 ms (14,000 e-): under 0.02 px.
 
         A sample of 1,500 frames gives the standard deviation to 2%. The model comes within 15%,
-        because the model's flux is the measured flux and the noise of the weights is ignored.
+        because the model's flux is the measured flux and the noise of the weights is ignored. In
+        a frame without sky the read noise spans less than an ADC step, so the model's pixel noise
+        stands for the border's, whose percentiles of whole counts would read a full step.
         """
         rng = np.random.default_rng(3)
         mean = box_integrated_gaussian(SHAPE, 64.3, 63.8, 1.0, POLARIS_ELECTRONS_2MS)
@@ -163,6 +165,101 @@ class TestNoise:
             models.append(m.noise_var_x)
         assert float(np.std(xs)) > 0.02
         assert math.sqrt(float(np.mean(models))) == pytest.approx(float(np.std(xs)), rel=0.2)
+
+
+class TestNoiseInABrightSky:
+    """The sky's photons enter the noise model of the centroid.
+
+    The star is the simulator's image of Polaris (1.33 px FWHM in bin1) on the model's skies:
+    14,000 e- at 2 ms on 1,336 e- of sky (the Sun at 0 degrees), and 8,000 e- at 1.23 ms on 4,300
+    e- (daylight). The guess is the true position, so the scatter is the noise alone.
+    """
+
+    SIGMA = 1.333 / 2.3548
+    PIXEL_VAR_E2 = 2.65**2 + 3.5**2 / 12
+
+    def scatter(
+        self, flux: float, sky_e: float, params: KernelParams, frames: int, seed: int
+    ) -> tuple[float, float]:
+        """The measured variance of the centroid per axis, and the mean modeled one."""
+        rng = np.random.default_rng(seed)
+        mean = box_integrated_gaussian(SHAPE, 64.3, 63.8, self.SIGMA, flux) + sky_e
+        xs, ys, models = [], [], []
+        for _ in range(frames):
+            m = measure_frame(digitize(mean, rng=rng), 0, 0, params, CALIBRATION, (64.3, 63.8))
+            if m.found:
+                xs.append(m.x)
+                ys.append(m.y)
+                models.append(0.5 * (m.noise_var_x + m.noise_var_y))
+        assert len(xs) >= 0.99 * frames  # the matched filter keeps the star
+        return 0.5 * (float(np.var(xs)) + float(np.var(ys))), float(np.mean(models))
+
+    @pytest.mark.parametrize(("flux", "sky_e"), [(14_000.0, 1_336.0), (8_000.0, 4_300.0)])
+    def test_the_aperture_model_holds_the_sky(self, flux: float, sky_e: float) -> None:
+        """Without the sky the model came out 70 to 700 times too small. The variance of 1,500
+        frames per axis is known to 2.6%, and the model of an aperture that recenters on noisy
+        centroids reads about 3% low in daylight, so the tolerance is 8%."""
+        params = KernelParams(aperture_diameter_px=16.0, matched_fwhms_px=(1.333,))
+        measured, modeled = self.scatter(flux, sky_e, params, 1_500, seed=21)
+        assert modeled == pytest.approx(measured, rel=0.08)
+        read_noise_only = self.PIXEL_VAR_E2 * params.second_moment_px4 / flux**2
+        assert measured > 60.0 * read_noise_only
+
+    def test_the_noise_moment_holds_the_squared_weights(self) -> None:
+        """`sum(w^2 u^2)` of the soft edge: 9% below `sum(w u^2)` for an aperture of 16 px."""
+        params = KernelParams(aperture_diameter_px=16.0)
+        half = params.half_box_px
+        u = np.arange(-half, half + 1, dtype=np.float64)
+        weights = np.clip(params.radius_px + 0.5 - np.hypot(u[None, :], u[:, None]), 0.0, 1.0)
+        expected = float(np.sum(weights**2 * u[None, :] ** 2))
+        assert params.noise_moment_px4 == pytest.approx(expected, rel=1e-12)
+        assert params.noise_moment_px4 / params.second_moment_px4 == pytest.approx(0.91, abs=0.01)
+
+
+class TestGaussianWeightedCentroid:
+    """The centroid weighted by a Gaussian that follows the star (`centroid_fwhm_px`)."""
+
+    def test_recovers_the_position_of_a_well_sampled_star(self) -> None:
+        """A noise-free star of 1 px sigma and a weight of 4 px FWHM: under 0.001 px."""
+        params = KernelParams(aperture_diameter_px=16.0, centroid_fwhm_px=4.0)
+        worst = 0.0
+        for fx in np.linspace(-0.5, 0.45, 11):
+            x, y = 64.0 + fx, 63.3
+            m = measure_frame(star16(x, y), 0, 0, params, CALIBRATION16, guess=(63.5, 63.5))
+            assert m.found
+            worst = max(worst, abs(m.x - x), abs(m.y - y))
+        assert worst < 1e-3
+
+    @pytest.mark.parametrize(("flux", "sky_e"), [(14_000.0, 0.0), (8_000.0, 4_300.0)])
+    def test_the_model_follows_the_scatter_and_the_aperture_is_far_noisier(
+        self, flux: float, sky_e: float
+    ) -> None:
+        """The weight of 3 Airy FWHM (4 px) on the simulator's image of Polaris. In daylight its
+        variance is about 0.0019 px^2, a hundredth of the aperture's 0.21 px^2 and 0.03 of the
+        image motion at an r0 of 10 cm. The tolerance of 8% is three times the sampling error."""
+        weighted = KernelParams(
+            aperture_diameter_px=16.0, matched_fwhms_px=(1.333,), centroid_fwhm_px=4.0
+        )
+        measured, modeled = TestNoiseInABrightSky().scatter(flux, sky_e, weighted, 1_500, seed=22)
+        assert modeled == pytest.approx(measured, rel=0.08)
+        if sky_e > 0.0:
+            aperture = KernelParams(aperture_diameter_px=16.0, matched_fwhms_px=(1.333,))
+            wide, _ = TestNoiseInABrightSky().scatter(flux, sky_e, aperture, 300, seed=23)
+            assert measured < 0.02 * wide
+
+    def test_a_mode_without_an_electron_scale_has_a_position_and_no_noise(self) -> None:
+        unknown = FrameCalibration.for_container(adc_bits=12, container_bits=16)
+        params = KernelParams(aperture_diameter_px=16.0, centroid_fwhm_px=4.0)
+        m = measure_frame(star(64.2, 63.7), 0, 0, params, unknown, guess=(64, 64))
+        assert m.found
+        assert m.x == pytest.approx(64.2, abs=0.01)
+        assert math.isnan(m.noise_var_x)
+
+    def test_a_blank_frame_has_no_star(self) -> None:
+        params = KernelParams(aperture_diameter_px=16.0, centroid_fwhm_px=4.0)
+        rng = np.random.default_rng(24)
+        frame = digitize(np.full(SHAPE, 1_000.0), rng=rng)
+        assert not measure_frame(frame, 0, 0, params, CALIBRATION).found
 
 
 class TestDetectionInABrightSky:
@@ -423,10 +520,11 @@ class TestParameters:
             {"border_px": 0},
             {"min_snr": -1.0},
             {"spike_ratio": 1.5},
+            {"centroid_fwhm_px": 0.2},
         ],
     )
     def test_rejects_invalid_settings(self, kwargs: dict[str, float]) -> None:
-        with pytest.raises(ValueError, match=r"aperture|recenter|border|min_snr|spike"):
+        with pytest.raises(ValueError, match=r"aperture|recenter|border|min_snr|spike|centroid"):
             KernelParams(**kwargs)  # type: ignore[arg-type]
 
     def test_rejects_an_invalid_container(self) -> None:

@@ -15,7 +15,7 @@ This page records what the fast path does with your two recorded 10 ms videos, a
 | Do the spectra look like turbulence? | Yes between 1 and 30 Hz. A floor that doesn't scale with the flux sits above 20 Hz. |
 | Do the two estimators agree? | Not at the default wind of 10 m/s: the structure-function estimate is 17 to 34% above the variance estimate. On average they agree within 4% at an assumed wind of 2 m/s. |
 | Does the bin2 gain swing of 0.53 to 1.48 show? | No. The star has a core of 2.3 pixels, and the gain stays within about 0.9 to 1.1. |
-| Does the 8-bit noise model hold? | No. It over-subtracts the centroid noise, and r0 reads about 3.5% high. |
+| Does the 8-bit noise model hold? | No. It over-subtracts the centroid noise, and r0 reads about 2.7% high (3.5% with the noise model of `fast-1`). |
 | What is r0? | 8 to 12 cm at the default assumptions, which is 0.8 to 1.2 arcsec of seeing. Not calibrated. |
 
 ## The captures
@@ -102,9 +102,9 @@ The 8-bit frames hold the top 8 bits of the 14-bit ADC, so one count is 82 e⁻.
 
 - **Background pixels.** The border pixels sit at the edge between two counts: 26% read 1 and 74% read 2. Their variance in time is 0.19 count² (0.44 count), twice the model.
 - **Pixels near the star.** At 6 to 8 pixels from the star the halo lifts the level away from the edge, and the variance in time is 0.001 to 0.005 count². Quantization noise depends on where the signal sits relative to the count edges, so one number can't describe it.
-- **Centroid noise.** The model gives 0.027 px per axis (0.0104 arcsec²), which is 5 to 10% of the motion variance. The variance of the second difference of the centroid doesn't depend on the flux: it changes by 4% between the lowest and the highest tenth of the flux (39,000 and 68,000 e⁻), and the model predicts a change of 27%. A fit with a part that scales as 1/F² gives a noise-like part of 0.0025 ± 0.0015 arcsec², against 0.0156 modeled. That is a white noise of about 0.011 px.
+- **Centroid noise.** The model of revision `fast-2` gives 0.024 to 0.025 px per axis (0.0081 to 0.0091 arcsec²), which is 4.5 to 8% of the motion variance. The model of `fast-1` gave 0.027 px (0.0104 arcsec²) and 5 to 10%: `fast-2` sums the squared weights of the soft-edged aperture and takes the flux above the trimmed mean of the border, and on the same frames each window's `r0` reads 0.5 to 1.2% lower. The variance of the second difference of the centroid doesn't depend on the flux: it changes by 4% between the lowest and the highest tenth of the flux (39,000 and 68,000 e⁻), and the model predicts a change of 27%. A fit with a part that scales as 1/F² gives a noise-like part of 0.0025 ± 0.0015 arcsec², against 0.0156 that the model of `fast-1` gave. That is a white noise of about 0.011 px.
 
-The model therefore over-subtracts noise for these recordings, and r0 reads about 3.5% high. The flat floor above 20 Hz is real motion or an instrument effect, not noise. Neither effect matters for 16-bit frames of a bright star, where the modeled noise is well below 1% of the variance.
+The model therefore over-subtracts noise for these recordings, and r0 reads about 2.7% high (3.5% with `fast-1`). The flat floor above 20 Hz is real motion or an instrument effect, not noise. Neither effect matters for 16-bit frames of a bright star, where the modeled noise is well below 1% of the variance.
 
 ## The vibration burst
 
@@ -114,7 +114,7 @@ A line at 17.5 Hz appears in one 10 s block (270 to 280 s) of the long capture: 
 
 1. **The estimators disagree at the default wind.** The single frozen layer at 10 m/s doesn't match the temporal structure of the data (27 to 51% too little power below 4 Hz). The cross-check depends on the wind assumption as much as the variance estimate does, so it can't confirm the wind.
 2. **The two axes differ.** The x variance is 31 to 57% above the y variance. A single layer explains this only with a fast wind along y, and the slow structure contradicts a single fast layer. The turbulence probably has several layers, and the estimator assumes one.
-3. **The 8-bit noise model over-subtracts,** by up to 7% of the variance for these recordings.
+3. **The 8-bit noise model over-subtracts,** by up to about 5% of the variance for these recordings (7% with `fast-1`).
 4. **The frame times jitter.** Arrival intervals range from 0.14 to 15 ms around 10.2 ms. The analyzer treats the stream as uniformly sampled and uses the times only to count lost frames, so seeing is not affected. Don't read the times as exposure times to better than one frame.
 5. **The star is defocused to a core of 2.3 pixels,** which these captures need and the final design avoids. The aperture truncation and the centroid gain were not tested on a focused star.
 6. **The first drop** falls in the first 30 ms of the capture, which suggests an unsettled start.

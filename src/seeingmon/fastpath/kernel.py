@@ -33,17 +33,41 @@ desktop, 12 of them for the matched filter (`seeingmon.fastpath.benchmark` measu
 `measure_stack` handles a 3-D stack with the same code, so the two agree exactly.
 
 **Noise.** `Measurement.noise_var_x` and `noise_var_y` hold the modeled variance of the centroid
-from photon noise and pixel noise, in square pixels: `sigma_x^2 / F + n^2 K / F^2`, where `F` is
-the flux in electrons, `n^2` the pixel noise variance in electrons squared, and `K` the sum of
-the aperture weights times the squared distance from the center along one axis. The estimator
-subtracts it from the motion variance. The model counts the read noise only, and not the sky.
+from the star's photon noise and the noise of the pixels, in square pixels: `sigma_x^2 / F +
+v K / F^2`, where `F` is the flux in electrons above the trimmed mean of the border, `sigma_x` the
+second-moment width, `v` the variance of one pixel (`pixel_variance_e2`: the sky noise measured on
+the border, or the modeled read and quantization noise when that is larger or the sky noise does
+not exceed one ADC step), and `K` the sum of the squared aperture weights times the squared
+distance from the center along one axis (2,935 px^4 for the aperture of 16 px). The estimator
+subtracts it from the motion variance. The flux of a frame is noisy, and so is the centroid's own
+denominator, so the mean of `1 / F^2` over the frames matches the noise of the centroids without a
+correction. In a dark sky the star's photons dominate. In daylight the sky does: the aperture adds
+the noise of about 200 pixels of sky, `v K / F^2` is about 4 times the motion variance of a window
+at an `r0` of 10 cm, and a model without the sky read `r0` a third of the truth. The aperture
+recenters on its own noisy centroid, which the model of a fixed aperture leaves out, and in the
+simulator's bright skies the true noise exceeds the model by 4 to 6% at the exposures of the
+adaptive loop (`docs/research-notes.md`, "The seeing in a bright sky").
+
+**The Gaussian-weighted centroid.** With `centroid_fwhm_px`, the position comes from a centroid
+weighted by a Gaussian of that FWHM instead of the aperture: the point `x` where `sum(W (u - x)
+(I - b)) = 0` for the weights `W = exp(-((u - x)^2 + (v - y)^2) / (2 s^2))`, found by Newton steps
+from the matched filter's peak (or from the aperture's centroid without one), so the weights
+follow the star. On a sky that dominates the noise, a weight as wide as a Gaussian image reaches
+the variance `8 pi s^4 v / F^2`, the lowest that any estimator reaches for that image (the
+Cramer-Rao bound), and a weight twice as wide reaches 2.4 times that. The aperture of 16 px
+reaches `v K / F^2`, about 540 times the bound for the simulator's image in daylight, and a weight
+of 3 Airy FWHM about 5 times. The modeled noise of the weighted centroid is the propagation of the
+pixel noise through that equation: `sum(W^2 (u - x)^2 (v + F P)) / D^2`, with `D = sum(W (I - b)
+(1 - (u - x)^2 / s^2))`, both from the pixels of the frame. The flux, the widths, the SNR, and the
+flags still come from the aperture.
 
 **Detection.** Two signal-to-noise ratios describe the star, and both take the sky from the
 trimmed mean of the border (its central 68%), which rounds far less than the median of whole
 counts: in a faint twilight sky the median can sit half an ADC step off, and over the aperture
 that looks like a star. Both take `v`, the variance of one pixel in electrons squared, as the
 larger of the modeled pixel noise (read noise and quantization) and the square of the measured
-sky noise, because the measured noise already holds the read noise.
+sky noise, because the measured noise already holds the read noise. The measured noise counts
+only when it exceeds one ADC step (`pixel_variance_e2`).
 
 - `matched_snr` is the SNR of a filter matched to the image of the star
   (`seeingmon.fastpath.matched`). `measure_frame` takes the first filter of `matched_fwhms_px`,
@@ -109,6 +133,7 @@ UNUSABLE_FLAGS = FLAG_NO_STAR | FLAG_EDGE
 PHASES = 16  # sub-pixel positions of the aperture center along each axis
 _HALF_PHASE = PHASES // 2
 _NAN = math.nan
+_FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 _UNSET = -(10**9)
 _BATCH_CHUNK = 256
 
@@ -128,7 +153,8 @@ class KernelParams:
     fill one pixel there. `matched_fwhms_px` holds the FWHMs of the matched filters, in pixels.
     `measure_frame` uses the first in its missing-star test, and `search_frame` tries them all and
     keeps the best. Empty, the kernel uses no matched filter, and the SNR of the aperture decides
-    alone.
+    alone. `centroid_fwhm_px` switches the position from the centroid of the aperture to the
+    Gaussian-weighted centroid of that FWHM, in pixels. `None`, the default, keeps the aperture.
     """
 
     aperture_diameter_px: float = 16.0
@@ -139,6 +165,7 @@ class KernelParams:
     min_snr: float = 6.0
     spike_ratio: float | None = 0.03
     matched_fwhms_px: tuple[float, ...] = ()
+    centroid_fwhm_px: float | None = None
 
     def __post_init__(self) -> None:
         if not 3.0 <= self.aperture_diameter_px <= 60.0:
@@ -153,6 +180,8 @@ class KernelParams:
             raise ValueError("spike_ratio must be between 0 and 1, or None")
         if not all(0.3 <= fwhm <= 20.0 for fwhm in self.matched_fwhms_px):
             raise ValueError("each of matched_fwhms_px must be between 0.3 and 20")
+        if self.centroid_fwhm_px is not None and not 0.5 <= self.centroid_fwhm_px <= 20.0:
+            raise ValueError("centroid_fwhm_px must be between 0.5 and 20, or None")
 
     @property
     def radius_px(self) -> float:
@@ -179,6 +208,12 @@ class KernelParams:
         """The sum of the weights times the squared distance along one axis from the center."""
         return _tables(self.radius_px, self.half_box_px).second_moment
 
+    @property
+    def noise_moment_px4(self) -> float:
+        """The sum of the squared weights times the squared distance along one axis from the
+        center: the factor of the pixel noise in the variance of the aperture's centroid."""
+        return _tables(self.radius_px, self.half_box_px).noise_moment
+
 
 @dataclass(frozen=True, slots=True)
 class _Tables:
@@ -188,13 +223,16 @@ class _Tables:
     `v`, times `u^2`, and times `v^2`, for the pixel offsets `(u, v)` from the center pixel of
     the box, in row-major order. `sums_list` holds the sum of each moment over the box as Python
     floats, which the background subtraction needs. `area` is the sum of the weights of a
-    centered aperture, and `second_moment` is the sum of the weights times `u^2`.
+    centered aperture, `second_moment` is the sum of the weights times `u^2`, and `noise_moment`
+    the sum of the squared weights times `u^2`. The soft edge makes `noise_moment` about 9%
+    smaller than `second_moment` for an aperture of 16 px.
     """
 
     moments: npt.NDArray[np.float64]
     sums_list: list[list[list[float]]]
     area: float
     second_moment: float
+    noise_moment: float
 
 
 @lru_cache(maxsize=8)
@@ -212,7 +250,8 @@ def _tables(radius_px: float, half: int) -> _Tables:
     moments = np.ascontiguousarray(stacked.reshape(PHASES, PHASES, 5, box * box))
     sums = moments.sum(axis=3)
     centered = sums[_HALF_PHASE, _HALF_PHASE]
-    return _Tables(moments, sums.tolist(), float(centered[0]), float(centered[3]))
+    noise_moment = float(np.sum(weight[_HALF_PHASE, _HALF_PHASE] ** 2 * u[0, 0] ** 2))
+    return _Tables(moments, sums.tolist(), float(centered[0]), float(centered[3]), noise_moment)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,12 +263,15 @@ class FrameCalibration:
     is the number of electrons for one container count, and `pixel_var_e2` is the variance of one
     pixel in electrons squared (read noise plus the coarse quantization of the container). Both are
     `NaN` when the profile does not know the mode, and then the flux and the noise model are `NaN`.
+    `step_dn` is the step between two ADC values in container counts (16 for a 12-bit ADC in a
+    16-bit container), which the sky noise of the border needs.
     """
 
     full_scale_dn: float
     saturation_dn: float
     e_per_dn: float = _NAN
     pixel_var_e2: float = _NAN
+    step_dn: float = 1.0
 
     @classmethod
     def for_container(
@@ -253,9 +295,11 @@ class FrameCalibration:
             raise ValueError("saturation_fraction must be in (0, 1]")
         if container_bits >= adc_bits:
             full_scale = float(((1 << adc_bits) - 1) << (container_bits - adc_bits))
+            step = float(1 << (container_bits - adc_bits))
         else:
             full_scale = float((1 << container_bits) - 1)
-        return cls(full_scale, saturation_fraction * full_scale, e_per_dn, pixel_var_e2)
+            step = 1.0
+        return cls(full_scale, saturation_fraction * full_scale, e_per_dn, pixel_var_e2, step)
 
 
 class Measurement(NamedTuple):
@@ -341,7 +385,9 @@ def _border_level(flat: FrameData, border: _Border) -> tuple[float, float, float
     the central 68% of the ring. The median of whole counts can sit up to half an ADC step off the
     sky when the noise spans a few steps, and over the area of the aperture that offset looks like
     a star. The mean of the central values rounds far less, so the detection takes the sky from
-    it. A star in a corner or a hot pixel falls in the tails and changes neither.
+    it. A star in a corner or a hot pixel falls in the tails and changes neither. The one-sigma
+    points round in the same way, so a noise of about one step reads one step or half of one
+    (`pixel_variance_e2` takes the model there).
     """
     values = flat[border.indices]
     values.partition(border.ranks)
@@ -364,13 +410,101 @@ def _locate(data: IntImage) -> tuple[float, float]:
     return float(column + 1), float(row + 1)
 
 
-def _noise_variance(
-    width_sq: float, flux_e: float, calibration: FrameCalibration, k_ap: float
-) -> float:
-    """Photon noise plus pixel noise of a centroid along one axis, in square pixels."""
-    if not (flux_e > 0.0 and calibration.pixel_var_e2 == calibration.pixel_var_e2):
+def _noise_variance(width_sq: float, flux_e: float, pixel_var_e2: float, k_ap: float) -> float:
+    """The star's photon noise plus the pixel noise of the aperture's centroid along one axis, in
+    square pixels. `pixel_var_e2` holds the sky, the read noise, and the quantization."""
+    if not (flux_e > 0.0 and pixel_var_e2 == pixel_var_e2):
         return _NAN
-    return width_sq / flux_e + calibration.pixel_var_e2 * k_ap / (flux_e * flux_e)
+    return width_sq / flux_e + pixel_var_e2 * k_ap / (flux_e * flux_e)
+
+
+_WEIGHT_REACH = 4.0  # the weighted centroid reads pixels within this many sigma of the weight
+_WEIGHT_STEPS = 12  # Newton steps at most
+_WEIGHT_TOLERANCE_PX = 1e-4
+
+
+class _Weighted(NamedTuple):
+    """The Gaussian-weighted centroid in ROI pixels, and its modeled noise in square pixels."""
+
+    x: float
+    y: float
+    noise_var_x: float
+    noise_var_y: float
+
+
+def _weighted_centroid(
+    data: FrameData,
+    gx: float,
+    gy: float,
+    level: float,
+    fwhm_px: float,
+    e_per_dn: float,
+    pixel_var_e2: float,
+) -> _Weighted | None:
+    """The Gaussian-weighted centroid near `(gx, gy)` (ROI pixels), or `None` when it fails.
+
+    `level` is the sky in the counts of the frame. The weight `W` is a Gaussian of `fwhm_px`
+    centered on the estimate, and each Newton step solves `sum(W (u - x) (I - b)) = 0` along each
+    axis, with the derivative `D = sum(W (I - b) (1 - (u - x)^2 / s^2))`. A step never moves more
+    than one sigma of the weight. The centroid fails when `D` is not positive (no star under the
+    weight), when it moves more than three sigma from the start, or when it does not converge.
+    Pixels outside the frame read as the sky. Without an electron scale, the noise is `NaN`.
+    """
+    sigma = fwhm_px / _FWHM_PER_SIGMA
+    inverse_var = 1.0 / (sigma * sigma)
+    half = math.ceil(_WEIGHT_REACH * sigma)
+    box = 2 * half + 1
+    offsets = np.arange(-half, half + 1, dtype=np.float64)
+    x0, y0 = gx, gy
+    x, y = gx, gy
+    origin = (_UNSET, _UNSET)
+    excess = np.empty((box, box))
+    for _ in range(_WEIGHT_STEPS):
+        cx, cy = round(x), round(y)
+        if (cx, cy) != origin:
+            origin = (cx, cy)
+            excess = _read_box(data, cx - half, cy - half, box, level).reshape(box, box) - level
+        u = offsets - (x - cx)
+        v = offsets - (y - cy)
+        gu = np.exp(-0.5 * inverse_var * u * u)
+        gv = np.exp(-0.5 * inverse_var * v * v)
+        rows = excess @ gu  # the weighted sums along x, one per row
+        total = float(gv @ rows)
+        dx = float(gv @ (excess @ (gu * u)))
+        dy = float((gv * v) @ rows)
+        curve_x = total - inverse_var * float(gv @ (excess @ (gu * u * u)))
+        curve_y = total - inverse_var * float((gv * v * v) @ rows)
+        if not (curve_x > 0.0 and curve_y > 0.0 and total > 0.0):
+            return None
+        step_x = max(-sigma, min(sigma, dx / curve_x))
+        step_y = max(-sigma, min(sigma, dy / curve_y))
+        x += step_x
+        y += step_y
+        if (x - x0) ** 2 + (y - y0) ** 2 > 9.0 * sigma * sigma:
+            return None
+        if abs(step_x) < _WEIGHT_TOLERANCE_PX and abs(step_y) < _WEIGHT_TOLERANCE_PX:
+            break
+    else:
+        return None
+    if not (e_per_dn == e_per_dn and pixel_var_e2 == pixel_var_e2):
+        return _Weighted(x, y, _NAN, _NAN)
+    # The noise at the last estimate: the step that ended the loop is far below the noise.
+    gu2u2 = gu * gu * u * u
+    gv2v2 = gv * gv * v * v
+    gu2 = gu * gu
+    gv2 = gv * gv
+    sky_x = pixel_var_e2 * float(gu2u2.sum()) * float(gv2.sum())
+    sky_y = pixel_var_e2 * float(gv2v2.sum()) * float(gu2.sum())
+    photon_x = e_per_dn * float(gv2 @ (excess @ gu2u2))
+    photon_y = e_per_dn * float(gv2v2 @ (excess @ gu2))
+    scale_x = e_per_dn * curve_x
+    scale_y = e_per_dn * curve_y
+    return _Weighted(
+        x,
+        y,
+        (sky_x + max(photon_x, 0.0)) / (scale_x * scale_x),
+        (sky_y + max(photon_y, 0.0)) / (scale_y * scale_y),
+    )
 
 
 def _read_box(
@@ -424,15 +558,36 @@ def measure_frame(
     return _measure_at(data, roi_x, roi_y, params, calibration, sky, gx, gy)
 
 
-def _pixel_variance_e2(sigma_dn: float, calibration: FrameCalibration) -> float:
+def pixel_variance_e2(sigma_dn: float, calibration: FrameCalibration) -> float:
     """The variance of one pixel in electrons squared: the measured sky or the modeled noise.
 
     The measured sky noise holds the read noise and the quantization too, so the two do not add.
-    The model is the floor, because a frame without noise, or one whose quantized border hides
-    the noise, measures less than the read noise.
+    It counts only when it exceeds one ADC step (`step_dn`), so that the one-sigma points of the
+    border lie more than two steps apart. Up to that, the rounding of whole counts decides what a
+    sky of one level shows: a noise of 0.8 step, as the read noise of a dark bin1 frame, reads a
+    full step, a border at the edge between two counts reads half a count, and one in the middle of
+    a count reads none, while the pixels of the star, spread over many levels, have the rounding
+    noise of the model (`e_per_adu^2 / 12`). In the owner's 8-bit videos, whose border sits at
+    such an edge, the measured noise would have put the centroid noise of a window at about half of
+    the motion variance, where the model gives 4.5 to 8% and the data about 2%
+    (`docs/recordings-validation.md`). The model is also the floor, because a frame without noise
+    measures less.
+
+    The rule fails in an 8-bit container in a bright sky. One step there is 64 values of the 14-bit
+    bin2 ADC (82 e- at gain 100, 259 e- at gain 0), so the sky's noise exceeds a step only near
+    saturation, and the function returns the model, which holds no sky. In bin2 frames of 64 x 64
+    pixels with a sky at 0.1 to 0.3 of saturation, the modeled noise of the centroid was 4 to 11
+    times too low, so `r0` reads low, and `noisy` does not mark the window. The median of whole
+    counts that the centroid subtracts can also sit up to half a count off such a sky, and in one
+    of those tests it moved the centroids by several pixels. The fast stream uses 16-bit
+    containers, where a step is one ADC value (3.5 e- in bin1 and 4 e- in bin2 at gain 0). Read
+    the seeing of 8-bit video in a dark sky only (`docs/research-notes.md`, "The seeing in a
+    bright sky").
     """
-    measured = (sigma_dn * calibration.e_per_dn) ** 2
     modeled = calibration.pixel_var_e2
+    if not sigma_dn > calibration.step_dn:
+        return modeled
+    measured = (sigma_dn * calibration.e_per_dn) ** 2
     return measured if measured > modeled else modeled
 
 
@@ -498,11 +653,14 @@ def _measure_at(
     flux_e = s0 * calibration.e_per_dn
     snr = _NAN
     matched_snr = _NAN
+    noise_x = noise_y = _NAN
+    pixel_var = _NAN
+    start = (gx, gy)  # where the weighted centroid starts
     if flux_e == flux_e and calibration.pixel_var_e2 == calibration.pixel_var_e2:
         detected_e = (s0 + (background - level) * sums[0]) * calibration.e_per_dn
         if not detected_e > 0.0:
             return _not_found(data, background, sigma)
-        pixel_var = _pixel_variance_e2(sigma, calibration)
+        pixel_var = pixel_variance_e2(sigma, calibration)
         snr = detected_e / math.sqrt(detected_e + tables.area * pixel_var)
         if params.matched_fwhms_px:
             best = matched.near(
@@ -515,10 +673,29 @@ def _measure_at(
                 pixel_var,
             )
             matched_snr = best.snr
+            start = (best.x, best.y)
         if not (snr >= params.min_snr or matched_snr >= params.min_snr):
             return _not_found(data, background, sigma)
+        # The flux above the trimmed mean: the median of whole counts can sit half an ADC step
+        # off the sky, and over the aperture that would bias `F` by several percent in daylight.
+        k_ap = tables.noise_moment
+        noise_x = _noise_variance(width_x_sq, detected_e, pixel_var, k_ap)
+        noise_y = _noise_variance(width_y_sq, detected_e, pixel_var, k_ap)
     elif peak - background < params.min_snr:
         return _not_found(data, background, sigma)
+    if params.centroid_fwhm_px is not None:
+        weighted = _weighted_centroid(
+            data,
+            start[0],
+            start[1],
+            level,
+            params.centroid_fwhm_px,
+            calibration.e_per_dn,
+            pixel_var,
+        )
+        if weighted is None or not (-1.0 < weighted.x < width and -1.0 < weighted.y < height):
+            return _not_found(data, background, sigma)
+        gx, gy, noise_x, noise_y = weighted
     flags = 0
     if peak >= calibration.saturation_dn:
         flags |= FLAG_SATURATED
@@ -527,7 +704,6 @@ def _measure_at(
         flags |= FLAG_EDGE
     if params.spike_ratio is not None and _is_spike(pixels, box, peak_index, background, params):
         flags |= FLAG_HOT_PIXEL
-    k_ap = tables.second_moment
     return Measurement(
         True,
         roi_x + gx,
@@ -537,8 +713,8 @@ def _measure_at(
         peak,
         s0,
         background,
-        _noise_variance(width_x_sq, flux_e, calibration, k_ap),
-        _noise_variance(width_y_sq, flux_e, calibration, k_ap),
+        noise_x,
+        noise_y,
         flags,
         sigma,
         snr,
@@ -583,7 +759,7 @@ def search_frame(
         radius = math.hypot(width, height)  # the whole frame, from its center
     else:
         cx, cy, radius = at[0] - roi_x, at[1] - roi_y, radius_px
-    pixel_var = _pixel_variance_e2(sigma, calibration)
+    pixel_var = pixel_variance_e2(sigma, calibration)
     found: matched.MatchedPeak | None = None
     for fwhm in params.matched_fwhms_px:
         candidate = matched.search(

@@ -379,8 +379,8 @@ class Scheduler:
         station_id: The ID that tags every event.
         config: The `[scheduler]` table. The defaults apply when you leave it out.
         site: The observing site for the Sun's elevation, which sets the search limit and the
-            `twilight` flag. Without it the search has no limit, and no flag applies. The measured
-            sky gates `safe` either way.
+            `twilight` and `daylight` flags. Without it the search has no limit, and no flag
+            applies. The measured sky gates `safe` either way.
         escalate: The supervisor's callback for the ladder steps above the driver's. It runs on the
             loop thread, so return when the step is done or has failed. Without it the ladder stops
             at the last driver step.
@@ -1617,7 +1617,8 @@ class Scheduler:
             self._emit(
                 "warning",
                 "scheduler.no_site",
-                "No site is configured, so the Sun's elevation and the twilight flag are off.",
+                "No site is configured, so the Sun's elevation and the twilight and daylight flags "
+                "are off.",
             )
 
     @property
@@ -1972,7 +1973,7 @@ class Scheduler:
 
         Without synchronization the UTC time can be days off (a Pi 4 has no real-time clock), so
         the Sun's elevation means nothing. The scheduler then relies on the measured sky alone, sets
-        no `twilight` flag, and marks windows and survey results `time_invalid`.
+        no `twilight` or `daylight` flag, and marks windows and survey results `time_invalid`.
         """
         now = self._mono()
         if now < self._clock_check_mono:
@@ -2873,8 +2874,7 @@ class Scheduler:
             elevation = sun_elevation_deg(
                 output.t_utc_ns, self._site.latitude_deg, self._site.longitude_deg
             )
-            if self._gate.is_twilight(elevation):
-                flags.add("twilight")
+            flags |= self._gate.sun_flags(elevation)
         if (
             output.cloud_fraction is not None
             and output.cloud_fraction >= self._config.cloud.threshold
@@ -2892,8 +2892,7 @@ class Scheduler:
         flags: set[str] = set()
         if self._cloud.active:
             flags.add("cloud")
-        if self._gate.is_twilight(self._sun_elevation()):
-            flags.add("twilight")
+        flags |= self._gate.sun_flags(self._sun_elevation())
         if not self._clock_ok:
             flags.add("time_invalid")
         extra = self._context_provider(t_ns) if self._context_provider is not None else None

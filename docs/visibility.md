@@ -66,7 +66,7 @@ In a bright sky, a 2 ms frame at gain 0 can saturate its background. The fast st
 
 Two effects need checks:
 
-- **Centroid noise.** A bright background adds photon noise to each centroid, and the estimator subtracts the noise from the variance (architecture, "Reported quantities"). That works only while the noise estimate is right. The centroids come from the wide aperture, so a daylight window is noisy: in the simulator's daylight, a window reads an `r0` of 3.4 cm against the injected 10 cm. The lane measures the bias of the seeing against the simulator's truth across background levels, and a window gets the flag `noisy` where the bias exceeds `fast.max_noise_bias` (5 %).
+- **Centroid noise.** A bright background adds photon noise to each centroid, and the estimator subtracts the noise from the variance (architecture, "Reported quantities"). That works only while the noise estimate is right. The centroids come from the wide aperture, so a daylight window is noisy: in the simulator's daylight, a window read an `r0` of 3.4 cm against the injected 10 cm while the noise model left out the sky. With the sky in the model (step 5), it reads about 10% low, and a centroid weighted by the star's image reads the truth (`docs/research-notes.md`, "The seeing in a bright sky"). The lane measures the bias of the seeing against the simulator's truth across background levels, and a window gets the flag `noisy` where the bias exceeds `fast.max_noise_bias` (5 %).
 - **A sunlit telescope.** A tube that the Sun has heated adds its own turbulence. That turbulence is real but local. The flags let you filter it: `daylight` while the Sun is above 0°, and `twilight` from 0° to −18° as now.
 
 Neither effect stops a reading. The flags let a user decide.

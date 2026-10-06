@@ -484,6 +484,28 @@ class TestTheReadings:
         rig.feed(30, 0.8, exposure_us=1000)
         assert [key[2] for key in asked] == [2000, 1000]  # the exposure; the others stayed
 
+    def test_the_helper_keeps_the_aperture_when_the_seeing_uses_the_weighted_centroid(
+        self,
+    ) -> None:
+        """A narrow Gaussian weight can miss a defocused image, so the helper never takes it."""
+        weighted = create_fast_analyzer(PROFILE, FastPathConfig(centroid="gaussian"), "test")
+        asked: list[Any] = []
+
+        def setup(*key: Any) -> Any:
+            params, calibration = weighted.kernel_setup(*key)
+            asked.append(params)
+            return params, calibration
+
+        helper = RapidFocusHelper(profile=PROFILE, clock=VirtualClock(T0_NS), kernel_setup=setup)
+        helper.begin_session()
+        rig = Rig(helper, Recorder(), VirtualClock(T0_NS), np.random.default_rng(2))
+        rig.feed(30, 2.5)  # a defocused star
+        assert asked
+        assert asked[0].centroid_fwhm_px is not None  # the seeing would weight the centroid
+        assert helper._setup is not None
+        assert helper._setup.params.centroid_fwhm_px is None
+        assert all(star is not None for star in rig.stars)
+
     def test_without_a_kernel_setup_the_helper_uses_the_default_aperture_and_no_correction(
         self,
     ) -> None:

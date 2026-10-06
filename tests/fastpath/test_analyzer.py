@@ -20,6 +20,7 @@ from seeingmon.fastpath import (
     FastPathAnalyzer,
     FastPathConfig,
     create_fast_analyzer,
+    models,
 )
 from seeingmon.frames import (
     ActiveStream,
@@ -34,7 +35,7 @@ from seeingmon.profile import Profile
 from seeingmon.records import SeeingWindowRecord
 from seeingmon.records.segments import segment_dtype
 from seeingmon.testing import FakeCameraDriver
-from tests.fastpath.helpers import box_integrated_gaussian, digitize
+from tests.fastpath.helpers import box_integrated_gaussian, digitize, make_frame
 
 ROI = Roi(200, 300, 64, 64)
 CONFIG = StreamConfig(
@@ -470,6 +471,108 @@ class TestStreams:
         assert [w.n_frames for w in windows] == [10, 10, 10]
 
 
+def bright_sky_window(
+    profile: Profile, sky_e: float, flux: float, centroid: str, max_noise_bias: float = 0.05
+) -> SeeingWindowRecord:
+    """The first window of a star of constant flux whose position jumps from frame to frame.
+
+    The frames hold the simulator's image of Polaris (1.33 px FWHM in bin1) at a position that
+    jumps by a white Gaussian of 0.25 px per axis, about the image motion of an `r0` of 10 cm. A
+    window of 6 s holds 531 frames.
+    """
+    config = FastPathConfig(
+        window_s=6.0, min_window_s=3.0, centroid=centroid, max_noise_bias=max_noise_bias
+    )
+    analyzer = FastPathAnalyzer(profile, config)
+    rng = np.random.default_rng(31)
+    sigma_px = 1.333 / 2.3548
+    closed: list[SeeingWindowRecord] = []
+    seq = 0
+    while not closed:
+        x, y = 64.0 + rng.normal(0.0, 0.25), 63.5 + rng.normal(0.0, 0.25)
+        electrons = box_integrated_gaussian((128, 128), x, y, sigma_px, flux) + sky_e
+        frame = make_frame(digitize(electrons, rng=rng), seq=seq, exposure_us=1226)
+        closed += analyzer.push(frame).windows
+        seq += 1
+    return closed[0]
+
+
+class TestTheNoisyFlag:
+    """`noisy` marks a window whose noise share lets the error of the noise model bias `r0`.
+
+    The star has 8,000 e- on 4,300 e- of sky in the model's daylight, and 14,000 e- on a dark sky
+    (`bright_sky_window`).
+    """
+
+    def window(
+        self, profile: Profile, sky_e: float, flux: float, centroid: str
+    ) -> SeeingWindowRecord:
+        return bright_sky_window(profile, sky_e, flux, centroid)
+
+    def test_the_aperture_in_daylight_is_noisy(self, profile: Profile) -> None:
+        """The aperture's noise is about three times the motion, so a model error of 6% predicts a
+        bias of `r0` of about 9%, above the limit of 5%."""
+        window = self.window(profile, 4_300.0, 8_000.0, "aperture")
+        assert "noisy" in window.flags
+        assert window.r0_cm is not None
+        assert window.centroid_noise_px is not None
+        assert window.centroid_noise_px**2 > 0.15  # px^2, against 0.06 of motion
+
+    def test_the_weighted_centroid_in_daylight_is_not(self, profile: Profile) -> None:
+        window = self.window(profile, 4_300.0, 8_000.0, "gaussian")
+        assert "noisy" not in window.flags
+        assert window.centroid_noise_px is not None
+        assert window.centroid_noise_px**2 < 0.003  # px^2
+        # 3 Airy FWHM of bin1. The record names the centroid, because it changes the estimate.
+        assert "centroid=gaussian 4.0 px" in window.provenance["assumptions"]
+
+    def test_the_limit_comes_from_the_configuration(self, profile: Profile) -> None:
+        """The aperture's daylight window predicts a bias of about 12%, under a limit of 0.5."""
+        window = bright_sky_window(profile, 4_300.0, 8_000.0, "aperture", max_noise_bias=0.5)
+        assert "noisy" not in window.flags
+
+    def test_each_centroid_takes_the_error_of_its_own_model(
+        self, profile: Profile, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An error of 100 for the weighted centroid's model makes its small share of noise, about
+        0.03, predict a bias of about 0.6, while the aperture keeps its own error."""
+        monkeypatch.setitem(models.NOISE_MODEL_ERROR, "gaussian", 100.0)
+        assert "noisy" in self.window(profile, 4_300.0, 8_000.0, "gaussian").flags
+        assert "noisy" not in self.window(profile, 0.0, 14_000.0, "aperture").flags
+
+    def test_the_aperture_in_a_dark_sky_is_not(self, profile: Profile) -> None:
+        window = self.window(profile, 0.0, 14_000.0, "aperture")
+        assert "noisy" not in window.flags
+
+    def test_a_motion_below_the_noise_is_noisy(self, profile: Profile) -> None:
+        """At 600 us in daylight (Polaris 3,900 e- on 2,100 e-) the noise share passes 20."""
+        window = self.window(profile, 2_100.0, 3_900.0, "aperture")
+        assert "noisy" in window.flags
+
+
+class TestTheScintillationFloorInABrightSky:
+    """The star of `bright_sky_window` has a constant flux, so its true index is 0.
+
+    In the model's daylight, the sky's photons in the aperture and the noise of the background
+    level that each flux subtracts make the flux scatter by about 15% of its mean, against 1% from
+    the star's own photons. A floor of the read noise alone (`fast-1`) leaves an index of about
+    0.020 on these frames, and a floor without the noise of the level about 0.008.
+    """
+
+    def test_a_constant_star_in_daylight_has_no_index(self, profile: Profile) -> None:
+        window = bright_sky_window(profile, 4_300.0, 8_000.0, "aperture")
+        assert window.scintillation_index is not None
+        # The raw variance of 531 frames scatters by about 0.0013 (6% of 0.021).
+        assert window.scintillation_index < 0.004
+
+    def test_a_constant_star_at_a_short_exposure_has_no_index(self, profile: Profile) -> None:
+        """At 600 us in daylight (3,900 e- on 2,100 e-), the floor is about 0.044 of a raw
+        variance of 0.046. A floor without the noise of the level leaves 0.020."""
+        window = bright_sky_window(profile, 2_100.0, 3_900.0, "aperture")
+        assert window.scintillation_index is not None
+        assert window.scintillation_index < 0.008  # 3 times the scatter of the raw variance
+
+
 class TestTheBackgroundAndTheSnr:
     """The window's background as a share of saturation and the star's SNR, for the scheduler's
     adaptive exposure and for a reader who judges the noise of a reading."""
@@ -559,6 +662,7 @@ class TestRecords:
         assert window.provenance["algo"] == ALGORITHM_REVISION
         assert "L0=20 m" in window.provenance["assumptions"]
         assert "wind=10 m/s" in window.provenance["assumptions"]
+        assert "centroid=aperture" in window.provenance["assumptions"]
         assert window.outer_scale_m == 20.0
         assert window.assumed_wind_ms == 10.0
 

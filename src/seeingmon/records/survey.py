@@ -23,7 +23,7 @@ TIME_INVALID = "The clock was not synchronized, so `t_utc_ns` is not trustworthy
 
 SKY_QUALITY_FLAGS: dict[str, str] = {
     "cloud": "Clouds reduce the number of detected stars.",
-    "twilight": "The Sun was less than 18 degrees below the horizon.",
+    "twilight": "The Sun was between 0 and 18 degrees below the horizon.",
     "moon": "The Moon was above the horizon and bright enough to raise the sky background.",
     "dew": "The star widths and the transparency indicate dew on the optics.",
     "dark_due": "The dark library misses the current temperature or is older than 6 months.",
@@ -32,6 +32,7 @@ SKY_QUALITY_FLAGS: dict[str, str] = {
         "The sky background reached the saturation guard (`[survey.twilight]`), so the frame gives "
         "no zero point, transparency, cloud fraction, limiting magnitude, or sky brightness."
     ),
+    "daylight": "The Sun was above the horizon.",
 }
 
 POINTING_FLAGS: dict[str, str] = {

@@ -203,7 +203,9 @@
 
   const FLAG_HELP = {
     cloud: "Clouds crossed the star.",
-    twilight: "The Sun was less than 18 degrees below the horizon, so sky light can skew the data.",
+    twilight: "The Sun was between 0 and 18 degrees below the horizon, so sky light can skew the data.",
+    daylight: "The Sun was above the horizon, so a sunlit telescope can add turbulence of its own.",
+    noisy: "The centroid noise was large against the image motion, so the seeing can be off by more than 5 %.",
     vibration: "The spectrum shows vibration lines, so the image motion can read high.",
     saturated: "The star saturated, which biases the centroid and the width.",
     partial: "The window ended early.",

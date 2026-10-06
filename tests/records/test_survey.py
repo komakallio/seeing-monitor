@@ -72,6 +72,7 @@ class TestSkyQualityRecord:
             "dark_due",
             "time_invalid",
             "saturated_sky",
+            "daylight",
         }
         record = SkyQualityRecord(**BASE, n_stars_used=0, flags=["cloud", "moon"])
         assert record.flags == ["cloud", "moon"]

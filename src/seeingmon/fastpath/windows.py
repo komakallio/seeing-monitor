@@ -49,9 +49,10 @@ class ClosedWindow:
 
     `slot` is the slot number of each frame (the first is 0), and `period_s` is the nominal frame
     period. `usable` marks the frames with a usable centroid, and the position, width, flux,
-    noise, and SNR arrays hold `NaN` for the others. The peak and the background hold a value for
-    every frame. `closed_early` says that `begin_stream`, `flush`, a new stream, or a time
-    discontinuity ended the window before its full length, and `reason` names the cause.
+    noise, and SNR arrays hold `NaN` for the others. The peak, the background, and the variance of
+    one pixel of sky (`pixel_var_e2`, in electrons squared) hold a value for every frame.
+    `closed_early` says that `begin_stream`, `flush`, a new stream, or a time discontinuity ended
+    the window before its full length, and `reason` names the cause.
     """
 
     stream_id: int
@@ -82,6 +83,7 @@ class ClosedWindow:
     noise_var_y: FloatArray
     saturated: npt.NDArray[np.bool_]
     snr: FloatArray
+    pixel_var_e2: FloatArray
 
     @property
     def n_slots(self) -> int:
@@ -121,6 +123,7 @@ class _Open:
     usable: list[bool] = field(default_factory=list)
     saturated: list[bool] = field(default_factory=list)
     snr: list[float] = field(default_factory=list)
+    pixel_var: list[float] = field(default_factory=list)
 
 
 class WindowAssembler:
@@ -188,12 +191,14 @@ class WindowAssembler:
         saturated: bool,
         values: tuple[float, ...],
         snr: float = math.nan,
+        pixel_var_e2: float = math.nan,
     ) -> list[ClosedWindow]:
         """Add one frame, and return the windows that it closed (none or one).
 
         `values` holds `x, y, width_x, width_y, peak_dn, flux_e, bg_dn, noise_var_x, noise_var_y`
-        of the frame, and `snr` the signal-to-noise ratio of its star. The kernel gives `NaN` for
-        the values that a missing star does not have.
+        of the frame, `snr` the signal-to-noise ratio of its star, and `pixel_var_e2` the variance
+        of one pixel of sky. The kernel gives `NaN` for the values that a missing star does not
+        have.
         """
         closed: list[ClosedWindow] = []
         window = self._open
@@ -238,6 +243,7 @@ class WindowAssembler:
         window.usable.append(usable)
         window.saturated.append(saturated)
         window.snr.append(snr)
+        window.pixel_var.append(pixel_var_e2)
         window.n_usable += usable
         window.n_saturated += saturated
         if time_invalid:
@@ -311,6 +317,7 @@ class WindowAssembler:
             noise_var_y=columns[8],
             saturated=np.asarray(window.saturated, dtype=np.bool_),
             snr=snr,
+            pixel_var_e2=np.asarray(window.pixel_var, dtype=np.float64),
         )
 
 

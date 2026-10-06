@@ -21,8 +21,11 @@ gives only a lower bound: the sky is at least that bright. The gate takes the la
 `auto`, a lower bound under the limit decides nothing, and the scheduler then takes a watch frame
 at the bright exposure before the long survey exposure. In `safe`, it keeps the scheduler there.
 
-**Twilight.** While the Sun is above `twilight_elevation_deg`, windows and survey results carry
-the `twilight` flag. At some latitudes the Sun stays above that elevation for weeks.
+**Twilight and daylight.** While the Sun is above `daylight_elevation_deg` (the horizon),
+windows and survey results carry the `daylight` flag, and from there down to
+`twilight_elevation_deg` they carry `twilight`. At some latitudes the Sun stays above the
+twilight limit for weeks. The flags describe the sky and the telescope, and they never stop a
+reading.
 
 **Clouds.** The survey analysis reports a cloud fraction. At or above `threshold`, the cloud
 response starts. At or below `clear_threshold`, it ends. A fraction between the two keeps the
@@ -218,11 +221,28 @@ class DaylightGate:
         self._config = config
 
     def is_twilight(self, sun_elevation_deg: float | None) -> bool:
-        """Whether the Sun is above the twilight limit. Without a site, no flag applies."""
+        """Whether the Sun is above the twilight limit and not above the daylight limit. Without a
+        site, no flag applies."""
+        config = self._config
         return (
             sun_elevation_deg is not None
-            and sun_elevation_deg > self._config.twilight_elevation_deg
+            and config.twilight_elevation_deg < sun_elevation_deg <= config.daylight_elevation_deg
         )
+
+    def is_daylight(self, sun_elevation_deg: float | None) -> bool:
+        """Whether the Sun is above the daylight limit. Without a site, no flag applies."""
+        return (
+            sun_elevation_deg is not None
+            and sun_elevation_deg > self._config.daylight_elevation_deg
+        )
+
+    def sun_flags(self, sun_elevation_deg: float | None) -> frozenset[str]:
+        """The flag that the Sun's elevation sets: `daylight`, `twilight`, or none."""
+        if self.is_daylight(sun_elevation_deg):
+            return frozenset({"daylight"})
+        if self.is_twilight(sun_elevation_deg):
+            return frozenset({"twilight"})
+        return frozenset()
 
     def threshold(self, *, running: bool) -> float:
         """The share of saturation that stops a running scheduler, or below which a stopped one

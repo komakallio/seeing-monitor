@@ -154,7 +154,7 @@ class WatchConfig(SectionModel):
 
 
 class DaylightConfig(SectionModel):
-    """The daylight gate: the measured sky, and the twilight flag. The Sun gates nothing.
+    """The daylight gate: the measured sky, and the Sun flags `twilight` and `daylight`.
 
     The gate judges the background that the fast stream would have at the profile's shortest
     exposure, as a share of saturation. It derives that background through the profile from the
@@ -163,7 +163,12 @@ class DaylightConfig(SectionModel):
     """
 
     twilight_elevation_deg: Finite = -18.0
-    """While the Sun is above this elevation, windows and survey results carry `twilight`."""
+    """While the Sun is above this elevation and at or below `daylight_elevation_deg`, windows and
+    survey results carry `twilight`."""
+
+    daylight_elevation_deg: Finite = 0.0
+    """While the Sun is above this elevation, windows and survey results carry `daylight` instead
+    of `twilight`."""
 
     saturation_limit: Fraction = 0.5
     """A fast background above this share of saturation at the shortest exposure forces `safe`."""
@@ -183,6 +188,8 @@ class DaylightConfig(SectionModel):
 
     @model_validator(mode="after")
     def _thresholds_are_ordered(self) -> Self:
+        if self.daylight_elevation_deg <= self.twilight_elevation_deg:
+            raise ValueError("daylight_elevation_deg must be above twilight_elevation_deg")
         if self.resume_saturation >= self.saturation_limit:
             raise ValueError("resume_saturation must be below saturation_limit")
         return self
@@ -439,7 +446,7 @@ def load_site(config: Config) -> SiteConfig | None:
     """Read the `[site]` table. Returns `None` when the configuration has no such table.
 
     Raises `ConfigError` when the table exists and is not valid. Without a site, the scheduler
-    relies on the measured sky background only and sets no `twilight` flag.
+    relies on the measured sky background only and sets no `twilight` or `daylight` flag.
     """
     if "site" not in config.effective(redact=False):
         return None

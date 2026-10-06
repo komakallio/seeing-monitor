@@ -34,6 +34,13 @@ runs once per window inside the `push` that closes it. It takes a few millisecon
 **Context.** `set_context` changes the flags, the heater duty, and the zenith angle that apply to
 windows that close afterwards. The zenith angle sets the conversion of `r0` to the zenith.
 
+**Noise.** The kernel models the noise of each centroid with the sky noise that it measures on
+the ROI border, and the estimator subtracts it. A window gets `noisy` when the error of that model,
+at the window's share of noise in the variance, can bias `r0` by more than `max_noise_bias`
+(`seeingmon.fastpath.models.noise_bias`). `[fastpath] centroid` picks the centroid: the aperture's,
+the default, or the Gaussian-weighted one, whose noise in a bright sky is a hundredth of the
+aperture's (`docs/research-notes.md`, "The seeing in a bright sky").
+
 **Live value.** `push` also keeps the recent frames in a ring, and every `live_every_s` seconds of
 frame time it estimates the seeing of the newest `live_span_s` seconds with the estimator of the
 windows (`seeingmon.fastpath.live`). `live` holds the newest value as an immutable `LiveSeeing`,
@@ -65,6 +72,7 @@ from seeingmon.fastpath.kernel import (
     KernelParams,
     Measurement,
     measure_frame,
+    pixel_variance_e2,
     search_frame,
 )
 from seeingmon.fastpath.live import LiveEstimator, LiveSeeing, LiveStream
@@ -79,8 +87,13 @@ from seeingmon.records.segments import segment_dtype
 
 _log = logging.getLogger(__name__)
 
-ALGORITHM_REVISION = "fast-1"
-"""The algorithm revision that every window record carries in `provenance["algo"]`."""
+ALGORITHM_REVISION = "fast-2"
+"""The algorithm revision that every window record carries in `provenance["algo"]`.
+
+`fast-2` added the sky to the noise model of the centroid and of the scintillation floor, so the
+seeing of a window in a bright sky is no longer biased toward bad seeing (`fast-1` read an `r0` of
+3.3 cm against 10 cm in the simulator's daylight), and added the `noisy` flag and the option of
+the Gaussian-weighted centroid (`[fastpath] centroid`)."""
 
 _FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 _UINT16_MAX = 65_535
@@ -101,6 +114,7 @@ class _Stream:
     e_per_dn: float
     known: bool  # whether the profile describes the readout mode
     saturation_dn: float  # the profile's saturation level in container counts, or `NaN`
+    noise_model_error: float  # the relative error of the centroid's noise model, for `noisy`
 
 
 def _stream_key(
@@ -204,6 +218,7 @@ class FastPathAnalyzer:
         usable = found and not analysis_flags & (FLAG_EDGE | FLAG_HOT_PIXEL)
         saturated = bool(analysis_flags & FLAG_SATURATED)
         peak = measurement.peak_dn
+        pixel_var = pixel_variance_e2(measurement.bg_sigma_dn, stream.calibration)
         self._rows.append(
             (
                 frame.t_utc_ns,
@@ -247,6 +262,7 @@ class FastPathAnalyzer:
                 measurement.noise_var_y,
             ),
             measurement.snr,
+            pixel_var,
         )
         windows = tuple(self._finalize(window) for window in closed) if closed else ()
         live = self._live
@@ -400,7 +416,7 @@ class FastPathAnalyzer:
                 # This is the noise of a signal that the read and photon noise dither across the
                 # count edges. Where they don't, as in the halo of the star in the owner's 8-bit
                 # videos, the term over-subtracts: docs/recordings-validation.md puts the bias
-                # of r0 at 3.5% for those videos.
+                # of r0 at about 2.7% for those videos.
                 pixel_var += (e_per_dn**2 - e_per_adu**2) / 12.0
         except ProfileError:
             pass
@@ -411,10 +427,13 @@ class FastPathAnalyzer:
         # A real star fills a pixel only when the pixels undersample it.
         spike = config.hot_pixel_ratio if airy_px == airy_px and airy_px >= 1.0 else None
         matched_fwhms: tuple[float, ...] = ()
+        centroid_fwhm: float | None = None
         if airy_px == airy_px:
             matched_fwhms = tuple(
                 min(max(widths * airy_px, 0.3), 20.0) for widths in config.matched_fwhm_airy_widths
             )
+            if config.centroid == "gaussian":
+                centroid_fwhm = min(max(config.centroid_fwhm_airy_widths * airy_px, 0.5), 20.0)
         kernel = KernelParams(
             aperture_diameter_px=diameter,
             recenter_iterations=config.recenter_iterations,
@@ -424,6 +443,7 @@ class FastPathAnalyzer:
             min_snr=config.min_star_snr,
             spike_ratio=spike,
             matched_fwhms_px=matched_fwhms,
+            centroid_fwhm_px=centroid_fwhm,
         )
         calibration = FrameCalibration.for_container(
             adc_bits=sat_adc,
@@ -435,12 +455,17 @@ class FastPathAnalyzer:
         aperture_m = profile.optics.aperture_mm * 1e-3
         gain_ratio = 1.0
         if config.apply_centroid_gain and plate_scale == plate_scale:
-            gain_ratio = models.windowed_centroid_variance_ratio(
-                0.5
-                * diameter
-                * plate_scale
-                / models.lambda_over_d_arcsec(profile.optics.wavelength_nm * 1e-9, aperture_m)
+            lambda_over_d = models.lambda_over_d_arcsec(
+                profile.optics.wavelength_nm * 1e-9, aperture_m
             )
+            if centroid_fwhm is None:
+                gain_ratio = models.windowed_centroid_variance_ratio(
+                    0.5 * diameter * plate_scale / lambda_over_d
+                )
+            else:
+                gain_ratio = models.gaussian_centroid_variance_ratio(
+                    centroid_fwhm * plate_scale / lambda_over_d
+                )
         settings = EstimatorSettings(
             aperture_m=aperture_m,
             plate_scale_arcsec_per_px=plate_scale if plate_scale == plate_scale else 1.0,
@@ -466,6 +491,9 @@ class FastPathAnalyzer:
             e_per_dn=e_per_dn,
             known=plate_scale == plate_scale,
             saturation_dn=saturation_dn,
+            noise_model_error=models.noise_model_error(
+                "aperture" if centroid_fwhm is None else "gaussian"
+            ),
         )
 
     def kernel_setup(
@@ -509,13 +537,19 @@ class FastPathAnalyzer:
         fields: dict[str, Any] = {}
         reason = self._reason_not_analyzed(window, stream, valid_fraction)
         spectrum: MotionSpectrum | None = None
+        noise_share: float | None = None
         if reason is None:
-            fields, spectrum = self._analyze(window, stream, quality)
+            fields, spectrum, noise_share = self._analyze(window, stream, quality)
         else:
             for name in _ANALYSIS_FIELDS:
                 quality[name] = reason
         if spectrum is not None and spectrum.lines_hz:
             flags.add("vibration")
+        if (
+            noise_share is not None
+            and models.noise_bias(noise_share, stream.noise_model_error) > config.max_noise_bias
+        ):
+            flags.add("noisy")
 
         plate = stream.plate_scale_arcsec_per_px
         usable = window.usable
@@ -523,12 +557,14 @@ class FastPathAnalyzer:
         zenith = context.zenith_angle_deg
         outer = config.outer_scale_m
         aperture_m = self._profile.optics.aperture_mm * 1e-3
+        weight_px = stream.kernel.centroid_fwhm_px
+        centroid = "aperture" if weight_px is None else f"gaussian {weight_px:.1f} px"
         provenance = {
             "algo": ALGORITHM_REVISION,
             "assumptions": (
                 f"L0={outer:g} m; wind={config.assumed_wind_ms:g} m/s; "
                 f"detrend={config.detrend_order}; aperture={stream.kernel.aperture_diameter_px:.1f}"
-                f" px; D={aperture_m * 1e3:.0f} mm"
+                f" px; centroid={centroid}; D={aperture_m * 1e3:.0f} mm"
             ),
         }
         record = SeeingWindowRecord(
@@ -573,8 +609,10 @@ class FastPathAnalyzer:
 
     def _analyze(
         self, window: ClosedWindow, stream: _Stream, quality: dict[str, str]
-    ) -> tuple[dict[str, Any], MotionSpectrum | None]:
-        """The seeing, the scintillation, and the spectrum of a window that has enough frames."""
+    ) -> tuple[dict[str, Any], MotionSpectrum | None, float | None]:
+        """The seeing, the scintillation, and the spectrum of a window that has enough frames,
+        and the share of the centroid noise in the variance (`None` when the estimate has none,
+        infinite when the motion is below the noise)."""
         config = self._config
         context = self._context
         zenith = context.zenith_angle_deg if config.zenith_correction else None
@@ -588,6 +626,11 @@ class FastPathAnalyzer:
         )
         estimate = estimate_seeing(series, settings)
         quality.update(estimate.quality)
+        noise_share: float | None = None
+        if estimate.x is not None and estimate.y is not None and estimate.factors is not None:
+            noise = 0.5 * (estimate.x.noise_var_px2 + estimate.y.noise_var_px2)
+            motion = 0.5 * (estimate.x.variance_px2 + estimate.y.variance_px2) - noise
+            noise_share = noise / motion if motion > 0.0 else math.inf
         scale = stream.plate_scale_arcsec_per_px
         fields: dict[str, Any] = {
             "image_motion_rms_x_arcsec": _finite(estimate.rms_x_arcsec),
@@ -642,12 +685,23 @@ class FastPathAnalyzer:
             ):
                 quality[name] = "too few contiguous frames for a spectrum"
         flux_slots = window.on_slots(window.flux_e)
+        # The sky adds to the floor twice: through the photons in the aperture, and through the
+        # noise of the background level that each flux subtracts. In the simulator's daylight the
+        # two make the aperture's flux scatter by about 15% of its mean, against 1% from the star's
+        # own photons.
+        measured = window.pixel_var_e2[np.isfinite(window.pixel_var_e2)]
+        pixel_var = float(np.mean(measured)) if len(measured) else stream.pixel_var_e2
         scint = scintillation_index(
             flux_slots,
             window.period_s,
             trend_s=config.scintillation_trend_s,
-            pixel_var_e2=stream.pixel_var_e2 if stream.pixel_var_e2 == stream.pixel_var_e2 else 0.0,
+            pixel_var_e2=pixel_var if pixel_var == pixel_var else 0.0,
             area_px2=stream.kernel.area_px2,
+            background_e=(
+                window.on_slots(window.bg_dn) * stream.e_per_dn
+                if stream.e_per_dn == stream.e_per_dn
+                else None
+            ),
             exclude=window.on_slots(window.saturated.astype(np.float64)) > 0.5,
         )
         if scint is None:
@@ -656,7 +710,7 @@ class FastPathAnalyzer:
             fields["scintillation_index"] = scint.index
         else:
             quality["scintillation_index"] = "the electron scale of the readout mode is unknown"
-        return fields, spectrum
+        return fields, spectrum, noise_share
 
     def _star_statistics(
         self,

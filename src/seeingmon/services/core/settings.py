@@ -73,11 +73,12 @@ class ReplaySettings(SectionModel):
 class SkyFlagSettings(SectionModel):
     """When `core` sets the `moon` and `dew` flags of a `sky_quality` record.
 
-    The scheduler sets `twilight`, `cloud`, and `time_invalid` on a survey record. `core` adds the
-    two flags that need more than the scheduler knows. The Moon counts when its center is above
-    `moon_min_elevation_deg` and at least `moon_min_illumination` of its disk is lit, because a thin
-    crescent adds little to the sky. The optics count as dewy when their temperature (the optics
-    sensor, or the air when there is none) is within `dew_margin_c` of the dew point.
+    The scheduler sets `twilight` or `daylight`, `cloud`, and `time_invalid` on a survey record.
+    `core` adds the two flags that need more than the scheduler knows. The Moon counts when its
+    center is above `moon_min_elevation_deg` and at least `moon_min_illumination` of its disk is
+    lit, because a thin crescent adds little to the sky. The optics count as dewy when their
+    temperature (the optics sensor, or the air when there is none) is within `dew_margin_c` of the
+    dew point.
     """
 
     moon_min_elevation_deg: float = Field(0.0, ge=-90.0, le=90.0)

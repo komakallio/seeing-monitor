@@ -71,6 +71,7 @@ def test_the_defaults_follow_the_architecture() -> None:
     assert config.watch.interval_s == 60.0
     assert config.daylight.saturation_limit == 0.5
     assert config.daylight.twilight_elevation_deg == -18.0
+    assert config.daylight.daylight_elevation_deg == 0.0
     assert config.align.idle_timeout_s == 30 * 60
     assert config.ladder.max_level == "power_cycle"
 
@@ -100,6 +101,7 @@ def test_a_search_limit_of_90_degrees_or_more_means_no_limit(limit: float, limit
 def test_the_daylight_gate_has_no_sun_limit() -> None:
     assert set(SchedulerConfig().daylight.model_dump()) == {
         "twilight_elevation_deg",
+        "daylight_elevation_deg",
         "saturation_limit",
         "resume_saturation",
         "brightness_clip_fraction",
@@ -180,6 +182,7 @@ def test_the_local_file_and_the_environment_turn_the_high_speed_mode_on(tmp_path
         {"daylight": {"sun_resume_margin_deg": 1.0}},
         {"daylight": {"brightness_clip_fraction": 1.5}},
         {"daylight": {"brightness_resume_fraction": 0.6}},  # the gate judges the fast stream
+        {"daylight": {"daylight_elevation_deg": -20.0}},  # below the twilight limit
         {"search": {"burst_frames": 0}},
         {"search": {"confirm_bursts": 0}},
         {"search": {"detect_snr": 0.0}},
