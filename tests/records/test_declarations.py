@@ -20,6 +20,7 @@ UNIT_SUFFIXES: dict[str, str] = {
     "us": "_us",
     "ms": "_ms",  # milliseconds
     "s": "_s",
+    "h": "_hours",
     "Hz": "_hz",
     "arcsec": "_arcsec",
     "arcmin": "_arcmin",

@@ -115,7 +115,7 @@ class TestSchema:
             changes = ensure_schema(db)
             assert table_names(db) == {cls.record_type for cls in TABLE_TYPES}
         assert "frame" not in table_names_of(changes)
-        assert len(TABLE_TYPES) == 10
+        assert len(TABLE_TYPES) == 11
 
     def test_the_schema_script_runs_on_an_empty_database(self) -> None:
         script = schema_sql()

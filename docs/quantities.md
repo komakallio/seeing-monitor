@@ -352,3 +352,37 @@ Storage: a row of a SQLite table. Retention: kept forever.
 | `versions` | `dict[str, str]` | none | The versions of the components, as a map from the component name to a version string, such as the vendor SDK, the plate solver, and the star catalog. | No |
 | `effective_config` | `dict[str, Any]` | none | The merged configuration of the run, as a JSON object that the caller has cleaned of secrets. | No |
 | `profile` | `dict[str, Any]` | none | The hardware profile of the run, with its derived values, as a JSON object. | No |
+
+## `visibility_summary`
+
+When Polaris was visible in one night, and how dark and clear the night was.
+
+`t_utc_ns` is the start of the night, at `[survey] night_split_utc_hour`, so the key of a night never changes. A censored detection is a bound: Polaris was already visible when the station began to watch, or still visible when it stopped. A missing value is `null`, and `quality` says why.
+
+Storage: a row of a SQLite table. Retention: kept forever.
+
+| Field | Type | Unit | Definition | Optional |
+|---|---|---|---|---|
+| `night` | `str` | none | The UTC date that labels the night, in `YYYY-MM-DD` form. | No |
+| `first_visible_utc_ns` | `int` | `ns` | The first time in the night that Polaris was visible: the first `polaris.visible`, or the start of the night when Polaris was visible then, in nanoseconds since the Unix epoch. | Yes |
+| `first_visible_sun_deg` | `float` | `deg` | The Sun's elevation at `first_visible_utc_ns`, in degrees. | Yes |
+| `last_visible_utc_ns` | `int` | `ns` | The last time in the night that Polaris was visible: the last end of measure, or the end of the night when Polaris was visible then, in nanoseconds since the Unix epoch. | Yes |
+| `last_visible_sun_deg` | `float` | `deg` | The Sun's elevation at `last_visible_utc_ns`, in degrees. | Yes |
+| `visible_hours` | `float` | `h` | The time in the night that the fast stream measured Polaris, in hours. | No |
+| `seeing_hours` | `float` | `h` | The time in the night that seeing windows with a seeing value cover, in hours. | No |
+| `first_censored` | `bool` | none | Whether the first detection is a bound, because Polaris was visible when the night started or the station did not watch the whole time before the detection. | No |
+| `last_censored` | `bool` | none | Whether the last detection is a bound, because Polaris was visible when the night ended or the station did not watch the whole time after the detection. | No |
+| `dark_utc_ns` | `int` | `ns` | The time of the `sky.dark` event of the night, in nanoseconds since the epoch. | Yes |
+| `dark_sun_deg` | `float` | `deg` | The Sun's elevation at `sky.dark`, in degrees. | Yes |
+| `dark_sky_mag_arcsec2` | `float` | `mag/arcsec^2` | The sky brightness that `sky.dark` reports, in magnitudes per square arcsecond. | Yes |
+| `clear_share` | `float` | none | The share of clear frames that the `sky.clear_verdict` of the night reports. | Yes |
+| `transparency_median` | `float` | none | The median transparency that the `sky.clear_verdict` of the night reports. | Yes |
+| `flags` | `list[str]` | none | The conditions that apply to the night, as documented codes. | No |
+
+Codes for `flags`:
+
+| Code | Meaning |
+|---|---|
+| `moon` | The Moon was up and lit enough to brighten the sky at the first detection, at the last detection, or at `sky.dark`. |
+| `time_invalid` | The clock was not synchronized for part of the night, so the times may be off. |
+| `no_pointing` | No pointing solution existed for part of the night, so the search could not run. |

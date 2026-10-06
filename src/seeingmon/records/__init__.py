@@ -5,10 +5,10 @@ Import the record classes and helpers from here, for example
 name on first use, so importing `seeingmon.records` (and `seeingmon --help`) stays fast.
 
 The declarations live in `base` (the `Record` base class, `quantity`, and the registry) and in
-one module for each owner: `seeing`, `survey`, `reference`, and `system`. The generators are
-`sqlite_schema`, `api_schema`, `quantity_reference`, `sink_mapping`, and `segments`, and
-`samples` builds valid records for tests. See the module documentation of `base` for how to
-declare and change a record type.
+one module for each owner: `seeing`, `survey`, `reference`, `system`, and `visibility`. The
+generators are `sqlite_schema`, `api_schema`, `quantity_reference`, `sink_mapping`, and
+`segments`, and `samples` builds valid records for tests. See the module documentation of `base`
+for how to declare and change a record type.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         SurveyFrameRecord,
     )
     from seeingmon.records.system import EventRecord, HealthRecord, RunRecord
+    from seeingmon.records.visibility import VisibilitySummaryRecord
 
 # The module that defines each public name.
 _EXPORTS: dict[str, str] = {
@@ -62,6 +63,7 @@ _EXPORTS: dict[str, str] = {
     "HealthRecord": "system",
     "EventRecord": "system",
     "RunRecord": "system",
+    "VisibilitySummaryRecord": "visibility",
 }
 
 __all__ = [
@@ -81,6 +83,7 @@ __all__ = [
     "StarListRecord",
     "Storage",
     "SurveyFrameRecord",
+    "VisibilitySummaryRecord",
     "field_specs",
     "get_record_type",
     "quantity",

@@ -98,7 +98,7 @@ KEY_FIELDS: tuple[str, ...] = ("station_id", "t_utc_ns", "revision")
 
 # Modules that declare record types. The registry imports them on first use. Keep one module
 # per owner, so that lanes extend their own file and never edit another lane's declarations.
-DECLARATION_MODULES: tuple[str, ...] = ("seeing", "survey", "reference", "system")
+DECLARATION_MODULES: tuple[str, ...] = ("seeing", "survey", "reference", "system", "visibility")
 
 # The storage types for the per-row fields of a segment record: NumPy codes, little-endian.
 _INT_DTYPES: dict[str, tuple[int, int]] = {

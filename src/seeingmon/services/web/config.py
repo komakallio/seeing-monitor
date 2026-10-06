@@ -166,8 +166,9 @@ class WebSettings(SectionModel):
     list, from reaching the server through the browser of a visitor.
 
     `withhold_fields` lists record fields that the API serves as `null` with a `quality` note,
-    because they narrow down the site (the zenith angle of Polaris equals about 90 degrees minus
-    the site latitude).
+    because they narrow down the site: the zenith angle of Polaris equals about 90 degrees minus
+    the site latitude, and the Sun's elevations of the visibility summary with their times show the
+    site.
     """
 
     bind_address: str = "127.0.0.1"
@@ -179,7 +180,12 @@ class WebSettings(SectionModel):
 
     health_max_age_s: float = Field(180.0, gt=0, le=86_400)
     ui_refresh_s: float = Field(10.0, ge=1, le=3600)
-    withhold_fields: tuple[str, ...] = ("zenith_angle_deg",)
+    withhold_fields: tuple[str, ...] = (
+        "zenith_angle_deg",
+        "first_visible_sun_deg",
+        "last_visible_sun_deg",
+        "dark_sun_deg",
+    )
 
     access_log: bool = False
     shutdown_timeout_s: float = Field(5.0, gt=0, le=120)

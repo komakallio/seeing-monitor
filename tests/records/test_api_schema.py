@@ -40,6 +40,7 @@ class TestComponents:
             "Health",
             "Event",
             "Run",
+            "VisibilitySummary",
         ]
 
     def test_names_are_camel_case_versions_of_the_record_types(self) -> None:

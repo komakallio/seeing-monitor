@@ -40,8 +40,13 @@ def test_reads_are_open_by_default() -> None:
     assert WebSettings().require_token_for_reads is False
 
 
-def test_the_zenith_angle_is_withheld_by_default() -> None:
-    assert WebSettings().withhold_fields == ("zenith_angle_deg",)
+def test_the_zenith_angle_and_the_suns_elevations_are_withheld_by_default() -> None:
+    assert WebSettings().withhold_fields == (
+        "zenith_angle_deg",
+        "first_visible_sun_deg",
+        "last_visible_sun_deg",
+        "dark_sun_deg",
+    )
 
 
 @pytest.mark.parametrize(

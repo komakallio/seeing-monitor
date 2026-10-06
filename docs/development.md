@@ -63,6 +63,7 @@ Each lane edits only its own package, its own tests, and its own sections of `do
 | `src/seeingmon/survey/` | Survey path | Survey path (step 7) |
 | `src/seeingmon/recordings/`, `drivers/replay.py` | SER reader, replay driver, validation | Recordings (step 8) |
 | `src/seeingmon/services/` | `acquire`, `core`, `web`, REST API, UI | Services (step 9) |
+| `src/seeingmon/visibility/`, `src/seeingmon/records/visibility.py` | The nightly visibility summary of Polaris, its statistics, and `seeingmon visibility stats` | Visibility lane |
 | `src/seeingmon/hardware/`, `src/seeingmon/perf/`, `deploy/`, `tools/lint_deploy.py` | ASI binding, GPIO, power cycle, SQM-LE, benchmarks, install scripts and their linter | Hardware-facing (steps 10 to 12) |
 
 The contracts are stable after step 2. You may make an additive change to a contract that your lane owns, such as a new optional field with a default, and you must say so in the commit message and in your report. Any change that could break another lane goes to the lead: describe the problem in your report, work around it inside your own package, and let the lead decide.
@@ -101,7 +102,7 @@ scheduler = config.section("scheduler", SchedulerConfig)
 
 ## Records
 
-Declare each record type once, in the module of the lane that owns it (`records/seeing.py`, `survey.py`, `reference.py`, or `system.py`). To add a field, append it to your class with `quantity(...)`, and make it optional or give it a default, so an existing database migrates by adding a column. Then regenerate the quantity reference and the API description, which carries the record schemas, and commit both with your change:
+Declare each record type once, in the module of the lane that owns it (`records/seeing.py`, `survey.py`, `reference.py`, `system.py`, or `visibility.py`). To add a field, append it to your class with `quantity(...)`, and make it optional or give it a default, so an existing database migrates by adding a column. Then regenerate the quantity reference and the API description, which carries the record schemas, and commit both with your change:
 
 ```bash
 <py> -m seeingmon records reference --output <clone>/docs/quantities.md

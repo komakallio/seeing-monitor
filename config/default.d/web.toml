@@ -45,8 +45,14 @@ health_max_age_s = 180.0
 ui_refresh_s = 10.0
 
 # Record fields that the API serves as null with a quality note, because they narrow down the
-# site. The zenith angle of Polaris is about 90 degrees minus the site latitude.
-withhold_fields = ["zenith_angle_deg"]
+# site. The zenith angle of Polaris is about 90 degrees minus the site latitude, and a series of the
+# Sun's elevations with their times shows the site: the visibility summary holds three.
+withhold_fields = [
+    "zenith_angle_deg",
+    "first_visible_sun_deg",
+    "last_visible_sun_deg",
+    "dark_sun_deg",
+]
 
 # Log every request. The log never holds a token.
 access_log = false

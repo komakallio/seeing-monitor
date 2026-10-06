@@ -34,6 +34,7 @@ ARCHITECTURE_RECORD_TYPES = {
     "health": ("table", None),
     "event": ("table", None),
     "run": ("table", None),
+    "visibility_summary": ("table", None),
 }
 
 

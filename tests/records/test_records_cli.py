@@ -67,7 +67,7 @@ class TestSqliteSchema:
         database = make_database(tmp_path / "empty.sqlite")
         code, out, _ = run(["records", "sqlite-schema", "--database", str(database)], capsys)
         assert code == 0
-        assert out.count("CREATE TABLE") == 10
+        assert out.count("CREATE TABLE") == 11
         assert out.rstrip().endswith(";")
 
     def test_a_current_database_needs_nothing(
