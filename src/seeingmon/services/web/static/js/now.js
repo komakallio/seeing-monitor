@@ -121,7 +121,7 @@
       }
       const value = record.seeing_fwhm_arcsec;
       setBig("seeing-value", fmt.num(value, 2), "″ FWHM", value === null);
-      $("seeing-note").textContent = value === null ? why(record, "seeing_fwhm_arcsec") || "No value in the newest window." : "Stored window of " + record.duration_s + " s.";
+      $("seeing-note").textContent = value === null ? why(record, "seeing_fwhm_arcsec") || "No value in the newest window." : "Stored window of " + fmt.trim(record.duration_s, 0) + " s.";
       watchAge($("seeing-when"), Date.parse(record.t_utc), expect("seeing"));
       setChips("seeing-chips", record.flags);
       setFacts("seeing-facts", [
@@ -130,13 +130,13 @@
         ["Star width", fmt.arcsec(record.width_fwhm_arcsec, 2)],
         ["Scintillation index", fmt.num(record.scintillation_index, 4)],
         ["Valid frames", fmt.percent(record.valid_fraction, 1) + " of " + record.n_frames],
-        ["Window", fmt.stamp(record.t_utc) + ", " + record.duration_s + " s"],
-        ["Camera", record.readout_mode + ", " + record.exposure_us / 1000 + " ms, gain " + record.gain],
+        ["Window", fmt.stamp(record.t_utc) + ", " + fmt.trim(record.duration_s, 0) + " s"],
+        ["Camera", record.readout_mode + ", " + fmt.trim(record.exposure_us / 1000, 3) + " ms, gain " + record.gain],
       ]);
       return;
     }
     setBig("seeing-value", fmt.num(live.seeing_fwhm_arcsec, 2), "″ FWHM", false);
-    const stored = record && record.seeing_fwhm_arcsec !== null ? " Stored " + record.duration_s + " s window: " + fmt.arcsec(record.seeing_fwhm_arcsec, 2) + " at " + fmt.clock(record.t_utc) + " UTC." : "";
+    const stored = record && record.seeing_fwhm_arcsec !== null ? " Stored " + fmt.trim(record.duration_s, 0) + " s window: " + fmt.arcsec(record.seeing_fwhm_arcsec, 2) + " at " + fmt.clock(record.t_utc) + " UTC." : "";
     const paused = activity && !activity.fast && activity.state === "auto" ? " Paused: " + activity.label + "." : "";
     $("seeing-note").textContent = "Live estimate over the last " + Math.round(live.span_s) + " s, not stored." + stored + paused;
     watchAge($("seeing-when"), liveAt, expectLive, "live ");
@@ -147,7 +147,7 @@
       ["Image motion rms", fmt.arcsec(live.image_motion_rms_x_arcsec, 2) + " x, " + fmt.arcsec(live.image_motion_rms_y_arcsec, 2) + " y"],
       ["Star width", fmt.arcsec(live.width_fwhm_arcsec, 2)],
       ["Valid frames", fmt.percent(live.valid_fraction, 1) + " of " + live.n_frames],
-      ["Camera", live.readout_mode + ", " + live.exposure_us / 1000 + " ms"],
+      ["Camera", live.readout_mode + ", " + fmt.trim(live.exposure_us / 1000, 3) + " ms"],
     ]);
   }
 

@@ -121,6 +121,14 @@
       return text.replace("-", MINUS);
     },
 
+    /** A number rounded to at most `digits` decimals, with no trailing zeros: 59.4, 2, 0.039. */
+    trim(value, digits) {
+      if (value === null || value === undefined || Number.isNaN(value)) {
+        return EM_DASH;
+      }
+      return String(Number(Number(value).toFixed(digits === undefined ? 1 : digits))).replace("-", MINUS);
+    },
+
     signed(value, digits) {
       if (value === null || value === undefined || Number.isNaN(value)) {
         return EM_DASH;

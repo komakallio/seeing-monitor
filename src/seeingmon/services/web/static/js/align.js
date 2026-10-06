@@ -614,7 +614,7 @@
     if (frame) {
       rows.push(["Frame", "#" + frame.seq + ", " + frame.width_px + " × " + frame.height_px + " px"]);
       rows.push(["Readout mode", frame.readout_mode || fmt.dash]);
-      rows.push(["Exposure, gain", (frame.exposure_s === null ? fmt.dash : frame.exposure_s + " s") + ", " + (frame.gain === null ? fmt.dash : frame.gain)]);
+      rows.push(["Exposure, gain", (frame.exposure_s === null ? fmt.dash : fmt.trim(frame.exposure_s, 3) + " s") + ", " + (frame.gain === null ? fmt.dash : frame.gain)]);
       rows.push(["Plate scale", fmt.num(frame.plate_scale_arcsec_px, 2) + "″/px"]);
     }
     if (state.t_utc) {
