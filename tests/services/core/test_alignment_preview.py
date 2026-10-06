@@ -64,11 +64,11 @@ class TestShrinking:
 
 
 class TestStretch:
-    def test_the_sky_is_dark_and_the_star_is_white(self) -> None:
+    def test_the_sky_is_dark_gray_and_the_star_is_white(self) -> None:
         image = block_mean(sky_with_a_star(), 1)
         stretched = stretch_asinh(image)
         assert stretched.dtype == np.uint8
-        assert int(np.median(stretched)) <= 2
+        assert 40 <= int(np.median(stretched)) <= 62  # the sky sits at about 20% gray
         assert stretched[30, 40] == 255
 
     def test_faint_structure_stays_visible(self) -> None:
@@ -76,8 +76,8 @@ class TestStretch:
         sky += np.random.default_rng(3).normal(0, 2.0, sky.shape).astype(np.float32)
         sky[20:23, 20:23] += 20.0  # a faint star, ten sigmas above the sky
         stretched = stretch_asinh(sky)
-        assert stretched[21, 21] > 100
-        assert stretched[40, 40] < 100
+        assert stretched[21, 21] > 200
+        assert stretched[21, 21] > int(stretched[40, 40]) + 40
 
     def test_the_curve_never_decreases_with_brightness(self) -> None:
         ramp = np.linspace(0, 5000, 1000, dtype=np.float32).reshape(10, 100)
@@ -86,7 +86,8 @@ class TestStretch:
 
     def test_a_flat_image_does_not_divide_by_zero(self) -> None:
         flat = np.full((16, 16), 700.0, dtype=np.float32)
-        assert int(stretch_asinh(flat).max()) == 0
+        stretched = stretch_asinh(flat)
+        assert int(stretched.min()) == int(stretched.max())
 
 
 class TestJpeg:

@@ -9,9 +9,11 @@ send that to a phone, so it makes a preview in five steps:
    `seeingmon.services.core.alignment.calibration` makes), it takes the dark level, the vignetting,
    and the dust shadows out of the shrunk image, so that the stretch shows the sky and not the
    optics. Without one, the image goes on as it is.
-3. **Stretch.** Subtract the median, scale by the bright end of the sky and the stars, and apply
-   `asinh`. The curve is linear for faint pixels and logarithmic for bright ones, so the faint stars
-   and the core of Polaris show in one image.
+3. **Stretch.** Scale by the bright end of the sky and the stars, and apply `asinh`, with the black
+   level placed so that the median of the image (the sky) lands at `BACKGROUND_GRAY` of white. The
+   sky background then shows as a dark gray with its noise, and not as black. The curve is linear
+   for faint pixels and logarithmic for bright ones, so the faint stars and the core of Polaris
+   show in one image.
 4. **Encode.** Pillow writes a grayscale JPEG.
 5. **Measure.** The histogram of the frame (with the counts to draw on a log axis) and the share of
    saturated pixels come from the full frame, not the preview, because one saturated pixel decides
@@ -33,9 +35,12 @@ import numpy.typing as npt
 
 from seeingmon.frames import Frame, FrameData
 
-# The stretch: pixels above the median by `WHITE_SIGMAS` robust sigmas of the sky (and at least
-# `MIN_RANGE_DN`) map to white. The factor `ASINH_GAIN` sets where the linear part ends.
+# The stretch: the median of the image (the sky) lands at `BACKGROUND_GRAY` of white, so that the
+# background stays visible whatever the stars do to the range, and the `WHITE_PERCENTILE` of the
+# pixels (and at least `MIN_RANGE_DN` above the median) maps to white. The factor `ASINH_GAIN` sets
+# where the linear part ends.
 ASINH_GAIN = 40.0
+BACKGROUND_GRAY = 0.2
 MIN_RANGE_DN = 8.0
 WHITE_PERCENTILE = 99.95
 MAD_TO_SIGMA = 1.4826
@@ -81,11 +86,16 @@ def block_mean(data: FrameData, k: int) -> npt.NDArray[np.float32]:
 
 
 def stretch_asinh(image: npt.NDArray[np.float32]) -> npt.NDArray[np.uint8]:
-    """Map an image to 8 bits with an `asinh` curve between the median and a bright percentile."""
-    black = float(np.median(image))
-    spread = MAD_TO_SIGMA * float(np.median(np.abs(image - black)))
+    """Map an image to 8 bits with an `asinh` curve that puts the sky at `BACKGROUND_GRAY`."""
+    median = float(np.median(image))
+    spread = MAD_TO_SIGMA * float(np.median(np.abs(image - median)))
     white = float(np.percentile(image, WHITE_PERCENTILE))
-    span = max(white - black, MIN_RANGE_DN, 3.0 * spread)
+    above = max(white - median, MIN_RANGE_DN, 3.0 * spread)
+    # The scaled level at which the curve gives BACKGROUND_GRAY. The black level sits that far
+    # below the median, so the sky has the same gray with bright stars in the frame and without.
+    sky_level = math.sinh(BACKGROUND_GRAY * math.asinh(ASINH_GAIN)) / ASINH_GAIN
+    span = above / (1.0 - sky_level)
+    black = median - sky_level * span
     scaled = np.clip((image - np.float32(black)) / np.float32(span), 0.0, 1.0)
     curve = np.arcsinh(np.float32(ASINH_GAIN) * scaled) / np.float32(math.asinh(ASINH_GAIN))
     return np.asarray(np.clip(curve * 255.0 + 0.5, 0, 255), dtype=np.uint8)
