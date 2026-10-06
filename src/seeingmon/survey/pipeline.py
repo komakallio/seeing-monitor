@@ -60,9 +60,28 @@ vanish. `SurveyPipelineAnalyzer` logs one line for each attempt in the process o
 
 **Cloud fraction.** The expected stars are the catalog stars in the field that the profile's
 photometric prior says a clear sky would show at a signal-to-noise ratio of
-`CloudConfig.expected_snr` or better. The cloud fraction is the share of them that no detection
-matches. Stars that a saturated star covers do not count. The `sky_quality` record keeps both
-counts (`n_expected` and `n_expected_found`), also when too few stars are expected for a fraction.
+`CloudConfig.expected_snr` or better, and that the search that ran finds with a chance of at least
+`CloudConfig.min_completeness` (0.9), by a model of that search for the noise and the star image of
+the frame (`seeingmon.survey.completeness`). Each star takes the trail of its own position, because
+near the pole the trails are short and the binned search loses those stars, and the model sees the
+share of a star's light that the fitted image holds (`light_in_core`), because the wings of a real
+image hold light below the threshold. So a frame never
+expects a star that its detector cannot find. The cloud fraction is the share of the expected stars
+that no detection matches. Stars that a saturated star covers do not count. The `sky_quality`
+record keeps both counts (`n_expected` and `n_expected_found`), also when too few stars are
+expected for a fraction, and its provenance names the search (`search`: `full` or `binned2`).
+
+**The search of a long frame.** The binned search (`[survey.detect] coarse_bin`) loses sharp stars
+when nothing spreads them across its blocks: in a short frame at dusk it found 10 of the 13 stars
+that the cloud fraction expected, so a clear frame read 0.23. A frame that gets a cloud fraction
+(a long frame, see `SkyConfig.min_exposure_s`, unless the caller turns the sky quality step off,
+and not a saturated sky) therefore takes the full search when the model says that the binned
+search would find a typical star of the field at the faintest flux that the cloud fraction can
+expect of the full search with a smaller chance than `min_completeness`. The model reads the noise
+and the star image that the binned search measured, so the choice follows the sky and the
+exposure: a dark frame of 30 s keeps the binned search, because its trail spreads the stars across
+the blocks, and the long frames of a bright sky take the full search. The 1 ms frame of a step and
+the frames of the alignment helper never pay for it.
 
 **A saturated sky.** In a bright sky the background of a long frame can reach the saturation
 level. A clipped background looks quiet, so the noise of the frame promises many stars that
@@ -83,7 +102,7 @@ import json
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -105,19 +124,27 @@ from seeingmon.records.survey import (
 from seeingmon.solvers.base import PlateSolver, SolveRequest, SolverError, StarList
 from seeingmon.survey import apparent
 from seeingmon.survey.catalog import CapCatalog, load_catalog
-from seeingmon.survey.config import SurveyConfig
+from seeingmon.survey.completeness import fold_angle, star_completeness, star_limit_e
+from seeingmon.survey.config import CloudConfig, SurveyConfig
 from seeingmon.survey.dark import DARKS_DIRNAME, DarkLibrary, DarkModel, DarkStatus, dark_status
 from seeingmon.survey.detect import (
     UNRELIABLE,
     DetectionError,
     Detections,
     DetectOptions,
+    SearchSpec,
     StarFlag,
     detect_stars,
 )
 from seeingmon.survey.field import catalog_field
 from seeingmon.survey.flat_library import ActiveFlat
 from seeingmon.survey.geometry import FloatArray
+from seeingmon.survey.photometry import (
+    PhotometryOptions,
+    aperture_correction,
+    aperture_photometry,
+    isolated,
+)
 from seeingmon.survey.pointing import (
     POINTING_ALGORITHM,
     PointingLimits,
@@ -158,6 +185,11 @@ _UNMATCHED_ROW = -1.0
 # The saturation guard counts the saturated pixels on a regular stride of at most about this many
 # pixels, so a share of 1% rests on some 650 of them.
 _GUARD_SAMPLE_PIXELS = 65_536
+# `light_in_core` measures the share of the light in the fitted image on at most this many of the
+# brightest isolated stars, each with at least this SNR, and needs at least `_CORE_MIN_STARS`.
+_CORE_STARS = 20
+_CORE_MIN_SNR = 30.0
+_CORE_MIN_STARS = 3
 
 # The outcomes of `SolveAttempt`.
 SOLVED = "solved"  # the solver found a field, and the fit confirmed it
@@ -371,6 +403,184 @@ class CloudCount:
     n_found: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _StarImage:
+    """The star image of a frame, which sets the stars that the cloud fraction expects.
+
+    `fwhm_px` is the median width of the reliable stars (1.1 px without one). `trail` is the trail
+    model of the frame in the pixels of the data, and `origin` the position of the data in the
+    sensor, so each star gets the trail of its own position. Without a model (the first frame after
+    a start, which takes the full search), every star takes the typical trail: `trail_px`, the
+    median length of the trails of the detections, and `trail_angle_rad`, the median of their
+    directions folded to 0 to 45 degrees from a pixel axis (`completeness.fold_angle`).
+    `core_fraction` is the share of a star's light in the fitted image (see `light_in_core`), and
+    the models of the search see only that share.
+    """
+
+    fwhm_px: float
+    trail_px: float
+    trail_angle_rad: float
+    trail: TrailModel | None = None
+    origin: tuple[float, float] = (0.0, 0.0)
+    core_fraction: float = 1.0
+
+    @classmethod
+    def of(
+        cls,
+        detections: Detections,
+        trail: TrailModel | None = None,
+        origin: tuple[float, float] = (0.0, 0.0),
+        core_fraction: float | None = None,
+    ) -> _StarImage:
+        widths = detections.fwhm_px[detections.reliable()]
+        widths = widths[np.isfinite(widths)]  # a NaN size must not spoil the frame
+        fwhm = float(np.median(widths)) if widths.size else 1.1
+        core = 1.0 if core_fraction is None else core_fraction
+        usable = np.isfinite(detections.trail_length_px) & np.isfinite(detections.trail_angle_rad)
+        if not np.any(usable):
+            return cls(fwhm, 0.0, 0.0, trail, origin, core)
+        length = float(np.median(detections.trail_length_px[usable]))
+        angle = float(np.median(fold_angle(detections.trail_angle_rad[usable])))
+        return cls(fwhm, length, angle, trail, origin, core)
+
+    def trails(self, x: FloatArray, y: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """The trail length and direction of a star at each sensor position."""
+        if self.trail is None:
+            return np.full(x.shape, self.trail_px), np.full(x.shape, self.trail_angle_rad)
+        data_x, data_y = x - self.origin[0], y - self.origin[1]
+        return self.trail.length(data_x, data_y), self.trail.angle(data_x, data_y)
+
+    def aperture_minimum_e(
+        self, cloud: CloudConfig, noise_e: float, trail_px: npt.ArrayLike
+    ) -> FloatArray:
+        """The clear-sky signal in electrons that reaches `expected_snr` in an aperture."""
+        width = max(self.fwhm_px, 0.8)
+        aperture = math.pi * (1.5 * width) ** 2 + 2.0 * np.asarray(trail_px) * width
+        snr2 = cloud.expected_snr**2
+        minimum = 0.5 * (snr2 + np.sqrt(snr2**2 + 4.0 * snr2 * aperture * noise_e**2))
+        return np.asarray(minimum, dtype=np.float64)
+
+    def completeness(
+        self,
+        search: SearchSpec,
+        flux_e: npt.ArrayLike,
+        noise_e: npt.ArrayLike,
+        trail_px: npt.ArrayLike,
+        trail_angle_rad: npt.ArrayLike,
+    ) -> FloatArray:
+        """The completeness of `search` for stars of these fluxes, noises, and trails.
+
+        `flux_e` is the whole light of each star, and the model sees the share in the core.
+        """
+        return star_completeness(
+            search,
+            self.core_fraction * np.asarray(flux_e, dtype=np.float64),
+            noise_e,
+            fwhm_px=self.fwhm_px,
+            trail_px=trail_px,
+            trail_angle_rad=trail_angle_rad,
+        )
+
+    def limit_e(
+        self,
+        search: SearchSpec,
+        completeness: float,
+        noise_e: float,
+        trail_px: npt.ArrayLike,
+        trail_angle_rad: npt.ArrayLike,
+    ) -> FloatArray:
+        """The whole light of a star that `search` finds with the chance `completeness`."""
+        core = star_limit_e(
+            search,
+            completeness,
+            noise_e,
+            fwhm_px=self.fwhm_px,
+            trail_px=trail_px,
+            trail_angle_rad=trail_angle_rad,
+        )
+        return np.asarray(core / self.core_fraction, dtype=np.float64)
+
+
+def light_in_core(
+    data: npt.NDArray[np.float32],
+    detections: Detections,
+    *,
+    origin: tuple[float, float],
+    e_per_adu: float,
+    saturation_dn: float,
+    options: PhotometryOptions,
+    bad: npt.NDArray[np.bool_] | None = None,
+) -> float | None:
+    """The share of a star's light that the fitted image holds, or `None` with too few stars.
+
+    The model of a search draws a star as a Gaussian of the fitted width
+    (`seeingmon.survey.completeness`). A real image has wings that a Gaussian lacks: the Airy rings
+    of the aperture hold about 16% of the light of a sharp image, and the simulator's image puts 9%
+    of its light outside the fitted Gaussian. Light in the wings lies below the threshold, so a
+    model that put all the light in the Gaussian would expect stars that the full search misses:
+    for the simulator's image, it overstates the share found by 0.14 where it says 0.9.
+    The share is the median ratio of the fitted flux to the flux in the aperture of the photometry
+    (`PhotometryOptions.aperture_px`), over the brightest isolated stars that the fit measured
+    (`_CORE_STARS`, with an SNR of `_CORE_MIN_SNR` or more), divided by the aperture correction of
+    the growth curve (`seeingmon.survey.photometry.aperture_correction`), so it refers to the light
+    within 12 pixels, as the zero point does. A frame with too few bright stars for the correction
+    (8 with an SNR of 50 in the aperture) keeps the aperture's light, and the share then errs high
+    by the light that the aperture misses: 1.5% for the simulator's image, and 2 to 3% for the
+    reference optics. It stays between 0.5 and 1. `origin` is the position of `data` in the
+    sensor.
+    """
+    bright = np.flatnonzero(
+        detections.reliable()
+        & (detections.snr >= _CORE_MIN_SNR)
+        & np.isfinite(detections.flux)
+        & (detections.flux > 0.0)
+    )
+    picked = detections.select(bright)
+    alone = isolated(
+        picked.x,
+        picked.y,
+        picked.flux,
+        picked.trail_length_px,
+        detections.x,
+        detections.y,
+        detections.flux,
+        options,
+    )
+    picked = picked.select(np.flatnonzero(alone)[:_CORE_STARS])  # the detections are by flux
+    if len(picked) < _CORE_MIN_STARS:
+        return None
+    measured = aperture_photometry(
+        data,
+        picked.x - origin[0],
+        picked.y - origin[1],
+        picked.trail_length_px,
+        picked.trail_angle_rad,
+        e_per_adu=e_per_adu,
+        saturation_dn=saturation_dn,
+        options=options,
+        bad=bad,
+    )
+    usable = measured.ok & (measured.flux_e > 0.0) & (measured.error_e > 0.0)
+    if int(usable.sum()) < _CORE_MIN_STARS:
+        return None
+    narrow = np.where(usable, measured.flux_e, 0.0)
+    correction, _ = aperture_correction(
+        data,
+        picked,
+        detections,
+        narrow,
+        np.where(usable, narrow / np.where(usable, measured.error_e, 1.0), 0.0),
+        e_per_adu=e_per_adu,
+        saturation_dn=saturation_dn,
+        origin_px=origin,
+        options=options,
+        bad=bad,
+        flat_scale=np.ones(len(picked)),
+    )
+    ratio = picked.flux[usable] * e_per_adu / narrow[usable]
+    return float(np.clip(np.median(ratio) / correction, 0.5, 1.0))
+
+
 def saturated_share(data: npt.NDArray[np.float32], threshold_dn: float) -> float:
     """The share of the pixels of a frame at or above `threshold_dn`.
 
@@ -418,6 +628,7 @@ class SurveyPipeline:
         cfg = self._config
         self._quality = QualityOptions.from_config(cfg)
         self._detect_options = DetectOptions.from_config(cfg.detect)
+        self._full_options = replace(self._detect_options, coarse_bin=1)
         self._fit_options = FitOptions(
             match_radius_px=cfg.fit.match_radius_px,
             clip_sigma=cfg.fit.clip_sigma,
@@ -499,17 +710,56 @@ class SurveyPipeline:
             native, self._detect_options.saturation_fraction * saturation.native_dn
         )
 
-        def detect(model: TrailModel | None) -> Detections:
+        e_per_adu = self._profile.e_per_adu(frame.mode, frame.gain)
+
+        def detect(model: TrailModel | None, *, full: bool = False) -> Detections:
             raw = detect_stars(
                 native,
                 saturation_dn=saturation.native_dn,
-                options=self._detect_options,
-                e_per_adu=self._profile.e_per_adu(frame.mode, frame.gain),
+                options=self._full_options if full else self._detect_options,
+                e_per_adu=e_per_adu,
                 hot_pixels=hot,
                 trail=model,
             )
             return raw.shifted(frame.roi.x, frame.roi.y)
 
+        cores: list[float] = []
+
+        def core_of(found: Detections) -> float | None:
+            """The share of a star's light in the fitted image (see `light_in_core`).
+
+            The bright stars of a frame are the same in every search of it, so a measurement
+            holds for the frame. A search with too few bright stars, such as the binned search of
+            a short frame at dusk, leaves the measurement to the next one.
+            """
+            if not cores:
+                share = light_in_core(
+                    native,
+                    found,
+                    origin=(float(frame.roi.x), float(frame.roi.y)),
+                    e_per_adu=e_per_adu,
+                    saturation_dn=saturation.native_dn,
+                    options=self._quality.photometry,
+                    bad=hot,
+                )
+                if share is None:
+                    return None
+                cores.append(share)
+            return cores[0]
+
+        def sky_of(found: Detections) -> tuple[float, bool]:
+            """The background as a share of saturation, and whether the sky counts as saturated."""
+            level = float(found.background_level) / saturation.native_dn
+            clipped = saturated > guard.max_saturated_fraction
+            return level, clipped or level > guard.max_background_fraction
+
+        long_frame = exposure_s >= self._config.sky.min_exposure_s
+        # The sky quality step, and with it the cloud fraction, runs on the long frames unless the
+        # caller says otherwise, as the quick solve of the alignment helper does.
+        wanted = long_frame if sky_quality is None else sky_quality
+        # A provisional zero point is no clear-sky level, so the cloud fraction keeps the
+        # photometric prior of the profile, as it does while no reference exists.
+        cloud_reference = None if zp_reference is None or zp_reference.provisional else zp_reference
         try:
             detections = detect(trail)
         except DetectionError as error:
@@ -521,11 +771,25 @@ class SurveyPipeline:
                 saturated_sky=saturated > guard.max_saturated_fraction,
                 sky_quality=sky_quality,
             )
+        # Only a frame that gets a cloud fraction pays for the full search: not the 1 ms frame of
+        # a step, not the alignment frames, and not a saturated sky, which gets no cloud fraction.
+        if (
+            wanted
+            and long_frame
+            and not sky_of(detections)[1]
+            and self._full_search_due(frame, detections, cloud_reference, core_of)
+        ):
+            notes.append(
+                "the binned search would miss stars that the cloud fraction expects, so the frame "
+                "takes the full search"
+            )
+            try:
+                detections = detect(trail, full=True)
+            except DetectionError as error:
+                notes.append(f"the full search failed, so the binned search stays: {error}")
         lap("detect")
-        background = float(detections.background_level) / saturation.native_dn
-        saturated_sky = (
-            saturated > guard.max_saturated_fraction or background > guard.max_background_fraction
-        )
+        detected_trail = trail  # the trail model behind the detections, if any
+        background, saturated_sky = sky_of(detections)
         if saturated_sky:
             notes.append(
                 f"the sky is saturated: {saturated:.1%} of the pixels saturate, and the "
@@ -542,6 +806,7 @@ class SurveyPipeline:
             if trail is not None:
                 try:
                     detections = detect(None)
+                    detected_trail = None
                 except DetectionError as error:
                     notes.append(f"the detection without a trail model failed: {error}")
             solved = self._solve(
@@ -591,15 +856,17 @@ class SurveyPipeline:
                 edge_px=self._config.cloud.edge_px,
                 match_radius_px=self._config.cloud.match_radius_px,
             )
-        # A provisional zero point is no clear-sky level, so the cloud fraction keeps the
-        # photometric prior of the profile, as it does while no reference exists.
-        cloud_reference = None if zp_reference is None or zp_reference.provisional else zp_reference
+        # The cloud fraction gives each catalog star the trail of its position. Detections without
+        # the trail model (the first frame after a start, or the retry at the pole) have none. Only
+        # a frame with the sky quality step measures the share of the light in the fitted image.
+        core = core_of(detections) if wanted and not saturated_sky else None
+        image = _StarImage.of(detections, detected_trail, (float(roi.x), float(roi.y)), core)
         # A clipped background promises stars that the frame cannot show, so a saturated sky gives
         # no counts and no cloud fraction.
         count = (
             CloudCount()
             if saturated_sky
-            else self._cloud_count(frame, detections, coverage, cloud_reference)
+            else self._cloud_count(frame, detections, coverage, cloud_reference, image)
         )
         cloud = count.fraction
         focus = self._focus(detections)
@@ -616,10 +883,13 @@ class SurveyPipeline:
                 solver="" if solved is None else solved.solver,
             )
         quality: SkyQualityResult | None = None
-        long_frame = exposure_s >= self._config.sky.min_exposure_s
-        wanted = long_frame if sky_quality is None else sky_quality
         if wanted:
             dark_model, status = self._dark_for(frame)
+            extra = self._quality_provenance(dark_model)
+            if detections.search is not None:
+                extra["search"] = detections.search.label  # the search behind n_expected
+            if core is not None:
+                extra["core"] = f"{core:.3f}"  # the share of the light that the model of it sees
             quality = assess_frame(
                 station_id=self._station_id,
                 profile=self._profile,
@@ -641,7 +911,7 @@ class SurveyPipeline:
                 hot_pixels=hot,
                 zp_reference=zp_reference,
                 options=self._quality,
-                provenance=self._provenance(self._quality_provenance(dark_model)),
+                provenance=self._provenance(extra),
                 time_invalid=frame_time_invalid(frame),
                 saturated_sky=saturated_sky,
             )
@@ -1037,44 +1307,118 @@ class SurveyPipeline:
             return None
         return float(np.median(detections.fwhm_px[usable]))
 
+    def _clear_sky_electrons(
+        self, frame: Frame, g_mag: FloatArray, zp_reference: ZeroPointReference | None
+    ) -> FloatArray | None:
+        """The electrons that a clear sky gives a star of each G magnitude in the frame.
+
+        The signal comes from the reference zero point when the history has one, and from the
+        profile's photometric prior otherwise. Without either, the result is `None`.
+        """
+        exposure_s = frame.exposure_us / 1e6
+        if zp_reference is not None:
+            rate = 10.0 ** (0.4 * (zp_reference.zero_point_mag - g_mag))
+        elif self._profile.photometry is not None:
+            rate = np.array([self._profile.star_electron_rate_e_per_s(float(g)) for g in g_mag])
+        else:
+            return None
+        return np.asarray(rate * exposure_s, dtype=np.float64)
+
     def _cloud_count(
         self,
         frame: Frame,
         detections: Detections,
         coverage: FieldStars | None,
         zp_reference: ZeroPointReference | None,
+        image: _StarImage,
     ) -> CloudCount:
         """The expected catalog stars, how many detection found, and the share that it missed.
 
-        The expected stars are those of the field that a clear sky would show at the signal-to-noise
-        ratio of `CloudConfig.expected_snr`. The expected signal comes from the reference zero
-        point when the history has one, and from the profile's photometric prior otherwise.
+        The expected stars are those of the field that a clear sky would show at the
+        signal-to-noise ratio of `CloudConfig.expected_snr` in an aperture, and that the search
+        that ran finds with a chance of at least `CloudConfig.min_completeness`
+        (`seeingmon.survey.completeness`), each star with the trail of its position and the share
+        of its light in the fitted image (`_StarImage.core_fraction`). When SEP took the noise map
+        (`SearchSpec.relative`), each star also takes the noise at its position, because SEP then
+        thresholds each pixel by its own noise. So a frame never expects a star that its detector
+        cannot find.
         """
         cfg = self._config.cloud
         if coverage is None or coverage.rows.size == 0:
             return CloudCount()
-        exposure_s = frame.exposure_us / 1e6
         g_mag = coverage.g_mag
-        if zp_reference is not None:
-            rate = 10.0 ** (0.4 * (zp_reference.zero_point_mag - g_mag))
-        elif self._profile.photometry is not None:
-            rate = np.array([self._profile.star_electron_rate_e_per_s(float(g)) for g in g_mag])
-        else:
+        electrons = self._clear_sky_electrons(frame, g_mag, zp_reference)
+        if electrons is None:
             return CloudCount()
-        electrons = rate * exposure_s
-        noise_e = detections.background_rms * self._profile.e_per_adu(frame.mode, frame.gain)
-        reliable = detections.reliable()
-        fwhm = float(np.median(detections.fwhm_px[reliable])) if np.any(reliable) else 1.1
-        trail = float(np.median(detections.trail_length_px)) if len(detections) else 0.0
-        aperture = np.pi * (1.5 * max(fwhm, 0.8)) ** 2 + 2.0 * trail * max(fwhm, 0.8)
-        snr2 = cfg.expected_snr**2
-        minimum = 0.5 * (snr2 + np.sqrt(snr2**2 + 4.0 * snr2 * aperture * noise_e**2))
-        expected = (g_mag < cfg.mag_limit) & (electrons >= minimum)
+        e_per_adu = self._profile.e_per_adu(frame.mode, frame.gain)
+        noise_e = detections.background_rms * e_per_adu
+        length, angle = image.trails(coverage.x, coverage.y)
+        expected = (g_mag < cfg.mag_limit) & (
+            electrons >= image.aperture_minimum_e(cfg, noise_e, length)
+        )
+        search = detections.search
+        candidates = np.flatnonzero(expected)
+        if search is not None and candidates.size:
+            local: FloatArray | float = noise_e
+            if search.relative and detections.noise_map is not None:
+                x, y = coverage.x[candidates], coverage.y[candidates]
+                local = detections.noise_map.at(x, y) * e_per_adu
+            found = image.completeness(
+                search, electrons[candidates], local, length[candidates], angle[candidates]
+            )
+            expected[candidates[found < cfg.min_completeness]] = False
         n_expected = int(expected.sum())
         n_found = int(coverage.found[expected].sum())
         if n_expected < cfg.min_expected:
             return CloudCount(None, n_expected, n_found)
         return CloudCount(1.0 - n_found / n_expected, n_expected, n_found)
+
+    def _full_search_due(
+        self,
+        frame: Frame,
+        detections: Detections,
+        zp_reference: ZeroPointReference | None,
+        core_of: Callable[[Detections], float | None],
+    ) -> bool:
+        """Whether the binned search misses stars that the cloud fraction would expect.
+
+        The rule looks at a typical star of the field, with the median trail and direction of the
+        detections (`_StarImage`). The faintest such star that the cloud fraction can expect has
+        the highest of three fluxes: that of `CloudConfig.mag_limit`, the clear-sky signal of
+        `expected_snr`, and the flux at which the full search finds a star with the chance
+        `min_completeness`. When the binned search finds a star of that flux with a smaller
+        chance, the stars between the limits of the two searches would drop out of the cloud
+        fraction, so the frame takes the full search. The model takes the noise, the star image,
+        and the share of the light in the fitted image (`core_of`, see `light_in_core`) that the
+        binned search measured, so the rule follows the sky and the exposure, and never the Sun. A
+        dark frame of 30 s keeps the binned search, because its trail spreads a sharp star across
+        the blocks and the stars down to `mag_limit` are bright. A short frame in a bright sky takes
+        the full search. The stars near the pole, whose trails are short, can still lie beyond the
+        binned search when a typical star does not, and the cloud fraction then leaves them out
+        (`_cloud_count`).
+        """
+        search = detections.search
+        if search is None or not search.binned:
+            return False
+        cfg = self._config.cloud
+        faintest = self._clear_sky_electrons(frame, np.array([cfg.mag_limit]), zp_reference)
+        if faintest is None:
+            return False  # no clear-sky signal, so no cloud fraction
+        noise_e = detections.background_rms * self._profile.e_per_adu(frame.mode, frame.gain)
+        image = _StarImage.of(detections, core_fraction=core_of(detections))
+        typical = image.trail_px, image.trail_angle_rad
+        full_limit = image.limit_e(
+            replace(search, factor=1), cfg.min_completeness, noise_e, *typical
+        )
+        flux = max(
+            float(faintest[0]),
+            float(image.aperture_minimum_e(cfg, noise_e, image.trail_px)),
+            float(full_limit),
+        )
+        if not math.isfinite(flux):
+            return False  # the full search cannot reach the limit either
+        found = image.completeness(search, flux, noise_e, *typical)
+        return float(found) < cfg.min_completeness
 
     # --- Records -------------------------------------------------------------------------
 

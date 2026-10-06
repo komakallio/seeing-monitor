@@ -260,9 +260,10 @@ class TestTheSurveyAtDusk:
     black level of the 1 ms frame with a frame of 32 us. Once the 1 ms frame shows less than about
     5 counts of the ADC of sky, the long frames start at 1 s and grow as the sky darkens.
 
-    Two runs gave (`docs/research-notes.md`, "The survey at dusk"): the first survey frame solves
-    at -6.31 degrees (4 stars, `few_stars`), and the first with 12 stars or more at -8.55 degrees.
-    Long frames of a fixed 30 s first solve at -9.98 degrees. A degree is 3 survey steps here.
+    The runs gave (`docs/research-notes.md`, "The survey at dusk"): the first survey frame solves
+    at -6.31 degrees (`few_stars`), and the first with 12 stars or more at -8.17 degrees (-8.55
+    before the long frames in a bright sky took the full search). Long frames of a fixed 30 s first
+    solve at -9.98 degrees. A degree is 3 survey steps here.
     """
 
     START = "2026-01-01T16:00:00Z"
@@ -280,7 +281,7 @@ class TestTheSurveyAtDusk:
             # The tolerance is the step of the cycle, 0.37 degrees, and a second step for the noise
             # of the stars that a frame of 1 s detects.
             assert sun_at(first.t_utc_ns) == pytest.approx(-6.31, abs=0.8)
-            assert sun_at(full.t_utc_ns) == pytest.approx(-8.55, abs=0.8)
+            assert sun_at(full.t_utc_ns) == pytest.approx(-8.17, abs=0.8)
 
             frames = night.records("survey_frame")
             longs = [f for f in frames if f.exposure_s >= 1.0]
@@ -292,12 +293,23 @@ class TestTheSurveyAtDusk:
             assert sun_at(longs[0].t_utc_ns) < -5.0
             # One or two long frames saturate before the black level puts the long frames where
             # they serve (one at -5.6 degrees in the runs above), and none of them reports clouds.
-            # The frames of 1 to 3 s that do not saturate can read clouds under this clear sky,
-            # because the binned search misses stars in a bright sky (the research notes).
             sky = night.records("sky_quality")
             saturated = [q for q in sky if "saturated_sky" in q.flags]
             assert 1 <= len(saturated) <= 2
             assert all(q.cloud_fraction is None and "cloud" not in q.flags for q in saturated)
+            # The other long frames take the full search, which finds the sharp stars of a short
+            # frame that the binned search loses, and they expect only the stars that it finds
+            # with a chance of 0.9 or more, so the clear sky reads no clouds. The runs read 0 in
+            # every such frame, and the binned search had read 0.43 to 0.80 in the frames of 1 to
+            # 3 s. One missed star in the 4 to 13 expected is 0.08 to 0.25, so the tolerance of
+            # 0.25 allows one, and the `cloud` flag (0.3) never sets.
+            clear = [q for q in sky if "saturated_sky" not in q.flags]
+            assert clear
+            assert all(q.provenance.get("search") == "full" for q in clear)
+            assert all("cloud" not in q.flags for q in clear)
+            fractions = [q.cloud_fraction for q in clear if q.cloud_fraction is not None]
+            assert fractions
+            assert max(fractions) <= 0.25
             # The long exposure grows as the sky darkens, by at most 4 times a step.
             exposures = [f.exposure_s for f in longs]
             assert exposures == sorted(exposures)

@@ -86,6 +86,10 @@ class CloudConfig(SectionModel):
     edge_px: float = 20.0  # catalog stars this close to the frame edge do not count
     min_expected: int = 8  # fewer expected stars give no cloud fraction
     match_radius_px: float = 3.0
+    # A catalog star counts as expected only when the search that ran finds it in a clear sky with
+    # at least this chance (`seeingmon.survey.completeness`). A long frame whose binned search would
+    # miss such stars takes the full search. Provisional.
+    min_completeness: float = Field(0.9, gt=0, lt=1, allow_inf_nan=False)
 
 
 class DarkConfig(SectionModel):

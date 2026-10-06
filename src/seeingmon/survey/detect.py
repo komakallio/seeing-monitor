@@ -46,6 +46,13 @@ is one pixel that holds the sum of the block, and it fits only the brightest `re
   faint star), and they carry `StarFlag.COARSE`. `UNRELIABLE` includes the flag, so the pointing
   fit, the photometry, and the focus ignore them, and the cloud fraction, the star list, and the
   sky mask still use them.
+- *What it loses.* Each block counts as one pixel toward `min_pixels`, so a sharp star in the
+  middle of a block, which puts almost no light into a second block, needs far more flux than the
+  full search needs, unless a trail spreads it. `Detections.search` says which search ran, and
+  `Detections.noise_map` holds the noise that it measured across the frame.
+  `seeingmon.survey.completeness` models how completely each search finds a star, so the cloud
+  fraction expects only the stars that the search finds, and a long frame at dusk takes the full
+  search (`seeingmon.survey.pipeline`).
 
 **Hot pixels.** Shape cannot tell an undersampled bin2 star from a hot pixel unless the
 detector is careful: a star with the sharpest PSF that the 50 mm aperture allows (FWHM 0.66
@@ -85,8 +92,11 @@ sep.set_extract_pixstack(3_000_000)
 
 BoolArray = npt.NDArray[np.bool_]
 
-_MATCHED_KERNEL = np.array([[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]], dtype=np.float32)
+# The filter of the full search: a PSF of one pixel. The binned search uses none.
+SEARCH_KERNEL = np.array([[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]], dtype=np.float32)
 _PIXEL_VARIANCE = 1.0 / 12.0  # the variance of a uniform distribution across one pixel
+# SEP thresholds with one noise for the whole frame unless its noise map varies by more than this.
+_VARIED_NOISE_RATIO = 1.3
 
 # `paint_disks` paints stars in batches that share a window of one of these half-widths. A disk
 # that reaches farther holds so many pixels that a loop of its own costs no more than a batch.
@@ -174,6 +184,76 @@ class DetectOptions:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SearchSpec:
+    """How the detector searched a frame, for the model of its limit.
+
+    `seeingmon.survey.completeness` models the search. `factor` is the side of a pixel of the
+    searched frame, in pixels of the full frame: 1 for the full search, which smooths with
+    `SEARCH_KERNEL`, and `coarse_bin` for the binned search, which sums each block and does not
+    smooth. A star needs `min_pixels` connected pixels of the searched frame above the threshold.
+    `relative` says how SEP set the threshold. With a noise map that varies by more than 30%
+    (true), SEP compares the SNR of the smoothed image with `threshold_sigma`. With one noise for
+    the frame (false), it compares the smoothed image, scaled to a kernel sum of 1, with
+    `threshold_sigma` times the noise of one pixel. Smoothing lowers the noise to 0.375 times that
+    of a pixel, so the full search then sets its threshold at 2.67 times `threshold_sigma` of the
+    noise of the smoothed image. The binned search compares each sum with `threshold_sigma` times
+    the noise of a sum in either case.
+    """
+
+    threshold_sigma: float
+    min_pixels: int
+    factor: int = 1
+    relative: bool = False
+
+    @property
+    def binned(self) -> bool:
+        return self.factor > 1
+
+    @property
+    def label(self) -> str:
+        """`full`, or `binned` with the factor, such as `binned2`."""
+        return f"binned{self.factor}" if self.binned else "full"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class NoiseMap:
+    """The noise of the background across a frame, on a coarse grid.
+
+    `values` holds the noise of one pixel of the full frame, in counts, at one point of each mesh
+    cell of the background: column `j` and row `i` lie at `(x0 + step_px * j, y0 + step_px * i)`.
+    SEP's noise map is smooth across a cell, so the nearest point gives the noise at any position.
+    """
+
+    values: npt.NDArray[np.float32]
+    step_px: float
+    x0: float
+    y0: float
+
+    @classmethod
+    def sample(cls, rms_map: npt.NDArray[np.float32], scale: int, mesh_px: int) -> NoiseMap:
+        """The map of a search: `rms_map` is in the units of a pixel of the searched frame, which
+        covers `scale` pixels of the full frame along each side."""
+        stride = max(1, mesh_px // scale)
+        start = stride // 2
+        values = np.ascontiguousarray(rms_map[start::stride, start::stride] / np.float32(scale))
+        first = scale * start + 0.5 * (scale - 1)  # the center of the searched pixel
+        return cls(values.astype(np.float32), float(scale * stride), first, first)
+
+    def at(self, x: npt.ArrayLike, y: npt.ArrayLike) -> FloatArray:
+        """The noise at each position, in counts of one pixel of the full frame."""
+        rows, columns = self.values.shape
+        column = np.rint((np.asarray(x, dtype=np.float64) - self.x0) / self.step_px)
+        row = np.rint((np.asarray(y, dtype=np.float64) - self.y0) / self.step_px)
+        column = np.clip(np.nan_to_num(column), 0, columns - 1).astype(np.intp)
+        row = np.clip(np.nan_to_num(row), 0, rows - 1).astype(np.intp)
+        return np.asarray(self.values[row, column], dtype=np.float64)
+
+    def shifted(self, dx: float, dy: float) -> NoiseMap:
+        """The map with its positions moved by `(dx, dy)`, as `Detections.shifted` moves stars."""
+        return NoiseMap(self.values, self.step_px, self.x0 + dx, self.y0 + dy)
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class Detections:
     """The stars of one frame, sorted by flux (the brightest first).
@@ -183,7 +263,9 @@ class Detections:
     the width of the PSF across the trail. `elongation` is the ratio of the major to the minor
     second-moment axis, and `trail_length_px` and `trail_angle_rad` describe the trail that the
     fit used. `background` is the `sep.Background` object, which later steps (the sky quality)
-    use for the background map. A binned search leaves it `None`.
+    use for the background map. A binned search leaves it `None`. `search` says how the detector
+    searched the frame, and `noise_map` holds the noise across the frame that the search measured.
+    Both are `None` for detections that another source built.
     """
 
     shape: tuple[int, int]
@@ -203,6 +285,8 @@ class Detections:
     background_level: float
     background_rms: float
     background: Any = None
+    search: SearchSpec | None = None
+    noise_map: NoiseMap | None = None
 
     def __len__(self) -> int:
         return int(self.x.shape[0])
@@ -236,6 +320,8 @@ class Detections:
             background_level=self.background_level,
             background_rms=self.background_rms,
             background=self.background,
+            search=self.search,
+            noise_map=self.noise_map,
         )
 
     def shifted(self, dx: float, dy: float) -> Detections:
@@ -259,6 +345,8 @@ class Detections:
             background_level=copy.background_level,
             background_rms=copy.background_rms,
             background=copy.background,
+            search=copy.search,
+            noise_map=None if copy.noise_map is None else copy.noise_map.shifted(dx, dy),
         )
 
     def star_list(self, exclude: StarFlag = StarFlag.HOT_PIXEL) -> StarList:
@@ -469,7 +557,8 @@ class _Search:
     `objects` is SEP's list, in the pixels of the searched frame. `level` and `rms` are the
     background and its noise per pixel of the full-resolution frame, and `rms_map` is the noise
     map of the searched frame in its own units. `scale` is the number of full-resolution pixels
-    along one side of a pixel of the searched frame: 1, or `coarse_bin`.
+    along one side of a pixel of the searched frame: 1, or `coarse_bin`. `relative` says whether
+    SEP took the noise map (see `SearchSpec`).
     """
 
     objects: Any
@@ -478,6 +567,12 @@ class _Search:
     rms_map: npt.NDArray[np.float32]
     scale: int
     background: Any
+    relative: bool
+
+
+def _varies(rms_map: npt.NDArray[np.float32]) -> bool:
+    """Whether the noise map varies enough that SEP thresholds each pixel by its own noise."""
+    return float(rms_map.max()) > _VARIED_NOISE_RATIO * max(float(rms_map.min()), 1e-6)
 
 
 def _extract(
@@ -489,11 +584,10 @@ def _extract(
     opts: DetectOptions,
 ) -> Any:
     """Run `sep.extract` on a background-subtracted image."""
-    varied = float(rms_map.max()) > 1.3 * max(float(rms_map.min()), 1e-6)
     return sep.extract(
         image,
         opts.threshold_sigma,
-        err=rms_map if varied else rms,
+        err=rms_map if _varies(rms_map) else rms,
         minarea=opts.min_pixels,
         filter_kernel=kernel,
         deblend_cont=1.0,
@@ -518,8 +612,8 @@ def _search_full(
     rms = float(background.globalrms)
     rms_map = np.asarray(background.rms(), dtype=np.float32)
     background.subfrom(frame)
-    objects = _extract(frame, rms, rms_map, hot, _MATCHED_KERNEL, opts)
-    return _Search(objects, level, rms, rms_map, 1, background)
+    objects = _extract(frame, rms, rms_map, hot, SEARCH_KERNEL, opts)
+    return _Search(objects, level, rms, rms_map, 1, background, _varies(rms_map))
 
 
 def _search_binned(
@@ -541,7 +635,9 @@ def _search_binned(
     objects = _extract(binned, rms, rms_map, mask, None, opts)
     _subtract_blocks(frame, levels / np.float32(factor * factor), factor)
     # A sum of `factor`^2 pixels has the mean and the variance of that many pixels together.
-    return _Search(objects, level / factor**2, rms / factor, rms_map, factor, None)
+    return _Search(
+        objects, level / factor**2, rms / factor, rms_map, factor, None, _varies(rms_map)
+    )
 
 
 def detect_stars(
@@ -751,5 +847,7 @@ def detect_stars(
         background_level=level,
         background_rms=rms,
         background=search.background,
+        search=SearchSpec(opts.threshold_sigma, opts.min_pixels, scale, search.relative),
+        noise_map=NoiseMap.sample(rms_map, scale, opts.mesh_px),
     )
     return detections.select(order)
