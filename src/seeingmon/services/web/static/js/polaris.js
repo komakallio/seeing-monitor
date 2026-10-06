@@ -129,8 +129,10 @@
       }
       const part = crop();
       const ratio = window.devicePixelRatio || 1;
-      const room = canvas.parentElement.clientWidth * ratio;
-      const scale = Math.max(1, Math.min(MAX_SCALE, Math.floor(room / part.width)));
+      // The image never takes more than half the height of the window, so that the numbers beside it
+      // or under it stay in view.
+      const room = Math.min(canvas.parentElement.clientWidth, window.innerHeight * 0.5) * ratio;
+      const scale = Math.max(1, Math.min(MAX_SCALE, Math.floor(room / Math.max(part.width, part.height))));
       const width = part.width * scale;
       const height = part.height * scale;
       if (canvas.width !== width || canvas.height !== height) {

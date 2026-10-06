@@ -189,7 +189,7 @@
     setChips("sky-chips", record.flags);
     setFacts("sky-facts", [
       ["Cloud cover", fmt.percent(record.cloud_fraction, 0)],
-      ["Transparency", fmt.num(record.transparency, 2)],
+      ["Transparency", record.transparency === null ? why(record, "transparency") || fmt.dash : fmt.num(record.transparency, 2)],
       ["Limiting magnitude", fmt.num(record.limiting_mag, 1)],
       ["Zero point", fmt.num(record.zero_point_mag, 2) + " mag"],
       ["Stars used", record.n_stars_used === null ? fmt.dash : String(record.n_stars_used)],
@@ -430,8 +430,11 @@
         next.append(", " + fmt.clock(new Date(activity.next).toISOString()) + " UTC, in " + span((activity.next - now) / 1000));
       }
     }
-    $("act-detail").textContent = activity.detail || "";
-    $("act-reason").textContent = activity.reason ? "Why: " + activity.reason : "";
+    // Say more only where you may need to act: normal measuring needs no sentence.
+    const quiet = activity.state === "auto" && !bad && !activity.degraded;
+    $("act-detail").textContent = quiet ? "" : activity.detail || "";
+    const reason = quiet ? "" : activity.reason || "";
+    $("act-reason").textContent = reason ? reason.charAt(0).toUpperCase() + reason.slice(1) : "";
   }
 
   // --- Polaris ----------------------------------------------------------------------------------

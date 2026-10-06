@@ -1811,3 +1811,41 @@ label {
   width: 100%;
   height: 150px;
 }
+
+/* --- The Align page: the picture and its numbers share the screen ----------------------------- */
+
+.rapid-grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.rapid-grid .focus-read {
+  margin-bottom: 4px;
+}
+
+.focus-panel #focus-curve,
+#rapid-curve {
+  height: 100px;
+}
+
+#rapid-panel.active {
+  order: -1; /* while rapid focus runs, its picture and numbers lead the column */
+}
+
+details.help > summary,
+details.more > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+details.more {
+  margin-top: 6px;
+}
+
+@media (max-width: 760px) {
+  .rapid-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

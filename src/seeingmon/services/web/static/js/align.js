@@ -827,6 +827,7 @@
     const start = $("rapid-start");
     const note = $("rapid-note");
     $("rapid-live").hidden = !rapid.active;
+    $("rapid-panel").classList.toggle("active", rapid.active); // while it runs, it moves to the top
     start.hidden = rapid.active;
     $("rapid-stop").hidden = !rapid.active;
     const enabled = commandsEnabled();

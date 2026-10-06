@@ -41,6 +41,20 @@
         <canvas id="view" width="640" height="436" role="img" aria-label="Live view of the star field"></canvas>
         <div class="cover" id="cover">Connecting to the live view.</div>
       </div>
+      <section class="panel focus-panel" aria-labelledby="h-focus">
+        <h2 id="h-focus">Focus</h2>
+        <div class="focus-read">
+          <span class="focus-value" id="focus-value">—</span>
+          <span class="focus-sub" id="focus-sub"></span>
+        </div>
+        <canvas id="focus-curve" role="img" aria-label="Width of the star in the last frames, with the best value"></canvas>
+        <div class="scale"><span id="focus-from"></span><span>now</span></div>
+        <p class="note" id="focus-note"></p>
+        <div class="row">
+          <button type="button" id="focus-reset">Restart the best value</button>
+          <span class="hint" id="focus-reset-note" aria-live="polite"></span>
+        </div>
+      </section>
       <fieldset class="overlays" id="overlays">
         <legend>Overlays</legend>
         <label class="check" for="overlay-pole"><input type="checkbox" id="overlay-pole" checked> Pole and orbit</label>
@@ -61,7 +75,7 @@
         <p class="sentence" id="pole-sentence">Waiting for a solution.</p>
         <p class="sentence" id="orbit-sentence"></p>
         <p class="note" id="adjust-note" hidden></p>
-        <p class="note" id="coordinates-note">Coordinates are of date.</p>
+        <p class="note" id="coordinates-note" hidden>Coordinates are of date.</p>
       </section>
       <section class="panel" aria-labelledby="h-offset">
         <h2 id="h-offset">Offset from the target</h2>
@@ -89,50 +103,45 @@
           <span class="hint" id="rapid-command-note" aria-live="polite"></span>
         </div>
         <div id="rapid-live" hidden>
-          <div class="live polaris-live">
-            <canvas id="rapid-canvas" width="384" height="384" role="img" aria-label="Live image of Polaris from the rapid focus stream"></canvas>
-            <span class="tag" id="rapid-tag" data-level="warn">NOT LIVE</span>
-            <div class="cover" id="rapid-cover">Connecting</div>
+          <div class="rapid-grid">
+            <div class="rapid-picture">
+              <div class="live polaris-live">
+                <canvas id="rapid-canvas" width="384" height="384" role="img" aria-label="Live image of Polaris from the rapid focus stream"></canvas>
+                <span class="tag" id="rapid-tag" data-level="warn">NOT LIVE</span>
+                <div class="cover" id="rapid-cover">Connecting</div>
+              </div>
+              <div class="segmented polaris-zoom" id="rapid-zoom" role="group" aria-label="Zoom of the live image"></div>
+            </div>
+            <div class="rapid-numbers">
+              <div class="focus-read">
+                <span class="focus-value" id="rapid-value">—</span>
+                <span class="focus-sub" id="rapid-sub"></span>
+              </div>
+              <canvas id="rapid-curve" role="img" aria-label="Width of the star in the last 30 seconds, with the best value"></canvas>
+              <div class="scale"><span id="rapid-from"></span><span>now</span></div>
+              <p class="note" id="rapid-verdict"></p>
+              <div class="row">
+                <button type="button" id="rapid-shorter">Shorter exposure</button>
+                <button type="button" id="rapid-longer">Longer exposure</button>
+                <button type="button" id="rapid-reset">Restart the best value</button>
+              </div>
+            </div>
           </div>
-          <div class="segmented polaris-zoom" id="rapid-zoom" role="group" aria-label="Zoom of the live image"></div>
-          <div class="focus-read">
-            <span class="focus-value" id="rapid-value">—</span>
-            <span class="focus-sub" id="rapid-sub"></span>
-          </div>
-          <canvas id="rapid-curve" role="img" aria-label="Width of the star in the last 30 seconds, with the best value"></canvas>
-          <div class="scale"><span id="rapid-from"></span><span>now</span></div>
-          <p class="note" id="rapid-verdict"></p>
-          <p class="note" id="rapid-video-note"></p>
-          <div class="row">
-            <button type="button" id="rapid-shorter">Shorter exposure</button>
-            <button type="button" id="rapid-longer">Longer exposure</button>
-            <button type="button" id="rapid-reset">Restart the best value</button>
-          </div>
-        </div>
-      </section>
-      <section class="panel" aria-labelledby="h-focus">
-        <h2 id="h-focus">Focus</h2>
-        <div class="focus-read">
-          <span class="focus-value" id="focus-value">—</span>
-          <span class="focus-sub" id="focus-sub"></span>
-        </div>
-        <canvas id="focus-curve" role="img" aria-label="Width of the star in the last frames, with the best value"></canvas>
-        <div class="scale"><span id="focus-from"></span><span>now</span></div>
-        <p class="note" id="focus-note"></p>
-        <div class="row">
-          <button type="button" id="focus-reset">Restart the best value</button>
-          <span class="hint" id="focus-reset-note" aria-live="polite"></span>
+          <details class="more">
+            <summary>Video status</summary>
+            <p class="note" id="rapid-video-note"></p>
+          </details>
         </div>
       </section>
       <section class="panel" aria-labelledby="h-solution">
         <h2 id="h-solution">Solution and frame</h2>
         <dl class="facts" id="solution-facts"></dl>
       </section>
-      <section class="panel" aria-labelledby="h-help">
-        <h2 id="h-help">How to align</h2>
+      <details class="panel help" id="help">
+        <summary id="h-help">Help: how to align</summary>
         <p class="note">Start the alignment with the token. In a first alignment, move the mount until the marker labeled pole sits on the cross labeled aim at the center of the image. The dashed circle is the orbit of Polaris around the pole. It is green when the whole circle fits in the frame with room to spare, amber when it fits tightly, and red when it leaves the frame. Check the focus curve too.</p>
-        <p class="note">When a target is set, the cross labeled target shows where Polaris belongs, and the ring labeled Polaris shows where the solver finds it. Move the mount until the ring sits on the cross, and until the roll is near zero. Stop the alignment when you finish, so that the camera goes back to measuring.</p>
-      </section>
+        <p class="note">When a target is set, the cross labeled target shows where Polaris belongs, and the ring labeled Polaris shows where the solver finds it. Move the mount until the ring sits on the cross, and until the roll is near zero. Stop the alignment when you finish, so that the camera goes back to measuring. Coordinates are of date.</p>
+      </details>
     </div>
   </div>
 </main>
