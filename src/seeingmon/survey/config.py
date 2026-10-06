@@ -232,6 +232,19 @@ class DarknessConfig(SectionModel):
     verdict_frames: int = Field(5, ge=1)
 
 
+class VisibilityConfig(SectionModel):
+    """The nightly visibility summary of Polaris (`seeingmon.services.core.visibility`)."""
+
+    # A stretch without watching the sky, longer than this in seconds, between the start of the
+    # night and the first detection (or the last detection and the end) censors that detection.
+    max_gap_s: float = Field(300.0, ge=0, allow_inf_nan=False)
+    # How many `[services.core] health_interval_s` a health record vouches for the station.
+    health_span_intervals: float = Field(3.0, ge=1, allow_inf_nan=False)
+    # How many nights, the newest that ended included, the first run after a start of core checks
+    # for a missing summary.
+    catch_up_nights: int = Field(7, ge=1, le=366)
+
+
 class SurveyConfig(SectionModel):
     """Settings of the survey path. Every key has a default that suits the reference camera."""
 
@@ -263,3 +276,4 @@ class SurveyConfig(SectionModel):
     star_epoch: StarEpochConfig = StarEpochConfig()
     twilight: TwilightConfig = TwilightConfig()
     darkness: DarknessConfig = DarknessConfig()
+    visibility: VisibilityConfig = VisibilityConfig()

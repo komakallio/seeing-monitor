@@ -26,8 +26,11 @@ calibration_dir = ""
 # has a set for the frame.
 flat_file = ""
 # The UTC hour that ends one night and starts the next. Pick an hour when the Sun is up at your
-# site, so that no night splits in two. The star epochs, the transparency reference, and the events
-# sky.dark and sky.clear_verdict ([survey.darkness]) group by night.
+# site, so that no night splits in two. The star epochs, the transparency reference, the events
+# sky.dark and sky.clear_verdict ([survey.darkness]), and the visibility summary
+# ([survey.visibility]) group by night. core writes the visibility summary of a night when this hour
+# passes. Polaris can be visible in daylight, so measure can run across this hour, and the summary
+# then counts the first or the last detection of the night as censored.
 night_split_utc_hour = 12.0
 # The solver programs. Each runs as a separate process, so its GPL or MPL code stays outside
 # this MIT code base.
@@ -242,3 +245,28 @@ max_gap_s = 600.0
 # from the stored pointing. The verdict gives the share of them at or below [scheduler.cloud]
 # clear_threshold. Provisional.
 verdict_frames = 5
+
+# The visibility summary of Polaris, which core writes once a night when night_split_utc_hour
+# passes. A detection is censored (a bound, not the moment when Polaris appeared or vanished) when
+# Polaris was visible at the start or the end of the night, or when the station did not watch the
+# sky for longer than max_gap_s between the start of the night and the first detection, or between
+# the last detection and the end. The station watches while core runs and the scheduler is in auto
+# or safe without a fault of the camera, as the health records show. A fault of the heater or the
+# SQM-LE reader does not stop the search, so it counts as watching. Provisional.
+[survey.visibility]
+# The longest stretch without watching, in seconds, that leaves a detection uncensored. The last
+# health record before a stop vouches for the station for health_span_intervals, so an outage of up
+# to max_gap_s plus that span (300 s + 180 s = 480 s with a health_interval_s of 60 s in
+# [services.core]) leaves a detection uncensored. The Sun's elevation changes by at most 15 degrees
+# an hour, and less away from the equator, so such an outage moves a detection by at most 2 degrees
+# of the Sun's elevation. A restart of core takes less than that. Provisional.
+max_gap_s = 300.0
+# How many health intervals ([services.core] health_interval_s) a health record vouches for the
+# station, at least 1. Above 1, a record or two that come late, from a busy supervisor thread, make
+# no gap and cut no measure short. Provisional.
+health_span_intervals = 3.0
+# How many nights, the newest night that ended included, the first run after a start of core checks
+# for a missing summary, oldest first. A night in which core never ran gets none. 7 covers a week of
+# downtime. A night that has its summary costs one read of the store, and core writes one missing
+# night every 30 s, so the catch-up never holds its supervisor thread for long. Provisional.
+catch_up_nights = 7

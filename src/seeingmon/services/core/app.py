@@ -16,6 +16,8 @@ right order. The parts, and where they come from:
   and it writes the previews and the FITS files (`seeingmon.services.core.survey_frames`).
 - **Darkness:** the scheduler polls the survey through `SkyDarkness`, which writes the events
   `sky.dark` and `sky.clear_verdict` from the results (`seeingmon.services.core.darkness`).
+- **Visibility:** `VisibilitySummary` writes the `visibility_summary` record of each night from the
+  store, once the split hour has passed (`seeingmon.services.core.visibility`).
 - **Preview calibration:** one `PreviewCalibrator` takes the dark level, the vignetting, and the
   dust shadows out of the previews of the survey frames and out of the live view of the alignment
   helper (`seeingmon.services.core.alignment.calibration`). It reads the active flat of the flat
@@ -38,8 +40,9 @@ the analyzers, and the writers of the scheduler. The housekeeping thread forward
 closes idle segments, and runs retention. The heater and SQM-LE threads run when those parts are
 configured. The frame writer thread writes the previews and the FITS files of the survey frames.
 The supervisor thread runs the periodic jobs: the `health` record, the collection of the events of
-`acquire`, and the heartbeat to systemd. The alignment helper has two threads, the video of
-Polaris has one (it encodes frames only while a client watches), and the IPC server has its own.
+`acquire`, the nightly summaries, and the heartbeat to systemd. The alignment helper has two
+threads, the video of Polaris has one (it encodes frames only while a client watches), and the IPC
+server has its own.
 All of them stop in this order: new commands, the scheduler (which closes the camera), the
 alignment helper, the video of Polaris, the heater and the SQM-LE reader, the supervisor, the
 survey worker, the frame writer (which writes the files that wait), and last the housekeeping and
@@ -54,7 +57,8 @@ time.
 **Records.** At start the app writes a `run` record (once the scheduler has opened the camera, or
 after `run_record_wait_s`), and every `health_interval_s` a `health` record. The hardware events
 of the heater, the SQM-LE reader, the power-cycle hook, and the driver in `acquire` become `event`
-records, and the SQM-LE readings become `reference` records.
+records, and the SQM-LE readings become `reference` records. Once the split hour of a night has
+passed, the app writes the `visibility_summary` record of that night, and never at shutdown.
 """
 
 from __future__ import annotations
@@ -132,6 +136,7 @@ from seeingmon.services.core.settings import AlignmentSettings, ReplaySettings
 from seeingmon.services.core.skyflags import SkyFlagWriter
 from seeingmon.services.core.survey_frames import SurveyFrames
 from seeingmon.services.core.survey_worker import make_survey_executor
+from seeingmon.services.core.visibility import VisibilitySummary
 from seeingmon.services.ipc.endpoint import Endpoint
 from seeingmon.services.ipc.keys import ConnectionKey
 from seeingmon.services.ipc.server import IpcServer
@@ -307,6 +312,7 @@ class CoreApp:
         self._build_hardware()
         self._build_alignment()
         site = load_site(config)
+        self.site = site
         self.darkness = self._build_darkness(scheduler_config, site)
         self.escalator = Escalator(
             writer=self.events,
@@ -878,6 +884,20 @@ class CoreApp:
         )
         if self.nightly is not None:
             self.tasks.add("nightly", NIGHTLY_INTERVAL_S, self._flush_night_if_due, immediate=False)
+        # The visibility summary reads the store, so it needs no survey analyzer with a summary.
+        self.visibility = VisibilitySummary(
+            self.storage.store,
+            clock=self.clock,
+            station_id=self.station_id,
+            profile_id=self.profile.id,
+            split_utc_hour=self.survey_config.night_split_utc_hour,
+            settings=self.survey_config.visibility,
+            health_interval_s=self.settings.health_interval_s,
+            delay_s=self.fast_config.window_s,
+            site=self.site,
+            sky_flags=self.settings.sky_flags,
+        )
+        self.tasks.add("visibility", NIGHTLY_INTERVAL_S, self._write_visibility, immediate=False)
         if self.notifier.watchdog_interval_s is not None:  # systemd asked for a heartbeat
             self.tasks.add("heartbeat", self.notifier.watchdog_interval_s, self._heartbeat)
 
@@ -989,6 +1009,10 @@ class CoreApp:
     def _flush_night_if_due(self) -> None:
         if self.nightly is not None:
             self.nightly.flush_due()
+
+    def _write_visibility(self) -> None:
+        """Write the summary of the night that ended. `stop` never does: the night is not over."""
+        self.visibility.write_due()
 
     def _poll_events(self) -> None:
         if self.pump is not None:
