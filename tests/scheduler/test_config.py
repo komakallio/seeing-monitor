@@ -77,7 +77,7 @@ def test_the_defaults_follow_the_architecture() -> None:
 
 
 def test_the_search_defaults_follow_the_visibility_design() -> None:
-    """`docs/visibility.md`, "Settings": no Sun limit, because the detection estimate keeps
+    """`docs/architecture.md`, "Scheduler": no Sun limit, because the detection estimate keeps
     Polaris detectable in full daylight."""
     search = SchedulerConfig().search
     assert (search.burst_frames, search.interval_s, search.confirm_bursts) == (50, 15.0, 2)
@@ -87,7 +87,7 @@ def test_the_search_defaults_follow_the_visibility_design() -> None:
 
 
 def test_the_adaptive_exposure_follows_the_visibility_design() -> None:
-    """`docs/visibility.md`, "Settings": the background of a fast frame aims for 0.3."""
+    """`docs/architecture.md`, "Scheduler": the background of a fast frame aims for 0.3."""
     assert SchedulerConfig().fast.target_background_fraction == 0.3
 
 

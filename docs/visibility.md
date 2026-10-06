@@ -1,8 +1,14 @@
 # Seeing whenever Polaris is visible
 
-Status: approved by the owner on October 5, 2026, and in implementation since the same day. When the lane builds it, the built parts move into `docs/architecture.md`, and this file then holds only the background. Every number here is provisional, and commissioning (phase 3) sets the final values.
+Status: built, except the cost measurement (step 9 of [visibility-brief.md](visibility-brief.md)), which is in progress. You approved this design on October 5, 2026, and the visibility lane built it on October 5 and 6. This file keeps the goals and the reasoning, and [architecture.md](architecture.md) holds the built design:
 
-The lane brief is [`visibility-brief.md`](visibility-brief.md).
+- [Scheduler](architecture.md#scheduler): the search and measure modes of the fast stream, the search limit and its probes, the events `polaris.visible`, `polaris.hidden`, and `polaris.search_limit_low`, the measured daylight gate, and the adaptive exposures of the fast stream and of the survey.
+- [Seeing (fast)](architecture.md#seeing-fast): the missing-star test of measure, the noise model with the sky, the `noisy` flag, and the optional weighted centroid.
+- [Sky quality](architecture.md#sky-quality), under "Transparency and clouds" and "The visibility of Polaris": `n_expected`, `saturated_sky`, `sky.dark`, `sky.clear_verdict`, the nightly `visibility_summary`, and `seeingmon visibility stats`.
+- [Pointing](architecture.md#pointing) and [Plate solvers](architecture.md#plate-solvers): a solution without an age limit, and the retry around the pole.
+- [Reported quantities](architecture.md#reported-quantities): the seeing in a bright sky, with the flags `noisy` and `daylight`, and the Sun's elevations of the visibility summary.
+
+Ten departures from the approved text wait for your decision. [Approved text that waits for a decision](#approved-text-that-waits-for-a-decision) keeps the approved rule of each. Every number is provisional, and commissioning (phase 3) sets the final values.
 
 ## Goals
 
@@ -11,133 +17,107 @@ The lane brief is [`visibility-brief.md`](visibility-brief.md).
 3. **Visibility statistics.** The Sun's elevation at the first and the last detection of each night, by season and transparency.
 4. **Darkness and clear skies from the star count.** The survey frames tell when the sky is dark and whether the night is clear.
 
-## What the system does now, and why it misses readings
+## Why the system missed readings
 
-| Condition | What happens now |
+Before this design, the Sun's elevation and the age of the pointing solution gated the fast stream:
+
+| Condition | What happened |
 |---|---|
-| The Sun above −3° | `safe`: one 1 ms brightness frame per minute. No seeing, even when Polaris is visible. |
-| The Sun below −4° | `auto` starts. The fast stream that measures seeing starts only with a pointing solution younger than 12 hours (`[survey.pointing] validity_s`). |
-| No solution younger than 12 hours | The scheduler waits for a survey frame to solve. In twilight the 30 s survey frame saturates, so the solve fails, and it retries every minute. |
-| Polaris hidden for 450 frames | The scheduler stops the fast stream and runs a survey step to solve again. |
+| The Sun above −3° | `safe`: one 1 ms brightness frame per minute. No seeing, even when Polaris was visible. |
+| The Sun below −4° | `auto` started. The fast stream that measures seeing started only with a pointing solution younger than 12 hours (`[survey.pointing] validity_s`). |
+| No solution younger than 12 hours | The scheduler waited for a survey frame to solve. In twilight the 30 s survey frame saturated, so the solve failed, and it retried every minute. |
+| Polaris hidden for 450 frames | The scheduler stopped the fast stream and ran a survey step to solve again. |
 
 The result:
 
 - **No seeing in daylight or bright twilight**, because of the −3° and −4° limits.
 - **No seeing on summer nights in the north.** The lowest Sun elevation at midsummer is your latitude + 23.4° − 90°. North of about 62.6° the Sun never gets below −4° then, and at 60° it gets only to −6.6°.
-- **No seeing early on the first clear night after a cloudy one.** That night starts with an expired solution and has to solve again, and in twilight the solve fails.
-- **Wasted solves during clouds.** Each time clouds hide Polaris, the scheduler runs a survey step, although the mount has not moved.
+- **No seeing early on the first clear night after a cloudy one.** That night started with an expired solution and had to solve again, and in twilight the solve failed.
+- **Wasted solves during clouds.** Each time clouds hid Polaris, the scheduler ran a survey step, although the mount had not moved.
 
-The 12-hour limit has no physical reason. A `PointingSolution` stores the camera's attitude in an Earth-fixed frame (`src/seeingmon/survey/pointing.py`), and the tracker turns it with the Earth's rotation and applies precession, nutation, and aberration. On a mount that does not move, a solution from last month predicts Polaris as well as one from a minute ago.
+The 12-hour limit had no physical reason. A `PointingSolution` stores the camera's attitude in an Earth-fixed frame (`src/seeingmon/survey/pointing.py`), and the tracker turns it with the Earth's rotation and applies precession, nutation, and aberration. On a mount that does not move, a solution from last month predicts Polaris as well as one from a minute ago.
 
-## Design
+## The reasoning behind the design
 
 ### Pointing without an age limit
 
-- `[survey.pointing] validity_s` gets the default 0, which means no limit. A positive value still works, for a mount that is not rigid.
-- When `core` starts, it seeds the tracker with the newest usable stored solution of any age. The checks of the matched stars and the residual stay.
-- A failed solve never clears the solution. Only a solve that succeeds replaces it, and a solve that sets the `moved` flag (5′ or 0.5° of roll from the reference) also writes a warning event.
-- A missing star never starts a solve by itself. Clouds and bright skies hide Polaris often, and a hidden star says nothing about the mount. The survey steps keep solving at their normal cadence whenever the sky allows, which catches a real move or a drift of a few pixels.
-- Without any solution (a new installation), the system behaves as now: survey frames at night until one solves, or the alignment helper.
+Only a solve that succeeds replaces a solution, and a missing star never starts a solve. Clouds and bright skies hide Polaris often, and a hidden star says nothing about the mount. The survey steps keep solving at their normal cadence whenever the sky allows, which catches a real move or a drift of a few pixels. Without an age limit, though, the solvers always get the hint of 2° around the prediction, so a mount that moved further would never solve again. A retry with the hint of 15° around the pole closes that gap (fix 1 of the brief).
 
-### Two modes of the fast stream: search and measure
+### The measured sky as the gate
 
-The fast stream replaces the Sun's elevation as the gate. It runs in one of two modes whenever a solution exists and the sky is not saturated:
+The Sun cannot enter the field, because the celestial pole is always at least 66.5° from the Sun. So the Sun's elevation sets flags, and only a sky that the fast stream cannot take, even at its shortest exposure, holds the camera. The brightness frame (1 ms, bin2) saturates long before the fast stream does at its shortest exposure (32 µs, bin1), so the gate judges the background that the fast stream would see (fix 2).
 
-- **Search.** A burst of `search.burst_frames` (50) fast frames every `search.interval_s` (15 s), on the region where the solution predicts Polaris. A detection in `search.confirm_bursts` (2) bursts in a row switches to measure. A burst keeps the camera busy for about 3 % of the time, and the camera is idle between bursts.
-- **Measure.** The fast stream as it runs now: continuous frames, seeing windows, and recentering at the ROI edge. When the star is missing for `fast.missing_star_frames` (450) frames in a row, the stream returns to search. It no longer starts a solve.
+Searching costs little. A burst of 50 fast frames takes about 0.6 s, so a burst every 15 s keeps the camera busy for about 4% of the time. The median of the SNR of the frames decides, and not the SNR of their sum, because measure needs a centroid in every frame (fix 5).
 
-The scheduler writes the event `polaris.visible` when the stream switches to measure and `polaris.hidden` when it switches back, each with the Sun's elevation. These events give the visibility statistics.
+### What decides whether Polaris is detectable
 
-**When to search.** Search runs only where Polaris can appear: while the Sun is below `search.max_sun_elevation_deg`, and at night under clouds. The default is 90°, which means no limit. The detection estimate (`docs/research-notes.md`, "Polaris in a bright sky") takes the SNR that a matched filter reaches, which depends only on the star, the sky, and the size of the star's image. In the estimate's daylight sky near the pole (4.2 mag/arcsec² in V), the median frame of a burst holds 7,980 e⁻ of Polaris in 1.23 ms on a sky of 4,310 e⁻² per pixel. The simulator's image is as sharp as the 50 mm aperture allows and covers about 6 px² (21.5 arcsec²), so the matched SNR is 41. It never falls to 10 between −18° and +90°, and it would take a sky 1.7 mag brighter than the model's daylight, and 0.7 mag brighter than the brightest daylight sky measured near the pole, to bring it there. Across the measured daylight skies, it ranges from 18 to 61. The real image is wider: in the owner's recordings it covers about 280 arcsec², 13 times as much, and the same daylight sky then gives about 13, which falls to 10 in a sky of about 3.9 mag/arcsec², within the measured daylight skies. So the default has no limit in either case, and whether Polaris shows in a given daylight sky depends on the focus and the sky of the day. The fast path's centroid aperture (201 px²) adds the noise of about 200 pixels of empty sky: in daylight it gives 8.3, and it falls to 10 at +8.9°, which set the first default of +12°. That limit came from the method, not from the sky. With a value below 90, one burst every `search.probe_interval_s` (600 s) above the limit checks that the limit is not too low, so that the statistics are not cut off by the system's own setting. When a probe burst finds Polaris, the system measures, and it writes a warning event that the limit is too low.
+The SNR that decides is a property of the star, the sky, and the size of the star's image, and a filter matched to the image reaches it (fix 7). The detection estimate (`docs/research-notes.md`, "Polaris in a bright sky") takes a daylight sky near the pole of 4.2 mag/arcsec² in V. The median frame of a burst then holds 7,980 e⁻ of Polaris in 1.23 ms on a sky of 4,310 e⁻² per pixel. The simulator's image is as sharp as the 50 mm aperture allows and covers about 6 px² (21.5 arcsec²), so the matched SNR is 41. It never falls to 10 between −18° and +90°, and it would take a sky 1.7 mag brighter than the model's daylight, and 0.7 mag brighter than the brightest daylight sky measured near the pole, to bring it there. Across the measured daylight skies, it ranges from 18 to 61. The real image is wider: in your recordings it covers about 280 arcsec², 13 times as much, and the same daylight sky then gives about 13, which falls to 10 in a sky of about 3.9 mag/arcsec², within the measured daylight skies. So the search has no Sun limit by default, and the focus and the sky of the day decide how much of the daylight shows Polaris.
 
-**The detection.** The fast analyzer already reports whether it found the star. Search adds the signal-to-noise ratio (SNR) of the star in each frame of a burst: the SNR of a filter matched to the image of the star, at the brightest place of the filtered image within `search.radius_px` of the prediction, with the sky noise measured on the ROI border and the star's own photon noise. The size of the image depends on the focus and the optics, so each frame tries Gaussian filters of 1, 2, and 4 Airy FWHM (`fastpath.matched_fwhm_airy_widths`) and keeps the best, which stays within 5% of the best weighting of the pixels for an image up to 13″ wide. A burst counts as a detection when the median of its frames reaches `search.detect_snr` (10). In measure, the first filter around the centroid decides whether the star is missing. On frames without a star, the noise reaches 10 with a chance below 6 × 10⁻¹⁹ per frame, so a false detection does not happen. The window keeps the SNR of the centroid aperture as `star_snr`, because that SNR tells the noise of the centroids.
+The size of the image depends on the focus and the optics, so each frame tries Gaussian filters of 1, 2, and 4 Airy FWHM and keeps the best, which stays within 5% of the best weighting of the pixels for an image up to 13″ wide. On frames without a star, the noise reaches 10 with a chance below 6 × 10⁻¹⁹ per frame, so a false detection does not happen.
 
-### The fast exposure in a bright sky
+The fast path's centroid aperture (201 px²) adds the noise of about 200 pixels of empty sky. In daylight it gives 8.3, and it falls to 10 at +8.9°, which set the first default of +12°. That limit came from the method, not from the sky. With a limit below 90°, one probe burst every 10 minutes above it checks that the limit is not too low, so that the statistics are not cut off by the system's own setting.
 
-In a bright sky, a 2 ms frame at gain 0 can saturate its background. The fast stream adapts its exposure between windows, never within one:
+### Exposures in a bright sky
 
-- Before each window, the scheduler picks the exposure that puts the background at `fast.target_background_fraction` (0.3) of saturation, from the previous window, between the profile's shortest exposure and `fast.exposure_us` (2 ms).
-- Each window record already carries its exposure, and the seeing estimator already corrects for the exposure.
-- The window record gets the background level and the star's SNR, so the noise of a reading can be judged later.
+A 2 ms fast frame at gain 0 saturates its background in a bright sky long before the sky hides Polaris, and a 30 s survey frame saturates in twilight long before its stars fade. Both exposures therefore follow the sky. The fast exposure changes only between windows, so that each window has one exposure, for which the seeing estimator corrects. The pointing does not need the long survey frame, so a step can skip it in daylight.
 
-**The daylight gate.** The Sun's elevation no longer gates the camera. The measured gate stays: when the background exceeds `saturation_limit` (50 %) of saturation even at the shortest exposure, nothing can be measured, and the scheduler waits in `safe` with its brightness watch. The Sun cannot enter the field, because the celestial pole is always at least 66.5° from the Sun.
+A clipped background looks quiet. A pipeline that trusted it would expect many stars, miss them, and report clouds, so a survey frame with a saturated sky gives no photometry.
 
 ### Can a reading in a bright sky be trusted?
 
 Two effects need checks:
 
-- **Centroid noise.** A bright background adds photon noise to each centroid, and the estimator subtracts the noise from the variance (architecture, "Reported quantities"). That works only while the noise estimate is right. The centroids come from the wide aperture, so a daylight window is noisy: in the simulator's daylight, a window read an `r0` of 3.4 cm against the injected 10 cm while the noise model left out the sky. With the sky in the model (step 5), it reads about 10% low, and a centroid weighted by the star's image reads the truth (`docs/research-notes.md`, "The seeing in a bright sky"). The lane measures the bias of the seeing against the simulator's truth across background levels, and a window gets the flag `noisy` where the bias exceeds `fast.max_noise_bias` (5 %).
-- **A sunlit telescope.** A tube that the Sun has heated adds its own turbulence. That turbulence is real but local. The flags let you filter it: `daylight` while the Sun is above 0°, and `twilight` from 0° to −18° as now.
+- **Centroid noise.** A bright background adds photon noise to each centroid, and the estimator subtracts the modeled noise from the variance. That works only while the model is right. The centroid aperture sums the noise of about 200 pixels of sky: in the simulator's daylight, a window read an `r0` of 3.3 cm against the injected 10 cm while the noise model left out the sky. With the sky in the model, it reads about 10% low, and a centroid weighted by the star's image reads the truth (`docs/research-notes.md`, "The seeing in a bright sky").
+- **A sunlit telescope.** A tube that the Sun has heated adds its own turbulence. That turbulence is real but local.
 
-Neither effect stops a reading. The flags let a user decide.
+Neither effect stops a reading. The flags `noisy` and `daylight` let a user decide.
 
-### Survey frames in a bright sky
+### Darkness and clear skies from the star count
 
-- **An adaptive long exposure.** While `twilight` applies, the long exposure takes its value from the 1 ms frame first, and from the previous long frame after that, so that the background sits at `survey.twilight.target_background_fraction` (0.3) of saturation. It stays between `survey.twilight.min_exposure_s` (1 s) and `long_exposure_s` (30 s), and changes by at most 4 times per step.
-- **No survey in daylight.** When even the shortest long exposure would pass the target, the scheduler skips the survey step. The pointing does not need it.
-- **A saturation guard.** A survey frame with more than `survey.twilight.max_saturated_fraction` (1 %) of its pixels saturated, or a background above 80 % of saturation, gets the flag `saturated_sky` and no cloud fraction, limiting magnitude, or sky brightness. Today a clipped background looks quiet, so the pipeline expects many stars, misses them, and reports clouds.
-- The dark model must scale with the exposure. The lane checks that it does.
+A solved survey frame already has `n_detected`, and `cloud_fraction`, `limiting_mag`, and `sky_mag_arcsec2`. The cloud fraction takes its expected stars from the noise of the frame, so it already tells a bright sky from a cloudy one. `n_detected` counts every detection, hot pixels and faint stars included, so it does not compare with the expected stars. `sky_quality` therefore keeps the counts behind the cloud fraction, `n_expected` and `n_expected_found`.
 
-### Darkness and clear skies
+A rule for `sky.dark` per degree of Sun elevation never fires. The twilight sky changes by about 1 mag per degree at −12° and still by about 0.2 near −18°, and near the Sun's lowest point on a summer night a change per degree is noise. A rule per hour fires near the darkest time of every night, also in summer, when the Sun never reaches −18° (fix 6).
 
-These already exist on a solved survey frame: `n_detected` in `survey_frame`, and `cloud_fraction`, `limiting_mag`, and `sky_mag_arcsec2` in `sky_quality`. The cloud fraction takes its expected stars from the noise of the frame, so it already tells a bright sky from a cloudy one. The design adds:
+### The visibility statistics
 
-- **`n_expected` and `n_expected_found` in `sky_quality`.** The number of catalog stars that the cloud fraction expects, and the number of them that detection found. The cloud fraction is 1 minus their ratio. `n_detected` counts every detection, hot pixels and faint stars included, so it does not compare with `n_expected`.
-- **`sky.dark`.** An event when a line fitted to the sky brightness of the last `survey.darkness.frames` (5) solved frames changes by less than `survey.darkness.max_slope_mag_per_hour` (0.3 mag per hour). A rule per degree of Sun elevation would never fire, because near the Sun's lowest point the elevation barely changes. The rule per hour also works in summer, when the Sun never reaches −18°, and fires near the darkest time of the night.
-- **`sky.clear_verdict`.** An event once per evening, `survey.darkness.verdict_frames` (5) solved frames after `sky.dark`, with the share of frames at or below the cloud tracker's `clear_threshold`.
+A night has a first and a last detection, and either can be a bound rather than a moment: Polaris was already visible when the night started, or the station did not see it appear. Censored values stay in the statistics as censored, because dropping them biases the result toward the nights that the station watched from end to end.
 
-### The visibility summary
+## Approved text that waits for a decision
 
-`core` writes one `visibility_summary` record per night, next to the nightly star summary (`src/seeingmon/services/core/nightly.py`), when the night's split hour passes.
+The lane built these ten points differently from the approved text, for the reasons that [visibility-brief.md](visibility-brief.md) gives under "Departures awaiting a decision". Each keeps its approved rule here until you decide.
 
-| Field | Meaning |
-|---|---|
-| `night` | The night, by `night_split_utc_hour` |
-| `first_visible_utc`, `first_visible_sun_deg` | The first `polaris.visible` of the evening |
-| `last_visible_utc`, `last_visible_sun_deg` | The last `polaris.hidden` of the morning |
-| `visible_hours`, `seeing_hours` | The time in measure mode, and the time that produced seeing windows |
-| `first_censored`, `last_censored` | Whether Polaris was already visible when the night started, or still visible when it ended |
-| `dark_utc`, `dark_sun_deg`, `dark_sky_mag_arcsec2` | The `sky.dark` event |
-| `clear_share`, `transparency_median` | The clear verdict |
-| `flags` | `moon`, `time_invalid`, `no_pointing` |
-
-Censored values stay in the statistics as censored, because dropping them biases the result. `seeingmon visibility stats` prints the Sun elevation at the first and the last detection by month and by transparency bin, with censored nights counted separately.
+| Departure | The approved text | What the code does |
+|---|---|---|
+| 1. The fast exposure | "Before each window, the scheduler picks the exposure that puts the background at `fast.target_background_fraction` (0.3) of saturation, from the previous window, between the profile's shortest exposure and `fast.exposure_us` (2 ms)." | The scheduler picks the exposure before each fast period and each search burst, and both windows of a period share it. |
+| 2. The clear verdict | "An event once per evening, `survey.darkness.verdict_frames` (5) solved frames after `sky.dark`, with the share of frames at or below the cloud tracker's `clear_threshold`." | The verdict counts the long frames with a cloud fraction after `sky.dark`, solved or not. |
+| 3. The missing star in measure | "In measure, the first filter around the centroid decides whether the star is missing." | The star counts as found when the first matched filter or the centroid aperture reaches `[fastpath] min_star_snr` (6). |
+| 4. The long survey exposure | "While `twilight` applies, the long exposure takes its value from the 1 ms frame first, and from the previous long frame after that." "When even the shortest long exposure would pass the target, the scheduler skips the survey step." | The long exposure follows the measured background at any Sun. The first long frame after a start takes 1 s and grows by 4 times a step, and two rules skip the long exposure, while the step keeps its 1 ms frame. |
+| 5. The saturation guard | "A survey frame with more than `survey.twilight.max_saturated_fraction` (1 %) of its pixels saturated, or a background above 80 % of saturation, gets the flag `saturated_sky` and no cloud fraction, limiting magnitude, or sky brightness." | Such a frame also gets no zero point, transparency, `n_expected`, or `n_expected_found`, and the 80% is the setting `[survey.twilight] max_background_fraction`. |
+| 6. Censored detections | `first_censored` and `last_censored` say "whether Polaris was already visible when the night started, or still visible when it ended". | A detection is also censored when the station did not watch the sky for longer than `[survey.visibility] max_gap_s` (300 s) before the first or after the last detection. |
+| 7. The values and the names of the summary | The fields `first_visible_utc`, `last_visible_utc`, and `dark_utc`, and `visible_hours` and `seeing_hours` without a unit. The last detection is "the last `polaris.hidden` of the morning". The `moon` flag has no rule. | The names carry their units (`first_visible_utc_ns`, `last_visible_utc_ns`, `dark_utc_ns`, and hours in `h`). A detection censored at an edge of the night takes the time of the edge and the Sun's elevation there. `moon` applies when the Moon was up and lit at a detection or at `sky.dark`, and the statistics bin the transparency at 0.6, 0.8, and 0.9. |
+| 8. The key of the noise limit | `scheduler.fast.max_noise_bias` (0.05). | The key is `[fastpath] max_noise_bias`, because the fast analyzer sets the flag. |
+| 9. The `noisy` flag | "A window gets the flag `noisy` where the bias exceeds `fast.max_noise_bias` (5 %)", from the bias measured against the simulator's truth across background levels. | The analyzer predicts the bias from the window's share of noise in the variance and the measured error of the noise model. |
+| 10. A second centroid | The design has none. | `[fastpath] centroid = "gaussian"` takes the position from a centroid weighted by a Gaussian of 3 Airy FWHM, and the default stays `"aperture"`. |
 
 ## Settings
 
-All values are provisional.
+The settings live in the default files, each with a comment, and every value is provisional. The lane added or changed these:
 
-| Key | Default | Meaning |
-|---|---|---|
-| `survey.pointing.validity_s` | 0 (changed) | No age limit. A positive value restores one. |
-| `scheduler.search.burst_frames` | 50 | Frames in one search burst |
-| `scheduler.search.interval_s` | 15.0 | The time between search bursts |
-| `scheduler.search.detect_snr` | 10.0 | The median matched SNR of a detection |
-| `scheduler.search.radius_px` | 20.0 | How far from the prediction a detection may lie, in fast-mode pixels |
-| `scheduler.search.confirm_bursts` | 2 | Bursts with a detection in a row that start measure |
-| `scheduler.search.max_sun_elevation_deg` | 90.0 | Search runs while the Sun is below this. 90 or more means always, the default: in the detection estimate, the matched SNR of Polaris stays above 10 in full daylight. |
-| `scheduler.search.probe_interval_s` | 600.0 | The time between check bursts above the limit |
-| `fastpath.matched_fwhm_airy_widths` | [1.0, 2.0, 4.0] (new) | The FWHMs of the matched filters, in Airy FWHM of the readout mode. A search frame keeps the best, and the missing-star test of measure uses the first. |
-| `fastpath.min_star_snr` | 6.0 (changed) | The matched SNR below which measure counts the star as missing. It was the SNR of the centroid aperture. |
-| `scheduler.fast.target_background_fraction` | 0.3 | The background that the fast exposure aims for |
-| `scheduler.fast.max_noise_bias` | 0.05 | The seeing bias that sets `noisy` |
-| `survey.twilight.target_background_fraction` | 0.3 | The background that the long exposure aims for |
-| `survey.twilight.min_exposure_s` | 1.0 | The shortest adaptive long exposure |
-| `survey.twilight.max_saturated_fraction` | 0.01 | The share of saturated pixels that sets `saturated_sky` |
-| `survey.darkness.max_slope_mag_per_hour` | 0.3 | The change of the sky brightness per hour that counts as dark |
-| `survey.darkness.frames` | 5 | Solved frames in the fit for `sky.dark` |
-| `survey.darkness.max_gap_s` | 600.0 | The longest time between two frames of the fit. A longer gap starts the fit again. |
-| `survey.darkness.verdict_frames` | 5 | Solved frames after `sky.dark` for the clear verdict |
+- `config/default.d/scheduler.toml`: `[scheduler.search]`, `[scheduler.fast]`, `[scheduler.daylight]`, and `[scheduler.watch] bright_exposure_us`.
+- `config/default.d/survey.toml`: `[survey.pointing]`, `[survey.solve]`, `[survey.twilight]`, `[survey.darkness]`, `[survey.visibility]`, `[survey.cloud] min_completeness`, and `[survey.sky] min_exposure_s`.
+- `config/default.d/fastpath.toml`: `matched_fwhm_airy_widths`, `min_star_snr`, `max_noise_bias`, `centroid`, and `centroid_fwhm_airy_widths`.
+- `config/default.d/web.toml`: `[web] withhold_fields`, which now also holds the Sun's elevations of the visibility summary.
 
-`scheduler.daylight.sun_elevation_limit_deg` and `sun_resume_margin_deg` no longer gate the camera, so they go away. `twilight_elevation_deg` stays for the flag.
+The Sun no longer gates the camera, so `[scheduler.daylight] sun_elevation_limit_deg` and `sun_resume_margin_deg` are gone. `twilight_elevation_deg` stays for the flag, and `daylight_elevation_deg` (0°) sets `daylight`.
 
 ## Open questions
 
-- **How bright a sky still shows Polaris?** The lane computed the SNR of Polaris in a fast frame against the Sun's elevation, from +60° to −18°, and extended the simulator's sky above +10° with a measured daylight sky near the pole (`docs/research-notes.md`, "Polaris in a bright sky"). In the model, the matched SNR of the median frame stays at 41 or more at every Sun elevation, so Polaris is detectable in full daylight. The measured daylight sky scatters by 1.5 mag, and even its brightest value gives 18. The model leaves out the color of the sky, haze, and how the sky near the pole darkens as the Sun sinks toward +10°, so the real sky decides in phase 3.
-- **How wide is the real image?** The model's image is as sharp as the aperture allows. The owner's recordings show an image of about 280 arcsec², 13 times the model's, which lowers the daylight SNR to about 13, and the bright third of the measured daylight skies would hide Polaris. Phase 3 measures the image of the fast stream in focus, and whether a sharper focus or a color filter narrows it.
-- **The cost of measuring in daylight.** Searching costs little. In the model Polaris is visible in daylight, though, so the system measures all day: the camera and the CPU work continuously, and the sensor warms in the sun. The lane measures the CPU load, the memory, and the sensor temperature of a day of measuring against the performance budgets. A warmer sensor also affects the dark library.
+- **How bright a sky still shows Polaris?** The detection estimate computed the SNR of Polaris in a fast frame against the Sun's elevation, from +60° to −18°, and extended the simulator's sky above +10° with a measured daylight sky near the pole (`docs/research-notes.md`, "Polaris in a bright sky"). In the model, the matched SNR of the median frame stays at 41 or more at every Sun elevation, so Polaris is detectable in full daylight. The measured daylight sky scatters by 1.5 mag, and even its brightest value gives 18. The model leaves out the color of the sky, haze, and how the sky near the pole darkens as the Sun sinks toward +10°, so the real sky decides in phase 3.
+- **How wide is the real image?** The model's image is as sharp as the aperture allows. Your recordings show an image of about 280 arcsec², 13 times the model's, which lowers the daylight SNR to about 13, and the bright third of the measured daylight skies would hide Polaris. Phase 3 measures the image of the fast stream in focus, and whether a sharper focus or a color filter narrows it.
+- **The cost of measuring in daylight.** Searching costs little. In the model Polaris is visible in daylight, though, so the system measures all day: the camera and the CPU work continuously, and the sensor warms in the sun. Step 9 of the lane measures the CPU load, the memory, and the sensor temperature of a simulated day of measuring against the performance budgets. A warmer sensor also needs dark sets at its temperatures.
+- **Which centroid in a bright sky?** The aperture reads `r0` about 10% low in the simulator's daylight, and the weighted centroid reads the truth there, but on your 8-bit bin2 recordings of a dark sky it reads `r0` 10% below the aperture, because its gain does not hold for the wider real image in bin2 pixels. Its gain needs a calibration on real frames before it can become the default.
 - **Where the seeing is measured.** The readings describe the line of sight to Polaris, corrected to the zenith. A planet low in the south looks through more air. The architecture already reports the zenith value, and the History page should say so.
 
 ## For phase 3
 
-The search interval and SNR, the exposure targets, the noise-bias limit, and the darkness slope, all from real skies.
+The search interval and SNR, the exposure targets, the noise-bias limit, and the darkness slope, all from real skies. The runbook lists what to look at on the first sunny day and the first clear night, and what to measure: the in-focus image of the fast stream, the daylight sky near the pole, the noise model on real frames, the gain of the weighted centroid, the sensor temperature in sunlight, and the cost of the search on the Pi 4 ([Check the visibility of Polaris](runbook.md#check-the-visibility-of-polaris)).

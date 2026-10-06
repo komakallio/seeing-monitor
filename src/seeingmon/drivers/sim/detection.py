@@ -1,8 +1,8 @@
 """The detection estimate: the signal-to-noise ratio of Polaris in one fast frame in a bright sky.
 
-The search mode of the fast stream (`docs/visibility.md`) counts a burst as a detection when the
-median signal-to-noise ratio (SNR) of Polaris in its frames reaches a threshold, and the fast path
-counts a star as missing below a lower one. Both take the SNR of a matched filter
+The search mode of the fast stream (`docs/architecture.md`, "Scheduler") counts a burst as a
+detection when the median signal-to-noise ratio (SNR) of Polaris in its frames reaches a threshold,
+and the fast path counts a star as missing below a lower one. Both take the SNR of a matched filter
 (`seeingmon.fastpath.matched`). This module predicts that SNR against the Sun's elevation from the
 simulator's own photon budget and sky model, so the estimate and a simulated day agree:
 

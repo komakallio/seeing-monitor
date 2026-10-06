@@ -1,8 +1,8 @@
 # Visibility lane brief
 
-Status: in progress. The owner approved [`visibility.md`](visibility.md) on October 5, 2026, and said to start the same day. The owner also approved five fixes to the design, listed under "Fixes approved at the start".
+Status: steps 1 to 8 and 10 are built, and step 9 (the cost) is in progress. [`architecture.md`](architecture.md) holds the design as the code runs it, and [`visibility.md`](visibility.md) keeps the goals, the reasoning, and the approved text of each departure. What waits for the owner: the ten departures under "Departures awaiting a decision", among them the default centroid (departure 10), and the final value of every setting, which phase 3 sets from the measurements that `docs/runbook.md` lists under "Check the visibility of Polaris". The owner approved `visibility.md` on October 5, 2026, said to start the same day, and approved the seven fixes listed under "Fixes approved at the start".
 
-You are the visibility lane. You make the system measure seeing whenever Polaris is visible: pointing without an age limit, the search and measure modes of the fast stream, the adaptive exposures, the darkness and clear-sky events, and the visibility summary that `docs/visibility.md` describes. That file is the design for this lane. Where it and `docs/architecture.md` disagree, the visibility design wins for this feature, and you update the architecture to match.
+You are the visibility lane. You make the system measure seeing whenever Polaris is visible: pointing without an age limit, the search and measure modes of the fast stream, the adaptive exposures, the darkness and clear-sky events, and the visibility summary that `docs/visibility.md` describes. That file was the design for this lane, and it won where it and `docs/architecture.md` disagreed. The architecture now holds the built design, and `docs/visibility.md` keeps the approved text of each departure until the owner decides.
 
 ## Read first
 
@@ -42,7 +42,7 @@ Each step ends with tests that pass and a push.
 
 ## Fixes approved at the start
 
-A read of the code before step 1 found five gaps in the design. The owner approved these fixes on October 5, 2026:
+A read of the code before step 1 found five gaps in the design, and two more fixes followed later the same day. The owner approved these seven fixes on October 5, 2026:
 
 1. **A moved mount solves again.** Without an age limit, the solvers always get the hint of 2° around the prediction and never the hint of 15° around the pole, so a mount that moved more than about 2° never solves again. When the hinted solvers fail on a frame with enough stars, the pipeline tries again with the pole hint (step 1).
 2. **The daylight gate measures the fast stream.** The gate reads a 1 ms bin2 frame, which saturates long before the fast stream does at its shortest exposure. The gate decides from the background that the fast stream would have at its shortest exposure (step 3).

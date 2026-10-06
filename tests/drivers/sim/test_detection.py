@@ -184,8 +184,10 @@ def test_no_crossing_and_no_search_limit(model: DetectionModel, repo_root: Path)
     section = notes_section(repo_root)
     assert f"`scheduler.search.max_sun_elevation_deg` is **{limit:.0f}°**" in section
     assert SchedulerConfig().search.max_sun_elevation_deg == limit
-    design = (repo_root / "docs" / "visibility.md").read_text(encoding="utf-8")
-    assert f"| `scheduler.search.max_sun_elevation_deg` | {limit:.1f} |" in design
+    architecture = (repo_root / "docs" / "architecture.md").read_text(encoding="utf-8")
+    assert f"The default `max_sun_elevation_deg` of {limit:.0f} degrees means no limit" in (
+        architecture
+    )
 
 
 def test_the_matched_snr_falls_to_10_only_in_a_far_brighter_sky(model: DetectionModel) -> None:
