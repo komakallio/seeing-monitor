@@ -68,7 +68,7 @@ class TestStretch:
         image = block_mean(sky_with_a_star(), 1)
         stretched = stretch_asinh(image)
         assert stretched.dtype == np.uint8
-        assert 40 <= int(np.median(stretched)) <= 62  # the sky sits at about 20% gray
+        assert 30 <= int(np.median(stretched)) <= 46  # the sky sits at about 15% gray
         assert stretched[30, 40] == 255
 
     def test_faint_structure_stays_visible(self) -> None:

@@ -40,7 +40,7 @@ from seeingmon.frames import Frame, FrameData
 # pixels (and at least `MIN_RANGE_DN` above the median) maps to white. The factor `ASINH_GAIN` sets
 # where the linear part ends.
 ASINH_GAIN = 40.0
-BACKGROUND_GRAY = 0.2
+BACKGROUND_GRAY = 0.15
 MIN_RANGE_DN = 8.0
 WHITE_PERCENTILE = 99.95
 MAD_TO_SIGMA = 1.4826
