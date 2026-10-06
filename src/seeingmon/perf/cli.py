@@ -45,8 +45,8 @@ def register(subparsers: Subparsers) -> None:
         "--smoke",
         action="store_true",
         help="shrink every case to the least work that shows it runs: tens of milliseconds, and "
-        "about 20 s for core-sim, which starts three processes. The figures say nothing about "
-        "speed.",
+        "35 to 50 s for each of core-sim, day-sim, and cloudy-sim, which start three processes. "
+        "The figures say nothing about speed.",
     )
     run.add_argument(
         "--json",

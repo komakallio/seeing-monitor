@@ -10,20 +10,26 @@ from __future__ import annotations
 import math
 import subprocess
 import sys
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from seeingmon.fastpath.kernel import FrameCalibration, KernelParams
 from seeingmon.perf.budgets import BASELINE, PEAK, build_budgets
-from seeingmon.perf.cases.fastmodes import FAST_MODES
+from seeingmon.perf.cases import kernel as kernel_case
+from seeingmon.perf.cases.fastmodes import FAST_MODES, REFERENCE_PROFILE
 from seeingmon.perf.cases.survey import check_sky_step
-from seeingmon.perf.registry import REGISTRY, load_registry
+from seeingmon.perf.registry import REGISTRY, CaseContext, load_registry
 from seeingmon.perf.report import SCALES, Measurement, Report
 from seeingmon.perf.runner import execute_case
+from seeingmon.profile import load_profile
 
 from .helpers import environment
 
 CASE_NAMES = load_registry().names()
+MODE_KEYS = tuple(mode.key for mode in FAST_MODES)
 
 
 def empty_report() -> Report:
@@ -51,6 +57,22 @@ def check_measurement(item: Measurement) -> None:
             assert math.isfinite(value)
 
 
+def check_kernel_differences(
+    measurements: Sequence[Measurement], keys: Sequence[str] = MODE_KEYS
+) -> None:
+    """The derived figures of the kernel case are the differences of the medians it reports."""
+    found = {item.name: item.value for item in measurements}
+    for key in keys:
+        for extra, more, less in (
+            ("matched_extra", "kernel", "kernel_without_matched"),
+            ("gaussian_extra", "kernel_gaussian", "kernel"),
+        ):
+            # Both medians are in the report, and a difference below zero shows the floor.
+            expected = max(found[f"{key}.{more}"] - found[f"{key}.{less}"], 1e-6)
+            got = found[f"{key}.{extra}"]
+            assert math.isclose(got, expected, rel_tol=1e-9), (key, extra, got, expected)
+
+
 class TestRegistryOfCases:
     def test_the_cases_come_in_the_order_of_the_budgets(self) -> None:
         assert CASE_NAMES == [
@@ -62,6 +84,8 @@ class TestRegistryOfCases:
             "store",
             "memory",
             "core-sim",
+            "day-sim",
+            "cloudy-sim",
         ]
 
     def test_importing_the_cases_loads_no_code_under_test(self) -> None:
@@ -101,6 +125,31 @@ class TestFastModes:
             assert mode.period_ns * mode.rate_hz >= 1e9
 
 
+class TestKernelCase:
+    def test_the_kernels_differ_only_in_the_matched_filter_and_the_centroid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[KernelParams] = []
+
+        class Recording(kernel_case.Follower):
+            def __init__(
+                self, pool: list[Any], params: KernelParams, calibration: FrameCalibration
+            ) -> None:
+                seen.append(params)
+                super().__init__(pool, params, calibration)
+
+        monkeypatch.setattr(kernel_case, "Follower", Recording)
+        profile = load_profile(REFERENCE_PROFILE)
+        found = kernel_case.time_kernel(CaseContext(smoke=True), profile, FAST_MODES[0])
+        kernel, gaussian, unmatched = seen  # in the order of the figures
+        assert kernel.matched_fwhms_px, "the kernel of measure runs its missing-star test"
+        assert kernel.centroid_fwhm_px is None  # the aperture, the default
+        assert unmatched == replace(kernel, matched_fwhms_px=())
+        assert gaussian.centroid_fwhm_px is not None
+        assert replace(gaussian, centroid_fwhm_px=None) == kernel
+        check_kernel_differences(found, [FAST_MODES[0].key])
+
+
 @pytest.mark.parametrize("name", CASE_NAMES)
 def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) -> None:
     result = execute_case(REGISTRY.get(name), smoke=True)
@@ -123,8 +172,11 @@ def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) 
         # The sky quality step is part of every frame, so its stage must not go missing.
         assert "stage.quality" in names
     if name == "kernel":
-        # The weighted centroid is not the default, but a run on the Pi must show its cost.
-        assert {f"{mode.key}.kernel_gaussian" for mode in FAST_MODES} <= set(names)
+        # The weighted centroid is not the default, but a run on the Pi must show its cost, and so
+        # must the matched filter of the missing-star test.
+        for extra in ("kernel_gaussian", "kernel_without_matched", "matched_extra"):
+            assert {f"{mode.key}.{extra}" for mode in FAST_MODES} <= set(names), extra
+        check_kernel_differences(result.measurements)
     if name == "ipc":
         # The runs with the fake camera show what that fake adds, and no budget reads them.
         assert "fake_camera.acquire.cpu_per_frame" in names
@@ -144,6 +196,27 @@ def test_every_case_runs_in_smoke_mode_and_returns_figures_or_a_skip(name: str) 
             "run.frame_rate",
             "run.length",
         } <= set(names)
+    if name in ("day-sim", "cloudy-sim"):
+        # The figures of a day and of a cloudy night that the page reads beside the budgets. The
+        # bin1 search row falls back to the kernel case when the burst share is missing, so the
+        # test names it, as it names the receive share of core-sim.
+        busy = "fast" if name == "day-sim" else "search"
+        costs = (
+            ("core.frame_cost", "core.fastpath_receive_share")
+            if name == "day-sim"
+            else ("core.search_frame_cost", "core.search_burst_share")
+        )
+        assert {
+            "core.peak_rss",
+            "web.peak_rss",
+            "other.peak_rss",
+            f"core.{busy}_share",
+            "core.idle_share",
+            *costs,
+            "run.length",
+        } <= set(names)
+        length = next(item for item in result.measurements if item.name == "run.length")
+        assert length.detail["sensor_temperature_c"] != "unknown"
     # The budgets read figures by name. A renamed figure must break this test and not the verdict.
     # With this case in the report, the budgets of `core-sim` read their measured terms.
     with_result = Report("dev", True, "2026-10-01T12:00:00Z", environment(), (result,))

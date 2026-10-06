@@ -23,7 +23,15 @@ from seeingmon.perf.scaling import (
     implied_factor,
 )
 
-from .helpers import case, core_sim_case, figure, fixture_report, with_case
+from .helpers import (
+    case,
+    cloudy_sim_case,
+    core_sim_case,
+    day_sim_case,
+    figure,
+    fixture_report,
+    with_case,
+)
 
 
 def verdicts(report: Report) -> dict[str, BudgetVerdict]:
@@ -284,6 +292,203 @@ class TestCoreSim:
         cases = [term.case for term in self.budget(report, "core-bin1").terms]
         assert cases == ["fastpath"] * 3 + ["ipc"] * 2
         assert verdicts(report)["memory-1.4"].value == pytest.approx(60 + 120 + 80 + 100 + 90)
+
+
+class TestVisibilityRows:
+    """The rows of a day of measuring, of a cloudy night of searching, and of the weighted centroid.
+
+    The fixture's kernel case holds a search frame of 200 us and a Gaussian-weighted centroid that
+    costs 50 us beyond the aperture, in both fast modes.
+    """
+
+    @staticmethod
+    def budget(report: Report, key: str) -> Budget:
+        return next(item for item in build_budgets(report) if item.key == key)
+
+    @staticmethod
+    def report() -> Report:
+        return with_case(with_case(fixture_report(), day_sim_case()), cloudy_sim_case())
+
+    def test_the_day_row_reads_the_share_that_day_sim_measured_in_core(self) -> None:
+        row = self.budget(self.report(), "day-core")
+        assert [(term.case, term.measurement) for term in row.terms] == [
+            ("day-sim", "core.fastpath_receive_share")
+        ]
+        assert (row.limit, row.unit) == (25.0, "% of one core")
+        assert row.title.endswith("measured in core")
+        found = verdicts(self.report())["day-core"]
+        interpreter = PI4_SCALING["interpreter"]
+        assert found.value == pytest.approx(2.5)
+        assert (found.low, found.high) == pytest.approx(
+            (2.5 * interpreter.low, 2.5 * interpreter.high)
+        )
+        assert found.verdict == "marginal"  # 17.5 to 27.5% against 25%
+
+    def test_a_day_share_beyond_the_limit_on_every_estimate_fails(self) -> None:
+        report = with_case(fixture_report(), day_sim_case(fastpath_receive=4.0))
+        assert verdicts(report)["day-core"].verdict == "fail"  # 28% or more
+        report = with_case(fixture_report(), day_sim_case(fastpath_receive=1.0))
+        assert verdicts(report)["day-core"].verdict == "pass"  # 11% at most
+
+    def test_without_the_runs_their_rows_are_n_a_and_name_the_case(self) -> None:
+        found = verdicts(fixture_report())
+        assert found["day-core"].verdict == "n/a"
+        assert found["day-core"].missing == ("day-sim: core.fastpath_receive_share",)
+        for key in ("day-memory-1.4", "day-memory-1.6", "cloudy-memory-1.4", "cloudy-memory-1.6"):
+            assert found[key].verdict == "n/a", key
+        text = format_verdicts(evaluate(fixture_report()))
+        assert "n/a (needs day-sim)" in text
+        assert "n/a (needs cloudy-sim)" in text
+
+    @pytest.mark.parametrize(("key", "case_name"), [("day", "day-sim"), ("cloudy", "cloudy-sim")])
+    def test_the_memory_rows_of_a_run_add_its_peaks_to_acquire_of_the_ipc_case(
+        self, key: str, case_name: str
+    ) -> None:
+        found = verdicts(self.report())
+        budget, gate = found[f"{key}-memory-1.4"], found[f"{key}-memory-1.6"]
+        memory = PI4_SCALING["memory"]
+        os_low, os_high = OS_MEMORY_MB
+        total = 60 + 150 + 300 + 90 + 8  # acquire (ipc), core, the worker, web, the others
+        assert budget.value == pytest.approx(total)
+        assert budget.low == pytest.approx(total * memory.low + os_low)
+        assert budget.high == pytest.approx(total * memory.high + os_high)
+        assert (budget.budget.limit, gate.budget.limit) == (1400.0, 1600.0)
+        assert (gate.value, gate.low, gate.high) == (budget.value, budget.low, budget.high)
+        cases = {term.case for term in budget.budget.terms if term.constant is None}
+        assert cases == {"ipc", case_name}
+
+    def test_each_run_has_its_own_memory_rows(self) -> None:
+        report = with_case(
+            with_case(fixture_report(), day_sim_case(core_peak_mb=200.0)),
+            cloudy_sim_case(core_peak_mb=100.0),
+        )
+        found = verdicts(report)
+        day, cloudy = found["day-memory-1.4"].value, found["cloudy-memory-1.4"].value
+        assert day is not None
+        assert cloudy is not None
+        assert day - cloudy == pytest.approx(100.0)
+
+    def test_a_run_without_a_worker_takes_the_worker_of_the_survey_case(self) -> None:
+        report = with_case(fixture_report(survey_peak_mb=120.0), day_sim_case(worker_peak_mb=None))
+        found = verdicts(report)
+        assert found["day-memory-1.4"].value == pytest.approx(60 + 150 + 120 + 90 + 8)
+        labels = [term.label for term in found["day-memory-1.4"].budget.terms]
+        assert "survey worker peak" in labels
+        assert found["day-core"].verdict != "n/a"
+
+    def test_without_cloudy_sim_the_search_rows_add_the_kernel_frame_to_the_receive(self) -> None:
+        found = verdicts(fixture_report())
+        numpy, interpreter = PI4_SCALING["numpy"], PI4_SCALING["interpreter"]
+        scheduler = PI4_SCALING["scheduler"]
+        bin1, bin2 = found["search-bin1"], found["search-bin2"]
+        # 200 us at 98 fps is 1.96% of a core, and the receive of the fixture adds 0.3 and 0.1.
+        assert bin1.value == pytest.approx(1.96 + 0.3 + 0.1)
+        assert bin1.low == pytest.approx(
+            1.96 * numpy.low + 0.3 * interpreter.low + 0.1 * scheduler.low
+        )
+        assert bin1.high == pytest.approx(
+            1.96 * numpy.high + 0.3 * interpreter.high + 0.1 * scheduler.high
+        )
+        # 200 us at 360 fps is 7.2%, and the bin2 receive of the fixture adds 1.0.
+        assert bin2.value == pytest.approx(7.2 + 1.0)
+        assert bin2.low == pytest.approx(7.2 * numpy.low + 1.0 * interpreter.low)
+        assert "measured in core" not in bin1.budget.title
+        assert (bin1.budget.limit, bin2.budget.limit) == (25.0, 25.0)
+
+    def test_cloudy_sim_replaces_the_bin1_search_row_with_the_burst_measured_in_core(
+        self,
+    ) -> None:
+        report = with_case(fixture_report(), cloudy_sim_case(burst_share=6.0))
+        row = self.budget(report, "search-bin1")
+        assert [(term.case, term.measurement) for term in row.terms] == [
+            ("cloudy-sim", "core.search_burst_share")
+        ]
+        assert row.title.endswith("measured in core")
+        found = verdicts(report)
+        interpreter = PI4_SCALING["interpreter"]
+        assert found["search-bin1"].value == pytest.approx(6.0)
+        assert found["search-bin1"].low == pytest.approx(6.0 * interpreter.low)
+        assert found["search-bin1"].verdict == "fail"  # 42% or more of a core
+        # The bin2 mode has no run of the whole system, so its row keeps the kernel.
+        assert self.budget(report, "search-bin2") == self.budget(fixture_report(), "search-bin2")
+
+    def test_a_cloudy_run_without_the_burst_share_keeps_the_kernel_row(self) -> None:
+        report = with_case(fixture_report(), cloudy_sim_case(burst_share=None))
+        row = self.budget(report, "search-bin1")
+        assert [term.case for term in row.terms] == ["kernel", "ipc", "ipc"]
+        assert verdicts(report)["cloudy-memory-1.4"].verdict != "n/a"
+
+    def test_a_search_without_its_kernel_figure_is_n_a(self) -> None:
+        found = verdicts(fixture_report(search=False))
+        assert found["search-bin1"].verdict == "n/a"
+        assert "kernel: bin1_128x128_u16.search" in found["search-bin1"].missing
+        assert found["gaussian-bin2"].verdict == "n/a"
+
+    @pytest.mark.parametrize(
+        ("key", "plain", "rate_hz"),
+        [("gaussian-bin1", "fast-bin1", 98.0), ("gaussian-bin2", "fast-bin2", 360.0)],
+    )
+    def test_the_gaussian_rows_add_the_extra_of_the_centroid_to_the_fast_path(
+        self, key: str, plain: str, rate_hz: float
+    ) -> None:
+        found = verdicts(fixture_report())
+        numpy = PI4_SCALING["numpy"]
+        row, base = found[key], found[plain]
+        assert base.value is not None
+        assert base.low is not None
+        assert base.high is not None
+        extra = 50.0 * rate_hz / 1e4  # 50 us a frame at the rate of the mode, in percent
+        assert row.value == pytest.approx(base.value + extra)
+        assert row.low == pytest.approx(base.low + extra * numpy.low)
+        assert row.high == pytest.approx(base.high + extra * numpy.high)
+        assert not row.budget.gate
+        assert row.budget.title.endswith("(information)")
+
+    def test_a_pi4_report_compares_the_new_rows_without_scaling(self) -> None:
+        report = with_case(
+            with_case(
+                fixture_report(label="pi4", machine="arm64"), day_sim_case(fastpath_receive=8.0)
+            ),
+            cloudy_sim_case(burst_share=30.0),
+        )
+        found = verdicts(report)
+        assert (found["day-core"].value, found["day-core"].low) == (8.0, 8.0)
+        assert found["day-core"].verdict == "pass"
+        assert found["search-bin1"].verdict == "fail"  # measured, so never marginal
+        total = 60 + 150 + 300 + 90 + 8
+        assert found["cloudy-memory-1.4"].value == pytest.approx(total)
+        assert found["cloudy-memory-1.4"].low == pytest.approx(total)  # no assumed OS share
+
+    def test_the_rows_of_the_night_do_not_change_with_the_new_runs(self) -> None:
+        with_runs = {item.key: item for item in build_budgets(self.report())}
+        without = {item.key: item for item in build_budgets(fixture_report())}
+        for key in (
+            "acquire-cpu",
+            "fast-bin1",
+            "core-bin1",
+            "fast-bin2",
+            "core-bin2",
+            "survey-time",
+            "survey-memory",
+            "memory-1.4",
+            "memory-1.6",
+        ):
+            assert with_runs[key] == without[key], key
+
+    def test_the_new_rows_come_after_the_rows_of_the_night_with_unique_keys(self) -> None:
+        keys = [item.key for item in build_budgets(self.report())]
+        assert len(keys) == len(set(keys))
+        assert keys[-9:] == [
+            "day-core",
+            "day-memory-1.4",
+            "day-memory-1.6",
+            "search-bin1",
+            "search-bin2",
+            "cloudy-memory-1.4",
+            "cloudy-memory-1.6",
+            "gaussian-bin1",
+            "gaussian-bin2",
+        ]
 
 
 class TestPi4Measurement:

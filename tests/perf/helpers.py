@@ -88,6 +88,9 @@ def fixture_report(
     calibration: bool = True,
     survey_peak_mb: float = 100.0,
     survey_seconds: float = 2.0,
+    search: bool = True,
+    search_us: float = 200.0,
+    gaussian_us: float = 50.0,
 ) -> Report:
     """A report with fixed numbers.
 
@@ -96,6 +99,11 @@ def fixture_report(
     path is marginal (2.3% on this machine, so 11.7 to 25.3% on a Pi 4), the bin2 fast path with
     its receive is marginal too (3.3%, so 18.7 to 36.3%), and the memory budgets pass. Pass larger
     numbers to make a budget fail.
+
+    The kernel case holds the search frame (200 us) and what the Gaussian-weighted centroid adds
+    (50 us) in both fast modes, unless `search` is false. A search frame and its receive then take
+    2.36% of a core in bin1 (1.96% for the frame at 98 fps, 0.3% and 0.1% for the receive), and
+    8.2% in bin2 (7.2% for the frame at 360 fps, 1.0% for the receive).
     """
     cases = [
         case(
@@ -122,10 +130,22 @@ def fixture_report(
             peak_mb=200,
         ),
         case("memory", figure("baseline.web", 90 * MB, "bytes", "memory")),
-        case("kernel", figure("bin1_128x128_u16.kernel", 100.0, "us/frame", "numpy")),
     ]
     if calibration:
         cases.append(case("calibration", figure("python_loop", 100.0, "ms", "interpreter")))
+    if search:
+        cases.append(
+            case(
+                "kernel",
+                figure("bin1_128x128_u16.kernel", 100.0, "us/frame", "numpy"),
+                figure("bin1_128x128_u16.search", search_us, "us/frame", "numpy"),
+                figure("bin2_64x64_u16.search", search_us, "us/frame", "numpy"),
+                figure("bin1_128x128_u16.gaussian_extra", gaussian_us, "us/frame", "numpy"),
+                figure("bin2_64x64_u16.gaussian_extra", gaussian_us, "us/frame", "numpy"),
+            )
+        )
+    else:
+        cases.append(case("kernel", figure("bin1_128x128_u16.kernel", 100.0, "us/frame", "numpy")))
     return Report(
         label=label,
         smoke=False,
@@ -201,6 +221,12 @@ class Timeline:
         steps: int = 0,
         results: int = 0,
         pending: int = 0,
+        phase: str | None = None,
+        bursts: int = 0,
+        exposure_us: int | None = None,
+        cloud: bool = False,
+        sun_deg: float | None = None,
+        temperature_c: float | None = None,
     ) -> Timeline:
         if self.samples:
             self._t += self.interval_s
@@ -224,6 +250,12 @@ class Timeline:
                 cpu_ns=dict(self._cpu),
                 threads={role: dict(found) for role, found in self._threads.items()},
                 rss={role: round(size * MB) for role, size in (rss_mb or {}).items()},
+                phase=phase,
+                bursts=bursts,
+                exposure_us=exposure_us,
+                cloud=cloud,
+                sun_elevation_deg=sun_deg,
+                sensor_temperature_c=temperature_c,
             )
         )
         return self
@@ -284,4 +316,62 @@ def fabricated_run(
         machine_busy_percent=machine_busy,
         own_busy_percent=1.5,
         notes=(),
+    )
+
+
+def visibility_case(
+    name: str,
+    *,
+    share_name: str,
+    share: float | None,
+    core_peak_mb: float = 150.0,
+    worker_peak_mb: float | None = 300.0,
+    web_peak_mb: float = 90.0,
+    other_peak_mb: float = 8.0,
+) -> CaseResult:
+    """A case of the whole system with the figures that its budget rows read.
+
+    `share_name` names the share of `core` that its CPU row reads, and `None` leaves a figure out.
+    """
+    figures = [
+        figure("core.peak_rss", core_peak_mb * MB, "bytes", "memory"),
+        figure("web.peak_rss", web_peak_mb * MB, "bytes", "memory"),
+        figure("other.peak_rss", other_peak_mb * MB, "bytes", "memory"),
+    ]
+    if worker_peak_mb is not None:
+        figures.append(figure("survey_worker.peak_rss", worker_peak_mb * MB, "bytes", "memory"))
+    if share is not None:
+        figures.append(figure(share_name, share, "percent", "interpreter"))
+    return case(name, *figures)
+
+
+def day_sim_case(
+    *,
+    fastpath_receive: float | None = 2.5,
+    core_peak_mb: float = 150.0,
+    worker_peak_mb: float | None = 300.0,
+) -> CaseResult:
+    """The `day-sim` case: the fast path with the receive in daylight, and the peaks."""
+    return visibility_case(
+        "day-sim",
+        share_name="core.fastpath_receive_share",
+        share=fastpath_receive,
+        core_peak_mb=core_peak_mb,
+        worker_peak_mb=worker_peak_mb,
+    )
+
+
+def cloudy_sim_case(
+    *,
+    burst_share: float | None = 6.0,
+    core_peak_mb: float = 150.0,
+    worker_peak_mb: float | None = 300.0,
+) -> CaseResult:
+    """The `cloudy-sim` case: the share of a search burst in core, and the peaks."""
+    return visibility_case(
+        "cloudy-sim",
+        share_name="core.search_burst_share",
+        share=burst_share,
+        core_peak_mb=core_peak_mb,
+        worker_peak_mb=worker_peak_mb,
     )

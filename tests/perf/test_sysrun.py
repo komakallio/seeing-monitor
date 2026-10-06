@@ -10,28 +10,39 @@ import http.server
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S, iso_to_utc_ns
 from seeingmon.perf import procs, sysrun
 from seeingmon.perf.sysrun import (
     FULL_PLAN,
     MIN_FAST_FPS,
+    OVERCAST_LEAD_S,
+    OVERCAST_SPAN_S,
     ROLES,
     SMOKE_PLAN,
     UNNAMED_GRACE_S,
     Phase,
+    RunPlan,
     Sampler,
     Snapshot,
     WebPoller,
     clean_environment,
     cost_per_frame_us,
+    dev_options,
     free_port,
     is_clean_fast,
+    is_clean_search,
     is_idle,
     run_share,
+    search_phase,
     split_phases,
+    split_search,
 )
+from seeingmon.services.dev import DEV_WINDOW_S, default_start_utc_ns
 
 from .helpers import MB, Timeline
 
@@ -240,6 +251,231 @@ class TestCostPerFrame:
         fast, idle = self.run()
         assert cost_per_frame_us(fast, idle, "survey_worker") is None
         assert cost_per_frame_us(fast, Phase(), "core") is None
+
+
+def searching(**second: object) -> tuple[Snapshot, Snapshot]:
+    """Two samples one second apart in a search period, after the first burst.
+
+    The second sample holds the frames of a burst, and `second` overrides its fields.
+    """
+    clock = Timeline()
+    first = clock.tick(purpose="search", phase="search", bursts=1).samples[-1]
+    follower = clock.tick(frames=50, purpose="search", phase="search", bursts=2).samples[-1]
+    return first, replace(follower, **second)  # type: ignore[arg-type]
+
+
+class TestSearchInterval:
+    def test_a_search_period_counts_with_the_frames_of_a_burst_and_without(self) -> None:
+        first, second = searching()
+        assert is_clean_search(first, second, warmup_bursts=1)
+        gap = replace(second, frames=first.frames, bursts=first.bursts)
+        assert is_clean_search(first, gap, warmup_bursts=1)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"state": "paused"},
+            {"phase": "survey_short"},
+            {"phase": "fast"},
+            {"phase": None},
+            {"survey_pending": 1},
+            {"survey_steps": 1},
+        ],
+    )
+    def test_a_change_in_the_second_sample_ends_the_phase(self, change: dict[str, object]) -> None:
+        first, second = searching(**change)
+        assert not is_clean_search(first, second, warmup_bursts=1)
+
+    @pytest.mark.parametrize(
+        "change", [{"state": "safe"}, {"phase": "idle"}, {"survey_pending": 2}]
+    )
+    def test_a_change_in_the_first_sample_ends_the_phase(self, change: dict[str, object]) -> None:
+        first, second = searching()
+        assert not is_clean_search(replace(first, **change), second, warmup_bursts=1)  # type: ignore[arg-type]
+
+    def test_the_first_bursts_are_the_warm_up(self) -> None:
+        first, second = searching()
+        assert not is_clean_search(first, second, warmup_bursts=2)
+        assert is_clean_search(replace(first, bursts=0), second, warmup_bursts=0)
+
+    def test_the_rest_of_a_warm_up_burst_after_a_sample_stays_out(self) -> None:
+        # A sample falls inside the first burst: 5 of its frames before it, 45 after.
+        clock = Timeline()
+        search: dict[str, Any] = {"purpose": "search", "phase": "search"}
+        clock.tick(frames=5, bursts=1, core_ms=60, **search)
+        clock.tick(frames=45, bursts=1, core_ms=240, **search)
+        clock.repeat(2, bursts=1, core_ms=8, **search)
+        samples = clock.samples
+        assert not is_clean_search(samples[1], samples[2], warmup_bursts=1)
+        bursts, gaps = split_search(samples, warmup_bursts=1)
+        assert bursts.frames == 0
+        assert gaps.seconds == pytest.approx(2.0)  # the gaps after the warm-up count
+        # Without a warm-up, the same interval holds frames of a burst that counts.
+        assert is_clean_search(samples[1], samples[2], warmup_bursts=0)
+        assert split_search(samples, warmup_bursts=0)[0].frames == 45  # before: no search yet
+
+    def test_the_rest_of_a_burst_after_the_warm_up_counts(self) -> None:
+        first, second = searching()
+        inside = replace(first, bursts=2)  # the sample falls inside the second burst
+        assert is_clean_search(inside, replace(second, bursts=2), warmup_bursts=1)
+
+    def test_the_search_and_the_fast_phase_never_share_an_interval(self) -> None:
+        first, second = searching()
+        assert not is_clean_fast(first, second, warmup_windows=0, min_fps=1.0)
+        fast_first, fast_second = pair()
+        assert not is_clean_search(fast_first, fast_second, warmup_bursts=0)
+
+
+class TestSearchPhases:
+    @staticmethod
+    def night() -> list[Snapshot]:
+        """A cloudy night: bursts with gaps, a survey step, more bursts, and a pause."""
+        clock = Timeline()
+        search: dict[str, Any] = {"purpose": "search", "phase": "search"}
+        clock.tick(core_ms=8, **search)  # the search begins
+        clock.tick(frames=50, bursts=1, core_ms=300, **search)  # the first burst: the warm-up
+        clock.repeat(4, bursts=1, core_ms=8, **search)  # gaps: 4 s
+        clock.tick(frames=50, bursts=2, core_ms=48, **search)  # a burst: 1 s
+        clock.repeat(4, bursts=2, core_ms=8, **search)  # gaps: 4 s
+        survey: dict[str, Any] = {"purpose": "survey", "phase": "survey_long", "bursts": 2}
+        clock.tick(steps=0, pending=1, core_ms=8, **survey)
+        clock.tick(steps=1, pending=1, core_ms=8, **survey)
+        clock.tick(frames=50, steps=1, bursts=3, core_ms=48, **search)  # the switch: not counted
+        clock.repeat(2, steps=1, bursts=3, core_ms=8, **search)  # gaps: 2 s
+        clock.tick(frames=50, steps=1, bursts=4, core_ms=48, **search)  # a burst: 1 s
+        paused: dict[str, Any] = {"state": "paused", "purpose": None, "phase": "paused"}
+        clock.repeat(3, steps=1, bursts=4, core_ms=5, **paused)
+        return clock.samples
+
+    def test_the_search_phase_holds_the_bursts_and_the_gaps_after_the_warm_up(self) -> None:
+        search = search_phase(self.night(), warmup_bursts=1)
+        assert search.seconds == pytest.approx(12.0)
+        assert search.frames == 100
+        assert search.share("core") == pytest.approx(100 * (2 * 0.048 + 10 * 0.008) / 12)
+
+    def test_the_split_gives_the_intervals_with_frames_and_the_gaps(self) -> None:
+        bursts, gaps = split_search(self.night(), warmup_bursts=1)
+        assert bursts.seconds == pytest.approx(2.0)
+        assert bursts.frames == 100
+        assert gaps.seconds == pytest.approx(10.0)
+        assert gaps.frames == 0
+        assert gaps.share("core") == pytest.approx(0.8)  # 8 ms a second
+        # A burst uses 48 ms where a gap uses 8: 40 ms for 50 frames is 800 us a frame.
+        assert cost_per_frame_us(bursts, gaps, "core") == pytest.approx(800.0)
+
+    def test_without_a_warm_up_the_first_burst_counts(self) -> None:
+        bursts, _ = split_search(self.night(), warmup_bursts=0)
+        assert bursts.frames == 150
+        assert search_phase(self.night(), warmup_bursts=0).seconds == pytest.approx(13.0)
+
+    def test_a_run_of_search_has_no_fast_phase(self) -> None:
+        fast, idle = split_phases(self.night(), warmup_windows=0, min_fps=1.0)
+        assert fast.seconds == 0.0
+        assert idle.seconds == pytest.approx(2.0)
+
+
+class TestThePlan:
+    def test_the_default_plans_measure_the_fast_phase_of_a_night(self) -> None:
+        for plan in (FULL_PLAN, SMOKE_PLAN):
+            assert (plan.start, plan.overcast) == (None, None)
+            assert (plan.window_s, plan.fast_windows) == (None, None)
+            assert plan.search_seconds == 0.0
+            assert plan.fast_seconds > 0
+
+    @pytest.mark.parametrize(
+        ("change", "message"),
+        [
+            ({"overcast": -0.1}, "transmission"),
+            ({"overcast": 1.5}, "transmission"),
+            ({"fast_seconds": 0.0}, "collects"),
+            ({"fast_windows": 0}, "at least 1"),
+        ],
+    )
+    def test_a_plan_that_cannot_run_is_refused(self, change: dict[str, Any], message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            RunPlan(**change)
+
+    def test_a_plan_of_the_search_alone_needs_no_fast_phase(self) -> None:
+        assert RunPlan(fast_seconds=0.0, search_seconds=10.0).search_seconds == 10.0
+
+    def test_the_default_plan_keeps_the_sky_and_the_cycle_of_the_launcher(self) -> None:
+        options = dev_options(SMOKE_PLAN, 8123)
+        assert options.start is None
+        assert options.window_s == DEV_WINDOW_S
+        assert dict(options.extra_sim) == {}
+        assert options.core_overrides == {
+            "scheduler": {"loop": {"read_timeout_margin_s": SMOKE_PLAN.read_timeout_margin_s}}
+        }
+        assert options.acquire_overrides == {
+            "services": {"acquire": {"read_timeout_margin_s": SMOKE_PLAN.read_timeout_margin_s}}
+        }
+        assert (options.port, options.sensor, options.speed) == (8123, "small", 1.0)
+
+    def test_a_plan_sets_the_start_the_windows_and_the_fast_period(self) -> None:
+        plan = RunPlan(start="2026-06-21T12:00:00Z", window_s=60.0, fast_windows=2)
+        options = dev_options(plan, 8123)
+        assert options.start == "2026-06-21T12:00:00Z"
+        assert options.window_s == 60.0
+        assert options.core_overrides["scheduler"]["fast"] == {"window_s": 120.0}
+
+    def test_the_overcast_counts_from_the_epoch_of_the_simulator_and_covers_the_run(self) -> None:
+        start = "2026-01-01T19:00:00Z"
+        options = dev_options(RunPlan(start=start, overcast=0.0), 8123)
+        (cloud,) = options.extra_sim["clouds"]
+        offset_s = (iso_to_utc_ns(start) - DEFAULT_START_UTC_NS) / NS_PER_S
+        assert cloud["start_s"] == pytest.approx(offset_s - OVERCAST_LEAD_S)
+        assert cloud["duration_s"] == OVERCAST_SPAN_S
+        assert cloud["transmission"] == 0.0
+        assert OVERCAST_SPAN_S - OVERCAST_LEAD_S >= 86_400.0  # a day after the start at least
+
+    def test_the_overcast_of_the_default_start_covers_that_start(self) -> None:
+        options = dev_options(RunPlan(overcast=0.25), 8123)
+        (cloud,) = options.extra_sim["clouds"]
+        start_s = (default_start_utc_ns() - DEFAULT_START_UTC_NS) / NS_PER_S
+        assert cloud["start_s"] < start_s < cloud["start_s"] + cloud["duration_s"]
+
+
+def test_the_children_of_the_launcher_read_the_sky_and_the_cycle_of_a_plan(
+    tmp_path: Path,
+) -> None:
+    """The overcast reaches the simulator in `acquire`, and the fast period reaches `core`."""
+    pytest.importorskip("sep", reason="the simulated sky of the launcher needs the survey extra")
+    from seeingmon.config import load_config
+    from seeingmon.drivers.sim import SimOptions
+    from seeingmon.scheduler import SchedulerConfig
+    from seeingmon.services.config import ServicesConfig
+    from seeingmon.services.dev import build_plan
+
+    start = "2026-01-01T19:00:00Z"
+    plan = RunPlan(
+        sensor="small",
+        start=start,
+        overcast=0.0,
+        window_s=60.0,
+        fast_windows=2,
+        fast_seconds=0.0,
+        search_seconds=1.0,
+    )
+    absent = tmp_path / "absent.toml"
+    built = build_plan(
+        dev_options(plan, 8123), directory=tmp_path / "run", local_file=absent, env={}
+    )
+    specs = {spec.name: spec for spec in built.children}
+
+    def config_of(name: str) -> Any:
+        env = {k: v for k, v in specs[name].env.items() if k.startswith("SEEINGMON_")}
+        return load_config(local_file=absent, env=env)
+
+    services = config_of("acquire").section("services", ServicesConfig)
+    sky = SimOptions.from_mapping({"clouds": services.acquire.driver_options["clouds"]})
+    start_ns = iso_to_utc_ns(start)
+    hour_ns = 3600 * NS_PER_S
+    assert sky.clouds.transparency(start_ns) == pytest.approx(0.0)
+    assert sky.clouds.transparency(start_ns + 6 * hour_ns) == pytest.approx(0.0)
+    assert sky.clouds.transparency(start_ns - 2 * hour_ns) == pytest.approx(1.0)
+    scheduler = config_of("core").section("scheduler", SchedulerConfig)
+    assert (scheduler.fast.window_s, scheduler.fast.analysis_window_s) == (120.0, 60.0)
+    assert built.start_utc_ns == start_ns
 
 
 class FakeTable:

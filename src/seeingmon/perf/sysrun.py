@@ -23,12 +23,20 @@ that they run:
 
 - *fast*: the fast stream runs and no survey frame waits. The first windows after the start do not
   count, because the imports and the first allocations of the analysis happen then;
+- *search*: the scheduler searches for Polaris (the search period of the cycle, with its bursts
+  and the gaps between them) and no survey frame waits. The frames come in bursts, so no frame
+  rate marks this phase, and the first bursts after the start do not count;
 - *idle*: the scheduler is paused (the `Pause` command, which a person gives with a button in
   `web`), so no frame flows. Whatever `core` still uses is the load that does not belong to the
   frames: the scheduler loop, the store, the health timer, and the answers to `web`.
 
-The difference of the two shares, divided by the frame rate, is what a frame costs `core`: the
-receive, the fast path, and the segment append.
+The difference of the fast and the idle share, divided by the frame rate, is what a frame costs
+`core`: the receive, the fast path, and the segment append. The same difference for the search
+phase gives what a search frame costs, with its share of the start and the end of its burst.
+
+**The sky of a run.** A plan can start the simulated clock at any time, for example at noon of a
+summer day, and it can cover the sky with an overcast, so that the scheduler searches all the time.
+The site is the synthetic site of `seeingmon dev`.
 
 **What the run includes.** The simulator renders the frames inside `acquire`, and its cost is far
 larger than the cost of `acquire` itself, so the CPU time of `acquire` here includes the simulator.
@@ -52,11 +60,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from seeingmon.perf import procs
 from seeingmon.perf.load import busy_percent_between, busy_ticks
 from seeingmon.services.core.process_names import ALIGNMENT_WORKER_NAME, SURVEY_WORKER_NAME
+
+if TYPE_CHECKING:
+    from seeingmon.services.dev import DevOptions
 
 ROLES = ("acquire", "core", "web", "survey_worker", "alignment_worker", "other")
 THREAD_ROLES = ("acquire", "core", "web")
@@ -66,6 +77,10 @@ UNNAMED_GRACE_S = 30.0
 MIN_FAST_FPS = 30.0  # a stream below this rate is not a fast stream at its steady state
 PAUSE_WAIT_S = 90.0
 WEB_PATHS = ("status", "seeing/latest", "health")
+# The overcast of a plan starts an hour before the run and lasts until a day after its start, so it
+# covers every run, whatever its length.
+OVERCAST_LEAD_S = 3600.0
+OVERCAST_SPAN_S = 90_000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,16 +89,29 @@ class RunPlan:
 
     `fast_seconds` and `idle_seconds` are the seconds of each phase to collect. The run waits for
     `survey_steps` survey steps, and for the results of their frames, because a result means that
-    the survey worker ran. A step takes two exposures, a short one and a long one, and the steps
-    come every 3 minutes at speed 1. A fast interval counts only when the frame rate reaches
-    `min_fast_fps`, so a stall does not enter the figures. `max_run_s` ends the sampling when the
-    system does not get there, and a note says so.
+    the survey worker ran. A step takes two exposures, a short one and a long one (in daylight the
+    short one alone), and the steps come every 3 minutes at speed 1 (every 100 s under clouds).
+    A fast interval counts only when the frame rate reaches `min_fast_fps`, so a stall does not
+    enter the figures. `max_run_s` ends the sampling when the system does not get there, and a
+    note says so.
 
     `read_timeout_margin_s` is the time that a camera read waits beyond its frame period, in the
     scheduler and in `acquire`. The simulator renders a survey frame inside the read, which takes
     seconds on a slow or busy machine, and the default margin of 0.5 s then turns the frame into a
     camera error: the scheduler never completes a survey step. A longer margin changes no work that
     the system does.
+
+    **The sky and the cycle.** `start` is the UTC time (ISO 8601) at which the simulated clock
+    starts, and `None` keeps the start of `seeingmon dev`, a winter night. `overcast` covers the
+    sky with a cloud of that transmission (0 is opaque) from an hour before the start to a day
+    after it, so Polaris stays hidden and the scheduler searches. `window_s` is the analysis
+    window of the fast path (`None` keeps the 20 s of the launcher), and `fast_windows` the fast
+    period in windows (`None` keeps the 3 of the launcher). Production runs 2 windows of 60 s.
+
+    **The search.** `search_seconds` is the seconds of the search phase to collect, and the run
+    waits for them, and for a frame of a burst in them, as it waits for `fast_seconds`. A plan
+    that measures only the search sets `fast_seconds` to 0. The first `warmup_bursts` bursts after
+    the start do not count.
     """
 
     sensor: str = "full"
@@ -100,6 +128,20 @@ class RunPlan:
     read_timeout_margin_s: float = 20.0
     max_run_s: float = 720.0
     ready_timeout_s: float = 120.0
+    start: str | None = None
+    overcast: float | None = None
+    window_s: float | None = None
+    fast_windows: int | None = None
+    search_seconds: float = 0.0
+    warmup_bursts: int = 1
+
+    def __post_init__(self) -> None:
+        if self.overcast is not None and not 0.0 <= self.overcast <= 1.0:
+            raise ValueError("overcast is a transmission, between 0 and 1")
+        if self.fast_seconds <= 0 and self.search_seconds <= 0:
+            raise ValueError("a run collects the fast phase, the search phase, or both")
+        if self.fast_windows is not None and self.fast_windows < 1:
+            raise ValueError("fast_windows must be at least 1")
 
 
 FULL_PLAN = RunPlan()
@@ -121,6 +163,12 @@ class Snapshot:
     `t` is a monotonic time in seconds. `cpu_ns` holds the cumulative CPU time by role, and
     `threads` the cumulative CPU time by thread ID for the roles whose threads the system gives.
     `rss` holds the resident size by role at that moment.
+
+    `phase` is the phase of the scheduler's activity, such as `search`, `fast`, or `idle`, and
+    `bursts` counts the search bursts since the start. `exposure_us` is the exposure of the stream
+    that runs or ran last, and `cloud` says that the scheduler runs its cycle for clouds.
+    `sun_elevation_deg` and `sensor_temperature_c` are what the scheduler knows at that moment
+    (`None` when it does not know).
     """
 
     t: float
@@ -135,6 +183,12 @@ class Snapshot:
     cpu_ns: Mapping[str, int]
     threads: Mapping[str, Mapping[int, int]] = field(default_factory=dict)
     rss: Mapping[str, int] = field(default_factory=dict)
+    phase: str | None = None
+    bursts: int = 0
+    exposure_us: int | None = None
+    cloud: bool = False
+    sun_elevation_deg: float | None = None
+    sensor_temperature_c: float | None = None
 
 
 @dataclass(slots=True)
@@ -212,6 +266,35 @@ def is_clean_fast(
     )
 
 
+def is_clean_search(first: Snapshot, second: Snapshot, *, warmup_bursts: int) -> bool:
+    """Whether the interval between two samples belongs to the search phase.
+
+    Both samples find the scheduler in the search period of `auto`, where bursts of frames alternate
+    with gaps, and no survey step or survey frame falls between them. No frame rate applies,
+    because the camera idles between bursts. The first `warmup_bursts` bursts meet the analysis
+    cold, so they stay out: the interval counts once they have started, and an interval with
+    frames but without the start of a burst holds the rest of the burst that ran at its first
+    sample, so it counts only when that burst came after the warm-up. The bursts come seconds
+    apart, so an interval holds the frames of one burst at most.
+    """
+    rest_of_warmup = (
+        warmup_bursts > 0
+        and second.frames > first.frames
+        and second.bursts == first.bursts == warmup_bursts
+    )
+    return (
+        first.state == "auto"
+        and second.state == "auto"
+        and first.phase == "search"
+        and second.phase == "search"
+        and first.survey_pending == 0
+        and second.survey_pending == 0
+        and first.survey_steps == second.survey_steps
+        and first.bursts >= warmup_bursts
+        and not rest_of_warmup
+    )
+
+
 def is_idle(first: Snapshot, second: Snapshot) -> bool:
     """Whether the interval between two samples belongs to the idle phase: paused, no frame."""
     return first.state == "paused" and second.state == "paused" and first.frames == second.frames
@@ -228,6 +311,30 @@ def split_phases(
         elif is_idle(first, second):
             idle.add(first, second)
     return fast, idle
+
+
+def search_phase(snapshots: Sequence[Snapshot], *, warmup_bursts: int) -> Phase:
+    """The search phase of a list of samples."""
+    search = Phase()
+    for first, second in pairwise(snapshots):
+        if is_clean_search(first, second, warmup_bursts=warmup_bursts):
+            search.add(first, second)
+    return search
+
+
+def split_search(snapshots: Sequence[Snapshot], *, warmup_bursts: int) -> tuple[Phase, Phase]:
+    """The search phase split in two: the intervals with frames of a burst, and the gaps.
+
+    A burst lasts less than a second, so an interval with its frames also holds a part of a gap.
+    The gaps give the load of the search period without frames: the scheduler loop, which wakes
+    to wait for the next burst, the store, the health timer, and the answers to `web`. The cost of
+    a burst is then what the intervals with frames use beyond that load (`cost_per_frame_us`).
+    """
+    bursts, gaps = Phase(), Phase()
+    for first, second in pairwise(snapshots):
+        if is_clean_search(first, second, warmup_bursts=warmup_bursts):
+            (bursts if second.frames > first.frames else gaps).add(first, second)
+    return bursts, gaps
 
 
 def run_share(snapshots: Sequence[Snapshot], role: str) -> float | None:
@@ -252,8 +359,9 @@ def run_share(snapshots: Sequence[Snapshot], role: str) -> float | None:
 def cost_per_frame_us(fast: Phase, idle: Phase, role: str) -> float | None:
     """The CPU time that a frame costs a role, in microseconds.
 
-    It is the share that the role uses in the fast phase minus the share that it uses when idle,
-    divided by the frame rate. Returns `None` without frames or without a share.
+    It is the share that the role uses in the fast phase (or the search phase) minus the share that
+    it uses when idle, divided by the frame rate of the phase. Returns `None` without frames or
+    without a share.
     """
     busy, quiet = fast.share(role), idle.share(role)
     if busy is None or quiet is None or fast.fps <= 0:
@@ -263,7 +371,11 @@ def cost_per_frame_us(fast: Phase, idle: Phase, role: str) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class SystemRun:
-    """What a run found: the phases, the peaks, and the facts about the run."""
+    """What a run found: the phases, the peaks, and the facts about the run.
+
+    `counters` holds the scheduler's counters at the last sample, such as `search_bursts`,
+    `measure_starts`, and `survey_long_skips`.
+    """
 
     plan: RunPlan
     fast: Phase
@@ -280,6 +392,8 @@ class SystemRun:
     machine_busy_percent: float | None
     own_busy_percent: float | None
     notes: tuple[str, ...] = ()
+    search: Phase = field(default_factory=Phase)
+    counters: Mapping[str, int] = field(default_factory=dict)
 
 
 # --- Reading the processes ----------------------------------------------------------------------
@@ -458,17 +572,57 @@ def _fail(message: str, children: Mapping[str, Any]) -> RuntimeError:
     return RuntimeError(f"{message}\n{tails}")
 
 
+def dev_options(plan: RunPlan, port: int) -> DevOptions:
+    """The options of the launcher for a plan: the sky, the cycle, and the margin of the reads.
+
+    The simulator counts the start of a cloud from its own epoch, the start of 2026, so the
+    overcast moves by the time from that epoch to the start of the run.
+    """
+    from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S, iso_to_utc_ns
+    from seeingmon.services.dev import DEV_WINDOW_S, DevOptions, default_start_utc_ns
+
+    margin = plan.read_timeout_margin_s
+    window_s = DEV_WINDOW_S if plan.window_s is None else plan.window_s
+    scheduler: dict[str, Any] = {"loop": {"read_timeout_margin_s": margin}}
+    if plan.fast_windows is not None:
+        scheduler["fast"] = {"window_s": window_s * plan.fast_windows}
+    sim: dict[str, Any] = {}
+    if plan.overcast is not None:
+        start_ns = iso_to_utc_ns(plan.start) if plan.start else default_start_utc_ns()
+        offset_s = (start_ns - DEFAULT_START_UTC_NS) / NS_PER_S
+        sim["clouds"] = [
+            {
+                "start_s": offset_s - OVERCAST_LEAD_S,
+                "duration_s": OVERCAST_SPAN_S,
+                "transmission": plan.overcast,
+                "ramp_s": 1.0,
+            }
+        ]
+    return DevOptions(
+        speed=plan.speed,
+        window_s=window_s,
+        port=port,
+        sensor=plan.sensor,
+        start=plan.start,
+        fast_exposure_us=plan.fast_exposure_us,
+        polaris_mag=plan.polaris_mag,
+        extra_sim=sim,
+        core_overrides={"scheduler": scheduler},
+        acquire_overrides={"services": {"acquire": {"read_timeout_margin_s": margin}}},
+    )
+
+
 def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> SystemRun:
     """Start the system, sample it through the phases, stop it, and return what it found.
 
     The system runs in a folder that the function deletes, on a free port of the loopback
     interface, with its own addresses and key, so it never meets another system on the machine.
-    Raises `RuntimeError` when a process dies, or when the fast phase never gets a second.
+    Raises `RuntimeError` when a process dies, or when a phase that the plan collects never gets a
+    second.
     """
     from seeingmon.scheduler.commands import Pause
     from seeingmon.services.dev import (
         Child,
-        DevOptions,
         build_plan,
         wait_for_web,
         wait_until_ready,
@@ -488,16 +642,7 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
     say = log or (lambda text: None)
     with tempfile.TemporaryDirectory(prefix="smon-perf-core-", ignore_cleanup_errors=True) as name:
         folder = Path(name)
-        margin = plan.read_timeout_margin_s
-        options = DevOptions(
-            speed=plan.speed,
-            port=free_port(),
-            sensor=plan.sensor,
-            fast_exposure_us=plan.fast_exposure_us,
-            polaris_mag=plan.polaris_mag,
-            core_overrides={"scheduler": {"loop": {"read_timeout_margin_s": margin}}},
-            acquire_overrides={"services": {"acquire": {"read_timeout_margin_s": margin}}},
-        )
+        options = dev_options(plan, free_port())
         dev_plan = build_plan(
             options,
             directory=folder / "run",
@@ -507,7 +652,8 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
         children = {spec.name: Child(spec) for spec in dev_plan.children}
         client: Any = None
         poller: WebPoller | None = None
-        stream_facts: dict[str, Any] = {}
+        first_streams: dict[str, dict[str, Any]] = {}  # the first stream of each purpose
+        last_counters: dict[str, int] = {}
         try:
             began = time.monotonic()
             for child_name in ("acquire", "core"):  # core connects to acquire, so acquire is first
@@ -537,15 +683,21 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                         raise _fail(f"{child_name} stopped with code {child.returncode}", children)
                 scheduler = decode_status(client.call(METHOD_STATUS)).scheduler
                 stream = scheduler.stream
-                if stream is not None and stream.purpose == "fast" and not stream_facts:
-                    stream_facts.update(
-                        mode=stream.mode,
-                        exposure_us=stream.exposure_us,
-                        gain=stream.gain,
-                        roi=None if stream.roi is None else (stream.roi.width, stream.roi.height),
+                if stream is not None and stream.purpose in ("fast", "search"):
+                    roi = None if stream.roi is None else (stream.roi.width, stream.roi.height)
+                    first_streams.setdefault(
+                        stream.purpose,
+                        {
+                            "mode": stream.mode,
+                            "exposure_us": stream.exposure_us,
+                            "gain": stream.gain,
+                            "roi": roi,
+                        },
                     )
                 cpu, threads = sampler.read()
                 counters = scheduler.counters
+                last_counters.clear()
+                last_counters.update(counters)
                 return Snapshot(
                     t=time.monotonic(),
                     state=scheduler.state,
@@ -559,6 +711,12 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                     cpu_ns=cpu,
                     threads=threads,
                     rss=dict(sampler.resident),
+                    phase=None if scheduler.activity is None else scheduler.activity.phase,
+                    bursts=counters.get("search_bursts", 0),
+                    exposure_us=None if stream is None else stream.exposure_us,
+                    cloud=scheduler.cloud,
+                    sun_elevation_deg=scheduler.sun_elevation_deg,
+                    sensor_temperature_c=scheduler.sensor_temperature_c,
                 )
 
             snapshots: list[Snapshot] = []
@@ -576,8 +734,11 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                 )
                 elapsed = latest.t - sampling_began
                 if stage == "collect":
+                    search = search_phase(snapshots, warmup_bursts=plan.warmup_bursts)
                     enough = (
                         fast.seconds >= plan.fast_seconds
+                        and search.seconds >= plan.search_seconds
+                        and (plan.search_seconds <= 0 or search.frames > 0)
                         and latest.survey_steps >= plan.survey_steps
                         and latest.survey_pending == 0
                     )
@@ -585,8 +746,8 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                         if not enough:
                             notes.append(
                                 f"the sampling reached its limit of {plan.max_run_s:.0f} s with "
-                                f"{fast.seconds:.0f} s of the fast phase and "
-                                f"{latest.survey_steps} survey steps"
+                                f"{fast.seconds:.0f} s of the fast phase, {search.seconds:.0f} s "
+                                f"of the search phase, and {latest.survey_steps} survey steps"
                             )
                         result = decode_result(
                             client.call(METHOD_SUBMIT, {"command": encode_command(Pause())})
@@ -594,7 +755,10 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                         if not result.accepted:
                             raise _fail(f"core refused the pause: {result.message}", children)
                         stage, paused_at = "pausing", latest.t
-                        say(f"the fast phase has {fast.seconds:.0f} s, and the scheduler pauses")
+                        say(
+                            f"the fast phase has {fast.seconds:.0f} s and the search phase "
+                            f"{search.seconds:.0f} s, and the scheduler pauses"
+                        )
                 elif stage == "pausing":
                     assert paused_at is not None
                     if latest.t - paused_at > PAUSE_WAIT_S:
@@ -612,8 +776,11 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
             fast, idle = split_phases(
                 snapshots, warmup_windows=plan.warmup_windows, min_fps=plan.min_fast_fps
             )
-            if fast.seconds < 1.0 or fast.frames <= 0:
+            search = search_phase(snapshots, warmup_bursts=plan.warmup_bursts)
+            if plan.fast_seconds > 0 and (fast.seconds < 1.0 or fast.frames <= 0):
                 raise _fail("the fast stream never reached a steady state", children)
+            if plan.search_seconds > 0 and (search.seconds < 1.0 or search.frames <= 0):
+                raise _fail("the search never ran a burst after its warm-up", children)
             logical = os.cpu_count() or 1
             machine = (
                 None
@@ -635,12 +802,14 @@ def run_system(plan: RunPlan, *, log: Callable[[str], None] | None = None) -> Sy
                 sampling_s=sampling_s,
                 survey_steps=snapshots[-1].survey_steps,
                 survey_results=snapshots[-1].survey_results,
-                stream=stream_facts,
+                stream=first_streams.get("fast") or first_streams.get("search") or {},
                 worker_cpu_ns=sampler.worker_cpu_ns(),
                 logical_cpus=logical,
                 machine_busy_percent=machine,
                 own_busy_percent=own,
                 notes=tuple(notes),
+                search=search,
+                counters=dict(last_counters),
             )
         finally:
             if poller is not None:

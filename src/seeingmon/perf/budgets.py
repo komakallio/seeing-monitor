@@ -23,6 +23,16 @@ second mode, bin2 at 360 fps, has no split: its receive figure scales with the i
 frame, so it counts the code of `acquire` and leaves out what the camera adds. A real driver adds
 some Python work of its own, so the row is a lower bound of the cost of `acquire`.
 
+**Measuring all day and searching under clouds.** The `day-sim` and `cloudy-sim` cases run the
+whole system in daylight and under an overcast (`seeingmon.perf.cases.visibility_sim`). Their rows
+hold the same limits as the rows of the night: the fast path with the receive in daylight (25% of
+a core), a search burst with the receive (25% of a core while the burst runs, because its frames
+come at the rate of the fast stream), and the peak memory of all processes. Without `cloudy-sim`,
+the search rows add the search frame of the `kernel` case to the receive of the `ipc` case, which
+leaves out what a burst costs besides its frames. The rows of the Gaussian-weighted centroid,
+which is not the default, gate nothing: they add what that centroid costs beyond the aperture
+(the `kernel` case) to the fast path, so that the owner can weigh it.
+
 A budget whose figures are missing, because a case skipped or failed, has the verdict `n/a`.
 """
 
@@ -133,14 +143,131 @@ def fast_path_budget(
 
 
 SYSTEM = "core-sim"  # the case that runs the whole system and reads it from outside
+DAY = "day-sim"  # the whole system on a day of measuring
+CLOUDY = "cloudy-sim"  # the whole system on a cloudy night of searching
 
 
-def _system_figures(report: Report) -> set[str]:
-    """The names of the figures that the `core-sim` case gave, or none when it did not run."""
-    result = report.case(SYSTEM)
+def _system_figures(report: Report, case: str = SYSTEM) -> set[str]:
+    """The names of the figures of a case of the whole system, or none when it did not run."""
+    result = report.case(case)
     if result is None or not result.ok:
         return set()
     return {item.name for item in result.measurements}
+
+
+def _per_frame(rate_hz: float) -> str:
+    """The frame rate of a row and the 25% of a core that it leaves to a frame."""
+    return f"{rate_hz:g} fps ({0.25 / rate_hz * 1e3:.2f} ms per frame)"
+
+
+def system_memory_budgets(report: Report, case: str, where: str) -> tuple[Budget, Budget]:
+    """The two memory rows of a run of the whole system: the budget and the 2 GB gate.
+
+    The run measures `core`, the survey worker, `web`, and the other children of `core`.
+    `acquire` comes from the `ipc` case, because the run renders the simulator inside `acquire`,
+    and a run without a survey step (a smoke run) takes the worker of the `survey` case, as
+    `core-sim` does. `where` names the run in the titles, such as `in daylight`.
+    """
+    worker = (
+        Term(f"survey worker peak ({case})", case, "survey_worker.peak_rss", 1 / MB, "memory")
+        if "survey_worker.peak_rss" in _system_figures(report, case)
+        else Term("survey worker peak", "survey", "worker.peak_rss", 1 / MB, "memory")
+    )
+    terms = (
+        Term("acquire peak (prebuilt frames)", "ipc", "acquire.peak_rss", 1 / MB, "memory"),
+        Term(f"core process peak ({case})", case, "core.peak_rss", 1 / MB, "memory"),
+        worker,
+        Term(f"web process peak ({case})", case, "web.peak_rss", 1 / MB, "memory"),
+        Term(f"other children of core ({case})", case, "other.peak_rss", 1 / MB, "memory"),
+        Term("operating system (assumption)", constant=OS_MEMORY_MB),
+    )
+    key = "day" if case == DAY else "cloudy"
+    return (
+        Budget(
+            f"{key}-memory-1.4",
+            f"All processes {where}, peak memory (the budget)",
+            1400.0,
+            "MB",
+            terms,
+        ),
+        Budget(
+            f"{key}-memory-1.6",
+            f"All processes {where}, peak memory (the 2 GB gate)",
+            1600.0,
+            "MB",
+            terms,
+        ),
+    )
+
+
+def visibility_budgets(report: Report) -> list[Budget]:
+    """The rows of measuring all day, of searching, and of the Gaussian-weighted centroid.
+
+    The bin1 search row reads the share of a burst that `cloudy-sim` measured in `core`, and
+    without that case the search frame of the `kernel` case with the receive of the `ipc` case.
+    """
+    day_core = Budget(
+        "day-core",
+        "Fast path and receive in daylight, bin1 128 x 128, "
+        f"{_per_frame(FAST_RATE_BIN1_HZ)}, measured in core",
+        25.0,
+        "% of one core",
+        (Term("fast path and receive in core, in daylight", DAY, "core.fastpath_receive_share"),),
+    )
+    search_rows = []
+    for mode, rate_hz, title in (
+        (BIN1, FAST_RATE_BIN1_HZ, "bin1 128 x 128"),
+        (BIN2, FAST_RATE_BIN2_HZ, "bin2 64 x 64"),
+    ):
+        terms: tuple[Term, ...] = (
+            Term("search frame", "kernel", f"{mode}.search", rate_hz / 1e4),
+            *RECEIVE_TERMS[mode],
+        )
+        suffix = ""
+        if mode == BIN1 and "core.search_burst_share" in _system_figures(report, CLOUDY):
+            terms = (Term("search burst in core", CLOUDY, "core.search_burst_share"),)
+            suffix = ", measured in core"
+        search_rows.append(
+            Budget(
+                f"search-{'bin1' if mode == BIN1 else 'bin2'}",
+                f"Search burst and receive, {title}, {_per_frame(rate_hz)}{suffix}",
+                25.0,
+                "% of one core",
+                terms,
+            )
+        )
+    gaussian_rows = []
+    for mode, rate_hz, title in (
+        (BIN1, FAST_RATE_BIN1_HZ, "bin1 128 x 128"),
+        (BIN2, FAST_RATE_BIN2_HZ, "bin2 64 x 64"),
+    ):
+        plain = fast_path_budget(mode, rate_hz, title, "")
+        gaussian_rows.append(
+            Budget(
+                f"gaussian-{'bin1' if mode == BIN1 else 'bin2'}",
+                f"Fast path with the Gaussian-weighted centroid, {title}, "
+                f"{_per_frame(rate_hz)} (information)",
+                25.0,
+                "% of one core",
+                (
+                    *plain.terms,
+                    Term(
+                        "the Gaussian-weighted centroid beyond the aperture",
+                        "kernel",
+                        f"{mode}.gaussian_extra",
+                        rate_hz / 1e4,
+                    ),
+                ),
+                gate=False,
+            )
+        )
+    return [
+        day_core,
+        *system_memory_budgets(report, DAY, "in daylight"),
+        *search_rows,
+        *system_memory_budgets(report, CLOUDY, "on a cloudy night"),
+        *gaussian_rows,
+    ]
 
 
 def build_budgets(report: Report) -> list[Budget]:
@@ -235,6 +362,7 @@ def build_budgets(report: Report) -> list[Budget]:
         Budget(
             "memory-1.6", "All processes, peak memory (the 2 GB gate)", 1600.0, "MB", memory_terms
         ),
+        *visibility_budgets(report),
     ]
 
 
