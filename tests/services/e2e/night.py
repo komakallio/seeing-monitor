@@ -9,6 +9,10 @@ make a night run in seconds and give the same answer every time:
   `seeingmon.services.simsky`);
 - the survey analysis runs inline in the scheduler thread, through an `InlineExecutor`.
 
+With `dark_set`, the data directory gets a dark set before `core` starts, recorded by the
+production dark session on the same simulated camera with a cover on, so the survey frames get a
+sky brightness, and `sky.dark` can fire.
+
 The analyzers are the production ones: the fast path (`seeingmon.fastpath`) and the survey pipeline
 (`seeingmon.survey`). A test injects the truth through the options of the simulator (the Fried
 parameter, the clouds, the sky brightness) and reads what `core` stored.
@@ -24,9 +28,12 @@ from typing import Any
 
 from seeingmon.clock import DEFAULT_START_UTC_NS, NS_PER_S, VirtualClock, iso_to_utc_ns
 from seeingmon.config import Config, load_config
-from seeingmon.drivers.sim.stars import Pointing
-from seeingmon.profile import load_profile
+from seeingmon.drivers.sim import SimOptions
+from seeingmon.drivers.sim import create as create_sim
+from seeingmon.drivers.sim.stars import Pointing, StarField
+from seeingmon.profile import Profile, load_profile
 from seeingmon.records import Record
+from seeingmon.scheduler import SchedulerConfig
 from seeingmon.services.acquire.factory import create_camera_driver
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.app import CoreApp, CoreParts
@@ -39,8 +46,11 @@ from seeingmon.services.simsky import (
     write_seed,
     write_small_profile,
 )
+from seeingmon.store.layout import DataLayout
 from seeingmon.survey.analyzer import InlineExecutor
 from seeingmon.survey.catalog import write_catalog
+from seeingmon.survey.dark import DarkLibrary
+from seeingmon.survey.dark_session import DarkSessionOptions, run_dark_session
 
 from ..addresses import unique_address
 from ..core.rig import FakeRemote, NoSleepClock, read_all
@@ -113,6 +123,28 @@ def cloud(
     }
 
 
+def record_dark_set(data_dir: Path, profile: Profile, start_utc_ns: int, *, gain: int) -> None:
+    """Record a dark set of the survey mode an hour before `start_utc_ns`, with a covered camera.
+
+    The camera is the sim with the seed and the sensor of `build_night`, so the bias, the dark
+    current, and the hot pixels match, with no stars and a sky far too faint to give an electron.
+    """
+    covered = SimOptions(
+        seed=1, stars=StarField.from_arrays([], [], []), sky_mag_arcsec2=60.0, twilight=False
+    )
+    clock = VirtualClock(start_utc_ns - 3600 * NS_PER_S)
+    run_dark_session(
+        create_sim(profile=profile, clock=clock, options=covered),
+        DarkLibrary.from_layout(DataLayout(data_dir)),
+        profile,
+        clock,
+        DarkSessionOptions(
+            mode=profile.survey_mode.mode, gain=gain, frames=3, bias_frames=3, wait=False
+        ),
+        say=lambda _: None,
+    )
+
+
 def build_night(
     directory: Path,
     *,
@@ -129,11 +161,15 @@ def build_night(
     sim_extra: Mapping[str, Any] | None = None,
     parts: Mapping[str, Any] | None = None,
     sensor: str = "small",
+    night_split_utc_hour: float | None = None,
+    dark_set: bool = False,
 ) -> Night:
     """Build and start a `CoreApp` on the simulated sky. Stop it with `night.app.stop()`.
 
     `sensor` is `small` for a sensor of 1280 by 960 bin1 pixels, which keeps the survey frames
     cheap, or `full` for the reference profile, whose survey frames take seconds of CPU each.
+    `night_split_utc_hour` sets `[survey] night_split_utc_hour`, and `dark_set` records a dark set
+    first (see the module text).
     """
     start_utc_ns = iso_to_utc_ns(start)
     clock = VirtualClock(start_utc_ns)
@@ -183,6 +219,11 @@ def build_night(
         "[survey]",
         f'catalog_path = "{catalog_path.as_posix()}"',
         "solvers = []",
+        *(
+            []
+            if night_split_utc_hour is None
+            else [f"night_split_utc_hour = {night_split_utc_hour}"]
+        ),
         "[survey.cloud]",
         "min_expected = 4",
         "expected_snr = 10.0",
@@ -193,6 +234,9 @@ def build_night(
     local = directory / "local.toml"
     local.write_text("\n".join(lines) + "\n" + config_extra, encoding="utf-8")
     config = load_config(local_file=local, env={})
+    if dark_set:
+        long_gain = config.section("scheduler", SchedulerConfig).survey.long_gain
+        record_dark_set(directory / "data", profile, start_utc_ns, gain=long_gain)
     services = config.section("services", ServicesConfig).model_copy(
         update={
             "acquire_address": unique_address("acquire"),

@@ -12,6 +12,7 @@ The short test runs on every push. The others run for 15 to 60 seconds of CPU, s
 from __future__ import annotations
 
 import itertools
+import re
 import statistics
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,8 @@ import pytest
 pytest.importorskip("sep", reason="the survey path needs the survey extra")
 pytest.importorskip("scipy", reason="the fast path needs the fast extra")
 
-from seeingmon.clock import NS_PER_S, iso_to_utc_ns
+from seeingmon.cli import main
+from seeingmon.clock import NS_PER_S, iso_to_utc_ns, utc_ns_to_datetime
 from seeingmon.drivers.sim.detection import DETECTION_SNR, DetectionModel
 from seeingmon.drivers.sim.params import SimParams
 from seeingmon.drivers.sim.sky import DAYLIGHT_SKY_MAG_ARCSEC2
@@ -398,3 +400,90 @@ class TestTheNightlySummary:
         with StoreReader.open(path) as store:
             nights = [r.night for r in read_all(store, "star_epoch")]  # type: ignore[attr-defined]
         assert nights == ["2025-12-31", "2026-01-01"]  # the open night was written at the stop
+
+
+@pytest.mark.slow
+class TestTheVisibilitySummary:
+    """The nightly summary of a night that the station watched for its last 20 minutes."""
+
+    def test_the_night_gets_a_summary_with_every_value_set_or_explained(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The split hour falls 20 minutes after the start, in the dark, because a whole night of
+        # fast frames would take hours of CPU. A split hour in the dark is no advice for a station,
+        # and the summary works the same at any hour. The dark set gives the survey frames a sky
+        # brightness, so sky.dark fires after three frames and the verdict three frames later. A
+        # cloud hides Polaris after ten minutes, and another one from two minutes before the split
+        # to after it, so the last detection falls inside the night.
+        night = build_night(
+            tmp_path,
+            night_split_utc_hour=18.5,
+            dark_set=True,
+            clouds=[
+                cloud(600.0, 120.0, transmission=0.01),
+                cloud(1050.0, 600.0, transmission=0.01),
+            ],
+            config_extra="[survey.darkness]\nframes = 3\nverdict_frames = 3\n",
+        )
+        split_ns = iso_to_utc_ns("2026-01-01T18:30:00Z")
+        try:
+            night.run_until(lambda: night.records("visibility_summary"), limit_s=1500.0)
+            assert night.clock.utc_ns() > split_ns + 6 * NS_PER_S  # one analysis window after
+            (summary,) = night.records("visibility_summary")
+            visible = night.events("polaris.visible")
+            hidden = night.events("polaris.hidden")
+            (dark,) = night.events("sky.dark")
+            (verdict,) = night.events("sky.clear_verdict")
+            windows = [w for w in windows_with_r0(night) if w.t_utc_ns < split_ns]
+        finally:
+            night.app.stop()
+
+        assert summary.night == "2025-12-31"
+        assert summary.t_utc_ns == split_ns - 24 * 3600 * NS_PER_S
+        # Every event falls inside the night.
+        assert [e.t_utc_ns < split_ns for e in [*visible, *hidden, dark, verdict]] == [True] * 6
+        # The station started 23 h 40 min into the night and found Polaris at once, so the first
+        # detection is a bound. The second cloud hid Polaris before the end, while the station
+        # watched, so the last detection is measured.
+        assert summary.first_visible_utc_ns == visible[0].t_utc_ns
+        assert summary.first_visible_sun_deg == visible[0].detail["sun_elevation_deg"]
+        assert summary.first_censored is True
+        assert [h.detail["reason"] for h in hidden] == ["star_missing", "star_missing"]
+        assert summary.last_visible_utc_ns == hidden[-1].t_utc_ns
+        assert summary.last_visible_sun_deg == hidden[-1].detail["sun_elevation_deg"]
+        assert summary.last_censored is False
+        measured_ns = sum(h.t_utc_ns - v.t_utc_ns for v, h in zip(visible, hidden, strict=True))
+        assert summary.visible_hours == pytest.approx(measured_ns / 3.6e12, abs=1e-6)
+        seeing_s = sum(w.duration_s for w in windows)
+        assert summary.seeing_hours == pytest.approx(seeing_s / 3600.0, abs=1e-6)
+        assert summary.dark_utc_ns == dark.t_utc_ns
+        assert summary.dark_sun_deg == dark.detail["sun_elevation_deg"]
+        assert summary.dark_sky_mag_arcsec2 == dark.detail["sky_mag_arcsec2"]
+        assert summary.clear_share == verdict.detail["clear_share"] == 1.0
+        # A new station has no reference zero point, so no frame has a transparency yet.
+        assert summary.transparency_median is None
+        missing = {name for name, value in summary.model_dump().items() if value is None}
+        assert missing == {"transparency_median"}
+        assert set(summary.quality) == missing  # every missing value says why
+        assert set(summary.flags) <= {"moon"}
+
+        code = main(["visibility", "stats", "--data-dir", str(tmp_path / "data")])
+        out = capsys.readouterr().out
+        assert code == 0
+        lines = out.splitlines()
+        row = re.split(r" {2,}", lines[lines.index("The newest night:") + 2])
+        first = utc_ns_to_datetime(summary.first_visible_utc_ns).strftime("%H:%M")
+        last = utc_ns_to_datetime(summary.last_visible_utc_ns).strftime("%H:%M")
+        assert row[:5] == [
+            "2025-12-31",
+            f"{first}*",  # censored
+            f"{summary.first_visible_sun_deg:+.1f}",
+            last,
+            f"{summary.last_visible_sun_deg:+.1f}",
+        ]
+        month = re.split(r" {2,}", lines[lines.index("By month:") + 2])
+        # month, nights, unseen; the first: n, median, range, censored, bounds; then the last
+        assert month[:3] == ["2025-12", "1", "0"]
+        assert month[3:8] == ["0", "-", "-", "1", f"{summary.first_visible_sun_deg:+.1f}"]
+        assert month[8] == "1"
+        assert month[11:13] == ["0", "-"]
