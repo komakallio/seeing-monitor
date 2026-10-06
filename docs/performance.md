@@ -4,7 +4,7 @@ The architecture sets a performance gate for a Raspberry Pi 4 (see [architecture
 
 ## Summary
 
-**Measured on a Pi 4 with 2 GB (October 3, 2026): every budget passes.** The sum of the peaks of all processes is 895 MB against the budget of 1.4 GB. The installed system with the real camera used at most 1,053 MiB of the 1,844 MiB, and a 45-minute simulated run at most 1,155 MiB, so 2 GB of RAM is enough (see [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4)). The rest of this summary and the tables below show the estimate from the dev machine that the run replaced.
+**Measured on a Pi 4 with 2 GB (October 3, 2026): every budget of that run passes.** The sum of the peaks of all processes is 895 MB against the budget of 1.4 GB. The installed system with the real camera used at most 1,053 MiB of the 1,844 MiB, and a 45-minute simulated run at most 1,155 MiB, so 2 GB of RAM is enough (see [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4)). The rows that the visibility lane added on October 6 have no Pi 4 run yet. On the dev machine the current code costs `core` twice what the code of the Pi 4 run cost for a frame, and the search burst fails its budget on the estimate (see the last bullet below). Apart from that bullet and [The cost of measuring all day](#the-cost-of-measuring-all-day), the rest of this summary and the tables below show the estimate from the dev machine that the October 3 run replaced.
 
 On the estimate before the Pi 4 run, the per-frame analysis fits its budget with a wide margin, and so does the receive in `core` since the services lane batched the stream. `acquire` is the one row of the CPU budgets that fails in all six runs. The memory is the open question: the peaks that the whole-system run measures put the estimate across the 1.4 GB budget.
 
@@ -31,26 +31,29 @@ The `core-sim` case (see [The whole-system case](#the-whole-system-case)) measur
 | All processes, peak memory, `acquire` from the `ipc` case | 1.4 GB budget, 1.6 GB gate | 766 MB | 905 / 775 MB | 783 to 1,476 MB | marginal, pass / pass, pass |
 | All processes, sum of the peaks in the whole system, with the simulator in `acquire` | 1.4 GB budget, 1.6 GB gate | | 1,143 / 966 MB | 950 to 1,786 MB | marginal, marginal / marginal, pass |
 
-- **The fast path has room.** One bin1 frame takes 26 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 19 µs of that. The Pi 4 estimate for the kernel (0.10 to 0.21 ms) agrees with the architecture's 0.2 to 0.4 ms. These runs predate the matched filter of the missing-star test (visibility lane), which adds about 55% to the kernel on the dev machine, about 12 µs on top of 22 µs (timed side by side with the kernel without it). At the Pi 4's measured 6.9 times the dev machine, that is about 70 µs more per frame there: 0.7% of a core in bin1 at 98 fps, and about 2% in bin2 64 × 64 at 360 fps. The `kernel` case now also times one frame of a search burst with its three filters (`<mode>.search`, about 0.2 ms on the dev machine and an estimated 1.3 ms on a Pi 4), so the next run of the harness measures both.
+- **The fast path has room.** One bin1 frame takes 26 µs through `FastPathAnalyzer` on the dev machine, and the kernel takes 19 µs of that. The Pi 4 estimate for the kernel (0.10 to 0.21 ms) agrees with the architecture's 0.2 to 0.4 ms. These runs predate the matched filter of the missing-star test (visibility lane), which adds 11 to 13 µs to the kernel on the dev machine (`<mode>.matched_extra` of the `kernel` case): 0.5 to 1.4% of a Pi 4 core in bin1 at 98 fps. See [The cost of measuring all day](#the-cost-of-measuring-all-day) for it, the search frame, and the weighted centroid.
 - **The stream between the processes was the risk, and it has changed.** At commit `0a764af`, the production code of `acquire` spent 0.69 ms of CPU on a frame, and `core` spent 0.41 ms on receiving it. At 360 frames per second, the receive alone cost an estimated 93 to 146% of a Pi 4 core. The costs belonged to each message and each frame, not to the bytes. The services lane then cut the per-message work (commits `0db406c` to `80acdcc`): `core` asks for batches, and `acquire` holds a fast stream for 60 ms and sends its frames as one message, so a batch costs one wake-up. Now `acquire` spends 0.35 ms of CPU on a frame (0.32 to 0.37 ms over the three Linux runs), and `core` spends 0.09 ms on the receive (0.07 to 0.11 ms). The receive in bin2 at 360 frames per second takes 28 µs a frame, 1.0% of a core. The estimate for `acquire` is 12 to 24% of a Pi 4 core, still over its budget of 10%: the capture thread takes 235 of the 348 µs, and the work alone gives 10 to 16%. The receive with the fast path is within the 25% budget: 7.5 to 13% in bin1 and 12 to 21% in bin2 on the estimate, and 13 to 21% in bin1 in the whole system. The camera is not the cause of the `acquire` figure: the fake camera of the tests adds about 3 µs to a call (see [What the camera adds](#what-the-camera-adds)).
 - **The survey path has room in time and little in memory.** A bin2 frame takes 1.0 s on the dev machine (1.0 to 1.3 s over the three Linux runs), including 0.31 s for the sky quality step, and the worker peaks at 452 MB in the `survey` case and at 444 MB in the whole system.
 - **Two gigabytes of memory was not settled on the estimate, and the Pi 4 run settled it (see [Results on a Raspberry Pi 4](#results-on-a-raspberry-pi-4)).** The estimate with a stand-in of 200 MB for `core` passes both limits. In the whole system, `core` peaks at 307 MB on Linux, and the estimated peak of all processes is 783 to 1,476 MB, which straddles the 1.4 GB budget and stays under the 1.6 GB gate. The range crosses the gate too when `acquire` counts with the simulator inside it (950 to 1,786 MB), and the true figure for `acquire` lies between the two. A run on a Pi 4 decides it (see [Memory](#memory)).
 - **Rust for the per-frame metrics is not indicated** (see [The Rust decision](#the-rust-decision)).
+- **Measuring all day costs what a clear night costs, a frame of the night costs `core` twice what the Pi 4 measured, and a search burst fails its budget on the estimate** (see [The cost of measuring all day](#the-cost-of-measuring-all-day), October 6, 2026). On the same laptop, the current code costs `core` 2.1 to 2.4 times what the code of the Pi 4 run cost for a frame, which puts a clear night at an estimated 17 to 19% of a Pi 4 core against 25%, where the Pi 4 measured 8%. A frame of daylight costs `core` 0.92 to 1.06 times a frame of the night, so daylight takes 16 to 20%, and the peaks of all processes stay within 8% of the night's, about 0.9 GB. Over whole cycles, `core` uses about 12% of a Pi 4 core by day and 7% under clouds. The peak is the search burst: a search frame costs `core` 2.4 to 5.3 times a frame of measure, so a burst takes an estimated 45 to 50% of a Pi 4 core while it runs (40 to 100% over three runs), against the 25% of the fast path. The simulator's sensor cannot warm in the sun, so the sensor temperature of a sunlit camera, and its effect on the dark library, wait for phase 3.
 
 ## What the harness measures
 
-`seeingmon perf run` runs eight cases. Each case runs in a fresh child process, so the peak memory of one case never includes another. The child sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `MKL_NUM_THREADS` to 1, so that every figure is per core, which is how the budgets read. A case imports the code that it measures when it runs, and it skips with a reason when a component is not on `main` yet, so the harness works at every commit.
+`seeingmon perf run` runs ten cases. Each case runs in a fresh child process, so the peak memory of one case never includes another. The child sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `MKL_NUM_THREADS` to 1, so that every figure is per core, which is how the budgets read. A case imports the code that it measures when it runs, and it skips with a reason when a component is not on `main` yet, so the harness works at every commit.
 
 | Case | What it measures | Feeds |
 |---|---|---|
 | `calibration` | Five fixed workloads: a pure-Python loop, a matrix product, an FFT, a SQLite insert batch, and a thread hand-off. The ratio of a Pi 4 run to a dev-machine run on them replaces the assumed scaling. | The scaling table |
-| `kernel` | One call of the fast-path kernel in three modes: bin1 128 × 128 at 16 bits (the planned fast mode), bin2 64 × 64 at 16 bits, and bin2 320 × 240 at 8 bits (the format of the 10 ms recordings). One frame of a search burst in each mode, the matched filter within 20 px of the ROI center (`<mode>.search`). The kernel with the Gaussian-weighted centroid, which is not the default and which no budget reads (`<mode>.kernel_gaussian`). | The per-frame budgets |
+| `kernel` | One call of the fast-path kernel in three modes: bin1 128 × 128 at 16 bits (the planned fast mode), bin2 64 × 64 at 16 bits, and bin2 320 × 240 at 8 bits (the format of the 10 ms recordings). One frame of a search burst in each mode, the three matched filters within 20 px of the ROI center (`<mode>.search`). The kernel with the Gaussian-weighted centroid, which is not the default (`<mode>.kernel_gaussian`), and the kernel without the matched filter of its missing-star test (`<mode>.kernel_without_matched`). Two differences of the medians: what the matched filter adds to a frame of measure (`<mode>.matched_extra`), and what the weighted centroid adds (`<mode>.gaussian_extra`). | The per-frame budgets, the search rows, and the rows of the weighted centroid |
 | `fastpath` | The whole per-frame path of `FastPathAnalyzer`: the kernel, the metrics row, the window bookkeeping, the segment append once per second, and the close of a 60 s window (the estimator, the scintillation index, and the spectrum), as a share of one core at the frame rate. | The 25% budget |
 | `ipc` | The cost of moving a frame from `acquire` to `core`: the production `AcquireService` in its own process with a camera that costs nothing per frame, and a `RemoteCameraDriver` that reads the frames. The case reads the CPU time per frame of each side, split by thread, and splits it again into the work and the wake-ups. It also runs the bin2 stream at 360 fps, a stream with the fake camera of the tests, and a timing of one `read_frame` call of three cameras, which show what the camera adds. | The 10% budget of `acquire`, and the receive cost in the 25% budgets |
 | `survey` | One synthetic bin2 survey frame (4144 × 2822 pixels, 30 s, rendered by the simulator from catalog stars) through `create_survey_analyzer` and the process worker of `make_process_executor`, with the sky quality step and one synthetic dark set: the wall time, the CPU time of the worker, each stage, the cost of the process boundary, the start of the worker, and the peak memory of the worker. | The survey budgets |
 | `store` | Sustained result-row inserts, and the cost of the metrics-segment append per frame at 98 fps, in a temporary folder that the case deletes. | The 25% budget |
 | `memory` | The resident size of a fresh process after it imports each part of the software: the fast path, the survey path, astropy, and the web stack. | The memory budgets |
 | `core-sim` | The whole system on the simulated sky: `acquire` with the simulator, `core`, `web`, and the survey worker, started from the plan of `seeingmon dev` and read from outside for about 6 minutes (see [The whole-system case](#the-whole-system-case)). | The fast path with the receive in `core`, and the memory budgets |
+| `day-sim` | The whole system on a simulated day of measuring: noon of midsummer, Polaris visible, the adaptive fast exposure, and the survey steps that skip their long exposure, in the cycle of production, for about 6 minutes (see [The cost of measuring all day](#the-cost-of-measuring-all-day)). | The rows of daylight |
+| `cloudy-sim` | The whole system on a simulated cloudy night of searching: an opaque overcast, the search bursts every 15 s, and the survey steps every 100 s, for about 6 minutes (see [The cost of measuring all day](#the-cost-of-measuring-all-day)). | The search rows and the rows of a cloudy night |
 
 The sections below name each figure the way a report does (`<case>: <figure>`).
 
@@ -68,6 +71,12 @@ The Pi 4 budget comes from [architecture.md](architecture.md). The harness adds 
 | Survey frame, bin2 | 180 s (not a gate) | The survey interval: a frame must end before the next one |
 | Survey worker, peak memory | 550 MB | The architecture |
 | All processes, peak memory | 1.4 GB (the budget), 1.6 GB (the 2 GB gate) | The architecture: more than 1.6 GB at peak means the 4 GB model |
+| Fast path and the receive in daylight, bin1 | 25% of one core | The fast path budget, read in `core` in the `day-sim` case |
+| All processes in daylight, peak memory | 1.4 GB, 1.6 GB | The memory budget, with the peaks of the `day-sim` case |
+| Search burst and the receive, bin1 128 × 128 at 98 fps | 25% of one core while the burst runs | The fast path budget: a burst reads the frames of the fast stream at its rate. The row reads the cost of a search frame that the `cloudy-sim` case measures in `core`, and without that case the search frame of the `kernel` case with the receive of the `ipc` case. |
+| Search burst and the receive, bin2 64 × 64 at 360 fps | 25% of one core while the burst runs | The same, from the `kernel` and `ipc` cases |
+| All processes on a cloudy night, peak memory | 1.4 GB, 1.6 GB | The memory budget, with the peaks of the `cloudy-sim` case |
+| Fast path with the Gaussian-weighted centroid, bin1 and bin2 | 25% of one core (information, not a gate) | The fast path rows plus what the weighted centroid adds to a frame (`<mode>.gaussian_extra`). The centroid is not the default, and the rows inform the owner's decision on it. |
 
 The harness sums the figures of each row. It reports `pass` when the whole estimated range is within the limit, `fail` when the whole range is above it, and `marginal` when the range straddles it. A report with the label `pi4` and a measured calibration case compares its figures with the limits directly, and the verdict is `pass` or `fail`.
 
@@ -76,14 +85,14 @@ The harness sums the figures of each row. It reports `pass` when the whole estim
 Run the commands on your development machine, from a clone with the extras installed (`uv sync --all-extras`, see [development.md](development.md)).
 
 ```bash
-seeingmon perf run --smoke                                  # about a minute: every case works
-seeingmon perf run --label dev --json local/perf/dev.json  # the full run: about 8 minutes
+seeingmon perf run --smoke                                  # about 2 minutes: every case works
+seeingmon perf run --label dev --json local/perf/dev.json  # the full run: about 20 minutes
 seeingmon perf report local/perf/dev.json --budgets         # the tables, the verdicts, and the checks
 ```
 
 - `--cases NAME,...` runs some cases, and `--list` names them.
-- `--smoke` shrinks every case to a tiny workload, and the figures then say nothing about speed. The `core-sim` case still starts its three processes, so it takes about 20 s. CI runs the smoke run as a test (`tests/perf/test_cases.py`). The test checks that every case runs, that its figures are finite and positive, and that the budgets find the figures that they read. It checks nothing about size.
-- `--cases core-sim` runs the whole-system case alone, which takes about 6 minutes (see [The whole-system case](#the-whole-system-case)).
+- `--smoke` shrinks every case to a tiny workload, and the figures then say nothing about speed. The cases `core-sim`, `day-sim`, and `cloudy-sim` still start their three processes, and each waits for the first search bursts, so each takes about 20 s of sampling and 35 to 50 s in all. CI runs the smoke run as a test (`tests/perf/test_cases.py`). The test checks that every case runs, that its figures are finite and positive, and that the budgets find the figures that they read. It checks nothing about size.
+- `--cases core-sim` runs the whole-system case alone, which takes about 6 minutes (see [The whole-system case](#the-whole-system-case)). `--cases day-sim,cloudy-sim` runs the day and the cloudy night, about 6 minutes each (see [The cost of measuring all day](#the-cost-of-measuring-all-day)).
 - `--json PATH` saves the report. Use a path under `local/`, which Git ignores. The report holds the architecture, the operating-system family, the Python and library versions, the processor model, and the commit. It holds no host name, user name, or serial number.
 - `--label` names the machine class. Use `pi4` on a Raspberry Pi 4.
 - `--quiet-wait SECONDS` waits up to that long before each case for the machine to be at most 15% busy. Other work disturbs a timing, and each case records how busy the machine was.
@@ -416,7 +425,7 @@ A Raspberry Pi 4 Model B (Cortex-A72, 4 cores, 2 GB of RAM of which 1,844 MiB ar
 | Survey worker, peak memory | 550 MB | 440 MB | the same | pass |
 | All processes, sum of the peaks, with `acquire` from the `ipc` case | 1.4 GB, gate 1.6 GB | 895 MB | the same | pass |
 
-The Pi 4 ran 2.4 to 4.4 times slower than the Pi 5 on the CPU rows (3.1 times on the survey frame), more than the 2.2 to 2.4 times of Raspberry Pi's Geekbench figures, because small NumPy and Python work scales worse than Geekbench does. Every budget still passes by a factor of 2.7 or more.
+The Pi 4 ran 2.4 to 4.4 times slower than the Pi 5 on the CPU rows (3.1 times on the survey frame), more than the 2.2 to 2.4 times of Raspberry Pi's Geekbench figures, because small NumPy and Python work scales worse than Geekbench does. Every budget still passes by a factor of 2.7 or more. The code has changed since: on the dev machine, a frame of the night now costs `core` about twice as much (see [A frame of the night costs twice what the Pi 4 measured](#a-frame-of-the-night-costs-twice-what-the-pi-4-measured)).
 
 **Memory.** Three measurements bound it:
 
@@ -437,6 +446,116 @@ The Pi 4 ran 2.4 to 4.4 times slower than the Pi 5 on the CPU rows (3.1 times on
 **The plate solver.** `solve-field` 0.97 with the cap index (five files, 3.2 MB) solved six synthetic fields from the real catalog (the pole 0 to 2.5 degrees off the axis, any roll, 150 stars each) in 0.34 to 0.61 s each, with a center error of 0.04 to 0.22 arcsec and the scale within 0.01%. Its peak resident size was 30 MB.
 
 **What the Pi 4 runs do not show.** A real sky (stars through the detector and the solver), a night of running, a data partition on a card of the final size (the 8 GB test card has 2 GB free), the heater HAT, and the fast mode of the real camera under the full scheduler.
+
+## The cost of measuring all day
+
+Since the visibility lane (see [visibility.md](visibility.md)), the system measures seeing whenever Polaris is visible, at any Sun elevation, and it searches for Polaris whenever it does not see it. In the simulator Polaris is visible in full daylight, so on a clear day the system measures from dawn to dusk, and on a cloudy night it searches for hours. Two cases measure what that costs, with the method of the whole-system case (see [The whole-system case](#the-whole-system-case)):
+
+- **`day-sim`, a day of measuring.** The simulated clock starts at noon of midsummer at the synthetic site, with the Sun 58.4 degrees up. The scheduler finds Polaris in two search bursts and measures at the exposure that the bright sky allows, 1.2 ms against 2 ms in the dark. In each survey step the 1 ms frame clips, a watch frame of 32 µs measures the sky, and the step skips its long exposure, because even the shortest long exposure would pass its target.
+- **`cloudy-sim`, a cloudy night of searching.** The clock starts on a winter night, and an opaque overcast hides every star for the whole run. The scheduler searches: a burst of 50 frames every 15 s, each frame through the three matched filters. The first survey frame shows the clouds, and the cycle for clouds follows: a search period of 60 s and a survey step every 100 s, with a long exposure that grows from 1 s by 4 times a step. No burst detects Polaris.
+
+Both runs take the cycle of production: fast periods of two analysis windows of 60 s, and a survey step every 180 s. The `core-sim` case keeps the short windows of the launcher. A day at midsummer lasts 16 to 19 hours, and a run cannot take that long, so each run measures about 4 minutes of a cycle that repeats through the day or the night. The share of a core over the cycle covers whole cycles, from the end of one survey step to the end of a later one: from the end of the first step by day, and from the end of the second under clouds, because the first cycle for clouds starts at once after the step that showed the clouds, without its gap. So the search at the start of a run stays out of it.
+
+The figures come from three runs of the harness on the Windows laptop of the tables above, on October 6, 2026. Runs 1 and 2 ran at commit `4adf3c2` with the changes that added the two cases. Run 3 ran on commit `66251aa` with the same changes and two fixes of the method: the share over whole cycles, and search figures that leave out the whole warm-up burst, also when a sample falls inside it. Runs 1 and 2 read the share over the cycle from the start of measure, or from the first sample of the cycle for clouds, to the end, which held one gap fewer than whole cycles, so the share of the day came out about 15% high. Other work loaded the machine: the reports say 43 to 51% busy during the first runs of `core-sim` and `day-sim`, 27% during the first `cloudy-sim`, 25 to 30% during the second runs, and 24 to 30% during run 3. Read each new figure against `core-sim` of the same run, not against the older tables: `core-sim` measured 477, 401, and 396 µs for a frame in `core`, against 251 µs at commit `b2e1f93`, and the next subsection shows that the code made the difference, not the laptop.
+
+### A frame of the night costs twice what the Pi 4 measured
+
+The code that the Pi 4 measured on October 3 (commit `93647df`) and the current code ran `core-sim` back to back on the laptop, in the session of run 3:
+
+| Run of `core-sim` | Code | CPU time of a frame in `core` | Machine busy |
+|---|---|---|---|
+| 1 | `93647df`, the code of the Pi 4 run | 186 µs | 22% |
+| 2 | The current code (run 3 of this section) | 396 µs | 25% |
+| 3 | `93647df` | 180 µs | 23% |
+| 4 | The current code | 430 µs | 52% |
+
+- **The code doubled what a frame of the night costs `core`.** In the same session, the current code costs 2.1 and 2.4 times the code of October 3. The laptop is not slower than in the older runs: the calibration case runs faster than in the older Windows runs (the Python loop takes 61 to 63 ms, against 70 to 119 ms), and the code of October 3 costs 180 to 186 µs, below the 251 µs of commit `b2e1f93`. The 477 and 401 µs of runs 1 and 2 carry the same rise.
+- **The current code puts a clear night at about 17 to 19% of a Pi 4 core.** The Pi 4 measured 7.95% for the code of October 3, which is 811 µs a frame, 4.4 to 4.5 times this laptop. The same factor gives the current code 1.7 to 1.9 ms a frame on a Pi 4. That stays within the 25% budget, with less room than on October 3. The verdicts below scale each new figure from this night.
+- **Where the time goes is open.** Since October 3, the fast path gained the sky noise and the SNR of the star (`0c894fd`), the rolling seeing value (`a533e94`), and the matched filter of the missing-star test (`66263a7`, `ae8bc98`). The scheduler gained the adaptive exposure (`993290b`), and `core` the live video of Polaris (`72d6d80`). The `fastpath` case shows about 30 µs of the rise: a bin1 frame takes 56 µs through `FastPathAnalyzer` in run 1, against 26 µs before. Most of the rise, about 200 µs, lies in the work of the scheduler and the services around a frame, which no case times on its own. A run of `core-sim` along the commits since `93647df` finds it.
+
+### Per-frame costs
+
+The visibility lane added two costs to the frames of the fast stream: the matched filter of the missing-star test in every frame of measure, and the three matched filters of a search frame in every frame of a burst. The Gaussian-weighted centroid, which is not the default, would add a third. The `kernel` case times each on its own. A cell reads `run 1 / run 2 / run 3`, and the Pi 4 column scales the range of the runs by the 5 to 11 times of NumPy code.
+
+| Figure, µs per frame | bin1 128 × 128 | bin2 64 × 64 | Pi 4 estimate |
+|---|---|---|---|
+| Kernel of measure, with the matched filter of its missing-star test | 30.3 / 38.5 / 29.6 | 25.4 / 36.6 / 26.9 | 0.15 to 0.42 ms in bin1 |
+| Kernel without that matched filter | 18.1 / 25.2 / 18.8 | 16.3 / 24.0 / 17.1 | |
+| What the matched filter adds (`matched_extra`) | 12.2 / 13.3 / 10.8 | 9.1 / 12.6 / 9.8 | 54 to 146 µs in bin1: 0.5 to 1.4% of a core at 98 fps. In bin2: 1.6 to 5.0% at 360 fps |
+| A search frame: three matched filters within 20 px (`search`) | 157 / 209 / 158 | 131 / 221 / 133 | 0.79 to 2.3 ms in bin1 |
+| Kernel with the Gaussian-weighted centroid | 73.2 / 104 / 74.2 | 80.6 / 125 / 83.9 | |
+| What the weighted centroid adds (`gaussian_extra`) | 43.0 / 65.1 / 44.6 | 55.2 / 88.0 / 57.0 | 2.1 to 7.0% of a core in bin1 at 98 fps, 9.9 to 35% in bin2 at 360 fps |
+
+- **The missing-star test is cheap.** It adds 11 to 13 µs to a frame, 40% of the kernel, and the fast path stays far inside its budget: the `fastpath` case gives 0.58% of a dev core in bin1 (2.9 to 6.4% on a Pi 4) and 2.0% in bin2 (10 to 22%).
+- **A search frame costs five times a kernel.** Each of the three filters scans the circle of 20 px around the prediction, a box of at least 41 × 41 pixels. The frame is timed alone here, and `core` pays more for it in the system (see [A cloudy night of searching](#a-cloudy-night-of-searching)).
+- **The weighted centroid is information.** With it, the fast path in bin2 at 360 fps takes 20 to 44% of a Pi 4 core on the estimate, which straddles the 25% budget (the row `gaussian-bin2`, which gates nothing), and in bin1 5 to 11%. That matches the estimate of the visibility brief (departure 10).
+
+### A day of measuring
+
+| Figure | Day (`day-sim`), run 1 / run 2 / run 3 | Night (`core-sim`), run 1 / run 2 / run 3 |
+|---|---|---|
+| CPU time of a frame in `core` (µs) | 507 / 368 / 366 | 477 / 401 / 396 |
+| The same, as a share of a core at 98 fps | 4.97 / 3.61 / 3.59% | 4.67 / 3.93 / 3.88% |
+| `core` in the fast phase | 4.80 / 4.03 / 3.58% | 5.07 / 4.18 / 4.13% |
+| `core` with the scheduler paused | 0.66 / 1.01 / 0.57% | 1.16 / 0.89 / 0.89% |
+| `core` over the cycle | 4.10 / 3.47 / 2.68% (runs 1 and 2 hold one gap fewer than whole cycles, run 3 whole cycles of production) | 4.40 / 3.02 / 2.86% (the cycle of the launcher) |
+| Peak memory of `core` (MB) | 248 / 247 / 249 | 268 / 259 / 259 |
+| Peak memory of the survey worker (MB) | 380 / 381 / 381 | 384 / 385 / 384 |
+| Peak memory of `web` (MB) | 89 / not read / 90 | 90 / 90 / 90 |
+| Peak memory of `acquire`, with the simulator (MB) | 246 / 246 / 245 | 254 / 254 / 253 |
+| Fast exposure | 1,196 µs | 2,000 µs |
+| Survey frames that the worker analyzed in a step | 1, the 1 ms frame | 2 |
+
+- **A frame of daylight costs what a frame of the night costs.** In the same run, the day's frame costs 0.92 to 1.06 times the night's. The bright sky shortens the exposure and leaves the frame rate at 82 frames per second, which the readout sets, and the per-frame work is the same.
+- **A day is no busier than a clear night.** The camera measures for 120 s of each 180 s cycle, as at night. The survey step skips its long exposure, so the camera idles about 55 s of the cycle, and the survey worker analyzes one frame of each step instead of two. The peaks of all processes match those of the night within 8%.
+- **Frames that the simulator dropped.** The simulator in `acquire` dropped 35, 6, and 0 of 13,300 frames in the three day runs, on a busy machine. The simulator renders every frame, so this says nothing about the real camera.
+- **`web` was not read in the second day run.** The sampler did not find the interpreter of `web` behind its launcher, so the run reports 4 MB, the size of the launcher. The first run reports 89 MB, and the verdicts below use it.
+
+### A cloudy night of searching
+
+| Figure | Run 1 / run 2 / run 3 |
+|---|---|
+| CPU time of a search frame in `core`, beyond the gaps between the bursts (µs) | 2,525 / 958 / 1,050 |
+| The same, as a share of a core at 98 fps: what a burst takes while it runs | 24.7 / 9.38 / 10.3% |
+| `core` over the search phase, bursts and gaps | 2.02 / 1.61 / 1.50% |
+| `core` with the scheduler paused | 0.99 / 1.15 / 0.99% |
+| `core` over the cycle for clouds | 2.12 / 1.76 / 1.67% (run 3 over a whole cycle from the end of the second step) |
+| Bursts and search frames in the run | 16 bursts and 800 frames in each run. The search figures count 701, 650, and 651 frames: run 3 leaves the warm-up burst out in full. |
+| Survey steps, and the frames that the worker analyzed | 3 steps, 6 frames |
+| Peak memory of `core`, the survey worker, and `web` (MB) | 254, 381, 89 / 254, 381, 90 / 254, 382, 90 |
+| Peak memory of `acquire`, with the simulator (MB) | 233 / 234 / 234 |
+
+- **A search frame costs `core` 2.4 to 5.3 times a frame of measure** (2.65 times in run 3). The CPU time of `core` per second ticks at 15.6 ms on Windows, so two more runs read the cycle counter of `core` (`QueryProcessCycleTime`) every 0.1 s: 1,829 and 838 µs a search frame. Timed alone, the matched filters take 0.15 to 0.35 ms of it, the median of the frame, which sets the exposure of the next burst, 0.05 to 0.17 ms, and the receive about 0.09 ms, all three slower on a busier machine. The rest is the work around each frame and around the start and the end of the stream of each burst. The scheduler thread does about four fifths of the whole (a count of the cycles of each thread). The work does not depend on the clouds: a burst costs the same in a clear sky.
+- **The load of a cloudy night is small.** The bursts take about 3% of the time, so `core` averages 1.7% of a dev core over a whole cycle for clouds in run 3, about 60% of the day's 2.7%. `acquire` streams 50 frames every 15 s in the search periods, about 4% of the frames of a clear night.
+- **A burst is the peak, and it fails its budget on the estimate.** While a burst runs, `core` needs 9 to 25% of a dev core. On a Pi 4 that is 45 to 50% in run 3 from the measured night scaled to the current code (40 to 100% over the three runs) and 66 to 272% on the scaling table, above the 25% that the fast path may use. The frames that `core` has not read yet wait in `acquire`, so a slow burst lasts longer, and a frame that `acquire` drops costs the burst a frame, not a window. A Pi 4 run confirms the figure. Two changes are cheap: take the median of a burst frame on a subsample of its pixels, or on a few frames of the burst, and find what the scheduler does around a search frame that it does not do around a frame of measure.
+
+### The verdicts
+
+The harness estimates each row from this machine with the scaling table (`seeingmon perf report --budgets`). On this laptop that table fails the night's row of `core-sim` too (27 to 51% of a Pi 4 core over the three runs), where a Pi 4 measured 7.95% on October 3. So the table also gives each new row from the measured Pi 4 night, scaled to the current code: the ratio of the new figure to `core-sim` of the same run, times the 17 to 19% that the current code takes on a clear night (see [A frame of the night costs twice what the Pi 4 measured](#a-frame-of-the-night-costs-twice-what-the-pi-4-measured)). For memory, it is the sum of the Pi 4 night, 895 MB, which the new peaks match.
+
+| Budget | Limit | Dev machine, run 1 / run 2 / run 3 | Pi 4, scaling table | Pi 4, from the measured night | Verdict |
+|---|---|---|---|---|---|
+| Fast path and receive in daylight, bin1 at 98 fps, in `core` (`day-core`) | 25% of a core | 4.97 / 3.61 / 3.59% | 25 to 55% | 16 to 20% | pass on the measured night, fail on the table |
+| Search burst and receive, bin1 at 98 fps, in `core` (`search-bin1`) | 25% of a core while a burst runs | 24.7 / 9.38 / 10.3% | 66 to 272% | 40 to 100% (run 3: 45 to 50%) | fail |
+| Search burst and receive, bin2 64 × 64 at 360 fps, from the `kernel` and `ipc` cases (`search-bin2`) | 25% of a core while a burst runs | 6.09% (run 1) | 33 to 67% | | fail on the table |
+| All processes in daylight, peak memory (`day-memory-1.4`, `day-memory-1.6`) | 1.4 GB, gate 1.6 GB | 773 MB (run 1) | 691 to 1,305 MB | about 900 MB | pass |
+| All processes on a cloudy night, peak memory (`cloudy-memory-1.4`, `cloudy-memory-1.6`) | 1.4 GB, gate 1.6 GB | 779 MB (run 1) | 695 to 1,312 MB | about 900 MB | pass |
+| Fast path with the Gaussian-weighted centroid, bin1 (`gaussian-bin1`) | 25% (not a gate) | 1.00% (run 1) | 5.0 to 11.0% | | pass |
+| Fast path with the Gaussian-weighted centroid, bin2 at 360 fps (`gaussian-bin2`) | 25% (not a gate) | 3.98% (run 1) | 20.0 to 43.8% | | marginal |
+
+The shares over whole cycles give the CPU load of a day and of a cloudy night. In run 3, `core` uses 2.7% of a dev core by day and 1.7% under clouds: about 12% and 7% of a Pi 4 core with the factor of 4.4 to 4.5 that the measured night gives (19 to 29% and 12 to 18% on the scaling table). The factor belongs to the work of a frame, so these figures are rough. `acquire` runs its stream by day as at night, 3.1% of a Pi 4 core while it streams (measured), and almost nothing under clouds.
+
+Runs 2 and 3 measured the system cases alone (`--cases calibration,kernel,core-sim,day-sim,cloudy-sim`), so their memory rows and the bin2 search row lack the `ipc` case and read `n/a`.
+
+### The sensor temperature
+
+The simulator cannot measure it. Its sensor reads the ambient temperature plus a constant rise (the options `ambient_c`, 15 °C, and `sensor_rise_c`, 4 °C), so every run read 19.0 °C throughout, and nothing in the simulator warms in the sun. A real camera in a sunlit enclosure runs warmer, and since it measures all day now, the camera and the Pi work through the warmest hours.
+
+The seeing does not depend on it: the real camera's dark current, 0.47 e⁻/s per bin2 pixel at 20 °C and doubling every 5 °C (see [architecture.md](architecture.md)), reaches 7.5 e⁻/s at 40 °C, which is 0.015 e⁻ per bin2 pixel in a fast frame of 2 ms, far below the read noise. The survey does depend on it. The dark model scales the dark current with the temperature, a dark set counts only within 3 °C of the frame (`dark_due`), and the hot pixels of the nearest set mask the frame. A camera that the Sun heated still runs warm at dusk, when the long exposures start again. Phase 3 must measure:
+
+- The sensor temperature against the ambient temperature through a sunny day in the enclosure, from the `sensor_temperature_c` of the `health` records, and how fast it falls after sunset.
+- Whether the dark library covers those temperatures: the dark sets that `dark_due` asks for, and how far the fit of the doubling temperature holds above the warmest set.
+- The temperature of the Pi in the sunlit enclosure, and whether it throttles (`vcgencmd get_throttled`). The harness cannot make a board stay cool.
 
 ## Measure on a Pi 4
 
@@ -460,7 +579,7 @@ The Pi 4 measurement ran on October 3, 2026 (see above). These steps repeat it o
    vcgencmd get_throttled    # 0x0 before the run
    ```
 
-3. Run the harness. The full run takes about 8 minutes on the dev machine: 2 minutes for the cases and 6 minutes for the whole system. On a Pi 4 the cases take an estimated 5 to 15 minutes. The `survey` case needs about 1 GB of free memory for its two processes. The whole-system case runs the simulator inside `acquire`, and the simulator may not reach 30 frames per second on a Pi 4. The case then fails with the message "the fast stream never reached a steady state". Run the other cases in that event (`--cases calibration,kernel,fastpath,ipc,survey,store,memory`), and send the message to the lead.
+3. Run the harness. The full run takes about 20 minutes on the dev machine: 2 minutes for the cases and 6 minutes for each of the three runs of the whole system. On a Pi 4 the cases take an estimated 5 to 15 minutes. The `survey` case needs about 1 GB of free memory for its two processes. The whole-system case runs the simulator inside `acquire`, and the simulator may not reach 30 frames per second on a Pi 4. The case then fails with the message "the fast stream never reached a steady state", and so may `day-sim`, and `cloudy-sim` with "the search never ran a burst after its warm-up". Run the other cases in that event (`--cases calibration,kernel,fastpath,ipc,survey,store,memory`), and send the message to the lead.
 
    ```bash
    .venv/bin/seeingmon perf run --label pi4 --quiet-wait 120 --json local/perf/pi4.json
@@ -481,6 +600,7 @@ The Pi 4 measurement ran on October 3, 2026 (see above). These steps repeat it o
 - **USB.** The camera, the SDK, and the USB transfer. The `ipc` case uses a camera that costs nothing per frame, so the cost of the vendor library and of the USB stack of the kernel is missing from the `acquire` figure. The Python of the production ASI driver (10 to 21 µs per frame on a stub SDK) is missing too, and the camera table shows it apart. About 10 µs of it is the arm and disarm of the `CallWatchdog` around each SDK call, which belongs to the hardware lane.
 - **The SD card.** The `store` case writes to the disk of the machine. An SD card is slower, and its fsync can take tens of milliseconds. The segment writer calls fsync once per minute of frame time, so the effect is small, and the Pi 4 run shows it.
 - **Thermal throttling and the supply.** The harness records `vcgencmd get_throttled` on a Raspberry Pi, and it cannot make a board stay cool. A soak shows the effect.
+- **The sensor temperature in sunlight.** The simulator's sensor reads the ambient temperature plus a constant rise, so `day-sim` cannot show how warm a sunlit camera runs, or what that does to the dark library (see [The sensor temperature](#the-sensor-temperature)).
 - **A real camera.** Jitter in the frame arrival, drops, and the recovery ladder.
 - **A multi-day soak.** Memory growth, file handle leaks, retention, and the long-term behavior of the three processes.
 - **The plate solver.** A first solve of a frame needs `solve-field` or ASTAP, which run outside Python. The `survey` case gives the pipeline the solution of a previous frame, as every frame after the first one has. The architecture's solver table estimates the first solve.
@@ -513,7 +633,7 @@ The `core-sim` case runs the system and reads it from outside. It starts `acquir
 
 **What includes the simulator.** The simulator renders every frame inside `acquire`, so the CPU time of `acquire` in this case includes it, and so does the peak memory of `acquire`: the simulator holds several arrays of the whole frame while it renders a survey frame, and each array of 32-bit floats takes 47 MB. The budgets keep reading `acquire` from the `ipc` case, which uses prebuilt frames, and the page shows the figures of the whole system apart and marks them. The peaks of `core`, the survey worker, and `web` are real, because none of them runs the simulator.
 
-**Sample interval and run length.** The case samples once per second. A full run takes 6 to 7 minutes of sampling after the processes start, and a smoke run takes about 8 s.
+**Sample interval and run length.** The case samples once per second. A full run takes 6 to 7 minutes of sampling after the processes start. A smoke run takes about 20 s of sampling, because the scheduler searches for Polaris in its first bursts before it measures, and 35 to 50 s with the start of the processes.
 
 **Run it.**
 
@@ -521,5 +641,7 @@ The `core-sim` case runs the system and reads it from outside. It starts `acquir
 seeingmon perf run --cases core-sim --label dev --json local/perf/system.json
 seeingmon perf report local/perf/system.json --details
 ```
+
+**The day and the cloudy night.** The cases `day-sim` and `cloudy-sim` run the same system from another plan (`seeingmon.perf.cases.visibility_sim`): a start at noon of midsummer, or a winter night under an opaque overcast, and the cycle of production. The cloudy night adds a search phase, the search period of the cycle with its bursts and the gaps between them, which the samples split into the intervals with the frames of a burst and the gaps (see [A cloudy night of searching](#a-cloudy-night-of-searching)). Slow tests in `tests/perf/test_visibility_sim.py` run both full plans.
 
 The extras `survey` and `web` must be installed. Other work on the machine changes the CPU figures, so run the case when the machine is quiet, and read the line `machine N% busy` and the figure `run.machine_busy`. The figure is the load of all processors during the run, and `system_share_percent` in its detail is the share that the system itself used. On Linux in a virtual machine, the load covers the virtual machine only, and the host can be busy without showing. The `--smoke` mode uses the `small` sensor and a few seconds of sampling. A slow test (`test_the_full_run_reaches_the_steady_state_and_two_survey_steps` in `tests/perf/test_core_sim.py`) runs the full plan, and the nightly workflow of CI runs it with the other slow tests. It checks that the run gets through the phases and that the figures exist, and it checks no size.
