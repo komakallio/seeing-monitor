@@ -828,8 +828,8 @@ class LiveSeeingResponse(LiveSeeingView):
     """The rolling seeing value of the fast stream: a provisional number that `core` does not store.
 
     `core` estimates the seeing from the newest `span_s` seconds of frames with the estimator of the
-    stored windows, and it repeats the estimate every few seconds while the fast stream runs, which
-    is about three quarters of each cycle. Between fast periods the value keeps its time, so
+    stored windows, and it repeats the estimate every few seconds while the fast stream measures,
+    which is at most two thirds of each cycle. Between fast periods the value keeps its time, so
     `age_s` shows how old it is. The `seeing_fwhm_*` and `r0_*` values follow the records of the
     `seeing` series: the first of each pair comes from the variance of the motion, and the second
     from its structure function. `valid_fraction` is the share of the frames of the span (the frames

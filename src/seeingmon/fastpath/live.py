@@ -15,8 +15,9 @@ span scatters by 3.3% around the truth, against 1.4% for a window of 60 s and 2.
 numbers). The estimator corrects the variance that its detrending removes for the length of the
 span, so the value stays unbiased to that level. `core` does not store the value, and it computes
 none of the extras of a window: the spectrum, the scintillation, the vibration lines, and the star
-statistics other than the width. The value exists only while the fast stream runs, which is about
-three quarters of each cycle.
+statistics other than the width. The value exists only while the fast stream measures, which is at
+most two thirds of each cycle (a fast period of 120 s in a cycle of 180 s by default). The frames
+of a search burst reach no ring.
 
 **The ring.** One row per frame holds the time (in seconds from the start of the stream), the slot
 on the uniform grid of frame periods, the flags (usable, saturated), the centroid, the widths, the
