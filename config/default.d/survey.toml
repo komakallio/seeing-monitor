@@ -37,8 +37,10 @@ night_split_utc_hour = 12.0
 solve_field_command = "solve-field"
 astap_command = "astap"
 astap_database_dir = ""   # Empty uses the star database that ASTAP finds by itself.
-# The solvers to try, in order, after the tracker fails to match the frame by itself.
-solvers = ["astrometry.net", "astap"]
+# The solvers to try, in order, after the tracker fails to match the frame by itself. `triangles`
+# matches the triangles of the brightest stars with the catalog in this process, in tens of
+# milliseconds and with no program and no index files. The other two start a program.
+solvers = ["triangles", "astrometry.net", "astap"]
 # UT1 - UTC in seconds (the IERS bulletins publish it). It moves the Earth rotation angle by
 # 15 arcsec for each second, so 0 is wrong by up to 0.9 s of that.
 dut1_s = 0.0

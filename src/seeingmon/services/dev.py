@@ -809,6 +809,8 @@ def _solver_warnings(survey: SurveyConfig) -> list[str]:
         ]
     found: list[str] = []
     for name in survey.solvers:
+        if name == "triangles":
+            continue  # it runs in this process and reads no file but the catalog
         if name == "astrometry.net":
             setting, command = "solve_field_command", survey.solve_field_command
         else:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 from types import ModuleType
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -113,3 +114,8 @@ def label(mask: npt.NDArray[np.bool_]) -> tuple[npt.NDArray[np.int32], int]:
     """
     labels, count = _ndimage.label(mask)
     return np.asarray(labels, dtype=np.int32), int(count)
+
+
+def kdtree(points: FloatArray) -> Any:
+    """A k-d tree of the rows of `points`: `query` and `query_ball_point` work as in SciPy."""
+    return _spatial.cKDTree(points)

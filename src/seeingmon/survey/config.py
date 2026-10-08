@@ -266,7 +266,8 @@ class SurveyConfig(SectionModel):
     solve_field_command: str = "solve-field"
     astap_command: str = "astap"
     astap_database_dir: str = ""  # the folder with the ASTAP star database; empty uses its default
-    solvers: tuple[str, ...] = ("astrometry.net", "astap")  # the order in which to try them
+    # The order in which to try them: `triangles` runs in this process and needs the catalog only.
+    solvers: tuple[str, ...] = ("triangles", "astrometry.net", "astap")
     dut1_s: float = 0.0  # UT1 - UTC in seconds, for the Earth rotation angle
 
     detect: DetectConfig = DetectConfig()

@@ -565,10 +565,10 @@ def test_the_spec_describes_the_pipeline_in_plain_data(profile: Profile, tmp_pat
     assert spec.station_id == "station-9"
     assert Profile.model_validate(spec.profile) == profile
     assert SurveyConfig.model_validate(spec.config) == config
-    assert [s.kind for s in spec.solvers] == ["astrometry.net", "astap"]
-    assert spec.solvers[0].command == "solve-field --verbose"
-    assert spec.solvers[0].index_dir == str(tmp_path / "idx")
-    assert spec.solvers[1].database_dir == str(tmp_path / "db")
+    assert [s.kind for s in spec.solvers] == ["triangles", "astrometry.net", "astap"]
+    assert spec.solvers[1].command == "solve-field --verbose"
+    assert spec.solvers[1].index_dir == str(tmp_path / "idx")
+    assert spec.solvers[2].database_dir == str(tmp_path / "db")
     with pytest.raises(ValueError, match="catalog_path"):
         analyzer_spec(profile=profile, station_id="s", config=SurveyConfig())
     with pytest.raises(ValueError, match="unknown solver"):

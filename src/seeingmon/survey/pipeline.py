@@ -259,7 +259,7 @@ class SolveAttempt:
 
 @dataclass(frozen=True, slots=True)
 class SolverSpec:
-    """A plate solver in plain data. `kind` is `astrometry.net` or `astap`."""
+    """A plate solver in plain data. `kind` is `triangles`, `astrometry.net`, or `astap`."""
 
     kind: str
     command: str
@@ -283,25 +283,39 @@ def solver_specs_from_config(config: SurveyConfig) -> tuple[SolverSpec, ...]:
     """The solver specifications that a configuration names, in order."""
     specs: list[SolverSpec] = []
     for name in config.solvers:
-        if name == "astrometry.net":
+        if name == "triangles":
+            specs.append(SolverSpec(name, ""))
+        elif name == "astrometry.net":
             specs.append(SolverSpec(name, config.solve_field_command, index_dir=config.index_dir))
         elif name == "astap":
             specs.append(
                 SolverSpec(name, config.astap_command, database_dir=config.astap_database_dir)
             )
         else:
-            raise ValueError(f"unknown solver {name!r}; use astrometry.net or astap")
+            raise ValueError(f"unknown solver {name!r}; use triangles, astrometry.net, or astap")
     return tuple(specs)
 
 
-def build_solvers(specs: tuple[SolverSpec, ...], clock: Clock | None = None) -> list[PlateSolver]:
-    """Make the solver adapters that the specifications describe."""
+def build_solvers(
+    specs: tuple[SolverSpec, ...], clock: Clock | None = None, catalog: CapCatalog | None = None
+) -> list[PlateSolver]:
+    """Make the solver adapters that the specifications describe.
+
+    The `triangles` solver works in this process on the catalog, so it needs `catalog`.
+    """
     from seeingmon.solvers.astap import AstapSolver
     from seeingmon.solvers.astrometry_net import AstrometryNetSolver
+    from seeingmon.solvers.triangles import TriangleSolver
 
     solvers: list[PlateSolver] = []
     for spec in specs:
-        if spec.kind == "astrometry.net":
+        if spec.kind == "triangles":
+            if catalog is None:
+                raise ValueError("the triangles solver needs the catalog")
+            triangles = TriangleSolver(catalog, clock=clock)
+            triangles.prepare()  # the table builds here, not at the first solve
+            solvers.append(triangles)
+        elif spec.kind == "astrometry.net":
             solvers.append(AstrometryNetSolver(spec.index_dir, command=spec.command, clock=clock))
         elif spec.kind == "astap":
             solvers.append(
@@ -329,11 +343,12 @@ def build_pipeline(spec: PipelineSpec, clock: Clock | None = None) -> SurveyPipe
     # The flat is the active one of the flat library, then `flat_file`, then a unit flat. The
     # pipeline asks again before each frame, so an activation needs no restart.
     active = ActiveFlat.from_config(config)
+    catalog = load_catalog(spec.catalog_path)
     return SurveyPipeline(
         station_id=spec.station_id,
         profile=profile,
-        catalog=load_catalog(spec.catalog_path),
-        solvers=build_solvers(spec.solvers, clock),
+        catalog=catalog,
+        solvers=build_solvers(spec.solvers, clock, catalog),
         config=config,
         hot_pixels=hot,
         dark_library=library,

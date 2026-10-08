@@ -45,7 +45,7 @@ def test_the_configuration_layers_load_the_survey_section(tmp_path: Path) -> Non
     config = load_config(local_file=tmp_path / "missing.toml", env={})
     section = config.section("survey", SurveyConfig)
     assert section.catalog_path == ""
-    assert section.solvers == ("astrometry.net", "astap")
+    assert section.solvers == ("triangles", "astrometry.net", "astap")
     assert section.pointing.validity_s == 0.0  # no age limit
     assert section.fit.match_radius_px == (4.0, 2.0, 1.2)
     assert section.transparency.fallback_hours == 6.0
