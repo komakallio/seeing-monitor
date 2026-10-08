@@ -8,8 +8,10 @@ from math import erf, sqrt
 import numpy as np
 import pytest
 
+from seeingmon.clock import VirtualClock
 from seeingmon.frames import Frame
 from seeingmon.profile import Profile
+from seeingmon.services.core.alignment.solve import QuickSolver
 from seeingmon.solvers.triangles import TriangleSolver
 from seeingmon.survey.catalog import CapCatalog
 from seeingmon.survey.centroid import FWHM_PER_SIGMA
@@ -18,6 +20,7 @@ from seeingmon.survey.detect import DetectionError, StarFlag
 from seeingmon.survey.detect_quick import QuickDetectOptions, block_sum, detect_quick
 from seeingmon.survey.geometry import ARCSEC_PER_RAD
 from seeingmon.survey.pipeline import SurveyPipeline
+from seeingmon.survey.tracker import PointingTracker
 from seeingmon.survey.wcs_fit import CameraAttitude
 from tests.survey import synth
 
@@ -249,3 +252,21 @@ def test_the_quick_bin_is_zero_by_default_and_the_property_says_so(
     pipeline = SurveyPipeline(station_id="test", profile=profile, catalog=catalog, solvers=[])
     assert pipeline.quick_bin == 0
     assert lean_pipeline(profile, catalog).quick_bin == 4
+
+
+def test_the_quick_solver_of_the_alignment_helper_takes_the_lean_path(
+    profile: Profile, catalog: CapCatalog, scene_frame: tuple[Frame, synth.SynthTruth]
+) -> None:
+    frame, _ = scene_frame
+    pipeline = lean_pipeline(profile, catalog)
+    tracker = PointingTracker(profile)
+    solver = QuickSolver(pipeline, tracker, VirtualClock(frame.t_utc_ns))
+    first = solver.solve(frame)
+    assert first.solved
+    assert first.solver == "triangles"
+    assert first.focus_fwhm_px is not None
+    assert first.n_matched >= 8
+    second = solver.solve(replace(frame, seq=frame.seq + 1))
+    assert second.solved
+    assert second.solver == "tracker"
+    assert second.elapsed_s < first.elapsed_s * 2 + 1.0
