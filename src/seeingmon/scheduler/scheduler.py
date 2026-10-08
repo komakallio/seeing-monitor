@@ -178,6 +178,7 @@ from seeingmon.scheduler.gates import (
     median_of,
     read_sky,
 )
+from seeingmon.scheduler.ladder_memory import LadderMemory
 from seeingmon.scheduler.levels import DESTRUCTIVE_STEPS, EscalationLevel, step_name
 from seeingmon.scheduler.machine import State, StateMachine
 from seeingmon.scheduler.roi import roi_at_sensor_center, roi_centered_on
@@ -425,6 +426,7 @@ class Scheduler:
         alignment_sink: Callable[[Frame], None] | None = None,
         focus_sink: FocusSink | None = None,
         result_sink: Callable[[CommissionResult], None] | None = None,
+        ladder_memory: LadderMemory | None = None,
         twilight: TwilightConfig | None = None,
     ) -> None:
         self._driver = driver
@@ -464,7 +466,10 @@ class Scheduler:
             usable_fraction=self._twilight.max_background_fraction,
         )
         self._cloud = CloudTracker(self._config.cloud)
-        self._faults = FaultTracker(self._config.faults, self._config.ladder)
+        self._ladder_memory = ladder_memory
+        self._faults = FaultTracker(
+            self._config.faults, self._config.ladder, self._remembered_destructive_age_s
+        )
 
         now_utc = clock.utc_ns()
         now_mono = clock.monotonic_ns()
@@ -1900,6 +1905,25 @@ class Scheduler:
             self._next_watch_mono = self._mono()
         return StepKind.RECOVERY
 
+    def _remembered_destructive_age_s(self) -> float | None:
+        """The age of the last reboot or power cycle that an earlier run asked for.
+
+        `None` means that the scheduler has no memory to consult, or that it holds no record. A
+        clock that is not synchronized cannot date a request, and it cannot tell the age of the
+        last one, so the answer is 0 then (the last request counts as just made). It is 0 too
+        when the clock runs behind the record, which only a clock that has not synchronized does.
+        """
+        memory = self._ladder_memory
+        if memory is None:
+            return None
+        if not self._clock_ok:
+            return 0.0
+        last = memory.read()
+        if last is None:
+            return None
+        age_s = (self._clock.utc_ns() - last) / NS_PER_S
+        return age_s if age_s >= 0.0 else 0.0
+
     def _perform_ladder_step(self, plan: FaultPlan) -> None:
         step = plan.step
         name = step_name(step)
@@ -1917,6 +1941,9 @@ class Scheduler:
                     self._opened = opened = True
             else:
                 assert self._escalate is not None
+                if step in DESTRUCTIVE_STEPS and self._ladder_memory is not None:
+                    # The request may take this process with it, so the record comes first.
+                    self._ladder_memory.write(self._clock.utc_ns())
                 self._escalate(step)
         except Exception as error:
             # The driver raises a `CameraError`, but the callback is outside code that can raise
@@ -3518,6 +3545,7 @@ def build_scheduler(
     alignment_sink: Callable[[Frame], None] | None = None,
     focus_sink: FocusSink | None = None,
     result_sink: Callable[[CommissionResult], None] | None = None,
+    ladder_memory: LadderMemory | None = None,
 ) -> Scheduler:
     """Build a scheduler from the layered configuration.
 
@@ -3543,6 +3571,7 @@ def build_scheduler(
         alignment_sink=alignment_sink,
         focus_sink=focus_sink,
         result_sink=result_sink,
+        ladder_memory=ladder_memory,
         twilight=twilight,
     )
 

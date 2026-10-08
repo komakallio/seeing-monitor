@@ -98,6 +98,7 @@ from seeingmon.scheduler import (
     build_scheduler,
     load_site,
 )
+from seeingmon.scheduler.ladder_memory import FileLadderMemory
 from seeingmon.scheduler.status import SchedulerStatus
 from seeingmon.services.config import ServicesConfig
 from seeingmon.services.core.alignment.calibration import (
@@ -347,6 +348,7 @@ class CoreApp:
             alignment_sink=self.alignment.sink,
             focus_sink=self.rapid,
             result_sink=self._on_result,
+            ladder_memory=FileLadderMemory(storage.layout.root / "state" / "ladder.json"),
         )
         self._register_handlers()
         self._build_reporting()

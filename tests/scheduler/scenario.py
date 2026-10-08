@@ -79,6 +79,7 @@ from seeingmon.records import (
 from seeingmon.scheduler import CommissionResult, Scheduler, SchedulerConfig, SiteConfig
 from seeingmon.scheduler.config import FastConfig, LoopConfig, SearchConfig, SurveyConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
+from seeingmon.scheduler.ladder_memory import LadderMemory
 from seeingmon.scheduler.levels import EscalationLevel
 from seeingmon.survey.config import TwilightConfig
 from seeingmon.testing import (
@@ -382,6 +383,7 @@ class World:
         context_provider: Callable[[int], FastContext] | None = None,
         sky: SkyCurve = saturating_sky,
         twilight: TwilightConfig = SCENARIO_TWILIGHT,
+        ladder_memory: LadderMemory | None = None,
     ) -> None:
         self.start_utc_ns = start_utc_ns
         self.clock: Clock = clock or VirtualClock(start_utc_ns)
@@ -432,6 +434,7 @@ class World:
             result_sink=self.results.append,
             context_provider=context_provider,
             twilight=twilight,
+            ladder_memory=ladder_memory,
         )
 
     # --- Time ---

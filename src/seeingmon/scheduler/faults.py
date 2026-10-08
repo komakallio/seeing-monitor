@@ -21,8 +21,10 @@ every few minutes and nothing more. A reboot or a power cycle always waits the s
 **The ladder.** The step for failure `k` is `LADDER[(k - 1) // attempts_per_level]`, limited to
 `max_level`. After the top step, the scheduler repeats it. A reboot or a power cycle interrupts the
 whole Pi, so the scheduler asks for one at most once per `destructive_interval_s`, and it falls
-back to the highest gentler step in between. When no supervisor callback exists, the ladder stops
-at the last driver step.
+back to the highest gentler step in between. The limit holds across a reboot: the scheduler
+remembers the time of its last request in a file (`seeingmon.scheduler.ladder_memory`) and hands
+the tracker the age of that request. When no supervisor callback exists, the ladder stops at the
+last driver step.
 
 **Degraded.** The status turns `degraded` after `degraded_after` failures in a row, and at once
 when the cause is `disconnected`: the driver says that the camera is not connected, and more
@@ -32,6 +34,7 @@ also resets the failure count and the ladder.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -128,9 +131,17 @@ class FaultPlan:
 class FaultTracker:
     """Count failures and plan the response. It reads no clock: the caller passes the time."""
 
-    def __init__(self, faults: FaultConfig, ladder: LadderConfig) -> None:
+    def __init__(
+        self,
+        faults: FaultConfig,
+        ladder: LadderConfig,
+        remembered_age_s: Callable[[], float | None] | None = None,
+    ) -> None:
+        """`remembered_age_s` gives the age of the last reboot or power cycle that an earlier run
+        asked for, or `None` when there is none. It is called when a destructive step comes up."""
         self._faults = faults
         self._ladder = ladder
+        self._remembered_age_s = remembered_age_s
         self._max_index = LADDER.index(parse_step(ladder.max_level))
         self._failures = 0
         self._good_frames = 0
@@ -234,7 +245,11 @@ class FaultTracker:
         return step
 
     def _destructive_is_too_soon(self, now_mono_ns: int) -> bool:
+        interval_s = self._ladder.destructive_interval_s
         last = self._last_destructive_mono_ns
-        if last is None:
+        if last is not None and (now_mono_ns - last) < interval_s * NS_PER_S:
+            return True
+        if self._remembered_age_s is None:
             return False
-        return (now_mono_ns - last) < self._ladder.destructive_interval_s * NS_PER_S
+        age_s = self._remembered_age_s()
+        return age_s is not None and age_s < interval_s
