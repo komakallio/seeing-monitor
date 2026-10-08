@@ -50,7 +50,7 @@ class TestTheQuickSolver:
             core.app.stop()
 
     def test_the_worker_detects_only_the_bright_stars(self, tmp_path: Path) -> None:
-        core = rig(tmp_path)
+        core = rig(tmp_path, "[alignment]\nfast_detect = false\n")
         try:
             solver = quick_solver(core)
             assert isinstance(solver, ProcessQuickSolver)
@@ -67,8 +67,9 @@ class TestTheQuickSolver:
     def test_the_options_of_the_alignment_section_reach_the_worker(self, tmp_path: Path) -> None:
         core = rig(
             tmp_path,
-            "[alignment]\ndetect_threshold_sigma = 6.5\ndetect_max_stars = 120\n"
-            "detect_coarse_bin = 4\ndetect_refine_stars = 90\nsolve_timeout_s = 30.0\n",
+            "[alignment]\nfast_detect = false\ndetect_threshold_sigma = 6.5\n"
+            "detect_max_stars = 120\ndetect_coarse_bin = 4\ndetect_refine_stars = 90\n"
+            "solve_timeout_s = 30.0\n",
         )
         try:
             solver = quick_solver(core)
@@ -82,13 +83,30 @@ class TestTheQuickSolver:
             core.app.stop()
 
     def test_the_thread_mode_builds_the_pipeline_in_this_process(self, tmp_path: Path) -> None:
-        core = rig(tmp_path, '[alignment]\nsolver_mode = "thread"\n')
+        core = rig(tmp_path, '[alignment]\nsolver_mode = "thread"\nfast_detect = false\n')
         try:
             solver = quick_solver(core)
             assert isinstance(solver, QuickSolver)
             options = solver._pipeline._detect_options  # type: ignore[attr-defined]
             assert (options.threshold_sigma, options.max_stars) == (8.0, 300)
             assert (options.coarse_bin, options.refine_stars) == (2, 300)
+        finally:
+            core.app.stop()
+
+    def test_the_fast_detector_is_on_by_default_and_takes_its_own_numbers(
+        self, tmp_path: Path
+    ) -> None:
+        core = rig(
+            tmp_path, "[alignment]\nfast_bin = 8\nfast_max_stars = 150\nfast_refine_stars = 90\n"
+        )
+        try:
+            solver = quick_solver(core)
+            assert isinstance(solver, ProcessQuickSolver)
+            assert solver.spec is not None
+            detect = solver.spec.config["detect"]
+            assert detect["quick_bin"] == 8
+            assert (detect["max_stars"], detect["refine_stars"]) == (150, 90)
+            assert core.app.survey_config.detect.quick_bin == 0  # the survey path never uses it
         finally:
             core.app.stop()
 

@@ -709,14 +709,19 @@ class CoreApp:
 
         assert self.tracker is not None
         settings = self.alignment_settings
-        detect = self.survey_config.detect.model_copy(
-            update={
-                "threshold_sigma": settings.detect_threshold_sigma,
-                "max_stars": settings.detect_max_stars,
-                "coarse_bin": settings.detect_coarse_bin,
-                "refine_stars": settings.detect_refine_stars,
-            }
-        )
+        detect_update: dict[str, Any] = {
+            "threshold_sigma": settings.detect_threshold_sigma,
+            "max_stars": settings.detect_max_stars,
+            "coarse_bin": settings.detect_coarse_bin,
+            "refine_stars": settings.detect_refine_stars,
+        }
+        if settings.fast_detect:
+            detect_update.update(
+                quick_bin=settings.fast_bin,
+                max_stars=settings.fast_max_stars,
+                refine_stars=settings.fast_refine_stars,
+            )
+        detect = self.survey_config.detect.model_copy(update=detect_update)
         config = self.survey_config.model_copy(update={"detect": detect})
         pointing = config.pointing
         in_process = (

@@ -258,13 +258,18 @@ def analyze_frame(
     """
     started = clock.monotonic_ns()
     try:
-        analysis = pipeline.analyze(
-            frame,
-            previous=previous,
-            reference=reference,
-            index=index,
-            sky_quality=False,  # the live view needs no zero point, and the step costs a second
-        )
+        quick = getattr(pipeline, "analyze_quick", None)
+        if callable(quick) and getattr(pipeline, "quick_bin", 0) >= 2:
+            # The lean analysis: the stars and the pointing, no sky quality and no records.
+            analysis = quick(frame, previous=previous, reference=reference, index=index)
+        else:
+            analysis = pipeline.analyze(
+                frame,
+                previous=previous,
+                reference=reference,
+                index=index,
+                sky_quality=False,  # the live view needs no zero point; the step costs a second
+            )
     except Exception as error:
         _log.exception("the quick solve of frame %d failed", frame.seq)
         return QuickAnalysis(

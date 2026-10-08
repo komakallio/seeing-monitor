@@ -62,6 +62,9 @@ trail_flag_px = 1.5
 # stars that the cloud fraction expects ([survey.cloud] min_completeness).
 coarse_bin = 2
 refine_stars = 1200
+# The quick detector of the alignment view (`[alignment] fast_detect`) sums blocks of this many
+# pixels and fits only the brightest stars. 0 turns it off. The survey path never reads it.
+quick_bin = 0
 
 # The pointing fit.
 [survey.fit]

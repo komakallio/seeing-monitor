@@ -35,6 +35,7 @@ _SQRT_2PI = float(np.sqrt(2.0 * np.pi))
 
 BoolArray = npt.NDArray[np.bool_]
 IntArray = npt.NDArray[np.intp]
+FrameCounts = npt.NDArray[np.float32] | npt.NDArray[np.uint16]
 
 # The sub-position counts that a trail can use, so stars with similar trails share a batch.
 _K_BINS = (1, 2, 4, 8, 16, 32, 64)
@@ -120,7 +121,7 @@ def _bin_up(values: FloatArray, bins: tuple[int, ...]) -> IntArray:
 
 
 def _fit_batch(
-    data: npt.NDArray[np.float32],
+    data: FrameCounts,
     bad: BoolArray | None,
     x0: FloatArray,
     y0: FloatArray,
@@ -134,6 +135,8 @@ def _fit_batch(
     n_sub: int,
     sigma_bounds: tuple[float, float],
     max_iter: int,
+    background0: FloatArray | None = None,
+    bad_above: float | None = None,
 ) -> StampFit:
     """Fit the stars of one batch, which share a stamp size and a sub-position count.
 
@@ -152,6 +155,8 @@ def _fit_batch(
     valid = ((gy >= 0) & (gy < height))[:, :, None] & ((gx >= 0) & (gx < width))[:, None, :]
     if bad is not None:
         valid &= ~bad[cy[:, :, None], cx[:, None, :]]
+    if bad_above is not None:
+        valid &= stamp < bad_above
     valid &= np.isfinite(stamp)
     stamp = np.where(valid, stamp, 0.0).reshape(n, size * size)
     valid = valid.reshape(n, size * size)
@@ -164,7 +169,7 @@ def _fit_batch(
     params[:, 0] = x0
     params[:, 1] = y0
     params[:, 2] = np.maximum(flux0, 3.0 * noise)
-    params[:, 3] = 0.0
+    params[:, 3] = 0.0 if background0 is None else background0
     params[:, 4] = np.clip(sigma0, *sigma_bounds)
 
     def system(
@@ -243,7 +248,7 @@ def _fit_batch(
 
 
 def fit_stars(
-    data: npt.NDArray[np.float32],
+    data: FrameCounts,
     x0: npt.ArrayLike,
     y0: npt.ArrayLike,
     flux0: npt.ArrayLike,
@@ -256,6 +261,8 @@ def fit_stars(
     bad: BoolArray | None = None,
     sigma_bounds: tuple[float, float] = (0.15, 4.0),
     max_iter: int = 10,
+    background0: npt.ArrayLike | None = None,
+    bad_above: float | None = None,
 ) -> StampFit:
     """Fit a profile to each star of a frame.
 
@@ -266,6 +273,11 @@ def fit_stars(
     electrons for the Poisson noise. `bad` marks pixels that carry no weight, such as
     saturated pixels and hot pixels. The function sorts the stars into batches of similar size
     and returns the fits in the input order.
+
+    `data` may hold the background too: `background0` gives the starting background of each star
+    (the fit then needs no frame that someone subtracted the background from), and `bad_above`
+    gives a weight of zero to every pixel of a stamp at or above that level, so that saturated
+    pixels need no mask of the whole frame.
     """
     x0a = np.asarray(x0, dtype=np.float64)
     n = x0a.shape[0]
@@ -275,6 +287,7 @@ def fit_stars(
     dx = np.asarray(trail_dx, dtype=np.float64)
     dy = np.asarray(trail_dy, dtype=np.float64)
     rms = np.asarray(noise, dtype=np.float64)
+    start_background = None if background0 is None else np.asarray(background0, dtype=np.float64)
     length = np.hypot(dx, dy)
     width = np.maximum(sigma, 0.5)
     half = _bin_up(3.0 * width + length / 2.0 + 1.5, _HALF_BINS)
@@ -319,6 +332,8 @@ def fit_stars(
                     int(sub_value),
                     sigma_bounds,
                     max_iter,
+                    None if start_background is None else start_background[index],
+                    bad_above,
                 )
                 out["x"][index] = fit.x
                 out["y"][index] = fit.y

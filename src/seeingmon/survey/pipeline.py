@@ -136,6 +136,7 @@ from seeingmon.survey.detect import (
     StarFlag,
     detect_stars,
 )
+from seeingmon.survey.detect_quick import QuickDetectOptions, detect_quick
 from seeingmon.survey.field import catalog_field
 from seeingmon.survey.flat_library import ActiveFlat
 from seeingmon.survey.geometry import FloatArray
@@ -964,6 +965,109 @@ class SurveyPipeline:
             field_vectors=field_vectors,
             epoch_stars=FrameStars.empty() if quality is None else quality.stars,
             quality=quality,
+            attempts=tuple(attempts),
+        )
+
+    @property
+    def quick_bin(self) -> int:
+        """The block size of the quick detector, or 0 when `analyze_quick` is off."""
+        return self._config.detect.quick_bin
+
+    def analyze_quick(
+        self,
+        frame: Frame,
+        *,
+        previous: PointingSolution | None = None,
+        reference: ReferenceSolution | None = None,
+        index: int = 0,
+    ) -> FrameAnalysis:
+        """The lean analysis of an alignment frame: the stars and the pointing, nothing else.
+
+        The live view needs the position of Polaris, the roll, and the focus, a few times a
+        second. This method detects the bright stars with `detect_quick` (blocks of
+        `[survey.detect] quick_bin` pixels, a model fit of the brightest stars only), solves with
+        the tracker and the solvers as `analyze` does, and builds no sky quality, cloud
+        fraction, or records. A frame of 8-bit counts takes the full analysis.
+        """
+        if frame.data.dtype != np.uint16 or self._config.detect.quick_bin < 2:
+            return self.analyze(frame, previous=previous, reference=reference, index=index,
+                                sky_quality=False)  # fmt: skip
+        timings: dict[str, float] = {}
+        started = self._clock.monotonic_ns()
+        notes: list[str] = []
+        attempts: list[SolveAttempt] = []
+        try:
+            readout = self._profile.mode(frame.mode)
+        except ProfileError:
+            return self._failure(
+                frame, reference, f"unknown readout mode {frame.mode!r}", timings, sky_quality=False
+            )
+        mode_shape = (readout.height_px, readout.width_px)
+
+        def lap(name: str) -> None:
+            nonlocal started
+            now = self._clock.monotonic_ns()
+            timings[name] = (now - started) / NS_PER_S
+            started = now
+
+        tracker = PointingTracker(self._profile, validity_s=self._config.pointing.validity_s)
+        if previous is not None and previous.mode == frame.mode:
+            tracker.update(previous)
+        cfg = self._config.detect
+        options = QuickDetectOptions(
+            bin_factor=cfg.quick_bin,
+            threshold_sigma=cfg.threshold_sigma,
+            max_stars=cfg.max_stars,
+            refine_stars=cfg.refine_stars,
+            min_pixels=cfg.min_pixels,
+            edge_margin_px=cfg.edge_margin_px,
+            max_saturated_pixels=cfg.max_saturated_pixels,
+        )
+        try:
+            detections = detect_quick(
+                np.asarray(frame.data, dtype=np.uint16),
+                adc_bits=frame.adc_bits,
+                e_per_adu=self._profile.e_per_adu(frame.mode, frame.gain),
+                options=options,
+            ).shifted(frame.roi.x, frame.roi.y)
+        except DetectionError as error:
+            return self._failure(
+                frame, reference, f"detection failed: {error}", timings, sky_quality=False
+            )
+        lap("detect")
+        epoch = apparent.epoch_from_utc_ns(frame.t_utc_ns, self._config.dut1_s)
+        solved = self._solve(frame, detections, tracker, epoch, mode_shape, index, notes, attempts)
+        if solved is None and self._pole_retry_due(detections, attempts):
+            notes.append("no solver found the field near the prediction, so they try the pole")
+            solved = self._solve(
+                frame, detections, tracker, epoch, mode_shape, index, notes, attempts, pole=True
+            )
+        lap("solve")
+        fit = None if solved is None else solved.fit
+        attitude = None if fit is None else fit.attitude
+        solution: PointingSolution | None = None
+        if attitude is not None and fit is not None:
+            solution = PointingSolution.from_attitude(
+                attitude,
+                epoch,
+                mode=frame.mode,
+                width_px=readout.width_px,
+                height_px=readout.height_px,
+                n_matched=fit.n_matched,
+                rms_arcsec=fit.rms_arcsec,
+                solver="" if solved is None else solved.solver,
+            )
+        return FrameAnalysis(
+            records=(),
+            solved=solved is not None,
+            cloud_fraction=None,
+            solution=solution,
+            detections=detections,
+            fit=fit,
+            timings=timings,
+            notes=tuple(notes),
+            attitude=attitude,
+            epoch=epoch,
             attempts=tuple(attempts),
         )
 

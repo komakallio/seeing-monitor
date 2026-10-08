@@ -70,6 +70,7 @@ x runs along the columns, and y runs along the rows.
 from __future__ import annotations
 
 import enum
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -87,8 +88,12 @@ if TYPE_CHECKING:
     from seeingmon.survey.config import DetectConfig
 
 # SEP stops when one object holds more pixels than its stack. A saturated star with a halo can
-# hold hundreds of thousands.
-sep.set_extract_pixstack(3_000_000)
+# hold hundreds of thousands. A large stack costs time on every extraction (about 0.2 s on a
+# Pi 4), so the quick detector of the alignment view sets a smaller one for its own call,
+# under `EXTRACT_LOCK`, which every extraction takes.
+PIXEL_STACK = 3_000_000
+sep.set_extract_pixstack(PIXEL_STACK)
+EXTRACT_LOCK = threading.Lock()
 
 BoolArray = npt.NDArray[np.bool_]
 
@@ -584,16 +589,17 @@ def _extract(
     opts: DetectOptions,
 ) -> Any:
     """Run `sep.extract` on a background-subtracted image."""
-    return sep.extract(
-        image,
-        opts.threshold_sigma,
-        err=rms_map if _varies(rms_map) else rms,
-        minarea=opts.min_pixels,
-        filter_kernel=kernel,
-        deblend_cont=1.0,
-        clean=True,
-        mask=mask,
-    )
+    with EXTRACT_LOCK:
+        return sep.extract(
+            image,
+            opts.threshold_sigma,
+            err=rms_map if _varies(rms_map) else rms,
+            minarea=opts.min_pixels,
+            filter_kernel=kernel,
+            deblend_cont=1.0,
+            clean=True,
+            mask=mask,
+        )
 
 
 def _search_full(

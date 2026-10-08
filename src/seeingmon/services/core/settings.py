@@ -220,6 +220,12 @@ class AlignmentSettings(SectionModel):
     start, takes the full search. The survey analysis keeps its own settings (`[survey.detect]`),
     and a lower threshold, more stars, and a smaller bin only make the quick solve slower.
 
+    With `fast_detect` (the default), the quick solve takes another way, for a Raspberry Pi 4: it
+    sums blocks of `fast_bin` x `fast_bin` pixels, finds the `fast_max_stars` brightest sources, and
+    fits the brightest `fast_refine_stars` of them that are not saturated at full resolution, and
+    it builds no sky quality or records (`seeingmon.survey.detect_quick`). The `detect_*` settings
+    above then apply only to the threshold. `fast_detect = false` returns to the search above.
+
     **Rapid focus.** The mode (a ROI of the fast readout mode around Polaris, with the star width in
     arcseconds 20 times a second) is offered when the coarse focus is good enough and `core` knows
     where Polaris is. The coarse focus is the median of the last five focus values of the normal
@@ -248,6 +254,10 @@ class AlignmentSettings(SectionModel):
     detect_max_stars: int = Field(300, ge=8)
     detect_coarse_bin: int = Field(2, ge=1, le=16)
     detect_refine_stars: int = Field(300, ge=1)
+    fast_detect: bool = True
+    fast_bin: int = Field(4, ge=2, le=16)
+    fast_max_stars: int = Field(120, ge=8)
+    fast_refine_stars: int = Field(80, ge=1)
 
     histogram_bins: int = Field(64, ge=8, le=256)
     saturation_level: float = Field(0.98, gt=0, le=1)

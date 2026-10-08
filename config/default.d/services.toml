@@ -284,6 +284,16 @@ detect_max_stars = 300
 detect_coarse_bin = 2
 detect_refine_stars = 300
 
+# The fast path, for a Raspberry Pi 4. With fast_detect, the quick solve sums blocks of
+# fast_bin x fast_bin pixels in one pass, finds the fast_max_stars brightest sources, fits the
+# brightest fast_refine_stars of them that are not saturated at full resolution, and builds no sky
+# quality or records (see seeingmon.survey.detect_quick). The detect_* keys above then apply only
+# to the threshold. false returns to the search above.
+fast_detect = true
+fast_bin = 4
+fast_max_stars = 120
+fast_refine_stars = 80
+
 # The histogram, and the saturation warning: the share of pixels that reach `saturation_level` of
 # the saturation level of the readout mode.
 histogram_bins = 64

@@ -30,6 +30,9 @@ class DetectConfig(SectionModel):
     # default 2 passed the comparison against the real catalog (see the architecture).
     coarse_bin: int = 2
     refine_stars: int = 1200
+    # The quick detector of the alignment view (`seeingmon.survey.detect_quick`) sums blocks of this
+    # many pixels and fits only the brightest stars. 0 turns it off. The survey path never uses it.
+    quick_bin: int = 0
 
 
 class FitConfig(SectionModel):
