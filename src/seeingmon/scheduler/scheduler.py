@@ -105,7 +105,14 @@ from seeingmon.config import Config
 from seeingmon.drivers.base import CameraDriver, CameraError, CameraStateError, RecoveryLevel
 from seeingmon.frames import ActiveStream, Frame, PixelFormat, Roi, StreamConfig, StreamKind
 from seeingmon.profile import Profile
-from seeingmon.records import EventRecord, PointingRecord, Record, SeeingWindowRecord, field_specs
+from seeingmon.records import (
+    EventRecord,
+    PointingRecord,
+    Record,
+    SeeingWindowRecord,
+    SurveyFrameRecord,
+    field_specs,
+)
 from seeingmon.scheduler import activity as words
 from seeingmon.scheduler.commands import (
     MAX_FLAT_FRAMES,
@@ -149,6 +156,7 @@ from seeingmon.scheduler.config import (
 from seeingmon.scheduler.ephemeris import polaris_zenith_angle_deg, sun_elevation_deg
 from seeingmon.scheduler.events import DARK_PHASE_EVENT, FLAT_PHASE_EVENT
 from seeingmon.scheduler.exposure import (
+    PLAN_FIRST,
     LongFrame,
     ShortFrame,
     SurveyExposure,
@@ -193,6 +201,7 @@ _CLOCK_CHECK_NS = 5 * NS_PER_S  # how often the loop asks the clock whether it i
 _METRICS_DRAIN_NS = NS_PER_S  # drain per-frame metrics at least once per second of frame time
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _MAX_EVENT_REVISIONS = 64
+PROBE_MIN_GAIN = 1.5  # a first long frame asks for a second one only when it wants this much more
 # What a survey exposure costs beyond its exposure time (configure, start, and read), until the
 # scheduler has measured it. The activity uses it to say when a survey frame ends.
 _DEFAULT_SURVEY_OVERHEAD_S = 1.5
@@ -251,6 +260,7 @@ class _Cycle:
     period_bursts: int = 0  # the bursts that the search period started
     long_exposure_us: int = 0  # the exposure of the long frame of the survey step that runs
     short: ShortFrame | None = None  # the 1 ms frame of that step, for the long exposure
+    probe: bool = False  # the long frame of that step is the first one: it measures the exposure
 
     def enter(self, phase: Phase, now_mono: int) -> None:
         """Move to another phase, and note when."""
@@ -2749,6 +2759,7 @@ class Scheduler:
                 self._finish_survey()
                 return StepKind.WORK
             cycle.long_exposure_us = plan.exposure_us
+            cycle.probe = plan.reason == PLAN_FIRST and self._long.adaptive
             cycle.short = short
             cycle.survey_stage = 1
             cycle.since_mono = self._mono()  # the long exposure begins where the short one ended
@@ -2765,6 +2776,15 @@ class Scheduler:
                         clipped=self._clipped(level / saturation),
                     ),
                 )
+                if cycle.probe:
+                    cycle.probe = False
+                    wanted = self._long.jump_us(cycle.short)
+                    if wanted is not None and wanted >= frame.exposure_us * PROBE_MIN_GAIN:
+                        # The first long frame measured the sky, so the real one follows at once.
+                        self._counters.survey_probes += 1
+                        cycle.long_exposure_us = wanted
+                        cycle.since_mono = self._mono()
+                        return StepKind.WORK
             self._finish_survey()
         return StepKind.WORK
 
@@ -2777,6 +2797,7 @@ class Scheduler:
         now = self._mono()
         cycle.long_exposure_us = 0
         cycle.short = None
+        cycle.probe = False
         if counted:
             self._counters.survey_steps += 1
         cycle.anchored = not cycle.survey_forced
@@ -2819,10 +2840,21 @@ class Scheduler:
 
     def _handle_survey_output(self, output: SurveyOutput) -> None:
         self._counters.survey_results += 1
-        if any(isinstance(r, PointingRecord) and "unsolved" in r.flags for r in output.records):
+        # The 1 ms frame shows too few stars to solve, and its job is the brightness gate, so an
+        # unsolved pointing record of it says nothing and is not written.
+        limit_s = 1.5 * self._config.survey.short_exposure_s
+        brief = any(
+            isinstance(r, SurveyFrameRecord) and r.exposure_s <= limit_s for r in output.records
+        )
+        records = [
+            r
+            for r in output.records
+            if not (brief and isinstance(r, PointingRecord) and "unsolved" in r.flags)
+        ]
+        if any(isinstance(r, PointingRecord) and "unsolved" in r.flags for r in records):
             self._counters.survey_unsolved += 1
         flags = self._survey_flags(output)
-        for record in output.records:
+        for record in records:
             self._records.write(_with_flags(record, flags))
             if isinstance(record, PointingRecord):
                 self._note_pointing(record, flags)

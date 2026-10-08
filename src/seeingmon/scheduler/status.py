@@ -109,6 +109,7 @@ class Counters:
     survey_unsolved: int = 0  # results with an unsolved pointing record (a 1 ms frame has none)
     survey_skipped: int = 0
     survey_long_skips: int = 0  # steps whose long exposure the bright sky skipped
+    survey_probes: int = 0  # steps whose first long frame measured the exposure of a second one
     watch_frames: int = 0  # brightness frames of the watch, in `safe` and for the gate in `auto`
     faults: int = 0
     recovery_steps: int = 0

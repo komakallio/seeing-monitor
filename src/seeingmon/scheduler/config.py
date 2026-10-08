@@ -105,7 +105,7 @@ class SurveyConfig(SectionModel):
 
     short_exposure_s: Seconds = 0.001
     short_gain: NonNegativeInt = 0
-    long_exposure_s: Seconds = 30.0
+    long_exposure_s: Seconds = 8.0
     long_gain: NonNegativeInt = 120
 
     max_pending: PositiveInt = 4

@@ -1,8 +1,8 @@
 """The counter of unsolved survey results: only a frame that a solver could try can fail.
 
 Each survey step takes two frames. The 1 ms frame shows Polaris alone by design, so no solver can
-use it, and the pipeline gives it no pointing record. The 30 s frame always gets one, unsolved when
-the solve fails. The scenario analysis follows the same rule.
+use it. The pipeline gives it an unsolved pointing record, and the scheduler drops that record. The
+long frame always gets one, unsolved when the solve fails.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def test_the_short_frame_of_a_step_is_a_result_but_never_an_unsolved_one() -> No
     pointing = pointing_records(world)
     assert len(pointing) >= 4  # several steps ran, and each one left its 30 s frame unsolved
     assert all("unsolved" in record.flags for record in pointing)
-    assert counters.survey_unsolved == len(pointing)  # the 30 s frames, and not the 1 ms frames
+    assert counters.survey_unsolved == len(pointing)  # the long frames, and not the 1 ms frames
     assert counters.survey_results >= 2 * counters.survey_unsolved  # each step has two results
     world.close()
 

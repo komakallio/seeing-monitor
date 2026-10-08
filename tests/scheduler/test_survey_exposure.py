@@ -111,6 +111,20 @@ class TestADarkSky:
         exposures = [step(control, DARK_SKY) for _ in range(6)]
         assert exposures == [1_000_000, 4_000_000, 16_000_000, 30_000_000, 30_000_000, 30_000_000]
 
+    def test_a_long_frame_that_did_not_clip_gives_the_exposure_of_the_target_at_once(self) -> None:
+        control = controller()
+        assert control.jump_us(short_frame(DARK_SKY)) is None  # no long frame yet
+        control.plan(short_frame(DARK_SKY))
+        control.update(short_frame(DARK_SKY), long_frame(DARK_SKY, SHORTEST_US))
+        assert control.jump_us(short_frame(DARK_SKY)) == LONGEST_US
+
+    def test_a_long_frame_that_clipped_gives_no_jump(self) -> None:
+        control = controller()
+        sky = sky_for(30.0)
+        control.plan(short_frame(sky))
+        control.update(short_frame(sky), long_frame(sky, SHORTEST_US))
+        assert control.jump_us(short_frame(sky)) is None
+
     def test_the_first_plan_says_why(self) -> None:
         control = controller()
         plan = control.plan(short_frame(DARK_SKY))
@@ -446,13 +460,15 @@ def floodlit() -> World:
 
 
 class TestTheSchedulerInTheDark:
-    def test_the_long_frames_ramp_up_from_the_shortest_and_stay_at_30_s(
+    def test_the_first_step_probes_with_1_s_and_takes_the_long_frame_at_once(
         self, floodlit: World
     ) -> None:
+        """No climb of 4 times a step: the 1 s frame measures, and 30 s follows in the same step."""
         exposures = [frame.exposure_us for frame in long_frames(floodlit)]
-        assert exposures[:5] == [1_000_000, 4_000_000, 16_000_000, 30_000_000, 30_000_000]
+        assert exposures[:5] == [1_000_000, 30_000_000, 30_000_000, 30_000_000, 30_000_000]
         dark = [e for t, e in steps(floodlit) if t < 3600]
-        assert set(dark[3:]) == {30_000_000}
+        assert set(dark) == {30_000_000}
+        assert floodlit.scheduler.status().counters.survey_probes >= 1
 
     def test_the_activity_names_the_long_exposure_of_the_step(self) -> None:
         """The status after each step of the loop, through the first three survey steps."""
@@ -468,11 +484,7 @@ class TestTheSchedulerInTheDark:
             ):
                 labels.append(activity.label)
         world.close()
-        assert labels == [
-            "Survey step: the 1 s frame",
-            "Survey step: the 4 s frame",
-            "Survey step: the 16 s frame",
-        ]
+        assert labels == ["Survey step: the 1 s frame", "Survey step: the 30 s frame"]
 
 
 class TestASunnyFloodlight:

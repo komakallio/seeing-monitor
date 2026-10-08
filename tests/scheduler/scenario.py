@@ -77,7 +77,7 @@ from seeingmon.records import (
     SkyQualityRecord,
 )
 from seeingmon.scheduler import CommissionResult, Scheduler, SchedulerConfig, SiteConfig
-from seeingmon.scheduler.config import FastConfig, LoopConfig, SearchConfig
+from seeingmon.scheduler.config import FastConfig, LoopConfig, SearchConfig, SurveyConfig
 from seeingmon.scheduler.ephemeris import sun_elevation_deg
 from seeingmon.scheduler.levels import EscalationLevel
 from seeingmon.survey.config import TwilightConfig
@@ -135,6 +135,7 @@ TEST_CONFIG = SchedulerConfig(
     # Sun limit, and the scenarios set one, so that they cover the probe bursts above it.
     search=SearchConfig(burst_frames=3, max_sun_elevation_deg=12.0),
     loop=LoopConfig(max_sleep_s=5.0),
+    survey=SurveyConfig(long_exposure_s=30.0),  # the scenarios plan around the old 30 s
 )
 
 # A sky of 20 times the saturation of the 1 ms frame: the fast stream at 32 us would see 74% of
@@ -293,10 +294,10 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
 
     A long exposure reports the cloud fraction of the script, and it solves unless clouds cover the
     field or the script forbids it. It always gets a pointing record, unsolved when it does not
-    solve. A short exposure cannot tell the cloud fraction, and it does not solve. It gets no
-    pointing record, as the 1 ms frame of a real survey step gets none. A solved result gives the
-    pointing provider the true position, and its pointing record carries the flags that the script
-    sets for its time (`World.pointing_flags`).
+    solve. A short exposure cannot tell the cloud fraction, and it does not solve. Its pointing
+    record is unsolved, as the 1 ms frame of a real survey step gets one, and the scheduler drops
+    it. A solved result gives the pointing provider the true position, and its pointing record
+    carries the flags that the script sets for its time (`World.pointing_flags`).
     """
 
     def __init__(self, world: World, polls_until_ready: int = 0) -> None:
@@ -341,6 +342,18 @@ class ScenarioSurvey(FakeSurveyAnalyzer):
                     ),
                 )
                 output = replace(output, records=(*output.records, quality, pointing))
+            else:  # the real pipeline gives the 1 ms frame an unsolved record too
+                brief = PointingRecord(
+                    station_id="test",
+                    t_utc_ns=output.t_utc_ns,
+                    profile_id=PROFILE.id,
+                    provenance={"algo": "fake"},
+                    n_matched=0,
+                    readout_mode="bin2",
+                    solver="none",
+                    flags=["unsolved"],
+                )
+                output = replace(output, records=(*output.records, brief))
             outputs.append(output)
         return tuple(outputs)
 

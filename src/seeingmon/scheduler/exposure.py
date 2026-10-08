@@ -303,14 +303,10 @@ class SurveyExposure:
             return LongPlan(self._longest_us, PLAN_DISABLED)
         black = self._black_dn if self._black_dn is not None else short.median_dn
         margin = SKIP_MARGIN_COUNTS * short.step_dn
-        at_least = max(0.0, short.median_dn - black - margin)
-        proven = self._long_fraction(short, at_least, self._shortest_us)
-        if proven > self._target:
+        if self._proven_fraction(short) > self._target:
             return LongPlan(None, PLAN_BRIGHT)
         # The sky that the 1 ms frame proves caps the exposure, as when the Moon rises at night.
-        cap = self._longest_us
-        if proven > 0.0:
-            cap = max(self._shortest_us, round(self._shortest_us * self._target / proven))
+        cap = self._cap_us(short)
         previous = self._previous
         if previous is not None:
             before, long = previous
@@ -330,6 +326,44 @@ class SurveyExposure:
             longest_us=self._longest_us,
         )
         return LongPlan(exposure, PLAN_FIRST)
+
+    def _proven_fraction(self, short: ShortFrame) -> float:
+        """The background that the proven sky of the 1 ms frame gives a frame at the shortest."""
+        black = self._black_dn if self._black_dn is not None else short.median_dn
+        margin = SKIP_MARGIN_COUNTS * short.step_dn
+        at_least = max(0.0, short.median_dn - black - margin)
+        return self._long_fraction(short, at_least, self._shortest_us)
+
+    def _cap_us(self, short: ShortFrame) -> int:
+        """The longest exposure that the sky proven by the 1 ms frame allows."""
+        proven = self._proven_fraction(short)
+        if proven > 0.0:
+            return max(self._shortest_us, round(self._shortest_us * self._target / proven))
+        return self._longest_us
+
+    def jump_us(self, short: ShortFrame) -> int | None:
+        """The exposure that the long frame just taken asks for, with no limit on the step.
+
+        The first long frame after a start is the shortest one, and it measures the sky: the
+        background grows in proportion to the exposure, so a frame that did not clip gives the
+        exposure of the target at once. The scheduler takes the real long frame in the same step,
+        instead of climbing by `LONG_STEP_FACTOR` once a step. The sky that the 1 ms frame proves
+        still caps the result. `None` when there is no long frame, or when it clipped, which leaves
+        the steps to their usual rule.
+        """
+        if self._previous is None:
+            return None
+        long = self._previous[1]
+        if long.clipped:
+            return None
+        wanted = adapted_exposure_us(
+            long.exposure_us,
+            long.fraction,
+            target=self._target,
+            shortest_us=self._shortest_us,
+            longest_us=self._longest_us,
+        )
+        return min(self._cap_us(short), wanted)
 
     def update(self, short: ShortFrame, long: LongFrame) -> None:
         """Take the long frame of a step and its 1 ms frame: the next step scales from them.

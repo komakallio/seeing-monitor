@@ -215,7 +215,7 @@ def test_exposures_convert_to_whole_microseconds() -> None:
     assert seconds_to_us(1e-9) == 1  # never zero, because the camera rejects a zero exposure
     config = SchedulerConfig()
     assert config.survey.short_exposure_us == 1000
-    assert config.survey.long_exposure_us == 30_000_000
+    assert config.survey.long_exposure_us == 8_000_000
 
 
 class TestSite:

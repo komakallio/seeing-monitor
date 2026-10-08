@@ -88,7 +88,7 @@ class TestBuildFromTheConfiguration:
         assert scheduler.config.fast.window_s == 60.0
         scheduler.close()
 
-    @pytest.mark.parametrize(("twilight", "first_long_s"), [("", 1.0), ("30.0", 30.0)])
+    @pytest.mark.parametrize(("twilight", "first_long_s"), [("", 1.0), ("8.0", 8.0)])
     def test_it_passes_the_twilight_table_of_the_survey_to_the_scheduler(
         self, tmp_path: Path, twilight: str, first_long_s: float
     ) -> None:
