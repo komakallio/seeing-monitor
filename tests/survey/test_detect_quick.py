@@ -60,7 +60,7 @@ def add_star(image: np.ndarray, x: float, y: float, flux: float, sigma: float = 
 def container(image: np.ndarray) -> np.ndarray:
     """A frame as the camera delivers it: the ADC value in the high bits of 16 bits."""
     native = np.clip(np.rint(image), 0, (1 << ADC_BITS) - 1).astype(np.uint16)
-    return (native << SHIFT).astype(np.uint16)
+    return np.asarray(native << SHIFT, dtype=np.uint16)
 
 
 STARS = [(100.3, 80.6, 9000.0), (300.7, 120.2, 6000.0), (500.1, 400.9, 12000.0),

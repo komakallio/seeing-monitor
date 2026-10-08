@@ -135,7 +135,8 @@ def _angular_sides(vectors: FloatArray, corners: IntArray) -> FloatArray:
     a, b, c = (vectors[corners[:, n]] for n in range(3))
 
     def angle(u: FloatArray, v: FloatArray) -> FloatArray:
-        return np.degrees(np.arccos(np.clip(np.sum(u * v, axis=1), -1.0, 1.0)))
+        cosine = np.clip(np.sum(u * v, axis=1), -1.0, 1.0)
+        return np.asarray(np.degrees(np.arccos(cosine)), dtype=np.float64)
 
     return np.stack([angle(b, c), angle(a, c), angle(a, b)], axis=1)
 
