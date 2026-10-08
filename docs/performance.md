@@ -507,7 +507,7 @@ The visibility lane added two costs to the frames of the fast stream: the matche
 | Survey frames that the worker analyzed in a step | 1, the 1 ms frame | 2 |
 
 - **A frame of daylight costs what a frame of the night costs.** In the same run, the day's frame costs 0.92 to 1.06 times the night's. The bright sky shortens the exposure and leaves the frame rate at 82 frames per second, which the readout sets, and the per-frame work is the same.
-- **A day is no busier than a clear night.** The camera measures for 120 s of each 180 s cycle, as at night. The survey step skips its long exposure, so the camera idles about 55 s of the cycle, and the survey worker analyzes one frame of each step instead of two. The peaks of all processes match those of the night within 8%.
+- **A day is no busier than a clear night.** The camera measures for 120 s of each 180 s cycle, as at night. The survey step skips its long exposure, so the camera idled about 55 s of the cycle (before the fast stream filled the slack on October 8, 2026, see `min_slack_fast_s`), and the survey worker analyzes one frame of each step instead of two. The peaks of all processes match those of the night within 8%.
 - **Frames that the simulator dropped.** The simulator in `acquire` dropped 35, 6, and 0 of 13,300 frames in the three day runs, on a busy machine. The simulator renders every frame, so this says nothing about the real camera.
 - **`web` was not read in the second day run.** The sampler did not find the interpreter of `web` behind its launcher, so the run reports 4 MB, the size of the launcher. The first run reports 89 MB, and the verdicts below use it.
 

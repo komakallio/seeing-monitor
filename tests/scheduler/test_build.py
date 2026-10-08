@@ -101,7 +101,7 @@ class TestBuildFromTheConfiguration:
             'station_id = "synthetic-station"\n'
             "[scheduler.fast]\nexposure_us = 2000000\nroi_arcmin = 1.0\n"
             "roi_edge_margin_px = 4.0\nmissing_star_frames = 10\n"
-            "target_background_fraction = 0.0\n"
+            "target_background_fraction = 0.0\nmin_slack_fast_s = 0.0\n"
             "[scheduler.search]\nburst_frames = 3\n"
             "[scheduler.loop]\nmax_sleep_s = 5.0\n"
         )

@@ -78,6 +78,16 @@ class FastConfig(SectionModel):
     requested, because a hidden star says nothing about the mount. The same count ends the rapid
     focus mode."""
 
+    min_slack_fast_s: NonNegative = 30.0
+    """The least time of the slack that the camera works in.
+
+    A cycle is the fast period, the survey step, and what is left of the cadence, the slack. When
+    at least this many seconds are left after the survey step, a fast period (or the search bursts
+    of a search period) runs to the next slot, and its last window is partial. A shorter slack
+    stays idle, because a window of a few seconds says little. 0 keeps the camera idle in the
+    whole slack, as before.
+    """
+
     target_background_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.3
     """The sky background that the adaptive exposure aims for, as a share of saturation.
 

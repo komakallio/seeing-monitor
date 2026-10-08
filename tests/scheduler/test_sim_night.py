@@ -110,7 +110,7 @@ def evening() -> Evening:
     writer = ListRecordWriter()
     fast = FakeFastAnalyzer(station_id="test", profile_id=profile.id, window_s=0.25)
     config = SchedulerConfig(
-        fast=FastConfig(window_s=0.5, analysis_window_s=0.25),
+        fast=FastConfig(window_s=0.5, analysis_window_s=0.25, min_slack_fast_s=0.0),
         survey=SurveyConfig(cadence_s=20.0, long_exposure_s=2.0),
         cloud=CloudConfig(fast_window_s=0.25, survey_cadence_s=12.0),
         # A burst of 10 frames of 12 ms at the start of each period of 0.5 s.

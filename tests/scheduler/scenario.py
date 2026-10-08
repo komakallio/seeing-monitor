@@ -131,6 +131,7 @@ TEST_CONFIG = SchedulerConfig(
         roi_edge_margin_px=4.0,
         missing_star_frames=10,
         target_background_fraction=0.0,  # the slow stream keeps its exposure (see above)
+        min_slack_fast_s=0.0,  # the scenarios keep the idle slack; test_slack.py turns it on
     ),
     # A burst of 3 frames of 2 s takes 6 s, which fits the interval of 15 s. The default has no
     # Sun limit, and the scenarios set one, so that they cover the probe bursts above it.

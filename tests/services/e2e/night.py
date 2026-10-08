@@ -205,8 +205,10 @@ def build_night(
         f"min_window_s = {window_s / 2}",
         # One window in each fast period, a survey step every minute, and a period that ends after
         # a second without the star: a night of minutes holds many cycles, and a frame costs 9 ms
-        # of CPU.
+        # of CPU. The camera rests in the slack, because a fast stream in it would cost ten times
+        # the frames.
         "[scheduler.fast]",
+        "min_slack_fast_s = 0",
         f"exposure_us = {fast_exposure_us}",
         f"analysis_window_s = {window_s}",
         f"window_s = {window_s}",

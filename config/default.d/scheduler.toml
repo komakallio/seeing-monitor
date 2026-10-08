@@ -17,6 +17,10 @@ roi_arcmin = 4.1            # The profile turns this angle into pixels.
 roi_edge_margin_px = 16.0   # A star nearer than this to the ROI edge ends the window.
 edge_cooldown_s = 5.0       # The shortest stream time between two edge recenters.
 missing_star_frames = 450   # Frames in a row without the star: the period ends, and search returns.
+# The slack is what is left of the cadence after the fast period and the survey step. When at
+# least this many seconds of it remain, the camera works to the next slot (a fast period, or the
+# search bursts) and the last window is partial. 0 keeps the camera idle in the slack.
+min_slack_fast_s = 30.0
 # Provisional. The adaptive exposure: before each fast period and each search burst, the exposure
 # scales so that the sky background of the last window or burst would sit at this share of
 # saturation, between the profile's shortest exposure and exposure_us. The first period or burst in

@@ -121,6 +121,7 @@ class Counters:
     transitions: int = 0
     stalls: int = 0  # sleeps of the loop that returned much too late
     search_periods: int = 0  # periods of the cycle that searched to their end
+    slack_periods: int = 0  # fast or search periods that filled the slack of a cycle
     search_bursts: int = 0  # bursts that looked for Polaris, probes included
     probe_bursts: int = 0  # bursts while the Sun was above the search limit
     search_frames: int = 0  # frames of the bursts, which reach no window
