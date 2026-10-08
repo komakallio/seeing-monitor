@@ -308,5 +308,8 @@ class CloudTracker:
         return self._config.fast_window_s if self._active else normal_s
 
     def survey_cadence_s(self, normal_s: float) -> float:
-        """The survey cadence: the cloud value while the response applies."""
-        return self._config.survey_cadence_s if self._active else normal_s
+        """The survey cadence: the cloud value while the response applies, if it is shorter.
+
+        A normal cadence of 0 runs the cycles back to back, which no cloud value can beat.
+        """
+        return min(self._config.survey_cadence_s, normal_s) if self._active else normal_s

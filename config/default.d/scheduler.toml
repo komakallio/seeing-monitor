@@ -17,10 +17,6 @@ roi_arcmin = 4.1            # The profile turns this angle into pixels.
 roi_edge_margin_px = 16.0   # A star nearer than this to the ROI edge ends the window.
 edge_cooldown_s = 5.0       # The shortest stream time between two edge recenters.
 missing_star_frames = 450   # Frames in a row without the star: the period ends, and search returns.
-# The slack is what is left of the cadence after the fast period and the survey step. When at
-# least this many seconds of it remain, the camera works to the next slot (a fast period, or the
-# search bursts) and the last window is partial. 0 keeps the camera idle in the slack.
-min_slack_fast_s = 30.0
 # Provisional. The adaptive exposure: before each fast period and each search burst, the exposure
 # scales so that the sky background of the last window or burst would sit at this share of
 # saturation, between the profile's shortest exposure and exposure_us. The first period or burst in
@@ -30,7 +26,9 @@ target_background_fraction = 0.3
 
 # The survey step. The readout mode is the profile's survey mode.
 [scheduler.survey]
-cadence_s = 180.0           # Start of one cycle to the start of the next.
+# The least time from the start of one cycle to the start of the next. 0: the next cycle starts
+# as soon as the survey step ends, so the camera never waits.
+cadence_s = 0.0
 short_exposure_s = 0.001    # Bright stars, and the brightness check of the sky.
 short_gain = 0
 long_exposure_s = 8.0       # Faint stars and the sky. The longest: [survey.twilight] adapts it.
@@ -98,7 +96,7 @@ probe_interval_s = 600.0       # Provisional. The time between probe bursts abov
 threshold = 0.5             # At or above: shorten the fast period, survey more often.
 clear_threshold = 0.3       # At or below: back to normal. The clear verdict counts such frames.
 fast_window_s = 60.0
-survey_cadence_s = 100.0       # More often than normal, but long enough for the cycle.
+survey_cadence_s = 100.0    # The least time between cycles under cloud. A shorter cadence_s wins.
 
 # The alignment helper.
 [scheduler.align]

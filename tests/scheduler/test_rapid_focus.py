@@ -47,9 +47,7 @@ ALIGN_AT = 5.0
 
 # The fast stream of the tests takes the real exposure, and the ROI of 4.1 arcminutes (128 pixels).
 CONFIG = SchedulerConfig(
-    fast=FastConfig(
-        exposure_us=2000, roi_arcmin=4.1, missing_star_frames=100, min_slack_fast_s=0.0
-    ),
+    fast=FastConfig(exposure_us=2000, roi_arcmin=4.1, missing_star_frames=100),
     loop=LoopConfig(max_sleep_s=5.0),
 )
 

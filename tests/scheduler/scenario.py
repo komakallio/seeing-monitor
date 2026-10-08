@@ -131,13 +131,13 @@ TEST_CONFIG = SchedulerConfig(
         roi_edge_margin_px=4.0,
         missing_star_frames=10,
         target_background_fraction=0.0,  # the slow stream keeps its exposure (see above)
-        min_slack_fast_s=0.0,  # the scenarios keep the idle slack; test_slack.py turns it on
     ),
     # A burst of 3 frames of 2 s takes 6 s, which fits the interval of 15 s. The default has no
     # Sun limit, and the scenarios set one, so that they cover the probe bursts above it.
     search=SearchConfig(burst_frames=3, max_sun_elevation_deg=12.0),
     loop=LoopConfig(max_sleep_s=5.0),
-    survey=SurveyConfig(long_exposure_s=30.0),  # the scenarios plan around the old 30 s
+    # The scenarios plan around a long frame of 30 s and a cycle of 3 minutes.
+    survey=SurveyConfig(long_exposure_s=30.0, cadence_s=180.0),
 )
 
 # A sky of 20 times the saturation of the 1 ms frame: the fast stream at 32 us would see 74% of

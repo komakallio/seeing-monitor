@@ -262,9 +262,6 @@ class _Cycle:
     long_exposure_us: int = 0  # the exposure of the long frame of the survey step that runs
     short: ShortFrame | None = None  # the 1 ms frame of that step, for the long exposure
     probe: bool = False  # the long frame of that step is the first one: it measures the exposure
-    slack: bool = (
-        False  # the period that runs fills the slack of the cycle, and no survey step follows
-    )
 
     def enter(self, phase: Phase, now_mono: int) -> None:
         """Move to another phase, and note when."""
@@ -926,31 +923,27 @@ class Scheduler:
         long_s = (planned_us or self._long.next_estimate_us()) / 1e6
         step_label = words.survey_step_label(survey.short_exposure_s, long_s)
         period_label = words.FAST_LABEL if search.measuring else words.SEARCH_LABEL
-        after_label = period_label if cycle.slack else step_label  # what follows a period
 
         def make(**fields: Any) -> ActivityStatus:
             return ActivityStatus(
-                state=State.AUTO.value, cadence_s=cadence_ns / NS_PER_S, reason=reason, **fields
+                state=State.AUTO.value,
+                cadence_s=cadence_ns / NS_PER_S if cadence_ns > 0 else None,
+                reason=reason,
+                **fields,
             )
 
         def fast_period(started_mono: int, window_s: float, closed: int) -> ActivityStatus:
             ends = at(started_mono + round(window_s * NS_PER_S))
             total = max(1, round(window_s / fast.analysis_window_s))
-            if cycle.slack:  # the last window is partial, and it counts
-                total = max(1, math.ceil(window_s / fast.analysis_window_s - 1e-9))
             return make(
                 phase=ActivityPhase.FAST.value,
                 label=words.FAST_LABEL,
                 since_utc_ns=at(started_mono),
                 ends_utc_ns=ends,
-                next_label=after_label,
+                next_label=step_label,
                 next_utc_ns=ends,
                 detail=words.fast_detail(
-                    fast.analysis_window_s,
-                    closed,
-                    total,
-                    clouds=self._cloud.active,
-                    slack=cycle.slack,
+                    fast.analysis_window_s, closed, total, clouds=self._cloud.active
                 ),
             )
 
@@ -962,7 +955,7 @@ class Scheduler:
             if next_mono + search.burst_ns <= ends_mono:
                 next_label, next_utc = words.burst_label(config.burst_frames), at(next_mono)
             else:
-                next_label, next_utc = after_label, at(ends_mono)
+                next_label, next_utc = step_label, at(ends_mono)
             return make(
                 phase=ActivityPhase.SEARCH.value,
                 label=words.PROBE_LABEL if waits_for_probe else words.SEARCH_LABEL,
@@ -2183,12 +2176,15 @@ class Scheduler:
         cadence_ns = self._cadence_ns()
         due = self._slot_due_mono(cycle, cadence_ns)
         if now < due:
-            filling = self._start_slack(now, due)
-            return self._sleep_until(due) if filling is None else filling
+            return self._sleep_until(due)
         if cycle.anchored:
             # A change of cadence in mid-cycle is not an overrun, so judge by the longer cadence.
-            latest_due = cycle.slot_start_mono + max(cycle.cadence_ns, cadence_ns)
-            if now - latest_due > _OVERRUN_TOLERANCE_NS:
+            # A cadence of 0 runs the cycles back to back, and no cycle outlasts it.
+            longest_ns = max(cycle.cadence_ns, cadence_ns)
+            if (
+                longest_ns > 0
+                and now - (cycle.slot_start_mono + longest_ns) > _OVERRUN_TOLERANCE_NS
+            ):
                 self._counters.cadence_overruns += 1  # the cycle took longer than its cadence
         cycle.anchored = False
         position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
@@ -2198,41 +2194,6 @@ class Scheduler:
         if not self._search.measuring:
             return self._start_search_period(now)
         return self._start_fast(position, now)
-
-    def _start_slack(self, now: int, due: int) -> StepKind | None:
-        """Work in the slack of the cycle: a fast period, or the search bursts, to the next slot.
-
-        The slack is what the cadence leaves after the fast period and the survey step. A cycle
-        used to idle in it. When at least `[scheduler.fast] min_slack_fast_s` of it remains, the
-        stream that the cycle runs (the fast stream while Polaris is measured, the search
-        otherwise) continues to the slot, and its last window is partial. No survey step follows
-        it: the cycle goes back to its boundary, and the next period starts on its slot. Returns
-        `None` when the camera stays idle: the setting is 0, the slack is short, the cycle is not
-        on its cadence (the wait for the next survey step after a failed solve), or no pointing
-        solution exists, so there is nothing to search or measure.
-        """
-        cycle = self._cycle
-        min_ns = round(self._config.fast.min_slack_fast_s * NS_PER_S)
-        if min_ns <= 0 or not cycle.anchored or due - now < min_ns:
-            return None
-        position = self._pointing.polaris_position(self._clock.utc_ns(), self._fast_mode)
-        self._pointing_known = position is not None
-        if position is None:
-            return None
-        cycle.slack = True
-        if self._search.measuring:
-            return self._start_fast(position, now, until_mono=due)
-        cycle.period_end_mono = due
-        cycle.period_bursts = 1  # a burst that cannot end before the slot waits for the next period
-        cycle.enter(Phase.SEARCH, now)
-        return StepKind.TRANSITION
-
-    def _end_slack(self) -> None:
-        """The period in the slack ended: back to the boundary of the cycle, with no survey step."""
-        cycle = self._cycle
-        cycle.slack = False
-        self._counters.slack_periods += 1
-        cycle.enter(Phase.BEGIN, self._mono())
 
     def _request_solve(self) -> StepKind:
         """No pointing solution exists: a survey step runs now to solve, and nothing searches.
@@ -2268,7 +2229,6 @@ class Scheduler:
         cycle.enter(Phase.SURVEY, now)
         cycle.survey_stage = 0
         cycle.survey_forced = forced
-        cycle.slack = False
         if forced:
             cycle.slot_start_mono = now
 
@@ -2342,13 +2302,6 @@ class Scheduler:
             window_ns = round(self._cloud.fast_window_s(fast.window_s) * NS_PER_S)
         else:
             window_ns = max(0, until_mono - now)
-            if cycle.slack:
-                # The run ends on the frame that reaches its end, and the next frame would
-                # arrive after the slot. So it ends one frame early, and the next period
-                # starts on its slot, with no drift from one cycle to the next.
-                exposure_s = active.config.exposure_us / 1e6
-                period_s = max(active.frame_period_s or exposure_s, exposure_s)
-                window_ns = max(0, window_ns - round(period_s * NS_PER_S))
         cooldown_ns = round(fast.edge_cooldown_s * NS_PER_S)
         self._fast_run = _FastRun(
             stream_id=active.stream_id,
@@ -2470,9 +2423,6 @@ class Scheduler:
 
     def _end_fast_period(self, reason: str, *, forced: bool) -> None:
         self._end_stream(reason)
-        if self._cycle.slack:
-            self._end_slack()
-            return
         self._counters.fast_periods += 1
         self._begin_survey(forced=forced)
 
@@ -2536,9 +2486,6 @@ class Scheduler:
             return self._burst_step(burst)
         now = self._mono()
         if now >= cycle.period_end_mono:
-            if cycle.slack:
-                self._end_slack()
-                return StepKind.TRANSITION
             self._counters.search_periods += 1
             self._begin_survey(forced=False)
             return StepKind.TRANSITION

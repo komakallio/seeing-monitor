@@ -28,6 +28,7 @@ def quick_config(**ladder: float | str) -> SchedulerConfig:
     return SchedulerConfig(
         fast=TEST_CONFIG.fast,
         search=TEST_CONFIG.search,
+        survey=TEST_CONFIG.survey,
         loop=LoopConfig(max_sleep_s=5.0),
         faults=FaultConfig(
             backoff_initial_s=1.0,

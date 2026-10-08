@@ -76,6 +76,10 @@ def local_config_text(
         "[scheduler.fast]",
         "window_s = 20.0",
         f"analysis_window_s = {analysis_window_s}",
+        # The rig keeps the cycle of 3 minutes that its tests count on: the default runs the cycles
+        # back to back.
+        "[scheduler.survey]",
+        "cadence_s = 180.0",
     ]
     if site:
         lines += ["[site]", "latitude_deg = 55.0", "longitude_deg = 0.0", "elevation_m = 0.0"]

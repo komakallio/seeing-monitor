@@ -327,3 +327,9 @@ class TestCloudTracker:
         tracker.update(0.7)
         assert tracker.fast_window_s(120.0) == 45.0
         assert tracker.survey_cadence_s(180.0) == 75.0
+
+    def test_a_cloud_cadence_never_lengthens_a_shorter_normal_one(self) -> None:
+        tracker = CloudTracker(CloudConfig(survey_cadence_s=75.0))
+        tracker.update(0.7)
+        assert tracker.survey_cadence_s(60.0) == 60.0
+        assert tracker.survey_cadence_s(0.0) == 0.0  # back to back beats any cloud cadence

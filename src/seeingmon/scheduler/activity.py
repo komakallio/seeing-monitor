@@ -67,16 +67,9 @@ SURVEY_LONG_DETAIL = (
 )
 
 
-def fast_detail(
-    window_s: float, closed: int, total: int, *, clouds: bool, slack: bool = False
-) -> str:
-    """The progress of a fast period: `Windows of 20 s: 4 of 7 closed`.
-
-    A period in the slack of the cycle says so: its last window is partial.
-    """
+def fast_detail(window_s: float, closed: int, total: int, *, clouds: bool) -> str:
+    """The progress of a fast period: `Windows of 20 s: 4 of 7 closed`."""
     text = f"Windows of {duration_text(window_s)}: {min(closed, total)} of {total} closed"
-    if slack:
-        text += "; the rest of the cycle, so the last window is partial"
     return f"{text}; clouds shorten the period" if clouds else text
 
 

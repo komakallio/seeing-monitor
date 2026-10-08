@@ -145,8 +145,8 @@ SIM_LONGITUDE_DEG = 0.0
 DEV_FAST_EXPOSURE_US = 50_000
 DEV_WINDOW_S = 20.0
 # The fast period, in windows. A simulated run keeps three. A real camera runs seven (140 s), so
-# that the fast period and the survey step (about 40 s) fill the 180 s cadence: the camera idles
-# less, and a seeing reading is at most one window plus the survey step old, about a minute.
+# that a seeing reading is at most one window plus the survey step old, about a minute. The cycles
+# run back to back, so the camera does not rest between them.
 DEV_FAST_WINDOWS = 3
 REAL_FAST_WINDOWS = 7
 DEFAULT_SPEED = 1.0

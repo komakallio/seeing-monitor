@@ -351,8 +351,8 @@ def build_budgets(report: Report) -> list[Budget]:
         ),
         Budget(
             "survey-time",
-            "Survey frame, bin2 (derived: it must end before the next frame, every 180 s)",
-            180.0,
+            "Survey frame, bin2 (derived: it must end before the next frame, every 130 s)",
+            130.0,
             "s",
             (Term("frame through the worker", "survey", "frame.total"),),
             gate=False,

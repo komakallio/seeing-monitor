@@ -210,7 +210,6 @@ def short_cycles(
             window_s=1.0,
             analysis_window_s=0.5,
             target_background_fraction=target,
-            min_slack_fast_s=0.0,  # the cadence leaves a slack that these runs keep idle
         ),
         survey=SurveyConfig(cadence_s=cadence_s, long_exposure_s=2.0),
         search=SearchConfig(burst_frames=10, interval_s=0.25),

@@ -179,8 +179,8 @@ class TestMissingStar:
                 roi_edge_margin_px=4.0,
                 missing_star_frames=450,
                 target_background_fraction=0.0,  # every frame takes 100 ms
-                min_slack_fast_s=0.0,
             ),
+            survey=TEST_CONFIG.survey,
             loop=LoopConfig(max_sleep_s=5.0),
         )
         world = World(start_utc_ns=NIGHT, config=config)
@@ -306,9 +306,9 @@ class TestEdgeDrift:
                 roi_edge_margin_px=15.0,
                 missing_star_frames=10,
                 target_background_fraction=0.0,  # the slow stream of the scenario
-                min_slack_fast_s=0.0,
             ),
             search=TEST_CONFIG.search,
+            survey=TEST_CONFIG.survey,
             loop=LoopConfig(max_sleep_s=5.0),
         )
         world = World(start_utc_ns=NIGHT, config=config)

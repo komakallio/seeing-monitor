@@ -16,13 +16,13 @@ that costs:
   survey frames show clouds. The long exposure of the survey grows from 1 s by 4 times a step.
 
 Both runs take the cycle of production: fast periods of two analysis windows of 60 s, and a
-survey step every 180 s (every 100 s under clouds). A day at midsummer lasts 16 to 19 hours, and a
-run cannot take that long, so each run measures a stretch of a few minutes that repeats through
-the day or the night. Read the share of a core over the cycle and the peak memory of each
-process. The share over the cycle covers whole cycles, from the end of one survey step to the end
-of a later one (`whole_cycles`), so it weighs the periods, the steps, and the gaps as production
-does. The figures carry the names of the `core-sim` case where they mean the same, so the budgets
-read them the same way.
+survey step after each period (the cycles run back to back). A day at midsummer lasts 16 to 19
+hours, and a run cannot take that long, so each run measures a stretch of a few minutes that
+repeats through the day or the night. Read the share of a core over the cycle and the peak memory
+of each process. The share over the cycle covers whole cycles, from the end of one survey step to
+the end of a later one (`whole_cycles`), so it weighs the periods, the steps, and the gaps as
+production does. The figures carry the names of the `core-sim` case where they mean the same, so
+the budgets read them the same way.
 
 **The figures of a search.** The bursts take less than a second, so the samples, one a second,
 split the search phase into intervals with the frames of a burst and gaps without frames. A

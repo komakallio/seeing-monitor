@@ -62,7 +62,7 @@ def test_the_defaults_follow_the_architecture() -> None:
     assert config.fast.exposure_us == 2000
     assert config.fast.high_speed is False
     assert config.fast.roi_arcmin == 4.1
-    assert config.survey.cadence_s == 180.0
+    assert config.survey.cadence_s == 0.0  # the cycles run back to back
     assert config.watch.exposure_us == 1000
     # The profile's shortest exposure, so that the frame after a clipped watch frame does not clip
     # in daylight.
@@ -112,7 +112,7 @@ def test_the_survey_exposures_fit_the_cadence_and_the_profile() -> None:
     """A survey step needs less than the time that the fast period leaves in a cycle."""
     config = SchedulerConfig()
     step_s = config.survey.short_exposure_s + config.survey.long_exposure_s
-    assert config.fast.window_s + step_s < config.survey.cadence_s
+    assert config.survey.cadence_s == 0.0 or config.fast.window_s + step_s < config.survey.cadence_s
     assert config.cloud.fast_window_s + step_s < config.cloud.survey_cadence_s
     limits = load_profile("asi294mm-gs250").limits
     for exposure_us in (

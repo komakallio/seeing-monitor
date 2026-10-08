@@ -10,7 +10,7 @@ bin2 size (4144 x 2822 pixels) and the survey worker peaks where it peaks on a r
 clock runs at the speed of real time. The fast stream takes the fast mode of the architecture (an
 exposure of 2 ms, which the readout of the sensor stretches to about 82 frames per second) and the
 real Polaris. The windows are those of the dev launcher (20 s). The run waits for two survey
-steps (a short and a long exposure each), which takes the survey cadence of 3 minutes, and it
+steps (a short and a long exposure each), which takes two cycles of a few minutes, and it
 pauses the scheduler at the end to read the load that does not belong to the frames. In `--smoke`
 mode the run uses the `small` sensor and takes a few seconds of sampling after the start of the
 processes.

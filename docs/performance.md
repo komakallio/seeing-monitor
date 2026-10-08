@@ -16,7 +16,7 @@ On the estimate before the Pi 4 run, the per-frame analysis fits its budget with
 | Fast path and receive, bin1 at 98 fps | 25% of a core | 1.2% | 7.5 to 13% | pass | Pass in six |
 | Fast path, bin2 at 360 fps | 25% of a core | 0.92% | 4.6 to 10% | pass | Pass in four, marginal in two |
 | Fast path and receive, bin2 at 360 fps | 25% of a core | 1.9% | 12 to 21% | pass | Pass in two, marginal in two, fail in two |
-| Survey frame, bin2 (derived, not a gate) | 180 s | 0.98 s | 4.9 to 11 s | pass | Pass in six |
+| Survey frame, bin2 (derived, not a gate) | 130 s | 0.98 s | 4.9 to 11 s | pass | Pass in six |
 | Survey worker, peak memory | 550 MB | 452 MB | 317 to 588 MB | marginal | Marginal in six |
 | All processes, peak memory | 1.4 GB budget, 1.6 GB gate | 766 MB | 686 to 1,295 MB | pass | Pass in six |
 
@@ -68,7 +68,7 @@ The Pi 4 budget comes from [architecture.md](architecture.md). The harness adds 
 | Fast path and the receive from `acquire`, bin1 | 25% of one core | The same consumer in `core` pays for both. The row reads the CPU time that `core` spends on a frame in the whole system (the `core-sim` case), and it falls back to the sum of the `fastpath` and `ipc` figures when that case did not run. |
 | Fast path, bin2 64 × 64 at 360 fps | 25% of one core, 0.69 ms per frame | The architecture |
 | Fast path and the receive from `acquire`, bin2 | 25% of one core | The same consumer in `core` pays for both |
-| Survey frame, bin2 | 180 s (not a gate) | The survey interval: a frame must end before the next one |
+| Survey frame, bin2 | 130 s (not a gate) | The survey interval: a frame must end before the next one. The cycles run back to back since October 8, 2026, so the interval is the fast period plus the survey step, and it was 180 s before |
 | Survey worker, peak memory | 550 MB | The architecture |
 | All processes, peak memory | 1.4 GB (the budget), 1.6 GB (the 2 GB gate) | The architecture: more than 1.6 GB at peak means the 4 GB model |
 | Fast path and the receive in daylight, bin1 | 25% of one core | The fast path budget, read in `core` in the `day-sim` case |
@@ -297,7 +297,7 @@ Each run sampled once per second for 303 s, after 8 s (Linux) or 13 s (Windows) 
 | Children of `core` (the resource tracker) | 15 / none | | | | |
 | Sum of the peaks | 1,143 / 966 | | | | |
 
-The fast phase excludes the first window and every interval in which the stream switches or a survey frame waits for its analysis. The last column covers the whole cycle of 3 minutes: the fast stream, the survey step, and the gap that waits for the next slot.
+The fast phase excludes the first window and every interval in which the stream switches or a survey frame waits for its analysis. The last column covers the whole cycle: the fast stream, the survey step, and, in these runs (cadence of 3 minutes, before October 8, 2026), the gap that waits for the next slot.
 
 - **`acquire` includes the simulator.** It renders every frame, and its CPU time and its memory are not those of the production code. The `ipc` case measures the production code with prebuilt frames: 3.4% of a core at 98 frames per second and a peak of 58 MB (commit `4afaca4`). The budgets read those figures.
 - **The cost of a frame in `core`** is the CPU time of the fast phase minus the CPU time with the scheduler paused, divided by the frame rate: 195 µs on Linux (2.31% minus 0.58%, over 88.3 frames per second) and 251 µs on Windows. At 98 frames per second, that is 1.92% of a core on Linux and 2.46% on Windows, and 13 to 21% and 17 to 27% on the Pi 4 estimate. The cost covers the receive, the fast path, and the append of the segment. For comparison, the sum of the `fastpath` and `ipc` figures was 4.3% (440 µs a frame) at commit `0a764af`, and it is 1.15% (117 µs) at commit `4afaca4`. A run of the whole-system case a few commits before `b2e1f93`, before the services lane batched the stream, measured 585 µs a frame (5.7%), so the batching cut the cost of a frame to a third. The whole system costs more than the sum of the two cases, 195 against 117 µs, and the case does not break the difference down. The scheduler of `core` does work around each frame that the `fastpath` and `ipc` cases leave out, such as noting the frame and checking the star.
@@ -330,7 +330,7 @@ The reference machine is a recent x86-64 laptop or desktop core. A Pi 4 run repl
 | `acquire`, bin1 | Medium for `fail`, low for the percentages | The verdict is `fail` in all six runs. The work alone gives 10 to 16% on the Linux run, which is at the limit, and the wake-ups add 2 to 8%, so the verdict leans on the wake-up range, which is a guess. The figure leaves the camera out, which a real driver adds (see [What the camera adds](#what-the-camera-adds)). |
 | Fast path and receive, bin1 | Medium for `pass` | The sum of the `fastpath` and `ipc` figures gives `pass` in all six runs (6 to 21%). The whole-system figure gives 13 to 21% on Linux, `pass`, and 17 to 27% on Windows, `marginal`, in runs with another system active. |
 | Fast path and receive, bin2 at 360 fps | Low | The case runs the stream once, and the verdict depends on the run: `pass` in two, `marginal` in two, and `fail` in two (12 to 61% over the six runs). The Linux runs are the better guide, and the three of them give 12 to 30%. |
-| Survey frame | High for `pass` | The estimate is 5 to 23 s in the six runs, against 180 s. |
+| Survey frame | High for `pass` | The estimate is 5 to 23 s in the six runs, against 180 s then (130 s now). |
 | Survey worker, peak memory | Low | The range of 0.7 to 1.3 times straddles the limit, so only a Pi 4 run settles it. |
 | All processes, peak memory | Low | The sum with the stand-in for `core` passes (686 to 1,295 MB), and the measured peaks of the whole-system run give `marginal` (783 to 1,476 MB). The `acquire` row is a lower bound, and the operating system's share is an assumption (see [Memory](#memory)). |
 
@@ -421,7 +421,7 @@ A Raspberry Pi 4 Model B (Cortex-A72, 4 cores, 2 GB of RAM of which 1,844 MiB ar
 | Fast path, bin2 64 × 64 at 360 fps | 25% | 6.27% | | pass |
 | Fast path and receive, bin2 64 × 64 at 360 fps | 25% | 9.11% | 5.7 to 6.2% | pass |
 | Kernel, 128 × 128 | | 132 µs | 75 to 82 µs | |
-| Survey frame, bin2 | 180 s | 4.49 s (detection 2.68 s, sky quality 1.50 s) | 3.1 to 3.4 s | pass (not a gate) |
+| Survey frame, bin2 | 130 s | 4.49 s (detection 2.68 s, sky quality 1.50 s) | 3.1 to 3.4 s | pass (not a gate) |
 | Survey worker, peak memory | 550 MB | 440 MB | the same | pass |
 | All processes, sum of the peaks, with `acquire` from the `ipc` case | 1.4 GB, gate 1.6 GB | 895 MB | the same | pass |
 
@@ -454,7 +454,7 @@ Since the visibility lane (see [visibility.md](visibility.md)), the system measu
 - **`day-sim`, a day of measuring.** The simulated clock starts at noon of midsummer at the synthetic site, with the Sun 58.4 degrees up. The scheduler finds Polaris in two search bursts and measures at the exposure that the bright sky allows, 1.2 ms against 2 ms in the dark. In each survey step the 1 ms frame clips, a watch frame of 32 µs measures the sky, and the step skips its long exposure, because even the shortest long exposure would pass its target.
 - **`cloudy-sim`, a cloudy night of searching.** The clock starts on a winter night, and an opaque overcast hides every star for the whole run. The scheduler searches: a burst of 50 frames every 15 s, each frame through the three matched filters. The first survey frame shows the clouds, and the cycle for clouds follows: a search period of 60 s and a survey step every 100 s, with a long exposure that grows from 1 s by 4 times a step. No burst detects Polaris.
 
-Both runs take the cycle of production: fast periods of two analysis windows of 60 s, and a survey step every 180 s. The `core-sim` case keeps the short windows of the launcher. A day at midsummer lasts 16 to 19 hours, and a run cannot take that long, so each run measures about 4 minutes of a cycle that repeats through the day or the night. The share of a core over the cycle covers whole cycles, from the end of one survey step to the end of a later one: from the end of the first step by day, and from the end of the second under clouds, because the first cycle for clouds starts at once after the step that showed the clouds, without its gap. So the search at the start of a run stays out of it.
+Both runs take the cycle of production: fast periods of two analysis windows of 60 s, and a survey step after each period (the runs of this section kept a cadence of 180 s, and since October 8, 2026 the cycles run back to back). The `core-sim` case keeps the short windows of the launcher. A day at midsummer lasts 16 to 19 hours, and a run cannot take that long, so each run measures about 4 minutes of a cycle that repeats through the day or the night. The share of a core over the cycle covers whole cycles, from the end of one survey step to the end of a later one: from the end of the first step by day, and from the end of the second under clouds, because the first cycle for clouds starts at once after the step that showed the clouds, without its gap. So the search at the start of a run stays out of it.
 
 The figures come from three runs of the harness on the Windows laptop of the tables above, on October 6, 2026. Runs 1 and 2 ran at commit `4adf3c2` with the changes that added the two cases. Run 3 ran on commit `66251aa` with the same changes and two fixes of the method: the share over whole cycles, and search figures that leave out the whole warm-up burst, also when a sample falls inside it. Runs 1 and 2 read the share over the cycle from the start of measure, or from the first sample of the cycle for clouds, to the end, which held one gap fewer than whole cycles, so the share of the day came out about 15% high. Other work loaded the machine: the reports say 43 to 51% busy during the first runs of `core-sim` and `day-sim`, 27% during the first `cloudy-sim`, 25 to 30% during the second runs, and 24 to 30% during run 3. Read each new figure against `core-sim` of the same run, not against the older tables: `core-sim` measured 477, 401, and 396 µs for a frame in `core`, against 251 µs at commit `b2e1f93`, and the next subsection shows that the code made the difference, not the laptop.
 
@@ -507,7 +507,7 @@ The visibility lane added two costs to the frames of the fast stream: the matche
 | Survey frames that the worker analyzed in a step | 1, the 1 ms frame | 2 |
 
 - **A frame of daylight costs what a frame of the night costs.** In the same run, the day's frame costs 0.92 to 1.06 times the night's. The bright sky shortens the exposure and leaves the frame rate at 82 frames per second, which the readout sets, and the per-frame work is the same.
-- **A day is no busier than a clear night.** The camera measures for 120 s of each 180 s cycle, as at night. The survey step skips its long exposure, so the camera idled about 55 s of the cycle (before the fast stream filled the slack on October 8, 2026, see `min_slack_fast_s`), and the survey worker analyzes one frame of each step instead of two. The peaks of all processes match those of the night within 8%.
+- **A day is no busier than a clear night.** The camera measured for 120 s of each 180 s cycle (the cadence of the time), as at night. The survey step skips its long exposure, so the camera idles about 55 s of the cycle, and the survey worker analyzes one frame of each step instead of two. The peaks of all processes match those of the night within 8%.
 - **Frames that the simulator dropped.** The simulator in `acquire` dropped 35, 6, and 0 of 13,300 frames in the three day runs, on a busy machine. The simulator renders every frame, so this says nothing about the real camera.
 - **`web` was not read in the second day run.** The sampler did not find the interpreter of `web` behind its launcher, so the run reports 4 MB, the size of the launcher. The first run reports 89 MB, and the verdicts below use it.
 
@@ -615,7 +615,7 @@ The `core-sim` case runs the system and reads it from outside. It starts `acquir
 - The sensor is the reference sensor (`full`), so the survey frames have the bin2 size of the real camera, 4144 × 2822 pixels, and the survey worker peaks where it peaks on a real night.
 - The clock runs at speed 1, in real time.
 - The fast stream uses the fast mode of the architecture (bin1, a 128 × 128 region, an exposure of 2 ms), which the readout of the sensor stretches to about 82 frames per second, and the real Polaris. The windows are those of the dev launcher, 20 s long. In production they are 60 s long.
-- The scheduler runs a fast stream, then a survey step (a short and a long exposure), then waits for the next slot, which comes every 3 minutes. The run waits for two survey steps and for the results of their four frames. It takes about 6 minutes.
+- The scheduler runs a fast stream, then a survey step (a short and a long exposure), then starts the next cycle at once (before October 8, 2026 it waited for a slot every 3 minutes, and the run took about 6 minutes). The run waits for two survey steps and for the results of their four frames.
 - One client polls `web` every 5 s with three requests (status, the latest seeing, and health), as an open page would.
 - The scheduler and `acquire` wait up to 20 s beyond the frame period for a frame. The simulator renders a survey frame inside the read, which takes longer than the default margin of 0.5 s on a slow or busy machine. The scheduler then counts a camera error, and it never completes a survey step: a run on Windows ended after one step in 12 minutes. The longer margin changes no work that the system does.
 

@@ -78,16 +78,6 @@ class FastConfig(SectionModel):
     requested, because a hidden star says nothing about the mount. The same count ends the rapid
     focus mode."""
 
-    min_slack_fast_s: NonNegative = 30.0
-    """The least time of the slack that the camera works in.
-
-    A cycle is the fast period, the survey step, and what is left of the cadence, the slack. When
-    at least this many seconds are left after the survey step, a fast period (or the search bursts
-    of a search period) runs to the next slot, and its last window is partial. A shorter slack
-    stays idle, because a window of a few seconds says little. 0 keeps the camera idle in the
-    whole slack, as before.
-    """
-
     target_background_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.3
     """The sky background that the adaptive exposure aims for, as a share of saturation.
 
@@ -110,8 +100,14 @@ class FastConfig(SectionModel):
 class SurveyConfig(SectionModel):
     """The survey step: a short exposure for bright stars, then a long one for the faint stars."""
 
-    cadence_s: Seconds = 180.0
-    """The time from the start of one cycle to the start of the next, in seconds."""
+    cadence_s: NonNegative = 0.0
+    """The least time from the start of one cycle to the start of the next, in seconds.
+
+    A cycle is the fast period and the survey step. With 0, the next cycle starts as soon as the
+    survey step ends, so the camera never waits: a fast period of 2 minutes and a survey step of
+    about 10 seconds make a cycle of about 2 minutes 10 seconds. A larger value makes the camera
+    rest, after the survey step, until that much time has passed since the cycle began.
+    """
 
     short_exposure_s: Seconds = 0.001
     short_gain: NonNegativeInt = 0
@@ -274,7 +270,7 @@ class CloudConfig(SectionModel):
     """The length of the fast period under cloud, in seconds."""
 
     survey_cadence_s: Seconds = 100.0
-    """The survey cadence under cloud, in seconds."""
+    """The survey cadence under cloud, in seconds. A normal cadence that is shorter wins."""
 
     @model_validator(mode="after")
     def _thresholds_are_ordered(self) -> Self:
