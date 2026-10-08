@@ -1090,3 +1090,44 @@ class TestTheLog:
         assert "fails" in messages[0]
         assert "too few stars" in messages[0]
         assert "works" in messages[1]
+
+
+class TestTheDigestOfSolves:
+    def test_a_stretch_of_solves_becomes_one_event_with_its_figures(self, build: Build) -> None:
+        events: list[tuple[str, str, str, dict[str, Any]]] = []
+        clock = VirtualClock(T0)
+        solver = StubSolver()
+        helper = build(
+            solver=solver,
+            clock=clock,
+            on_event=lambda level, kind, message, detail: events.append(
+                (level, kind, message, dict(detail))
+            ),
+        )
+        helper.solve_frame(sky_frame(seq=1))
+        solver.result = solution(solved=False, solver="", n_matched=0, note="no star field matched")
+        helper.solve_frame(sky_frame(seq=2))
+        assert not events  # the stretch of 30 s is not over
+        clock.advance(31 * NS_PER_S)
+        solver.result = solution(solver="astrometry.net")
+        helper.solve_frame(sky_frame(seq=3))
+        assert len(events) == 1
+        level, kind, message, detail = events[0]
+        assert (level, kind) == ("info", "alignment.solves")
+        assert message.startswith(
+            "Alignment solves: 2 of 3 found the field (1 by the tracker, 1 by"
+        )
+        assert detail["solves"] == 3
+        assert detail["by_tracker"] == 1
+        assert detail["by_plate_solver"] == 1
+        assert detail["reasons"] == {"no star field matched": 1}
+
+    def test_the_end_of_a_session_writes_the_rest(self, build: Build) -> None:
+        events: list[str] = []
+        helper = build(
+            solver=StubSolver(),
+            on_event=lambda level, kind, message, detail: events.append(kind),
+        )
+        helper.solve_frame(sky_frame(seq=1))
+        helper._end_session()
+        assert events == ["alignment.solves"]

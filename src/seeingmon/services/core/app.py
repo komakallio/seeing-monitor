@@ -685,6 +685,9 @@ class CoreApp:
             solver=quick,
             tracker=self.tracker,
             touch=lambda: self.scheduler.touch_alignment(),
+            on_event=lambda level, kind, message, detail: self.scheduler.note_event(
+                level, kind, message, detail
+            ),
             site=load_site(self.config),
             calibrator=self.preview_calibrator,
             rapid=self.rapid,

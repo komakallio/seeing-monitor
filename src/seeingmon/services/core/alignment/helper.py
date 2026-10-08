@@ -46,9 +46,11 @@ mode as well.
 from __future__ import annotations
 
 import logging
+import statistics
 import threading
+from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from seeingmon.clock import NS_PER_S, Clock
@@ -94,6 +96,8 @@ from seeingmon.survey.tracker import PointingTracker
 _log = logging.getLogger(__name__)
 
 WAKE_S = 0.5  # the longest that a worker thread waits before it looks around
+DIGEST_S = 30.0  # how often a session writes the digest of its quick solves to the event log
+TRACKER = "tracker"  # the `solver` of a solution that the pointing tracker found by itself
 
 
 class Solver(Protocol):
@@ -105,6 +109,55 @@ class Solver(Protocol):
     """
 
     def solve(self, frame: Frame) -> QuickSolution: ...
+
+
+@dataclass(slots=True)
+class _SolveDigest:
+    """The quick solves of one stretch of an alignment session, for the event log."""
+
+    started_ns: int
+    elapsed_s: list[float] = field(default_factory=list)
+    detected: list[int] = field(default_factory=list)
+    matched: list[int] = field(default_factory=list)
+    by_tracker: int = 0
+    by_solver: int = 0
+    notes: Counter[str] = field(default_factory=Counter)
+
+    def add(self, solution: QuickSolution, elapsed_s: float) -> None:
+        self.elapsed_s.append(elapsed_s)
+        self.detected.append(solution.n_detected)
+        if solution.solved:
+            self.matched.append(solution.n_matched)
+            if solution.solver == TRACKER:
+                self.by_tracker += 1
+            else:
+                self.by_solver += 1
+        else:
+            self.notes[solution.note or "no reason given"] += 1
+
+    def event(self) -> tuple[str, dict[str, Any]]:
+        """The message and the detail of the event."""
+        total = len(self.elapsed_s)
+        solved = self.by_tracker + self.by_solver
+        median = statistics.median(self.elapsed_s)
+        longest = max(self.elapsed_s)
+        message = (
+            f"Alignment solves: {solved} of {total} found the field "
+            f"({self.by_tracker} by the tracker, {self.by_solver} by a plate solver), "
+            f"median {median:.2f} s, longest {longest:.1f} s."
+        )
+        detail: dict[str, Any] = {
+            "solves": total,
+            "solved": solved,
+            "by_tracker": self.by_tracker,
+            "by_plate_solver": self.by_solver,
+            "median_s": round(median, 3),
+            "longest_s": round(longest, 3),
+            "median_detected": int(statistics.median(self.detected)),
+            "median_matched": int(statistics.median(self.matched)) if self.matched else 0,
+            "reasons": dict(self.notes.most_common(3)),
+        }
+        return message, detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +184,10 @@ class AlignmentHelper:
         site: SiteConfig | None = None,
         calibrator: PreviewCalibrator | None = None,
         rapid: RapidFocusHelper | None = None,
+        on_event: Callable[[str, str, str, Mapping[str, Any]], None] | None = None,
     ) -> None:
+        self._on_event = on_event
+        self._digest: _SolveDigest | None = None
         self._settings = settings
         self._site = site
         self._profile = profile
@@ -332,6 +388,7 @@ class AlignmentHelper:
         return StartRapidFocus(x, y, exposure_us, gain), ""
 
     def _end_session(self) -> None:
+        self._flush_digest()
         if self._rapid is not None:  # the scheduler ended it already, and ending it twice is fine
             self._rapid.end_session("the alignment ended")
         with self._lock:
@@ -464,7 +521,33 @@ class AlignmentHelper:
             self.solve_failures += 1
         self.last_solve_s = elapsed_s
         self._log_outcome(solution)
+        self._note_digest(solution, elapsed_s)
         return solution
+
+    def _note_digest(self, solution: QuickSolution, elapsed_s: float) -> None:
+        """Count a solve for the event log, and write the digest when its stretch is over."""
+        if self._on_event is None:
+            return
+        now = self._clock.monotonic_ns()
+        with self._lock:
+            if self._digest is None:
+                self._digest = _SolveDigest(now)
+            self._digest.add(solution, elapsed_s)
+            due = now - self._digest.started_ns >= DIGEST_S * NS_PER_S
+        if due:
+            self._flush_digest()
+
+    def _flush_digest(self) -> None:
+        """Write the digest of the solves since the last one to the event log."""
+        with self._lock:
+            digest, self._digest = self._digest, None
+        if digest is None or not digest.elapsed_s or self._on_event is None:
+            return
+        message, detail = digest.event()
+        try:
+            self._on_event("info", "alignment.solves", message, detail)
+        except Exception:
+            _log.exception("the alignment helper could not write its digest of solves")
 
     def reset_focus(self) -> None:
         """Restart the best focus value, for example after a refocus. The history stays.

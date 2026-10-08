@@ -560,6 +560,12 @@ class Scheduler:
         with self._lock:
             return tuple(self._results)
 
+    def note_event(
+        self, level: str, kind: str, message: str, detail: Mapping[str, Any] | None = None
+    ) -> None:
+        """Write an event from another thread, such as the alignment helper. The loop flushes it."""
+        self._emit(level, kind, message, detail)
+
     def touch_alignment(self) -> None:
         """Tell the scheduler that someone uses the alignment helper, which restarts the idle timer.
 
